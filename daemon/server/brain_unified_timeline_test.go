@@ -183,9 +183,8 @@ func TestBrainWorkCardLifecycleUsesWorkIdentity(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("append result = %#v created=%v err=%v", result, created, err)
 	}
-	// Real reducer cards use the canonical review Event identity (turn_done),
-	// while their visible fact is session.done. Lifecycle must follow WorkID,
-	// not attempt to reinterpret this card ID as a session result Event.
+	// A cached card with an unrelated Event ID is history, even if it has the
+	// same Work ID. Only the current result identity receives active labels.
 	if _, _, err := store.SyncWorkCard(item.ID, &brain.WorkEvent{
 		ID: "canonical-review", WorkID: item.ID, Kind: "session.done",
 		PayloadRef: "session:worker", SourceName: "worker", Summary: "done",
@@ -203,8 +202,8 @@ func TestBrainWorkCardLifecycleUsesWorkIdentity(t *testing.T) {
 			continue
 		}
 		if event.Source != "work_result" || event.WorkID != item.ID ||
-			event.WorkReviewState == "" || event.WorkSessionState == "" ||
-			!event.WorkResultCurrent {
+			event.WorkReviewState != "resolved" || event.WorkSessionState == "" ||
+			event.WorkResultCurrent {
 			t.Fatalf("work card lifecycle = %#v", event)
 		}
 		return

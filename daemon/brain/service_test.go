@@ -1227,7 +1227,7 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 	}
 }
 
-func TestSameReviewEventRedeliveryUsesFreshProviderTurnReceipt(t *testing.T) {
+func TestSameReviewEventRequiresExplicitReplayAfterHandlingEnds(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1262,6 +1262,14 @@ func TestSameReviewEventRedeliveryUsesFreshProviderTurnReceipt(t *testing.T) {
 	settleCanonicalHostTurnForTest(t, store, hostID, first.ProviderTurnID)
 	if _, requeued, err := store.EndReviewDelivery(item.ID, first.HandlingID, first.ProviderTurnID); err != nil || !requeued {
 		t.Fatalf("end first handling requeued=%v err=%v", requeued, err)
+	}
+	for range 20 {
+		if delivered, err := service.ReconcileHostLane(); err != nil || delivered {
+			t.Fatalf("unchanged decision automatically redelivered: %v %v", delivered, err)
+		}
+	}
+	if _, _, err := store.ResolveReviewLease(item.ID, ReviewLeaseReplay, "user", "explicit recovery after reviewing the failure"); err != nil {
+		t.Fatal(err)
 	}
 
 	if delivered, err := service.ReconcileHostLane(); err != nil || !delivered {
@@ -2483,7 +2491,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	for _, want := range []string{
 		"Delegated executor: codex", brainWorkerRoleContract,
 		"Read AGENTS.md and soul.md", "Managed worktree root:", "Zen CLI:",
-		"Work/Event state owns scheduling", "a running Worker does not need progress polling",
+		"Brain owns orchestration", "a running Worker does not need progress polling",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("bootstrap missing %q", want)
@@ -2494,7 +2502,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 			t.Fatalf("bootstrap retains %q", unwanted)
 		}
 	}
-	for _, want := range []string{"delegated=true", "due_retry", "resolve_command", "source-thread", "scheduled_action", "first/second", "completion or failure event"} {
+	for _, want := range []string{"delegated=true", "Brain decides decomposition", "source-thread", "scheduled_action", "first/second", "no acknowledgement ceremony"} {
 		if !strings.Contains(productWorkspaceInstructions, want) {
 			t.Fatalf("loaded AGENTS missing %q", want)
 		}
@@ -2852,7 +2860,7 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 		"Read AGENTS.md and soul.md",
 		"policies/delegation.md",
 		"Managed worktree root:",
-		"Work/Event state owns scheduling",
+		"Brain owns orchestration",
 	} {
 		if !strings.Contains(bootstrap, want) {
 			t.Fatalf("new chat bootstrap missing %q:\n%s", want, bootstrap)
@@ -3085,7 +3093,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 		t.Fatalf("workspace instructions do not describe playbooks:\n%s", instructions)
 	}
 	for _, want := range []string{
-		brainWorkerRoleContract, "claimed actionable Work Event", "resolve_command",
+		brainWorkerRoleContract, "Brain decides decomposition", "no acknowledgement ceremony",
 		"finish independent authorized preparation first", "materially changes scope, risk, or user values",
 		"zen worker list/spawn/capture/send/close", "delegated=true",
 		"$ZEN_WORKTREE_ROOT", "TMPDIR/TMP/TEMP", "$ZEN_BUILD_TMPDIR",
@@ -3099,7 +3107,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Inspect every delegated result", "same viable Worker", "acceptance criteria", "verification", "durable next action"} {
+	for _, want := range []string{"Inspect every delegated result", "same viable Worker", "acceptance criteria", "verification", "no second continuation command"} {
 		if !strings.Contains(string(delegation), want) {
 			t.Fatalf("loaded delegation policy missing %q", want)
 		}

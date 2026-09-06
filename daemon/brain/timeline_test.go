@@ -362,12 +362,12 @@ func TestReducerFactsMaterializeWorkCards(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if state.Review == nil || state.Review.Reason != "lease_expired" {
+		if state.Review != nil {
 			t.Fatalf("canonical lease-expiry review = %+v", state.Review)
 		}
 		cards := store.FSM().Cards()
 		if len(cards) != 1 || cards[0].WorkID != lifecycle.WorkID(item.ID) ||
-			!cards[0].Actionable || cards[0].Reason != "lease_expired" {
+			cards[0].Actionable {
 			t.Fatalf("canonical one-card projection = %+v", cards)
 		}
 	})
@@ -561,7 +561,6 @@ func TestTimelineOmitsCanonicalDirectWorkEventUserRows(t *testing.T) {
 	envelope := work.FormatDirectWorkEventInput(work.DirectWorkEventInput{
 		EventID: "1aa90ab5-cf46-4643-9985-f6fd26c9526b", WorkID: "ae621005-929b-49b5-9d42-fa476d42d3f3",
 		WorkRevision: 7, HandlingID: "handling-envelope", ProviderTurnID: "provider-turn-envelope",
-		ResolutionRequired: true, ResolveCommand: "zen brain work resolve --event-id 1aa90ab5-cf46-4643-9985-f6fd26c9526b --handling-id handling-envelope --provider-turn-id provider-turn-envelope --revision 7 --disposition complete",
 		WorkTitle:  "zen-telegram-performance-publish",
 		Kind:       "session.failed",
 		Source:     "zen-telegram-performance-publish (zen-worker-zen-telegram-performance-publish-1786011456826849565:@7730)",

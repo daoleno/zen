@@ -9,56 +9,10 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-// ---------------------------------------------------------------------------
-// Work-centric Brain review model.
-//
-// Work is the authoritative durable unit. A delegated Session is an executor
-// attached to Work. A WorkEvent is an append-only fact and at most a one-shot
-// wake/delivery signal. A UI card is a projection of Work state and its
-// current required action; it is never owned by a transient Event claim.
-//
-// Invariants
-//
-//	I1  Work.Review is the only scheduler truth. Event rows never carry
-//	    claim/delivery/lease state; they are append-only facts plus audit
-//	    (HandledAt/Disposition for Brain dispositions, Resolution/DiscardedAt
-//	    for actor lease closures).
-//	I2  At most one Work.Review exists per Work and at most one delivered
-//	    review lease exists globally (the Host lane stop gate).
-//	I3  Review.RequiredAt is the immutable event birth used for queue
-//	    ordering. Review.EventID names the current action fact; a newer
-//	    eligible fact replaces it while no lease is in flight (content
-//	    refresh, never a second queue item).
-//	I4  A disposition CASes the exact lease capability (WorkID, HandlingID,
-//	    ProviderTurnID) and the expected Work revision. A stale capability
-//	    can never mutate newer state.
-//	I5  Work.Review is cleared only by: a typed Brain disposition, an actor
-//	    lease resolution (mark_delivered/discard/replay), owner admission
-//	    settling an undelivered event, or operator CloseWork. Clearing is
-//	    atomic with the Work transition and the fact audit.
-//	I6  queued_attention counts review-required Work. Every counted item is
-//	    recoverable: re-claimable after lease expiry, or quarantined with an
-//	    explicit actor-resolution path (Lease.AmbiguousDelivery). A claim
-//	    conflict can therefore never leave queued_attention > 0 with no
-//	    recoverable action.
-//	I7  A card is active iff its Event ID equals Work.Review.EventID.
-//	    Older event cards are history (resolved). Duplicate facts (dedupe
-//	    key) never create a second card or a second review.
-//	I8  A lease never survives Host death unless the durable submission
-//	    ledger proves mutation may have begun (Pending/Resolved exact
-//	    submission): that case is quarantined in Work state and only an
-//	    explicit actor resolution closes it. Absent/Aborted exact submission
-//	    proves the action was never delivered, so the lease is dropped and
-//	    the same unresolved action becomes re-claimable.
-//	I9  Missing/terminal delegated Sessions never block Work transitions:
-//	    owner strings are references validated against the canonical Turn
-//	    ledger, and terminal dispositions detach executor ownership
-//	    atomically.
-//	I10 Projections (queue counts, cards, attention labels) are recomputed
-//	    from canonical Work + append-only facts at startup and after every
-//	    reducer pass. There is no event/card repair path and no direct DB
-//	    mutation.
-// ---------------------------------------------------------------------------
+// Delivery bookkeeping is internal to the runtime. Brain receives facts and
+// decides the next action; it need not claim or resolve a notification.
+// Exact receipts suppress duplicate automatic delivery. New terminal evidence
+// supersedes earlier attention, and ended handlers cannot block independent Work.
 
 // WorkReview is the canonical Brain review obligation of one Work. It is
 // durable Work state. EventID is the sole identity from actionable fact
@@ -134,8 +88,6 @@ type WorkReviewDispositionRequest struct {
 	ProviderTurnID       string          `json:"provider_turn_id"`
 	ExpectedWorkRevision uint64          `json:"expected_work_revision"`
 	Disposition          WorkDisposition `json:"disposition"`
-	NextSessionID        string          `json:"next_session_id,omitempty"`
-	NextTurnToken        string          `json:"next_turn_token,omitempty"`
 	Wake                 *WorkWake       `json:"wake,omitempty"`
 	NextAction           string          `json:"next_action,omitempty"`
 	Summary              string          `json:"summary,omitempty"`
@@ -151,45 +103,9 @@ const (
 	ReviewLeaseReplay        ReviewLeaseResolution = "replay"
 )
 
-// ---------------------------------------------------------------------------
-// Transition table
-//
-// Review event state is (Review, Lease): absent, pending, leased, delivered,
-// ended, quarantined.
-//
-//	absent       Review == nil
-//	pending      Review != nil, Lease == nil
-//	leased       Lease != nil, DeliveredAt == nil, AmbiguousDelivery == false
-//	delivered    Lease.DeliveredAt != nil, HandlingEndedAt == nil
-//	ended        Lease.HandlingEndedAt != nil
-//	quarantined  Lease.AmbiguousDelivery
-//
-//	#    From        Event                                            To            Guard / effect
-//	1    absent      eligible actionable fact appended                 pending       RequiredAt=now; EventID=fact.ID; card materialized
-//	2    pending     newer eligible fact while no lease in flight      pending       EventID := fact.ID (content refresh, same event)
-//	3    pending     lane claims at the serialization boundary         leased        lease minted (capability + revision fence)
-//	4    leased      receipt proves non-submission                     pending       lease cleared (I8)
-//	5    leased      receipt accepted; provider Turn canonical         delivered      DeliveredAt set
-//	6    leased      Host gone; no/Aborted exact submission            pending       lease cleared (I8); same action re-claimable
-//	7    leased      Host gone; Pending/Resolved exact submission      quarantined   AmbiguousDelivery set; delivery.uncertain note
-//	8    delivered   typed disposition resolves                        absent        Work transitioned; fact audited; owner detached if terminal
-//	9    delivered   Host turn ended without disposition               ended         HandlingEndedAt set; audit note appended
-//	10   ended       lane claims at the serialization boundary         leased        same action re-claimed (no new queue item)
-//	11   quarantined actor mark_delivered                              pending       delivery proven; same action re-claimable
-//	12   quarantined actor replay                                     pending       lease cleared; same action re-claimable
-//	13   quarantined actor discard                                    absent        audit; if Work non-terminal a fresh reconcile fact re-requires (1)
-//	14   pending     initial delegated owner admission                absent        event settled (owner executes instead; I9)
-//	15   any         operator CloseWork                               absent        audit; event discarded
-//	16   delivered   Host turn ends (startup recompute)               ended         requeue; lane resumes
-//	17   leased      startup recompute, Host gone, no evidence        pending       re-derivation of I8
-//	18   leased      startup recompute, Host gone, evidence           quarantined   re-derivation of I7
-//	19   any         disposition clears; eligible fact appended       pending       during the lease (sequence > fence) re-requires a fresh event
-//
-// Exactly-once: rows 3-5 happen at most once per lease; a disposition (8)
-// clears the review, so a second disposition of the same event is refused by
-// the capability CAS (I4). Host death re-delivers the same unresolved action
-// (6, 9, 10, 17) but can never create or preserve a second queue item.
-// ---------------------------------------------------------------------------
+// A result is pending, in delivery, delivered, or ended. An unknown receipt
+// retains uncertainty for explicit recovery; it is not a workflow decision.
+// Ordinary Work updates and accepted follow-ups retire the previous result.
 
 func reviewDeliveredAwaitingDisposition(review *WorkReview) bool {
 	return review != nil && review.Lease != nil &&

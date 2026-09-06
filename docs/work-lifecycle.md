@@ -8,8 +8,9 @@ projections, never lifecycle truth.
 
 This schema is intentionally breaking. Normal startup accepts only the current
 transaction-image schema; it never falls back to an earlier scheduler directory
-or reconstructs execution state from presentation. An explicit offline upgrade
-is described below.
+or reconstructs execution state from presentation. There is no supported
+old-schema migration or offline upgrade command; see Worker Upgrade below for
+the fresh-state maintenance handoff. This lifecycle candidate adds no migration.
 
 ## Work
 
@@ -41,33 +42,89 @@ Attempt loss releases execution authority but never completes Work. A later
 Attempt can reuse the viable Session or start anew from the Work's
 durable objective, completion criteria, context, and workspace facts.
 
-Same-Session continuation is deliberately two steps. Brain first submits one
-scoped follow-up with one random Turn identity and the exact Review capability.
-Provider acceptance leaves that admission non-owning. Brain then resolves the
-same Review with typed `continue`; that transaction closes the Review and
-activates exactly the accepted Turn as the next Attempt.
+### Supervision And Decisions
 
-The exact provider mutation is first recorded as an `AdmissionState`. A
-review-bound follow-up is tagged with the exact handling identity. It remains
-non-owning until provider acceptance and the typed `continue` disposition
-atomically promote it to the active Attempt.
+Execution, supervision, and Brain decisions have separate responsibilities:
+the Attempt owns execution, the daemon supervises its progress deadline, and
+Brain receives result and exception facts through a durable delivery record. A check-in deadline is not a
+terminal result and does not create a Review, notification, or Brain turn.
 
-Admissions are indexed by their exact proposed Turn token. Host review delivery
-cannot replace a Worker's accepted signal contract. A Work still has at most one
-unresolved transport transaction and one current Attempt. Retaining an accepted
-receipt does not authorize an old token to become current, waive a handling
-identity check, close a Review, or replay an uncertain submission.
+| Current state | Evidence or command | Result | Brain admission |
+| --- | --- | --- | --- |
+| Owned Attempt | Exact check-in or recent bound provider progress | Renew the same Attempt deadline | None |
+| Owned Attempt | Deadline reached | Record one expiry fact; retain ownership | None |
+| Expired Attempt | Same unchanged expiry | No new state; next timer is loss-grace deadline | None |
+| Expired Attempt | Fresh exact progress | Renew the same Attempt | None |
+| Owned Attempt | Exact completion or failure | Release ownership and persist result | One result for Brain |
+| Expired Attempt | Loss-grace deadline with no new progress | Release ownership as lost, never as completed | One loss decision |
+| Owned Attempt | Producer disappears | Record uncertain/lost outcome, never fabricated success | One loss decision |
+| Active decision | Exact session_terminal wait naming its Attempt | Close decision, retain Attempt; do not add a Wake beside it | None |
+| Delivered decision | Handling ends without a valid disposition | Retain ended capability and visible unresolved decision | None until explicit recovery |
+| Ended decision | Explicit actor replay | Clear handler; allow a fresh handling | One authorized delivery |
+| Ended decision | Genuinely new actionable fact | Replace decision and invalidate old capability | One new decision; unchanged content cannot reopen it |
+| Any producer decision | New exact terminal evidence | Supersede prior decision and capability | Fresh result for Brain |
 
-After a lost CLI response, inspect known input without sending it again:
+Provider `running` is an activity status, not proof of continuing progress.
+Only recent source-timestamped events bound to the exact Turn renew its lease;
+rereading a cached status cannot keep a hung producer owned indefinitely. The
+deadline scheduler reconciles due producers before sweeping. After an expiry
+fact is recorded it schedules the loss-grace deadline, not the expired timer.
+Normal Worker check-ins remain useful when a long tool call emits no structured
+provider activity. Silence remains uncertain until the existing loss boundary.
+
+For an owned wait, the reference is `session:<session-id>:turn:<turn-token>`.
+Bare Session names and another producer's Turn do not authorize changing the
+active Attempt. Without an Attempt, wait retains its usual typed external Wake.
+
+### Model-Led Continuation
+
+Normal operation is one command per decision:
 
 ```sh
-zen worker receipt --work-id <work-id> --id <session-id> --turn-id <turn-token>
+zen worker send -id <session-id> --work-id <work-id> -text '<scoped follow-up>'
+zen brain work update -id <work-id> -status done
 ```
 
-The receipt reports canonical acceptance and `owns_attempt` separately. It works
-without a live tmux target and does not mutate lifecycle state. A follow-up
-accepted under an ended handling remains evidence, not a capability to bypass
-the currently required review disposition.
+Sending a follow-up mints an internal Turn identity. Exact acceptance records the
+receipt, retires the previous result/Attempt if present, and starts the new Attempt
+in one transaction. There is no accepted-but-non-owning Worker stage and no second
+`resolve continue` call. Host delivery receipts remain separate from Worker
+execution; delivering a notification cannot take Worker ownership.
+
+Unknown delivery is a fact: the input may have arrived. Brain decides whether to
+inspect a receipt, reconcile effects or send another attempt. A new Worker send
+is allowed after an unknown outcome, including after restart. The previous
+receipt remains evidence. Repeating an identical transport receipt is idempotent;
+a newer model-directed submission has precedence over late old acceptance.
+The persisted submission sequence determines this order, not timestamps or
+lexicographic random tokens.
+
+A notification contains result data, not a generated command program.
+`resolution_required`, `resolve_command`, the Worker send handling/event/revision
+flags and the `AcceptReviewFollowUp` transition are removed. Explicit Work
+updates can record acceptance during a Host turn without acquiring a capability.
+The optional typed wait/recovery APIs remain available for explicit scheduling
+and redelivery decisions; they are not prerequisites to normal delegation.
+
+### Responsibility Change
+
+| Concern | Before | Now |
+| --- | --- | --- |
+| Decomposition, ordering, coordination | Brain constrained by runtime choreography | Brain decides from context and user boundaries |
+| Follow-up | Send with review capability, then resolve to activate | One accepted send activates execution atomically |
+| Completion | Bounded provider end or criteria flag could complete Work | All reports are results; only Brain/operator decision accepts Work |
+| Unknown input | Unresolved admission prevented another mutation | Preserve uncertainty; Brain may submit a new attempt |
+| Notification | Resolve instruction and frozen metadata gate | Factual result; no mandatory acknowledgement |
+| Missed check-in | Clock exception woke Brain | Runtime supervises progress and reports actual loss |
+| Host interruption | Unchanged decision could be re-admitted | Delivered fact remains visible, independent facts proceed |
+| Source writes | Blanket writer/worktree rules in earlier design brief | Contextual model coordination; no exclusive-writer mechanism |
+| Persistence and permissions | Exact receipts, atomic store, owned Sessions | Retained implementation correctness and actual permission boundaries |
+
+The retained Attempt is execution correlation, not a source-writer lock.
+Review/handler fields are internal notification bookkeeping, not a model-managed
+lease. Wake represents a requested future input, not an invented program plan.
+Completion policies remain descriptive Work metadata; neither policy starts
+follow-ups or accepts Worker reports. No compatibility or migration layer is added.
 
 ## Worker Upgrade
 
@@ -92,12 +149,9 @@ upgrade. Deploy the new daemon/mobile pair and create or resume Sessions through
 the new owner. Keep archived data until the new state and native resume paths are
 verified. Do not integrate source into a running `zen-dev` tree as a shortcut.
 
-`until_done` changes only completion authority: an unaffirmed terminal result
-cannot complete the Work. It does not queue a continuation, schedule a retry,
-select an executor, create a Session, submit a generic prompt, or admit another
-Attempt. The terminal result opens one actionable Event for Brain. Brain names
-the next scoped concern and explicitly creates or reuses its Session before
-resolving that exact Event with `continue` and the accepted Attempt identity.
+Both completion policies leave acceptance to Brain. Neither queues a
+continuation, selects an executor or manufactures a prompt. Worker/provider
+success is not proof that the user's larger objective was accepted.
 
 ## Event
 
@@ -109,21 +163,26 @@ identity.
 An open Review is the durable delivery obligation. A handler atomically claims
 it by `Review.EventID`. If it disappears before confirmed delivery,
 `claim_expires_at` releases the claim and the same Review becomes claimable.
-Repeated delivery and repeated resolution are idempotent. The timeline
-projection keys the card by `Review.EventID`, so repeated handling produces
-exactly one card.
+Confirmed delivery is consumed even if the handling fails to resolve. Ending
+that handling does not release it for automatic redelivery. The unresolved
+Review remains visible and does not hold the Host lane; the existing explicit
+actor lease-recovery command can authorize replay. Its ended state is canonical
+and survives restart. An ended or superseded capability cannot disposition a
+new decision. Repeated ending, claim attempts, and resolution are idempotent.
 
-The first unresolved actionable Event remains the review/card identity when
-evidence strengthens. In particular, a provisional lease-expired/lost fact may
-later be upgraded by exact terminal evidence for the same latest Attempt. The
-existing `event_id`, claim, and notification stay in place while its current
-reason and Attempt result reflect the stronger evidence. Brain dispositions
-therefore target the same Event; no second card or automatic Attempt is made.
+Exact terminal evidence supersedes a producer's earlier decision, including an
+input request or provisional lost outcome. It gets a new decision identity and
+invalidates the earlier handling; the prior card becomes history, never another
+active obligation. A delivered or ended provisional decision cannot swallow a
+required result notification. Exact delegated terminal signals use the same
+canonical result path as provider evidence, including after lease expiry.
+There is no separate audit-only completion path selected by lease attention.
 
-Provider uncertainty exists only at the exact input-admission boundary. A
-definite pre-mutation failure may retry the identical payload with the same
-Turn identity. An ambiguous or unknown outcome is durable no-replay evidence;
-it creates no scheduler state, Session, Attempt, Wake, or fallback action.
+Provider failures, including rate limits and unavailable evidence, are factual
+results, never success. Bound provider terminal results are delivered even when
+the Worker could not emit its own completion command. Unknown input stays on
+its receipt; it does not invent a Session, retry or fallback. Brain can request
+redelivery explicitly or proceed with ordinary Work/send commands.
 
 The daemon calculates the earliest due Wake, claim expiry, or Attempt
 liveness deadline and waits on one timer plus lifecycle commit wakeups. On
@@ -142,11 +201,11 @@ and repeated timer sweeps create one stable actionable Event.
 - Exact `session_id + turn_token + fence` gates all Attempt mutation.
 - One `event_id` names an actionable fact from creation through resolution.
 - Internal transitions and repeated resolution are idempotent.
-- A definite no-submit may retry only the exact same admission identity.
+- A definite no-submit can reuse its receipt; a new model decision can use a new receipt.
 - Ambiguous or unknown admission is never replayed automatically.
 - Heartbeats affect Attempt liveness only.
 - Execution evidence cannot imply Work completion.
 - Lifecycle timers never create Sessions or infer delegated prompts.
-- `until_done` gates completion only.
+- Completion policies do not perform orchestration or accept results.
 - Current rows are usable directly; no second event-log replay is required to
   repair a separate authority.

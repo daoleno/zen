@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -261,7 +262,7 @@ func (e *Engine) PrepareAdmission(id WorkID, in PrepareAdmissionInput) (bool, *S
 			if existing.Status != AdmissionAborted {
 				return nil, nil
 			}
-			if st.ActiveAdmission() != nil {
+			if active := st.ActiveAdmission(); active != nil && (active.Status != AdmissionAmbiguous || in.ClaimToken != "") {
 				return nil, fmt.Errorf("%w: another admission is still active", ErrAttemptActive)
 			}
 			if in.Purpose == AdmissionPurposeReview &&
@@ -282,13 +283,12 @@ func (e *Engine) PrepareAdmission(id WorkID, in PrepareAdmissionInput) (bool, *S
 				},
 			}}, nil
 		}
-		if active := st.ActiveAdmission(); active != nil {
+		if active := st.ActiveAdmission(); active != nil && (active.Status != AdmissionAmbiguous || in.ClaimToken != "") {
 			return nil, fmt.Errorf("%w: admission %s is still %s", ErrAttemptActive, active.TurnToken, active.Status)
 		}
 		for _, previous := range st.Admissions {
-			if in.Purpose != "" && previous.Purpose == in.Purpose && previous.PurposeID == in.PurposeID &&
-				(previous.ClaimToken == "") == (in.ClaimToken == "") && previous.Status != AdmissionAborted {
-				return nil, fmt.Errorf("%w: admission purpose already belongs to %s", ErrAttemptActive, previous.TurnToken)
+			if in.ClaimToken != "" && previous.ClaimToken == in.ClaimToken && previous.Status != AdmissionAborted {
+				return nil, fmt.Errorf("%w: delivery already has receipt %s", ErrAttemptActive, previous.TurnToken)
 			}
 		}
 		switch in.Purpose {
@@ -348,10 +348,9 @@ type AcceptAdmissionInput struct {
 	AdmissionAt     time.Time
 }
 
-// AcceptAdmission records exact provider evidence. Fresh initial input commits
-// admission.accepted and turn.admitted in one batch. A review-purpose admission
-// is accepted but remains non-owning until AcceptReviewFollowUp atomically
-// settles the review. A signal-protocol steer is also a new lifecycle Turn:
+// AcceptAdmission records exact provider evidence. Accepted Worker input commits
+// admission.accepted and turn.admitted in one batch, settling any previous
+// result as the model-directed continuation. A signal-protocol steer is also a new lifecycle Turn:
 // the provider may reuse its Activity, but the exact prompt token atomically
 // replaces the predecessor as the active Attempt.
 func (e *Engine) AcceptAdmission(id WorkID, token TurnToken, in AcceptAdmissionInput) (*State, error) {
@@ -411,7 +410,7 @@ func (e *Engine) AcceptAdmission(id WorkID, token TurnToken, in AcceptAdmissionI
 				AdmissionAt: in.AdmissionAt, ResultTurnToken: resultToken,
 			},
 		}}
-		if a.ClaimToken != "" {
+		if a.ClaimToken != "" || newerWorkerSubmission(st, a) {
 			return events, nil
 		}
 		if a.Mode == AdmissionConditionalSteer && !a.SignalProtocol {
@@ -434,8 +433,8 @@ func (e *Engine) AcceptAdmission(id WorkID, token TurnToken, in AcceptAdmissionI
 			)
 			return events, nil
 		}
-		if st.Review != nil && st.Review.Handler != nil && a.Purpose == AdmissionPurposeReview &&
-			a.PurposeID == st.Review.Handler.HandlerID {
+		events = append(events, followUpEvents(st, a, now)...)
+		if len(events) > 1 {
 			return events, nil
 		}
 		if st.Attempt != nil {
@@ -476,6 +475,9 @@ func (e *Engine) AcceptAdmissionBySignal(id WorkID, token TurnToken, sessionID s
 		events := []Event{{WorkID: id, Kind: KAdmissionAccepted, TurnToken: token,
 			SourceID: "admission-signal:" + string(token), At: now,
 			Payload: AdmissionAcceptedPayload{ResultTurnToken: token}}}
+		if newerWorkerSubmission(st, a) {
+			return events, nil
+		}
 		if a.Mode == AdmissionConditionalSteer {
 			predecessor, predecessorFence := st.Attempt.TurnToken, st.Attempt.Generation
 			events = append(events,
@@ -488,8 +490,8 @@ func (e *Engine) AcceptAdmissionBySignal(id WorkID, token TurnToken, sessionID s
 			)
 			return events, nil
 		}
-		if st.Review != nil && st.Review.Handler != nil && a.Purpose == AdmissionPurposeReview &&
-			a.PurposeID == st.Review.Handler.HandlerID {
+		events = append(events, followUpEvents(st, a, now)...)
+		if len(events) > 1 {
 			return events, nil
 		}
 		if st.Attempt != nil {
@@ -500,6 +502,37 @@ func (e *Engine) AcceptAdmissionBySignal(id WorkID, token TurnToken, sessionID s
 			Payload: AdmittedPayload{SessionID: sessionID, Delegated: true, FollowUpOf: a.ExistingTurnToken}})
 		return events, nil
 	})
+}
+
+// An accepted follow-up is the model's continuation decision. Persistence
+// retires the previous result and binds execution in the same atomic batch.
+func newerWorkerSubmission(st *State, a *AdmissionState) bool {
+	for _, other := range st.Admissions {
+		if other.ClaimToken == "" && other.PreparedSeq > a.PreparedSeq && other.Status != AdmissionAborted {
+			return true
+		}
+	}
+	return false
+}
+
+func followUpEvents(st *State, a *AdmissionState, now time.Time) []Event {
+	if st.Review == nil || a.ClaimToken != "" {
+		return nil
+	}
+	events := []Event{{WorkID: st.ID, Kind: KReviewResolved,
+		SourceID: "continue:" + string(a.TurnToken), At: now,
+		Payload: ReviewResolvedPayload{EventID: st.Review.EventID, Disposition: DispositionContinue}}}
+	fence := st.Fence + 1
+	if st.Attempt != nil {
+		events = append(events, Event{WorkID: st.ID, Kind: KTurnRelinquished,
+			TurnToken: st.Attempt.TurnToken, Fence: st.Attempt.Generation,
+			SourceID: "follow-up-release:" + string(a.TurnToken), At: now,
+			Payload: RelinquishedPayload{Reason: "model-directed follow-up"}})
+		fence++
+	}
+	return append(events, Event{WorkID: st.ID, Kind: KTurnAdmitted,
+		TurnToken: a.TurnToken, Fence: fence, SourceID: "admit:" + string(a.TurnToken), At: now,
+		Payload: AdmittedPayload{SessionID: a.SessionID, Delegated: true, FollowUpOf: a.ExistingTurnToken}})
 }
 
 func (e *Engine) MarkAdmissionAmbiguous(id WorkID, token TurnToken, reason string) (*State, error) {
@@ -599,6 +632,13 @@ func (e *Engine) admittedAttemptLocked(id WorkID, token TurnToken) (AttemptIdent
 	return AttemptIdentity{}, false
 }
 
+// AdmittedAttempt reads the immutable execution fence for exact late results.
+func (e *Engine) AdmittedAttempt(id WorkID, token TurnToken) (AttemptIdentity, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.admittedAttemptLocked(id, token)
+}
+
 // Heartbeat extends the live turn's lease monotonically.
 func (e *Engine) Heartbeat(id WorkID, attempt AttemptIdentity, leaseSeconds int) (*State, error) {
 	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
@@ -658,11 +698,8 @@ func coalescedLeaseRenewal(current, observedAt time.Time, lease time.Duration) (
 
 // DoneInput settles the live turn.
 type DoneInput struct {
-	OK          bool
-	Summary     string
-	CriteriaMet bool
-	// Final carries strong completion authority (see DonePayload).
-	Final bool
+	OK      bool
+	Summary string
 }
 
 // ReportTurnDone applies the completion rule. Stale tokens are rejected
@@ -692,7 +729,7 @@ func (e *Engine) ReportTurnDone(id WorkID, attempt AttemptIdentity, in DoneInput
 		return []Event{{
 			WorkID: id, Kind: KTurnDone, TurnToken: attempt.TurnToken, Fence: attempt.Fence,
 			SourceID: "done:" + string(attempt.TurnToken), At: now,
-			Payload: DonePayload{OK: in.OK, Summary: in.Summary, CriteriaMet: in.CriteriaMet, Final: in.Final},
+			Payload: DonePayload{OK: in.OK, Summary: in.Summary},
 		}}, nil
 	})
 }
@@ -718,7 +755,7 @@ func (e *Engine) ReportTurnLost(id WorkID, attempt AttemptIdentity, reason strin
 }
 
 // Amend patches mutable fields with an optional CAS revision pin.
-func (e *Engine) Amend(id WorkID, expectedRevision uint64, title, objective, doneCriteriaRef, nextAction *string) (*State, error) {
+func (e *Engine) Amend(id WorkID, expectedRevision uint64, in AmendedPayload) (*State, error) {
 	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
 		if st == nil {
 			return nil, ErrUnknownWork
@@ -729,9 +766,25 @@ func (e *Engine) Amend(id WorkID, expectedRevision uint64, title, objective, don
 		if terminal(st) {
 			return nil, ErrTerminal
 		}
+		policy, criteria := st.Policy, st.DoneCriteriaRef
+		if in.Status != nil && !in.Status.Terminal() {
+			return nil, fmt.Errorf("%w: only terminal status is an explicit Work decision", ErrInvalidCommand)
+		}
+		if in.Policy != nil {
+			policy = *in.Policy
+		}
+		if in.DoneCriteriaRef != nil {
+			criteria = strings.TrimSpace(*in.DoneCriteriaRef)
+		}
+		if policy != PolicyBounded && policy != PolicyUntilDone {
+			return nil, fmt.Errorf("%w: invalid completion policy %q", ErrInvalidCommand, policy)
+		}
+		if policy == PolicyUntilDone && criteria == "" {
+			return nil, fmt.Errorf("%w: until_done requires done_criteria_ref", ErrInvalidCommand)
+		}
 		return []Event{{
 			WorkID: id, Kind: KWorkAmended, SourceID: "amend:" + e.newID(), At: now,
-			Payload: AmendedPayload{Title: title, Objective: objective, DoneCriteriaRef: doneCriteriaRef, NextAction: nextAction},
+			Payload: in,
 		}}, nil
 	})
 }
@@ -874,7 +927,8 @@ func (e *Engine) MarkReviewDelivered(id WorkID, handlerToken TurnToken) (*State,
 	})
 }
 
-// ReleaseReview drops the handler lease so the Event can be reclaimed.
+// ReleaseReview releases undelivered claims. Delivered handlings end without
+// becoming automatically claimable; only explicit recovery can replay them.
 func (e *Engine) ReleaseReview(id WorkID, handlerToken TurnToken) (*State, error) {
 	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
 		if st == nil {
@@ -882,6 +936,9 @@ func (e *Engine) ReleaseReview(id WorkID, handlerToken TurnToken) (*State, error
 		}
 		if st.Review == nil || st.Review.Handler == nil || st.Review.Handler.HandlerToken != handlerToken {
 			return nil, ErrReviewLease
+		}
+		if st.Review.Handler.EndedAt != nil {
+			return nil, nil
 		}
 		return []Event{{
 			WorkID: id, Kind: KReviewReleased, SourceID: "release:" + e.newID(), At: now,
@@ -915,7 +972,7 @@ func (e *Engine) ResolveReviewDelivery(id WorkID, action, actor, reason string) 
 			return nil, nil
 		}
 		h := st.Review.Handler
-		if h.DeliveredAt != nil {
+		if h.DeliveredAt != nil && h.EndedAt == nil {
 			return nil, ErrReviewLease
 		}
 		return []Event{{
@@ -938,48 +995,6 @@ type ResolveReviewInput struct {
 	NextAttemptAt *time.Time
 }
 
-// AcceptReviewFollowUp atomically settles a still-live reviewed turn, closes
-// the exact actionable Event, and admits the named accepted admission. The append is
-// one log transaction, so restart can observe only the state before or after
-// the Attempt transition.
-func (e *Engine) AcceptReviewFollowUp(id WorkID, eventID, nextSession string, nextToken TurnToken) (*State, error) {
-	if eventID == "" || nextSession == "" || nextToken == "" {
-		return nil, fmt.Errorf("%w: Event, next Attempt Session, and next Attempt token required", ErrInvalidCommand)
-	}
-	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
-		if st == nil {
-			return nil, ErrUnknownWork
-		}
-		if st.Review == nil || st.Review.EventID != eventID {
-			return nil, nil
-		}
-		admission := st.AdmissionByToken(nextToken)
-		if admission == nil || admission.Status != AdmissionAccepted || admission.SessionID != nextSession ||
-			admission.Mode != AdmissionFresh || admission.ClaimToken != "" || st.Review.Handler == nil ||
-			admission.Purpose != AdmissionPurposeReview || admission.PurposeID != st.Review.Handler.HandlerID {
-			return nil, fmt.Errorf("%w: next Attempt provider input is not accepted", ErrInvalidCommand)
-		}
-		events := make([]Event, 0, 3)
-		followUpOf := TurnToken("")
-		if st.Attempt != nil {
-			followUpOf = st.Attempt.TurnToken
-			events = append(events, Event{
-				WorkID: id, Kind: KTurnRelinquished, TurnToken: st.Attempt.TurnToken, Fence: st.Attempt.Generation,
-				SourceID: "review-relinquish:" + eventID, At: now,
-				Payload: RelinquishedPayload{Reason: "review accepted with named follow-up"},
-			})
-		}
-		events = append(events,
-			Event{WorkID: id, Kind: KReviewResolved, SourceID: "resolve:" + eventID, At: now,
-				Payload: ReviewResolvedPayload{EventID: eventID, Disposition: DispositionContinue, Actor: "brain"}},
-			Event{WorkID: id, Kind: KTurnAdmitted, TurnToken: nextToken, Fence: st.Fence + 1,
-				SourceID: "admit:" + string(nextToken), At: now,
-				Payload: AdmittedPayload{SessionID: nextSession, Delegated: true, FollowUpOf: followUpOf}},
-		)
-		return events, nil
-	})
-}
-
 // ResolveReview applies the disposition. Resolving an already-closed Event is an
 // idempotent no-op.
 func (e *Engine) ResolveReview(id WorkID, eventID string, in ResolveReviewInput) (*State, error) {
@@ -992,6 +1007,11 @@ func (e *Engine) ResolveReview(id WorkID, eventID string, in ResolveReviewInput)
 		}
 		if err := validateWaitDisposition(in.Disposition, in.WakeKind, in.WakeRef, in.NextAttemptAt, now); err != nil {
 			return nil, err
+		}
+		if in.Disposition == DispositionWait && st.Attempt != nil &&
+			(in.WakeKind != WakeSessionTerminal ||
+				in.WakeRef != "session:"+st.Attempt.SessionID+":turn:"+string(st.Attempt.TurnToken)) {
+			return nil, fmt.Errorf("%w: active Attempt wait must name its exact Session Turn", ErrInvalidCommand)
 		}
 		return []Event{{
 			WorkID: id, Kind: KReviewResolved, SourceID: "resolve:" + eventID, At: now,
@@ -1043,7 +1063,8 @@ func (e *Engine) openReview(id WorkID, reason, ref, eventID string) (*State, err
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		if st.Review != nil {
+		if st.Review != nil && (st.Review.Handler == nil || st.Review.Handler.EndedAt == nil ||
+			(st.Review.Reason == reason && st.Review.Ref == ref)) {
 			return nil, nil
 		}
 		return []Event{{
@@ -1064,7 +1085,7 @@ func (e *Engine) ReportLeaseExpired(id WorkID, token TurnToken) (*State, error) 
 		if st == nil {
 			return nil, ErrUnknownWork
 		}
-		if st.Attempt == nil || st.Attempt.TurnToken != token {
+		if st.Attempt == nil || st.Attempt.TurnToken != token || now.Before(st.Attempt.LeaseDeadline) {
 			return nil, nil
 		}
 		return []Event{{
@@ -1129,9 +1150,9 @@ func (e *Engine) Sweep() error {
 		if attempt == nil {
 			continue
 		}
-		if now.After(attempt.LeaseDeadline) {
+		if !now.Before(attempt.LeaseDeadline) {
 			if _, err := e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
-				if st.Attempt == nil || st.Attempt.TurnToken != attempt.TurnToken {
+				if st.Attempt == nil || st.Attempt.TurnToken != attempt.TurnToken || now.Before(st.Attempt.LeaseDeadline) {
 					return nil, nil
 				}
 				events := []Event{{
@@ -1139,7 +1160,7 @@ func (e *Engine) Sweep() error {
 					SourceID: leaseExpiredSourceID(attempt.TurnToken, st.Attempt.LeaseDeadline), At: now,
 					Payload: ExpiredPayload{Deadline: st.Attempt.LeaseDeadline},
 				}}
-				if now.After(st.Attempt.LeaseDeadline.Add(LostGrace)) {
+				if !now.Before(st.Attempt.LeaseDeadline.Add(LostGrace)) {
 					events = append(events, Event{
 						WorkID: id, Kind: KTurnLost, TurnToken: attempt.TurnToken, Fence: st.Attempt.Generation,
 						SourceID: "lost:" + string(attempt.TurnToken), At: now,
@@ -1175,7 +1196,11 @@ func (e *Engine) NextWakeAt() (time.Time, bool) {
 			continue
 		}
 		if st.Attempt != nil {
-			consider(st.Attempt.LeaseDeadline)
+			deadline := st.Attempt.LeaseDeadline
+			if st.SeenSources[leaseExpiredSourceID(st.Attempt.TurnToken, deadline)] {
+				deadline = deadline.Add(LostGrace)
+			}
+			consider(deadline)
 		}
 		if st.Wake != nil && st.Wake.Kind == WakeDueRetry && st.Wake.NextAttemptAt != nil {
 			consider(*st.Wake.NextAttemptAt)

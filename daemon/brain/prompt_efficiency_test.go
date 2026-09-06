@@ -38,15 +38,14 @@ func TestPromptOwnersCoverAutonomyWaitingAndVerification(t *testing.T) {
 	for _, required := range []string{
 		"complete authorized work", "finish independent authorized preparation first",
 		"User instructions override skill guidelines within platform constraints",
-		"completion or failure event", "Do not repeatedly capture progress",
-		"If a lifecycle command fails, report the actual failure once",
-		"provider Goals and current.md are not alternate schedulers",
+		"Brain decides decomposition", "a new send is a new attempt",
+		"A result notification needs no acknowledgement ceremony",
 	} {
 		if !strings.Contains(productWorkspaceInstructions, required) {
 			t.Fatalf("workspace missing %q", required)
 		}
 	}
-	for _, required := range []string{"Scale verification to risk", "required repository gates", "Do not replace a full-task requirement with a passing subset", "Receipt acceptance alone is not active Attempt ownership", "Ambiguous or unknown delivery is no-replay"} {
+	for _, required := range []string{"Scale verification to risk", "required repository gates", "Do not replace a full-task requirement with a passing subset", "there is no second continuation command", "Runtime preserves both outcomes"} {
 		if !strings.Contains(productDelegationPolicy, required) {
 			t.Fatalf("delegation missing %q", required)
 		}

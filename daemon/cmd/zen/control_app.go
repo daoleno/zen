@@ -706,12 +706,12 @@ func (a *controlApp) recordSpawnWorkFailure(item brain.Work, spawnErr error, aut
 	}
 	next := "Resolve the delegated Session launch failure."
 	if watcher.InputOutcomeFromError(spawnErr) == watcher.InputAmbiguous {
-		next = "Confirm whether the delegated Session received the prompt; delivery will not be replayed."
+		next = "Delivery is unknown; decide whether to reconcile or submit another attempt."
 		if _, err := a.brainStore.FSM().OpenReview(lifecycle.WorkID(item.ID), "submission_ambiguous", spawnErr.Error()); err != nil {
 			log.Printf("spawn work failure review: %v", err)
 			return
 		}
-		if _, err := a.brainStore.FSM().Amend(lifecycle.WorkID(item.ID), 0, nil, nil, nil, &next); err != nil {
+		if _, err := a.brainStore.FSM().Amend(lifecycle.WorkID(item.ID), 0, lifecycle.AmendedPayload{NextAction: &next}); err != nil {
 			log.Printf("spawn work failure amendment: %v", err)
 			return
 		}
@@ -732,7 +732,7 @@ func (a *controlApp) recordSpawnWorkFailure(item brain.Work, spawnErr error, aut
 		log.Printf("spawn work failure review: %v", err)
 		return
 	}
-	if _, err := a.brainStore.FSM().Amend(lifecycle.WorkID(item.ID), 0, nil, nil, nil, &next); err != nil {
+	if _, err := a.brainStore.FSM().Amend(lifecycle.WorkID(item.ID), 0, lifecycle.AmendedPayload{NextAction: &next}); err != nil {
 		log.Printf("spawn work failure amendment: %v", err)
 		return
 	}
@@ -787,9 +787,6 @@ func (a *controlApp) handleBrainWorkUpdate(req control.Request) control.Response
 		case "objective":
 			update.Objective = &source.Objective
 		case "status":
-			if source.Status == brain.WorkDone || source.Status == brain.WorkCancelled {
-				return control.ErrorResponse("invalid_brain_work", "Terminal handling requires zen brain work resolve with the delivered Event identity and Work revision.")
-			}
 			update.Status = &source.Status
 		case "attempt_session_id":
 			update.AttemptSessionID = &source.AttemptSessionID
@@ -930,8 +927,16 @@ func (a *controlApp) handleWorkerSend(req control.Request) control.Response {
 	if worker != nil && !a.watcher.HasSession(workerID) {
 		return control.ErrorResponse("worker_session_unavailable", "Worker is listed but the tmux target is no longer available. Refresh the worker list and spawn a new session if needed.")
 	}
-	if reviewCapabilityRequested(req) {
-		return a.handleReviewAuthorizedWorkerSend(req, worker)
+	if strings.TrimSpace(req.WorkID) != "" {
+		if !req.Submit || strings.TrimSpace(payload) == "" {
+			return control.ErrorResponse("missing_text", "Work input requires submitted prompt text.")
+		}
+		turnID := "turn:" + uuid.NewString()
+		result, err := a.watcher.SubmitDelegatedWorkInput(workerID, delegatedLifecyclePayload(payload, turnID), req.WorkID, turnID, "", "", time.Now().UTC())
+		if err != nil {
+			return control.ErrorResponse("send_failed", err.Error())
+		}
+		return control.Response{OK: result.Outcome == watcher.InputAccepted, TurnID: turnID, Confirmation: string(result.Outcome)}
 	}
 	var sendErr error
 	if req.Submit && worker != nil && payload != "" {
@@ -953,70 +958,12 @@ func (a *controlApp) handleWorkerSend(req control.Request) control.Response {
 	return control.Response{OK: true, Worker: &out}
 }
 
-func reviewCapabilityRequested(req control.Request) bool {
-	return strings.TrimSpace(req.WorkID) != "" || strings.TrimSpace(req.EventID) != "" ||
-		strings.TrimSpace(req.HandlingID) != "" || strings.TrimSpace(req.ProviderTurnID) != "" || req.Revision != 0
-}
-
-func (a *controlApp) handleReviewAuthorizedWorkerSend(req control.Request, worker *classifier.Worker) control.Response {
-	if a == nil || a.brainStore == nil || worker == nil {
-		return control.ErrorResponse("brain_unavailable", "Brain Work review authorization is not configured.")
-	}
-	workID := strings.TrimSpace(req.WorkID)
-	eventID := strings.TrimSpace(req.EventID)
-	handlingID := strings.TrimSpace(req.HandlingID)
-	providerTurnID := strings.TrimSpace(req.ProviderTurnID)
-	turnID := strings.TrimSpace(req.TurnID)
-	if workID == "" || eventID == "" || handlingID == "" || providerTurnID == "" || req.Revision <= 0 || turnID == "" {
-		return control.ErrorResponse("invalid_review_capability", "work_id, event_id, handling_id, provider_turn_id, revision, and caller-supplied turn_id are required together.")
-	}
-	if !worker.Delegated || worker.Hidden {
-		return control.ErrorResponse("worker_not_delegated", "Review-authorized reuse requires an existing delegated Session.")
-	}
-	if !req.Submit || strings.TrimSpace(req.Text) == "" {
-		return control.ErrorResponse("missing_text", "Review-authorized reuse requires submitted prompt text.")
-	}
-	if !strings.HasPrefix(turnID, "turn:") {
-		return control.ErrorResponse("invalid_turn_id", "Review-authorized reuse requires a random turn: identity.")
-	}
-	item, err := a.brainStore.Work(workID)
-	if err != nil {
-		return brainWorkControlError(err)
-	}
-	lease := (*brain.WorkReviewLease)(nil)
-	if item.Review != nil && item.Review.EventID == eventID {
-		lease = item.Review.Lease
-	}
-	if lease == nil || lease.DeliveredAt == nil || lease.HandlingID != handlingID ||
-		lease.ProviderTurnID != providerTurnID || lease.DeliveryWorkRevision != uint64(req.Revision) {
-		return control.ErrorResponse("invalid_review_capability", "The exact delivered Review capability is not current.")
-	}
-	payload := delegatedLifecyclePayload(req.Text, turnID)
-	result, err := a.watcher.SubmitDelegatedWorkInput(
-		req.WorkerID, payload, workID, turnID, string(lifecycle.AdmissionPurposeReview), handlingID, time.Now().UTC(),
-	)
-	if err != nil {
-		return control.ErrorResponse("send_failed", err.Error())
-	}
-	if result.Outcome != watcher.InputAccepted || strings.TrimSpace(result.TurnID) != turnID {
-		return control.ErrorResponse("send_failed", "Review-authorized delegated input was not accepted under the exact turn identity.")
-	}
-	if _, rebindErr := a.watcher.RebindDelegatedTurnProjection(req.WorkerID); rebindErr != nil {
-		log.Printf("delegated Session %s projection rebind failed after accepted review follow-up: %v", req.WorkerID, rebindErr)
-	}
-	out := controlWorker(a.watcher.GetWorker(req.WorkerID))
-	return control.Response{
-		OK: true, Worker: &out, TurnID: turnID,
-		Confirmation: "Review-authorized input accepted; use this exact turn identity in the typed continue disposition.",
-	}
-}
-
 // submitWorkerHandoff is the single control-plane owner for initial delegated
 // prompts and confirmed follow-ups for every interactive provider. The watcher owns the
 // paste-once/Enter-once provider transaction and the canonical Admitted
 // ledger record (persisted before the submit queue runs); this owner rebinds
-// the Session projection from the canonical turn and never replays an
-// ambiguous send.
+// the Session projection from the canonical turn. A new command may retry an
+// unknown outcome with a new receipt.
 func (a *controlApp) submitWorkerHandoff(workerID, command, payload, workID string, initial bool) (string, error) {
 	handoffStartedAt := time.Now().UTC()
 	turnID := "turn:" + uuid.NewString()
@@ -1693,6 +1640,7 @@ Keep descendants and resources within this Session's ownership. Reuse named reso
 Return the report in the Worker result. Persist Brain reports only in the runtime Brain worklog/ when requested, never in the project repository.
 Run meaningful, risk-proportionate checks and required repository gates. Repeat only for edits, failures or unresolved concerns; report unverified limitations.
 Report through "$ZEN_WORKER_PROGRESS_CMD" worker progress at phase changes, meaningful long steps, blockers and completion. ZEN_WORKER_ID identifies this Session. Use the exact --turn-id from the appended turn contract; omit it only when no turn contract exists.
+Progress is a check-in, not a request for Brain inspection. Continue authorized work without waiting for acknowledgement; exact completion/failure signals settle the Attempt.
 Required fields: --status running|done|failed|blocked --phase starting|reading|planning|working|verifying|reporting --attention none|done|blocked|failed|user_input|stale --summary "<result>".
 Optional semantics: --task-class exploration|mechanical_change|lasting_design --event-kind progress|invariant|artifact|risk|needs_judgment|verification|done --details-json '<evidence>' --lease 300.
 Use attention none while working, user_input only for a necessary decision, and status done with attention done only after acceptance and feasible verification.`, normalizeWorkerProfile(profile)))

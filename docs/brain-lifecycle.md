@@ -6,10 +6,9 @@ scoped Sessions, reviews their outputs, and advances the next runnable concern
 without requiring the user to type `continue`. Delegated Agents execute scoped
 concerns; they do not own the overall plan.
 
-Brain reacts to lifecycle Events; it does not supervise time. When a Work
-needs judgment, lifecycle exposes one due `event_id`. Brain claims it for an
-exact Host Session and turn, sends the notification once per delivery attempt,
-and resolves it with a typed disposition.
+Brain reacts to persisted results and exceptions. Runtime delivers them to the
+current Host and records delivery. No acknowledgement or resolve ceremony is
+required: Brain decides whether to continue, accept, cancel or wait.
 
 While a Work has a due Wake, Brain has no open polling turn. The
 daemon's lifecycle timer wakes at the exact due instant or `claim_expires_at` and
@@ -26,30 +25,23 @@ repeated delivery of its stable Event cannot append duplicate cards. Session,
 provider, tmux, transcript, and process observations help decide whether an
 Attempt is viable, but none can mark Work done.
 
-For `continue`, Brain first sends one scoped follow-up to an explicitly chosen
-or created Session using one random Turn identity and the exact Review
-capability. A definite pre-mutation failure may retry that same Turn; ambiguous
-or unknown submission is no-replay. Only after exact provider acceptance does
-Brain resolve the Review with typed `continue`, which activates that exact Turn
-as the Attempt. Old Attempt tokens and fences remain stale after the transfer.
+Continue with `zen worker send -id <session> --work-id <work> -text <follow-up>`.
+Runtime mints the Turn token and atomically binds accepted input as execution.
+There is no separate accepted-but-non-owning state or typed continue step.
+Accept with `zen brain work update -id <work> -status done`.
+Worker reports and provider termination never implicitly accept Work.
 
-`until_done` never starts this path by itself. After any terminal, failed, or
-lost Attempt, repeated lifecycle sweeps and daemon restarts only preserve and
-redeliver the same actionable Event. Brain reviews its exact evidence, writes
-one scoped concern, explicitly creates or reuses a visible delegated Session,
-waits for provider input acceptance, and then resolves the Event with the one
-accepted next Attempt identity. Lifecycle code neither reads the Delegated
-Executor to continue Work nor manufactures a generic continuation prompt.
+An unknown send may have arrived. Brain decides whether to reconcile or retry;
+a new attempt is permitted while the original unknown receipt remains evidence.
+Source-write coordination is contextual, with isolation only when needed.
+Exact receipts and stale-turn checks remain persistence correctness, not a
+mandatory exclusive-writer product mechanism.
 
-When exact terminal evidence arrives after a provisional lease-expired/lost
-fact for the same latest Attempt, the stronger evidence updates the current
-result without replacing the unresolved `event_id`. Brain dispositions the
-same stable card from the stronger evidence; no parallel notification or
-automatic Attempt is created.
-
-Provider ambiguity is retained only on the exact input admission. It never
-creates a lifecycle status, fallback Session, automatic continuation, or
-scheduler retry.
+Delivered facts are not repeatedly admitted when a Host ends without resolving
+them. They remain discoverable, explicit redelivery is possible, and independent
+Work results proceed. New terminal evidence replaces an earlier provisional
+exception and its current card; it cannot be stranded behind an old handling.
+See [Work Lifecycle](work-lifecycle.md) for responsibilities and transitions.
 
 Fresh Brain homes receive the provider-neutral lifecycle and delegated
 Worker protocol from the versioned templates under `daemon/brain/templates/`.

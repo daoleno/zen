@@ -15,6 +15,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -211,7 +212,7 @@ func (s *Service) ReconcileSignalSystemStartup(workers []*classifier.Worker, lim
 			hasTurn && !watcher.TurnImmutable(turn.Status) && hasCurrentTurn && currentTurn.TurnID == handling.ProviderTurnID
 		if !live {
 			// The delivered lease ends without a disposition; the same
-			// unresolved action becomes re-claimable (row 16).
+			// unresolved action remains visible for explicit recovery (row 16).
 			if _, _, err := s.store.EndReviewDelivery(
 				handling.WorkID, handling.HandlingID, handling.ProviderTurnID,
 			); err != nil {
@@ -284,6 +285,11 @@ func (s *Service) RunLifecycleScheduler(ctx context.Context) {
 		case <-timerC:
 		}
 
+		if s.watcher != nil {
+			// Reconcile due producers before admitting clock-only exceptions.
+			s.ReconcileDelegatedSessions(s.watcher.Workers())
+			continue
+		}
 		s.reconcileMu.Lock()
 		err := s.store.SweepLifecycle()
 		s.reconcileMu.Unlock()
@@ -1611,14 +1617,14 @@ func (s *Service) CurrentHostSessionID() string {
 // provider evidence. The watcher Event is never completion authority itself.
 //
 // Exact terminal state changes additionally close a matching in-flight review
-// handling. Missing disposition never replays the delivered input: the Work
-// key is durably reconciled once at the FIFO tail before dispatch resumes.
+// handling. Missing disposition never replays the delivered input: the ended
+// handling remains visible for explicit recovery while the lane resumes.
 func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if s == nil || s.store == nil || event.Worker == nil || !event.Worker.Hidden {
 		return false, nil
 	}
 	workerID := firstNonEmpty(strings.TrimSpace(event.Worker.ID), strings.TrimSpace(event.WorkerID))
-	requeued := false
+	handlingEnded := false
 	stateChanged := event.Type == "worker_state_change" && strings.TrimSpace(event.TurnID) != "" &&
 		strings.TrimSpace(event.OldState) != strings.TrimSpace(event.NewState)
 	if stateChanged {
@@ -1632,7 +1638,7 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 			for _, handling := range handlings {
 				if handling.DeliveryHostSessionID == workerID &&
 					handling.ProviderTurnID == strings.TrimSpace(event.TurnID) {
-					_, requeued, err = s.store.EndReviewDelivery(
+					_, handlingEnded, err = s.store.EndReviewDelivery(
 						handling.WorkID, handling.HandlingID, handling.ProviderTurnID,
 					)
 					if err != nil {
@@ -1652,9 +1658,9 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 		s.dispatchMu.Lock()
 		defer s.dispatchMu.Unlock()
 		woke, reconcileErr := s.reconcileHostLaneLocked()
-		return requeued || woke, errors.Join(activationErr, reconcileErr)
+		return handlingEnded || woke, errors.Join(activationErr, reconcileErr)
 	}
-	if requeued {
+	if handlingEnded {
 		return s.ReconcileHostLane()
 	}
 	return false, nil
@@ -1766,7 +1772,8 @@ func (s *Service) ReconcileDelegatedSessions(workers []*classifier.Worker) {
 						ActivityID: strings.TrimSpace(observation.ID), StartedAt: observation.StartedAt,
 						At: now, Summary: "Delegated turn running",
 					})
-					if applyErr == nil && providerObservationOwnsTurn(snapshot, observation) {
+					if applyErr == nil && providerObservationOwnsTurn(snapshot, observation) &&
+						!observation.ProgressAt.After(now) && !observation.ProgressAt.Before(now.Add(-lifecycle.LeaseGrace)) {
 						if _, _, ownerErr := s.store.ReassertLiveTurnOwnership(item.ID, item.AttemptSessionID, turn.TurnID); ownerErr != nil {
 							log.Printf("brain live Work ownership repair failed for %s: %v", item.ID, ownerErr)
 						}
@@ -1892,12 +1899,17 @@ func (s *Service) AnnotateWorkResultEvents(events []work.CodexConversationEvent)
 	}
 	for index := range events {
 		lifecycle, found := lifecycles[events[index].WorkID]
-		if !found {
+		if !found || events[index].Source != workResultConversationSource {
 			continue
 		}
-		events[index].WorkReviewState = string(lifecycle.ReviewState)
-		events[index].WorkSessionState = string(lifecycle.SessionState)
-		events[index].WorkResultCurrent = true
+		current := events[index].ID == lifecycle.CurrentEventID
+		events[index].WorkResultCurrent = current
+		events[index].WorkReviewState = string(WorkReviewResolved)
+		events[index].WorkSessionState = string(WorkResultSessionNotRequired)
+		if current {
+			events[index].WorkReviewState = string(lifecycle.ReviewState)
+			events[index].WorkSessionState = string(lifecycle.SessionState)
+		}
 	}
 	return nil
 }
@@ -3355,7 +3367,7 @@ Zen CLI: %s
 
 Read AGENTS.md and soul.md before the first response or work. Load policies/delegation.md, policies/engine.md and policies/handoff.md when their workflow applies.
 Use current.md and zen brain context --json to recover active work. Read memory.md and profile.md only when relevant. Discover optional playbooks with zen brain playbooks --json.
-Work/Event state owns scheduling. Wait for user input or a claimed Work Event; a running Worker does not need progress polling.
+Brain owns orchestration. Work/Event state persists facts and decisions; a running Worker does not need progress polling.
 Keep private reports in the Brain Worklog; return delegated reports in the Worker result unless persistence is requested.
 
 Current personality:

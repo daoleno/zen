@@ -25,20 +25,13 @@ func marshalDirectWorkEventInput(action WorkReviewAction, item Work) (string, er
 		HandlingID:         strings.TrimSpace(action.HandlingID),
 		ProviderTurnID:     strings.TrimSpace(action.ProviderTurnID),
 		EventSequenceFence: action.DeliverySequenceFence,
-		ResolutionRequired: true,
-		ResolveCommand: fmt.Sprintf(
-			"For wait, complete, or cancel: zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition <wait|complete|cancel> [--wake-kind due_retry --wake-ref <source> --next-attempt-at <RFC3339>]. For continue, first run zen worker send -id <session> -text <scoped-follow-up> --work-id %s --event-id %s --handling-id %s --provider-turn-id %s --revision %d --turn-id <one-random-turn-id>; only after exact acceptance run zen brain work resolve --work-id %s --handling-id %s --provider-turn-id %s --revision %d --disposition continue --next-attempt-session-id <session> --next-attempt-turn-token <exact-accepted-turn-token>.",
-			action.WorkID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
-			action.WorkID, action.EventID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
-			action.WorkID, action.HandlingID, action.ProviderTurnID, action.DeliveryWorkRevision,
-		),
-		WorkTitle:  compactDirectWorkEventField(item.Title, directWorkEventTitleRuneLimit),
-		Kind:       compactDirectWorkEventField(action.Kind, directWorkEventKindRuneLimit),
-		Source:     compactDirectWorkEventField(action.SourceName, directWorkEventSourceRuneLimit),
-		Summary:    compactWorkResultText(action.Summary),
-		NextAction: compactDirectWorkEventField(item.NextAction, directWorkEventNextActionRuneLimit),
-		ContextRef: compactDirectWorkEventField(item.ContextRef, directWorkEventReferenceRuneLimit),
-		PayloadRef: compactDirectWorkEventField(action.PayloadRef, directWorkEventReferenceRuneLimit),
+		WorkTitle:          compactDirectWorkEventField(item.Title, directWorkEventTitleRuneLimit),
+		Kind:               compactDirectWorkEventField(action.Kind, directWorkEventKindRuneLimit),
+		Source:             compactDirectWorkEventField(action.SourceName, directWorkEventSourceRuneLimit),
+		Summary:            compactWorkResultText(action.Summary),
+		NextAction:         compactDirectWorkEventField(item.NextAction, directWorkEventNextActionRuneLimit),
+		ContextRef:         compactDirectWorkEventField(item.ContextRef, directWorkEventReferenceRuneLimit),
+		PayloadRef:         compactDirectWorkEventField(action.PayloadRef, directWorkEventReferenceRuneLimit),
 	}
 	payload := work.FormatDirectWorkEventInput(input)
 	if len(payload) > directWorkEventInputMaxBytes {

@@ -33,7 +33,19 @@ Async tool calling, mid-turn steering and cached reasoning updates require harne
 | `daemon/work/dispatch.go` | Short Work-file pointer and terminal frontmatter requirement; retained because its file workflow consumes it. |
 | `daemon/calendar/work_runner.go` | Scheduled action instructions, bounded deliverable markers and metadata; retained because result extraction validates that contract. |
 
-Work Event resolution commands retain exact identities. They are actionable transaction data, not prose to abbreviate. Provider conversation parsers, terminal permission-prompt UI and historical documentation are not active model instructions. Global installed skills and private runtime overlays are outside repository source ownership.
+Work Events carry factual result data and references, not generated resolve
+programs. Canonical templates assign decomposition, sequence, coordination,
+retry and acceptance to Brain. A normal follow-up is one send with a Work ID;
+runtime owns the receipt and atomic execution binding. Unknown input is evidence
+for a model decision, not a blanket no-replay ban. Worker reports return through
+the result path and do not accept the larger Work.
+
+Unchanged delivery does not demand another capture, reply or resolution attempt.
+Check-in expiry stays supervision evidence; terminal results remain deliverable
+after Host interruption. These guarantees are implemented and tested in
+[Work Lifecycle](work-lifecycle.md), not merely requested in prompts. Provider
+parsers, permission UI and historical documents are not active instructions.
+Private runtime overlays remain outside repository ownership.
 
 The compact role is repeated at Host activation intentionally: a resumed provider process needs the current instructions even if its retained history contains older text. Activation uses the role text's SHA-256 digest, not a manually maintained version. The digest stays in internal receipt/state metadata, never in the model prompt. Other workflow policies refer to AGENTS.md instead of restating that role.
 

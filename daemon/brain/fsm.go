@@ -146,6 +146,7 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 		index = len(database.BrainWork) - 1
 	}
 	item := database.BrainWork[index]
+	item.CompletionPolicy, item.DoneCriteriaRef = CompletionPolicy(st.Policy), st.DoneCriteriaRef
 
 	// Until the engine has admitted at least one turn for this aggregate, it
 	// holds no execution opinion: declared row fields (owner, status) remain
@@ -229,6 +230,7 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 				// Same handling: delivery state advances with the engine.
 				item.Review.Lease.DeliveredAt = st.Review.Handler.DeliveredAt
 			}
+			item.Review.Lease.HandlingEndedAt = st.Review.Handler.EndedAt
 		}
 	} else {
 		item.Review = nil
@@ -389,9 +391,8 @@ func (s *Store) fsmAdmitTurn(workID, sessionID, turnToken string, delegated bool
 // Every command is an idempotent reject against stale fences/tokens, so
 // replaying a durable fact after a crash converges instead of duplicating.
 //
-// The caller passes finalDone for the one strong-completion path: a bounded
-// signal-protocol worker whose exact bound provider terminal arrived.
-func (s *Store) fsmTranslateCanonicalTransition(turn *TurnRecord, fact watcher.TurnFact, status watcher.TurnStatus, eventKind string, finalDone bool) error {
+// Execution results never accept the larger Work on Brain's behalf.
+func (s *Store) fsmTranslateCanonicalTransition(turn *TurnRecord, fact watcher.TurnFact, status watcher.TurnStatus, eventKind string) error {
 	if turn == nil || strings.TrimSpace(turn.WorkID) == "" {
 		return nil
 	}
@@ -445,9 +446,13 @@ func (s *Store) fsmTranslateCanonicalTransition(turn *TurnRecord, fact watcher.T
 		}
 		summary := firstNonEmpty(fact.Summary, mutationEventSummary(eventKind))
 		identity := lifecycle.AttemptIdentity{SessionID: sessionID, TurnToken: token, Fence: fence}
+		if fence == 0 {
+			if historical, found := s.fsm.AdmittedAttempt(lifecycle.WorkID(workID), token); found && historical.SessionID == sessionID {
+				identity = historical
+			}
+		}
 		_, err := s.fsm.ReportTurnDone(lifecycle.WorkID(workID), identity, lifecycle.DoneInput{
-			OK: ok, Summary: summary, CriteriaMet: ok && fact.Class == watcher.EvidenceControl && fact.CriteriaMet,
-			Final: finalDone,
+			OK: ok, Summary: summary,
 		})
 		if err != nil {
 			return fsmObservationResult(err)

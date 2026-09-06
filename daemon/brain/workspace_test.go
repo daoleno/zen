@@ -427,8 +427,8 @@ func TestNewStoreUpgradesExistingDelegationPolicyWithoutOverwriting(t *testing.T
 		"observable acceptance criteria",
 		"Scale verification to risk",
 		"same viable Worker",
-		"## Event Continuation",
-		"Ambiguous or unknown delivery is no-replay",
+		"## Continuation",
+		"Runtime preserves both outcomes",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("delegation policy missing %q:\n%s", want, content)

@@ -10,12 +10,8 @@ Follow the Brain/Worker role in AGENTS.md. Zen Workers are visible execution ses
 - Scale verification to risk. Use meaningful behavior checks, complete required repository gates, and broaden or repeat only for new edits, failures or unresolved concerns. Do not replace a full-task requirement with a passing subset.
 - Return reports in the Worker result. Persist private reports only in the runtime Brain worklog/ when requested; name repository paths explicitly for product documentation.
 
-## Event Continuation
+## Continuation
 
-Use the exact identities and commands supplied by the current Work Event. For same-Session continuation:
+Send a scoped follow-up with the Work ID to reuse a Worker. Runtime mints and persists the turn identity and binds accepted execution; there is no second continuation command. Review the returned facts and decide whether to continue, accept, cancel or wait. Worker reports and provider errors are evidence, not acceptance of the larger objective.
 
-1. Mint one random turn:<uuid> and send the scoped follow-up once with the event's Work, handling, provider-turn and revision fields.
-2. After exact acceptance, resolve continue with the accepted Session and turn token. Receipt acceptance alone is not active Attempt ownership.
-3. A definite pre-mutation failure may retry the same payload and identity. Ambiguous or unknown delivery is no-replay: seek exact receipt evidence; do not resend or create a replacement turn.
-
-Record a typed disposition and durable next action before ending each handling turn. Use event-driven waiting as defined in AGENTS.md.
+Coordinate source writes contextually. Use isolated worktrees when concurrent edits need them, not as a mandatory exclusive-writer product rule. For uncertain delivery, weigh duplicate effects and available evidence before choosing reconciliation or a new attempt. Runtime preserves both outcomes without imposing that choice.

@@ -113,6 +113,13 @@ func (p *workProviderActivityProbe) ObserveProviderActivity(
 	}
 	for index := len(conversation.Events) - 1; index >= 0; index-- {
 		event := conversation.Events[index]
+		at := parseProviderActivityTime(event.Timestamp)
+		if !observation.StartedAt.IsZero() && !at.Before(observation.StartedAt) && at.After(observation.ProgressAt) {
+			observation.ProgressAt = at
+		}
+	}
+	for index := len(conversation.Events) - 1; index >= 0; index-- {
+		event := conversation.Events[index]
 		if event.Kind != "user_message" || strings.TrimSpace(event.Body) == "" {
 			continue
 		}

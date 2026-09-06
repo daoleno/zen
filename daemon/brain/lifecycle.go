@@ -299,8 +299,9 @@ const (
 )
 
 type WorkResultLifecycle struct {
-	ReviewState  WorkReviewState
-	SessionState WorkResultSessionState
+	CurrentEventID string
+	ReviewState    WorkReviewState
+	SessionState   WorkResultSessionState
 }
 
 type WorkChange struct {
@@ -949,9 +950,7 @@ func reduceWorkReviewState(database presentationDatabase, workID string) reviewD
 		return reviewQuarantined
 	}
 	if lease.HandlingEndedAt != nil {
-		// Ended without a disposition: the same unresolved action is
-		// re-claimable (rows 9-10).
-		return reviewPending
+		return reviewQuarantined
 	}
 	if lease.DeliveredAt != nil {
 		return reviewDelivered
@@ -1398,12 +1397,6 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 // admitted only through canonical turn admission.
 func (s *Store) applyWorkUpdateViaFSMLocked(database *presentationDatabase, index int, update WorkUpdate, now time.Time) (Work, error) {
 	item := database.BrainWork[index]
-	if eventID, owned := activeHostLaneEvent(*database, item.ID); owned {
-		// The delivered review capability froze its exact revision fence:
-		// neither metadata nor terminal transitions may advance the aggregate
-		// while that handling is in flight (I4).
-		return Work{}, fmt.Errorf("%w: Event %s still owns the Host lane", ErrWorkConflict, eventID)
-	}
 	if item.Status == WorkDone || item.Status == WorkCancelled {
 		if update.Status != nil && *update.Status != item.Status {
 			return Work{}, fmt.Errorf("%w: terminal Work cannot be reopened", ErrWorkConflict)
@@ -1412,15 +1405,33 @@ func (s *Store) applyWorkUpdateViaFSMLocked(database *presentationDatabase, inde
 	if update.AttemptSessionID != nil && strings.TrimSpace(*update.AttemptSessionID) != "" {
 		return Work{}, fmt.Errorf("%w: Attempt Sessions are admitted only through canonical turn admission", ErrWorkAttemptConflict)
 	}
+	if update.Status != nil && *update.Status != WorkDone && *update.Status != WorkCancelled && *update.Status != WorkWaiting {
+		return Work{}, fmt.Errorf("%w: status %q is derived", ErrWorkConflict, *update.Status)
+	}
 
-	// Status transitions.
-	if update.Status != nil {
-		switch *update.Status {
-		case WorkCancelled:
-
-			if _, err := s.fsm.Cancel(lifecycle.WorkID(item.ID), 0, "operator", "work update"); err != nil {
-				return Work{}, err
+	// Persist a terminal decision and its prose in one canonical transaction.
+	title, objective, dcr, nextAction := update.Title, update.Objective, update.DoneCriteriaRef, update.NextAction
+	terminalUpdate := update.Status != nil && (*update.Status == WorkDone || *update.Status == WorkCancelled)
+	if title != nil || objective != nil || dcr != nil || nextAction != nil || update.CompletionPolicy != nil || terminalUpdate {
+		in := lifecycle.AmendedPayload{Title: title, Objective: objective, DoneCriteriaRef: dcr, NextAction: nextAction}
+		if terminalUpdate {
+			status := lifecycle.StatusDone
+			if *update.Status == WorkCancelled {
+				status = lifecycle.StatusCancelled
 			}
+			in.Status = &status
+		}
+		if update.CompletionPolicy != nil {
+			policy := lifecycle.Policy(*update.CompletionPolicy)
+			in.Policy = &policy
+		}
+		if _, err := s.fsm.Amend(lifecycle.WorkID(item.ID), 0, in); err != nil {
+			return Work{}, err
+		}
+	}
+	// Status transitions.
+	if update.Status != nil && !terminalUpdate {
+		switch *update.Status {
 		case WorkWaiting:
 			var wake *WorkWake
 			if update.Wake != nil {
@@ -1436,19 +1447,15 @@ func (s *Store) applyWorkUpdateViaFSMLocked(database *presentationDatabase, inde
 			if _, err := s.fsm.SetWait(lifecycle.WorkID(item.ID), lifecycle.WakeKind(wake.Kind), wake.Ref); err != nil {
 				return Work{}, err
 			}
-		case WorkDone:
-			if _, err := s.fsm.Complete(lifecycle.WorkID(item.ID), 0, "operator", "work update"); err != nil {
-				return Work{}, err
-			}
 		default:
 			return Work{}, fmt.Errorf("%w: status %q is derived; only done/cancelled/waiting are operator-settable", ErrWorkConflict, string(*update.Status))
 		}
-	} else if update.Wake != nil && *update.Wake != nil {
+	} else if !terminalUpdate && update.Wake != nil && *update.Wake != nil {
 		wake := cloneWorkWake(*update.Wake)
 		if _, err := s.fsm.SetWait(lifecycle.WorkID(item.ID), lifecycle.WakeKind(wake.Kind), wake.Ref); err != nil {
 			return Work{}, err
 		}
-	} else if update.Wake != nil && *update.Wake == nil {
+	} else if !terminalUpdate && update.Wake != nil && *update.Wake == nil {
 		st, err := s.fsmState(item.ID)
 		if err != nil {
 			return Work{}, err
@@ -1457,14 +1464,6 @@ func (s *Store) applyWorkUpdateViaFSMLocked(database *presentationDatabase, inde
 			if _, err := s.fsm.ClearWait(lifecycle.WorkID(item.ID), st.Wake.Kind, st.Wake.Ref, "operator"); err != nil {
 				return Work{}, err
 			}
-		}
-	}
-
-	// Prose amendments. Terminal aggregates accept no further events.
-	title, objective, dcr, nextAction := update.Title, update.Objective, update.DoneCriteriaRef, update.NextAction
-	if title != nil || objective != nil || dcr != nil || nextAction != nil {
-		if _, err := s.fsm.Amend(lifecycle.WorkID(item.ID), 0, title, objective, dcr, nextAction); err != nil && err != lifecycle.ErrTerminal {
-			return Work{}, err
 		}
 	}
 
@@ -2389,8 +2388,8 @@ func (s *Store) ListWorkEvents(workID string) ([]WorkEvent, error) {
 // the oldest event birth (RequiredAt) with no in-flight lease and no
 // quarantine. Claiming mints a disposable lease carrying the exact capability
 // and the frozen Work revision fence. The same unresolved action is
-// re-claimable after lease expiry (Host death or ended delivery), and never
-// creates a second queue item.
+// re-claimable after an undelivered claim expires or explicit actor recovery,
+// never merely because a delivered handling ended.
 func (s *Store) ClaimNextReviewAction(hostSessionID string) (WorkReviewAction, bool, error) {
 	hostSessionID = strings.TrimSpace(hostSessionID)
 	if hostSessionID == "" {
@@ -2755,7 +2754,7 @@ func (s *Store) ConsumeReviewDelivery(workID, claimToken, providerTurnID string)
 // EndReviewDelivery ends exactly the admitted review lease without a typed
 // disposition (Host turn ended or Host died after delivery). The delivered
 // bytes remain permanently consumed; the unresolved Work action stays the same
-// review event and becomes re-claimable — no new queue item is created (I7).
+// review event and requires explicit recovery before another delivery (I7).
 // An audit note records the ended handling.
 func (s *Store) EndReviewDelivery(workID, handlingID, providerTurnID string) (WorkReviewAction, bool, error) {
 	workID = strings.TrimSpace(workID)
@@ -2788,7 +2787,8 @@ func (s *Store) EndReviewDelivery(workID, handlingID, providerTurnID string) (Wo
 			return action, false, nil
 		}
 	}
-	// Canonical: drop the handler lease so the event is claimable again.
+	// Delivered input stays consumed. An unresolved decision is visible for
+	// explicit recovery, never a reason to spend another automatic Host turn.
 	if _, releaseErr := s.fsm.ReleaseReview(lifecycle.WorkID(workID), lifecycle.TurnToken(providerTurnID)); releaseErr != nil {
 		return WorkReviewAction{}, false, releaseErr
 	}
@@ -2889,8 +2889,14 @@ func (s *Store) WorkResultLifecycles(workIDs []string) (map[string]WorkResultLif
 			}
 		}
 		out[workID] = WorkResultLifecycle{
-			ReviewState:  reviewState,
-			SessionState: sessionState,
+			CurrentEventID: event.ID,
+			ReviewState:    reviewState,
+			SessionState:   sessionState,
+		}
+		if review != nil {
+			current := out[workID]
+			current.CurrentEventID = review.EventID
+			out[workID] = current
 		}
 	}
 	return out, nil
@@ -2914,8 +2920,6 @@ func (s *Store) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEve
 	request.WorkID = strings.TrimSpace(request.WorkID)
 	request.HandlingID = strings.TrimSpace(request.HandlingID)
 	request.ProviderTurnID = strings.TrimSpace(request.ProviderTurnID)
-	request.NextSessionID = strings.TrimSpace(request.NextSessionID)
-	request.NextTurnToken = strings.TrimSpace(request.NextTurnToken)
 	request.NextAction = strings.TrimSpace(request.NextAction)
 	request.Summary = strings.TrimSpace(request.Summary)
 	if request.WorkID == "" || request.HandlingID == "" || request.ProviderTurnID == "" || request.ExpectedWorkRevision == 0 ||
@@ -2964,26 +2968,33 @@ func (s *Store) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEve
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, fmt.Errorf("review Event %q is missing", review.EventID)
 	}
-	if lease.DeliveredAt == nil {
+	if lease.DeliveredAt == nil || lease.HandlingEndedAt != nil {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, ErrEventClaim
 	}
-	// The canonical event identity plus the exact handler capability replace
-	// a projected revision freeze: engine events during a delivered handling
-	// (heartbeats, progress) legitimately advance the aggregate, and a stale
-	// disposition is an idempotent no-op against a superseded event.
-	_ = request.ExpectedWorkRevision
+	// Fence the delivered capability, not the aggregate's current revision:
+	// valid progress can advance Work while this exact handling is in flight.
+	if request.ExpectedWorkRevision != lease.DeliveryWorkRevision {
+		s.mu.Unlock()
+		return WorkEvent{}, Work{}, ErrEventClaim
+	}
 	wasTerminal := item.Status == WorkDone || item.Status == WorkCancelled
 	if wasTerminal && request.Disposition != WorkDispositionComplete && request.Disposition != WorkDispositionCancel {
 		s.mu.Unlock()
 		return WorkEvent{}, Work{}, fmt.Errorf("terminal Work cannot return to a nonterminal disposition")
 	}
 	if request.Disposition == WorkDispositionWait {
-		if workHasActiveCanonicalAttempt(database, item) {
+		st, stateErr := s.fsmState(item.ID)
+		if stateErr != nil {
 			s.mu.Unlock()
-			return WorkEvent{}, Work{}, fmt.Errorf("%w: wait requires the active canonical Attempt to settle first", ErrWorkAttemptConflict)
+			return WorkEvent{}, Work{}, stateErr
 		}
-		if err := validateWorkWakeProducer(database, item, request.Wake, now); err != nil {
+		if st.Attempt != nil {
+			if request.Wake.Kind != WorkWakeSessionTerminal || request.Wake.Ref != SessionTerminalWakeRef(st.Attempt.SessionID, string(st.Attempt.TurnToken)) {
+				s.mu.Unlock()
+				return WorkEvent{}, Work{}, fmt.Errorf("%w: active Attempt wait must name its exact Session Turn", ErrWorkAttemptConflict)
+			}
+		} else if err := validateWorkWakeProducer(database, item, request.Wake, now); err != nil {
 			s.mu.Unlock()
 			return WorkEvent{}, Work{}, err
 		}
@@ -2994,35 +3005,9 @@ func (s *Store) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEve
 	nextAction := request.NextAction
 	switch request.Disposition {
 	case WorkDispositionContinue:
-		if request.NextSessionID == "" || request.NextTurnToken == "" {
+		if err := s.fsmResolveReview(item.ID, lifecycle.DispositionContinue, nil); err != nil {
 			s.mu.Unlock()
-			return WorkEvent{}, Work{}, fmt.Errorf("continue disposition requires exact next_session_id and next_turn_token")
-		}
-		canonical, stateErr := s.fsmState(item.ID)
-		if stateErr != nil {
-			s.mu.Unlock()
-			return WorkEvent{}, Work{}, stateErr
-		}
-		nextToken := lifecycle.TurnToken(request.NextTurnToken)
-		admission := canonical.AdmissionByToken(nextToken)
-		if admission == nil || admission.Status != lifecycle.AdmissionAccepted ||
-			admission.SessionID != request.NextSessionID || admission.Purpose != lifecycle.AdmissionPurposeReview ||
-			admission.PurposeID != lease.HandlingID {
-			s.mu.Unlock()
-			return WorkEvent{}, Work{}, fmt.Errorf("%w: named next Attempt Turn has no accepted admission for this review handling", ErrWorkAttemptConflict)
-		}
-		st, stErr := s.fsm.AcceptReviewFollowUp(
-			lifecycle.WorkID(item.ID), fsmEventID(item), request.NextSessionID,
-			nextToken,
-		)
-		if stErr != nil {
-			s.mu.Unlock()
-			return WorkEvent{}, Work{}, stErr
-		}
-		if st.Attempt == nil || st.Attempt.SessionID != request.NextSessionID ||
-			st.Attempt.TurnToken != nextToken {
-			s.mu.Unlock()
-			return WorkEvent{}, Work{}, fmt.Errorf("%w: atomic next Attempt admission failed: attempt=%+v", ErrWorkAttemptConflict, st.Attempt)
+			return WorkEvent{}, Work{}, err
 		}
 	case WorkDispositionWait:
 		if err := s.fsmResolveReview(item.ID, lifecycle.DispositionWait, request.Wake); err != nil {

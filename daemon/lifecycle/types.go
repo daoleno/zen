@@ -289,6 +289,8 @@ type DefinedPayload struct {
 }
 
 type AmendedPayload struct {
+	Status          *Status `json:"status,omitempty"`
+	Policy          *Policy `json:"policy,omitempty"`
 	Title           *string `json:"title,omitempty"`
 	Objective       *string `json:"objective,omitempty"`
 	DoneCriteriaRef *string `json:"done_criteria_ref,omitempty"`
@@ -372,16 +374,10 @@ type ProgressPayload struct {
 	Note string `json:"note,omitempty"`
 }
 
-// DonePayload settles one turn. Final is the completion-authority flag: only
-// a reporter whose evidence class affirms the done criteria (or a bounded
-// signal-protocol worker terminal) may complete the Work outright; every
-// other terminal settles review-ready and leaves completion to Brain's typed
-// disposition. until_done only denies implicit completion (I7).
+// DonePayload records execution outcome, never Work acceptance.
 type DonePayload struct {
-	OK          bool   `json:"ok"`
-	Summary     string `json:"summary,omitempty"`
-	CriteriaMet bool   `json:"criteria_met,omitempty"`
-	Final       bool   `json:"final,omitempty"`
+	OK      bool   `json:"ok"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // RelinquishedPayload settles a reviewed turn without applying the Work
@@ -509,6 +505,7 @@ type ReviewHandler struct {
 	ClaimedAt      time.Time  `json:"claimed_at"`
 	ClaimExpiresAt time.Time  `json:"claim_expires_at"`
 	DeliveredAt    *time.Time `json:"delivered_at,omitempty"`
+	EndedAt        *time.Time `json:"ended_at,omitempty"`
 }
 
 // AdmissionState is the canonical pre-provider-mutation transaction owned by
@@ -534,6 +531,7 @@ type AdmissionState struct {
 	Status             AdmissionStatus  `json:"status"`
 	AcceptedSeq        uint64           `json:"accepted_seq,omitempty"`
 	PreparedAt         time.Time        `json:"prepared_at"`
+	PreparedSeq        uint64           `json:"prepared_seq"`
 	AttemptedAt        time.Time        `json:"attempted_at"`
 	SettledAt          *time.Time       `json:"settled_at,omitempty"`
 	Reason             string           `json:"reason,omitempty"`
@@ -637,14 +635,19 @@ func (s *State) AdmissionByToken(token TurnToken) *AdmissionState {
 	return s.Admissions[token]
 }
 
-// ActiveAdmission returns the sole unresolved transport transaction.
+// ActiveAdmission returns an in-flight transport transaction. Unknown outcomes
+// remain evidence, but do not prevent a new model-directed submission.
 func (s *State) ActiveAdmission() *AdmissionState {
+	var unknownDelivery *AdmissionState
 	for _, admission := range s.Admissions {
-		if admission.Status == AdmissionPrepared || admission.Status == AdmissionAmbiguous {
+		if admission.Status == AdmissionPrepared {
 			return admission
 		}
+		if admission.Status == AdmissionAmbiguous && admission.ClaimToken != "" {
+			unknownDelivery = admission
+		}
 	}
-	return nil
+	return unknownDelivery
 }
 
 // Errors returned by command validation. ErrStaleInput is deliberately

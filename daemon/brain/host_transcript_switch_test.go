@@ -255,15 +255,13 @@ func TestHostSwitchBindsNewProviderConversationNotPreviousCodexIdentity(t *testi
 
 func TestBoundHostConversationSubmissionResolutionRecoversGrokUntimestampedWorkEvent(t *testing.T) {
 	payload := work.FormatDirectWorkEventInput(work.DirectWorkEventInput{
-		EventID:            "event-grok-delivery",
-		WorkID:             "work-grok-delivery",
-		WorkRevision:       1,
-		HandlingID:         "handling-grok-delivery",
-		ProviderTurnID:     "turn-grok-delivery",
-		ResolutionRequired: true,
-		ResolveCommand:     "zen brain work resolve --event-id event-grok-delivery --disposition continue",
-		WorkTitle:          "Grok host delivery",
-		Kind:               "session.done",
+		EventID:        "event-grok-delivery",
+		WorkID:         "work-grok-delivery",
+		WorkRevision:   1,
+		HandlingID:     "handling-grok-delivery",
+		ProviderTurnID: "turn-grok-delivery",
+		WorkTitle:      "Grok host delivery",
+		Kind:           "session.done",
 	})
 	acceptedAt := time.Date(2026, 8, 13, 5, 10, 0, 0, time.UTC)
 	startedAt := acceptedAt.Add(2 * time.Second)

@@ -77,14 +77,9 @@ func TestCleanHomeShipsAutonomousPolicyAndRepairPreservesPrivateOverlays(t *test
 	for _, contract := range []string{
 		"Brain owns conversation",
 		"visible Zen Worker",
-		"typed disposition",
-		"durable next action",
-		"due_retry",
 		"Inspect every delegated result",
-		"same-Session continuation",
-		"exact acceptance",
-		"Ambiguous or unknown delivery is no-replay",
-		"completion or failure event",
+		"there is no second continuation command",
+		"Brain decides decomposition",
 		"User instructions override skill guidelines",
 	} {
 		if !strings.Contains(productWorkspaceInstructions, contract) && !strings.Contains(productDelegationPolicy, contract) {

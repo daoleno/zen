@@ -95,12 +95,7 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 		t.Fatalf("prepare nextAttempt created=%v err=%v", created, err)
 	}
 	resolveDelegatedSubmission(t, store, pending, "activity-398", acceptedAt.Add(2*time.Minute))
-	lease := requireReviewDelivered(t, store, workID)
-	_, projected, err := store.ResolveWorkReview(WorkReviewDispositionRequest{
-		WorkID: workID, HandlingID: lease.HandlingID, ProviderTurnID: lease.ProviderTurnID,
-		ExpectedWorkRevision: lease.DeliveryWorkRevision, Disposition: WorkDispositionContinue,
-		NextSessionID: nextAttempt, NextTurnToken: nextAttemptTurn, NextAction: "Continue with the named follow-up.",
-	})
+	projected, err := store.Work(workID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +115,7 @@ func TestDataPlatformNeedsInputWakesSourceThreadAndAcceptsNamedFollowUpAtomicall
 	}
 }
 
-func TestExactControlDoneCompletesUntilDoneWhenCriteriaMet(t *testing.T) {
+func TestExactControlDoneLeavesAcceptanceToBrain(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -147,12 +142,12 @@ func TestExactControlDoneCompletesUntilDoneWhenCriteriaMet(t *testing.T) {
 		t.Fatalf("exact done result=%+v err=%v", result, err)
 	}
 	st, err := store.FSM().State(lifecycle.WorkID(item.ID))
-	if err != nil || st.Status != lifecycle.StatusDone || st.Review != nil || st.Attempt != nil {
+	if err != nil || st.Status != lifecycle.StatusQueued || st.Review == nil || st.Attempt != nil {
 		t.Fatalf("exact criteria completion state=%+v err=%v", st, err)
 	}
 }
 
-func TestLatestExactDelegatedDoneAfterLeaseExpiryIsAuditOnly(t *testing.T) {
+func TestLatestExactDelegatedDoneAfterLeaseExpirySettlesAttempt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +176,11 @@ func TestLatestExactDelegatedDoneAfterLeaseExpiryIsAuditOnly(t *testing.T) {
 	}); err != nil || !result.Owned || !result.Matched || !result.Changed {
 		t.Fatalf("accept exact running result=%+v err=%v", result, err)
 	}
+	active, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return active.Attempt.LeaseDeadline.Add(time.Second) }
 	if _, err := store.FSM().ReportLeaseExpired(lifecycle.WorkID(item.ID), lifecycle.TurnToken(turnID)); err != nil {
 		t.Fatal(err)
 	}
@@ -188,14 +188,13 @@ func TestLatestExactDelegatedDoneAfterLeaseExpiryIsAuditOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, err := store.FSM().State(lifecycle.WorkID(item.ID))
-	if err != nil || before.Attempt == nil || before.Review == nil || before.Review.Reason != "lease_expired" {
+	if err != nil || before.Attempt == nil || before.Review != nil {
 		t.Fatalf("lease-expiry fixture=%+v err=%v", before, err)
 	}
 	beforeEvents, err := store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reviewID := before.Review.EventID
 	result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
 		Kind: "done", SourceID: "control\x00late-done", Summary: "late exact result is complete",
@@ -212,17 +211,15 @@ func TestLatestExactDelegatedDoneAfterLeaseExpiryIsAuditOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Revision != before.Revision || after.Status != before.Status || after.Status == lifecycle.StatusDone ||
-		after.Attempt == nil || after.Attempt.TurnToken != before.Attempt.TurnToken || after.Wake != nil ||
-		after.Review == nil || after.Review.EventID != reviewID || after.Review.Reason != "lease_expired" ||
-		len(afterEvents) != len(beforeEvents) {
-		t.Fatalf("late terminal mutated lifecycle: before=%+v after=%+v events=%d->%d", before, after, len(beforeEvents), len(afterEvents))
+	if after.Revision <= before.Revision || after.Status != lifecycle.StatusQueued ||
+		after.Attempt != nil || after.Wake != nil || after.Review == nil || len(afterEvents) <= len(beforeEvents) {
+		t.Fatalf("exact completion did not settle lifecycle: before=%+v after=%+v events=%d->%d", before, after, len(beforeEvents), len(afterEvents))
 	}
 	if replay, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
 		SessionID: sessionID, TurnID: turnID, Class: watcher.EvidenceControl,
 		Kind: "done", SourceID: "control\x00late-done", Summary: "late exact result is complete",
 		At: time.Now().UTC(), CriteriaMet: true,
-	}); err != nil || !replay.Owned || !replay.Matched || replay.Changed {
+	}); err != nil || !replay.Owned || replay.Changed {
 		t.Fatalf("late terminal replay=%+v err=%v", replay, err)
 	}
 	newerAcceptedAt := before.Attempt.LeaseDeadline.Add(lifecycle.LostGrace + time.Second)
@@ -389,7 +386,6 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 		if readErr != nil || beforeResolve.Review == nil {
 			t.Fatalf("review before autonomous handoff=%+v err=%v", beforeResolve.Review, readErr)
 		}
-		eventID := beforeResolve.Review.EventID
 		now = now.Add(time.Second)
 		pending := prepareSignal(token, "reviewed follow-up "+token)
 		resolveDelegatedSubmission(t, store, pending, "activity-"+token, now.Add(time.Millisecond))
@@ -399,18 +395,8 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 			admission.Purpose != lifecycle.AdmissionPurposeReview {
 			t.Fatalf("aggregate review admission=%+v err=%v", admission, stateErr)
 		}
-		lease := requireReviewDelivered(t, store, item.ID)
-		resolvedEvent, resolvedWork, resolveErr := store.ResolveWorkReview(WorkReviewDispositionRequest{
-			WorkID: item.ID, HandlingID: lease.HandlingID, ProviderTurnID: lease.ProviderTurnID,
-			ExpectedWorkRevision: lease.DeliveryWorkRevision, Disposition: WorkDispositionContinue,
-			NextSessionID: sessionID, NextTurnToken: token, NextAction: "run next scoped tracer concern",
-		})
-		if resolveErr != nil {
-			t.Fatalf("resolve reviewed follow-up %s: %v", token, resolveErr)
-		}
-		if resolvedEvent.ID != eventID || resolvedEvent.Disposition != WorkDispositionContinue ||
-			resolvedEvent.HandledAt == nil || resolvedWork.NextAction != "run next scoped tracer concern" {
-			t.Fatalf("autonomous typed disposition event=%+v work=%+v", resolvedEvent, resolvedWork)
+		if nextAttemptState.Attempt == nil || nextAttemptState.Attempt.TurnToken != lifecycle.TurnToken(token) || nextAttemptState.Review != nil {
+			t.Fatalf("accepted follow-up not active: %+v", nextAttemptState)
 		}
 		exact, exactFound, exactErr := store.Turn(sessionID)
 		if exactErr != nil || !exactFound || exact.TurnID != token || !exact.SignalProtocol {
@@ -450,6 +436,10 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 
 	const finalToken = "turn:a-reviewed-final"
 	reviewedFollowUp(finalToken, "host:review-2", true)
+	done := WorkDone
+	if _, err := store.UpdateWork(item.ID, WorkUpdate{Status: &done}); err != nil {
+		t.Fatal(err)
+	}
 	state, err := store.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil || state.Status != lifecycle.StatusDone || state.Attempt != nil || state.Review != nil {
 		t.Fatalf("exact final state=%+v err=%v", state, err)
@@ -459,7 +449,7 @@ func TestIsolatedLifecycleLiveProofRetryReloadSameSessionAndExactCompletion(t *t
 		t.Fatalf("bounded final projection=%+v state revision=%d err=%v", projected, state.Revision, err)
 	}
 	items, err := store.ThreadTimeline(sourceThread, 0)
-	if err != nil || len(items) != 1 || items[0].ID != finalEventID {
+	if err != nil || len(items) != 1 || items[0].Summary != "all acceptance criteria verified" {
 		t.Fatalf("one-card projection=%+v err=%v", items, err)
 	}
 
@@ -1062,7 +1052,7 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 	}
 	identity := lifecycle.AttemptIdentity{SessionID: "worker:@1", TurnToken: firstToken, Fence: 1}
 	if _, err := store.FSM().ReportTurnDone(lifecycle.WorkID(item.ID), identity, lifecycle.DoneInput{
-		OK: true, Summary: "phase complete", CriteriaMet: false,
+		OK: true, Summary: "phase complete",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1090,7 +1080,7 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 				return
 			}
 			_, duplicateErr := store.FSM().ReportTurnDone(lifecycle.WorkID(item.ID), identity, lifecycle.DoneInput{
-				OK: true, Summary: "phase complete", CriteriaMet: false,
+				OK: true, Summary: "phase complete",
 			})
 			errs <- duplicateErr
 		}(i)
@@ -1152,7 +1142,7 @@ func TestUntilDoneTerminalSweepsNeverCreateSessionsAndBrainAdmitsOneScopedAttemp
 	if _, err := store.FSM().AcceptAdmissionBySignal(lifecycle.WorkID(item.ID), "turn-scoped", "worker:@2"); err != nil {
 		t.Fatal(err)
 	}
-	continued, err := store.FSM().AcceptReviewFollowUp(lifecycle.WorkID(item.ID), eventID, "worker:@2", "turn-scoped")
+	continued, err := store.FSM().State(lifecycle.WorkID(item.ID))
 	if err != nil {
 		t.Fatal(err)
 	}

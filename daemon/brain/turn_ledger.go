@@ -990,16 +990,6 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 				mutation.changed = true
 				return mutation, nil
 			}
-			if turn.SignalProtocol {
-				// Signal-protocol terminal authority (C.2.10): only exact
-				// Control done/failed is semantic. A bound provider terminal
-				// is transport/liveness evidence: it attaches as a provisional
-				// hint and never moves canonical status. A later exact Control
-				// terminal flips the same dedupe-keyed row actionable.
-				hintOnly(kind, "Delegated provider reported "+fact.Kind+"; awaiting exact control completion")
-				mutation.changed = true
-				return mutation, nil
-			}
 			if adopts {
 				admission = fact.Admission
 				mutation.recordAdmission = true
@@ -1115,17 +1105,12 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			applyEvent(kind, true, summary)
 			mutation.dropHintKind = firstNonEmpty(mutation.dropHintKind, kind)
 		case "stale":
-			// Lease expiry: no canonical change; one actionable session.stale
-			// per turn wakes Brain. The current turn must have exceeded its own
-			// expected-next-check time (minted at admission, extended only by
-			// this turn's Control lease facts): a freshly admitted turn or a
-			// turn with a live per-turn lease is never stale, so an old turn's
-			// expired lease cannot make a newer turn stale. Current-turn
-			// identity is enforced by ApplyTurnFact before the reducer runs.
+			// Check-in staleness is audit evidence. The lifecycle supervisor
+			// alone decides when missing progress becomes loss of ownership.
 			if now.Before(turn.LeaseDeadline) {
 				return mutation, nil
 			}
-			applyEvent("session.stale", true, "Delegated Session lease expired; inspect the Session")
+			applyEvent("session.stale", false, "Delegated Session check-in expired; supervision continues")
 			mutation.changed = true
 		}
 	case watcher.EvidenceReceipt:
@@ -1303,12 +1288,6 @@ func derivedWorkUpdate(status watcher.TurnStatus, sessionID, eventKind string) W
 	waiting := WorkWaiting
 	sessionWait := "Session " + sessionID
 	var noWake *WorkWake
-	if eventKind == "session.stale" {
-		// Lease expiry never moves canonical status; the stale wake is
-		// needs_input regardless of the current canonical state.
-		next := "Inspect the delegated Session lease expiry."
-		return WorkUpdate{Status: &needsInput, NextAction: &next, WaitFor: &sessionWait, Wake: &noWake}
-	}
 	switch status {
 	case watcher.TurnAccepted, watcher.TurnRunning:
 		next := "Wait for the delegated Session."
@@ -1381,12 +1360,11 @@ func (s *Store) ReassertLiveTurnOwnership(workID, sessionID, turnID string) (Wor
 // prepareDelegatedSignalTurnLocked validates the one prompt-carried identity
 // against authoritative lifecycle state. If it names the current pending
 // delegated submission, this promotes that exact candidate to Accepted and
-// resolves the submission in memory. A terminal signal for the latest exact
-// Turn after lease loss is marked audit-only so the caller persists Turn
-// evidence without translating it back into Work lifecycle state.
-func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase, fact watcher.TurnFact, now time.Time) (bool, error) {
+// resolves the submission in memory. Exact terminal evidence after loss uses
+// the same canonical result path; it must still name the latest Session Turn.
+func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase, fact watcher.TurnFact, now time.Time) error {
 	if database == nil {
-		return false, errNoDelegatedSignalContract
+		return errNoDelegatedSignalContract
 	}
 	var state *lifecycle.State
 	var admission *lifecycle.AdmissionState
@@ -1401,47 +1379,45 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 		for _, candidate := range s.fsm.ListViews() {
 			for _, a := range candidate.Admissions {
 				if a != nil && a.SessionID == fact.SessionID && a.SignalProtocol && a.ClaimToken == "" {
-					return false, errDelegatedTurnMismatch
+					return errDelegatedTurnMismatch
 				}
 			}
 		}
-		return false, errNoDelegatedSignalContract
+		return errNoDelegatedSignalContract
 	}
 	if fact.At.Before(admission.AttemptedAt) {
-		return false, errDelegatedTurnMismatch
+		return errDelegatedTurnMismatch
 	}
 	if admission.Status == lifecycle.AdmissionPrepared || admission.Status == lifecycle.AdmissionAmbiguous {
 		next, err := s.fsm.AcceptAdmissionBySignal(state.ID, admission.TurnToken, admission.SessionID)
 		if err != nil {
-			return false, err
+			return err
 		}
 		state, admission = next, next.AdmissionByToken(admission.TurnToken)
 	}
 	if admission.ResultTurnToken != lifecycle.TurnToken(fact.TurnID) {
-		return false, errDelegatedTurnMismatch
+		return errDelegatedTurnMismatch
 	}
 	activeAttempt := state.Attempt != nil && state.Attempt.SessionID == fact.SessionID &&
 		state.Attempt.TurnToken == lifecycle.TurnToken(fact.TurnID)
-	lateTerminalAudit := (fact.Kind == "done" || fact.Kind == "failed") &&
+	lateTerminal := state.Attempt == nil && (fact.Kind == "done" || fact.Kind == "failed") &&
 		state.Review != nil && state.Review.Ref == fact.TurnID &&
-		(state.Review.Reason == "lease_expired" || state.Review.Reason == "turn_lost")
-	if !activeAttempt && !lateTerminalAudit {
-		return false, errDelegatedTurnMismatch
+		state.Review.Reason == "turn_lost"
+	if !activeAttempt && !lateTerminal {
+		return errDelegatedTurnMismatch
 	}
-	if lateTerminalAudit {
+	if lateTerminal {
 		if current, found := currentTurnForSession(*database, fact.SessionID); !found ||
 			current.TurnID != fact.TurnID || !current.SignalProtocol {
-			return false, errDelegatedTurnMismatch
+			return errDelegatedTurnMismatch
 		}
 	}
-	if !lateTerminalAudit {
-		if err := s.fsmSyncWorkLocked(database, string(state.ID), now); err != nil {
-			return false, err
-		}
+	if err := s.fsmSyncWorkLocked(database, string(state.ID), now); err != nil {
+		return err
 	}
 	for _, turn := range database.BrainTurns {
 		if turn.SessionID == fact.SessionID && turn.TurnID == fact.TurnID {
-			return lateTerminalAudit, nil
+			return nil
 		}
 	}
 	database.BrainTurns = append(database.BrainTurns, TurnRecord{
@@ -1454,7 +1430,7 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 			PiFlag: admission.TranscriptFlag, PiPath: admission.TranscriptPath},
 		SignalProtocol: true, LeaseDeadline: now.Add(turnLeaseGrace).UTC(), UpdatedAt: now,
 	})
-	return lateTerminalAudit, nil
+	return nil
 }
 
 // ApplyTurnFact is the single canonical reducer. Under one lock and one
@@ -1522,14 +1498,11 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	if err != nil {
 		return watcher.TurnSnapshot{}, false, err
 	}
-	lateTerminalAudit := false
 	if delegatedSignal {
 		if fact.Class != watcher.EvidenceControl {
 			return watcher.TurnSnapshot{}, false, fmt.Errorf("delegated progress requires Control evidence")
 		}
-		var prepareErr error
-		lateTerminalAudit, prepareErr = s.prepareDelegatedSignalTurnLocked(&database, fact, now)
-		if prepareErr != nil {
+		if prepareErr := s.prepareDelegatedSignalTurnLocked(&database, fact, now); prepareErr != nil {
 			return watcher.TurnSnapshot{}, false, prepareErr
 		}
 	}
@@ -1547,7 +1520,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		// different turn.
 		return watcher.TurnSnapshot{}, false, nil
 	}
-	if fact.Class == watcher.EvidenceControl || fact.Class == watcher.EvidenceProvider {
+	if !isHostHandlingTurn(database.BrainTurns[turnIndex]) && (fact.Class == watcher.EvidenceControl || fact.Class == watcher.EvidenceProvider) {
 		// Control and provider lifecycle facts may affect only the current
 		// aggregate owner. A late previous-turn completion after Session reuse
 		// is retained by its provider transcript, but cannot terminate the newer
@@ -1580,31 +1553,11 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		return turn.snapshot(), false, nil
 	}
 
-	// Strong-completion pre-check: a bounded signal-protocol worker whose
-	// exact bound provider terminal arrived carries Final completion
-	// authority (bounded Work has no follow-up acceptance gate). Until-done
-	// Work deliberately stays on the hint path.
-	workIndexPre := workIndex(database.BrainWork, turn.WorkID)
-	finalDone := false
-	if workIndexPre >= 0 {
-		workItemPre := database.BrainWork[workIndexPre]
-		if workItemPre.CompletionPolicy == CompletionBounded && turn.SignalProtocol &&
-			fact.Class == watcher.EvidenceProvider && fact.Kind == "done" &&
-			providerFactBinds(&turn, fact) && mutation.hint != nil &&
-			mutation.hint.Kind == "session.done" {
-			finalDone = true
-		}
-	}
-
 	// Canonical lifecycle first (docs/work-lifecycle.md): translate the
 	// canonical transition into engine commands. The engine is the only writer
 	// of Work status, active Attempt, review, wake, and completion state; the ledger
 	// row below remains evidence cache. Every command is an idempotent reject
 	// against stale fences/tokens, so crash replays converge.
-	effectiveStatus := mutation.status
-	if finalDone {
-		effectiveStatus = watcher.TurnDone
-	}
 	if fact.Class == watcher.EvidenceProvider && turn.ActivityID == "" &&
 		turn.QueuedBehindActivityID != "" && mutation.activityID != "" &&
 		providerFactBinds(&turn, fact) {
@@ -1620,10 +1573,8 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			return watcher.TurnSnapshot{}, false, fmt.Errorf("persist queued provider promotion: %w", err)
 		}
 	}
-	if !lateTerminalAudit {
-		if err := s.fsmTranslateCanonicalTransition(&turn, fact, effectiveStatus, mutation.eventKind, finalDone); err != nil {
-			return watcher.TurnSnapshot{}, false, err
-		}
+	if err := s.fsmTranslateCanonicalTransition(&turn, fact, mutation.status, mutation.eventKind); err != nil {
+		return watcher.TurnSnapshot{}, false, err
 	}
 
 	// Apply the mutation to the ledger row.
@@ -1676,13 +1627,6 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 		Summary: fact.Summary,
 	})
 	turn.UpdatedAt = now
-	if lateTerminalAudit {
-		database.BrainTurns[turnIndex] = turn
-		if err := s.persistPresentationLocked(database); err != nil {
-			return watcher.TurnSnapshot{}, false, err
-		}
-		return turn.snapshot(), true, nil
-	}
 	if isHostHandlingTurn(turn) {
 		// Host provider Turns own only the delivery handling. Their lifecycle
 		// may close/recover that exact handling, but must never be reinterpreted
@@ -1702,38 +1646,9 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 	workIndex := workIndex(database.BrainWork, turn.WorkID)
 	var workItem Work
 	terminalWork := false
-	dispositionRevisionFrozen := false
 	if workIndex >= 0 {
 		workItem = database.BrainWork[workIndex]
 		terminalWork = workItem.Status == WorkDone || workItem.Status == WorkCancelled
-		dispositionRevisionFrozen = workHostLaneOwned(database, turn.WorkID)
-		// A bounded signal-protocol worker's exact bound provider terminal is
-		// strong completion evidence: promote the provisional hint to the
-		// canonical terminal on the ledger row (the engine side already
-		// reduced the same Final completion above).
-		if !terminalWork && !dispositionRevisionFrozen && finalDone {
-			settled := now
-			if !fact.SettledAt.IsZero() {
-				settled = fact.SettledAt.UTC()
-			}
-			mutation.status = watcher.TurnDone
-			mutation.attention = ""
-			mutation.settledAt = &settled
-			mutation.summary = firstNonEmpty(fact.Summary, "session.done")
-			mutation.eventActionable = true
-			mutation.eventSummary = mutation.summary
-			mutation.hint = nil
-			mutation.dropHintKind = "session.done"
-			turn.Status = watcher.TurnDone
-			turn.Attention = ""
-			turn.SettledAt = &settled
-			turn.Summary = mutation.summary
-		}
-		// A delivered Host handling carries the exact Work capability for its
-		// eventual disposition. Facts observed during that window remain
-		// durable evidence, but they cannot mutate Work or advance the
-		// capability fence: ResolveWorkReview is the sole owner of that
-		// transition, and every lifecycle effect routes through the engine.
 	}
 
 	// Presentation event: exactly one row per (work, dedupe key); corrections flip
@@ -1771,7 +1686,7 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 				CreatedAt:   now,
 			}
 			if workIndex >= 0 {
-				event, err = appendWorkEventLocked(&database, workIndex, event, !dispositionRevisionFrozen)
+				event, err = appendWorkEventLocked(&database, workIndex, event, true)
 				if err != nil {
 					return watcher.TurnSnapshot{}, false, err
 				}
@@ -1793,9 +1708,6 @@ func (s *Store) applyTurnFact(fact watcher.TurnFact, delegatedSignal bool) (watc
 			database.BrainWorkEvents[eventIndex].EventKind = fact.EventKind
 			database.BrainWorkEvents[eventIndex].DetailsJSON = fact.DetailsJSON
 			database.BrainWorkEvents[eventIndex].WorkRevision = workItem.Revision
-			if dispositionRevisionFrozen {
-				database.BrainWorkEvents[eventIndex].WorkRevision++
-			}
 			eventID = database.BrainWorkEvents[eventIndex].ID
 			eventCreated = true
 		}

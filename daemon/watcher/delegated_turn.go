@@ -39,10 +39,12 @@ func (s ProviderProbeState) Loss() bool {
 // diagnostic evidence only: the canonical per-turn reducer (brain.Store) is
 // the only lifecycle state machine.
 type ProviderActivityObservation struct {
-	ID              string
-	Status          string
-	StartedAt       time.Time
-	SettledAt       time.Time
+	ID        string
+	Status    string
+	StartedAt time.Time
+	SettledAt time.Time
+	// ProgressAt is source event time, never the time a cached status was read.
+	ProgressAt      time.Time
 	AdmissionStream string
 	AdmissionID     string
 	AdmissionCursor uint64

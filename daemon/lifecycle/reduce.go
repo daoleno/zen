@@ -50,6 +50,9 @@ func Reduce(prev *State, ev Event) *State {
 			return noop(s, ev)
 		}
 		p := payload[AmendedPayload](ev)
+		if p.Policy != nil {
+			s.Policy = *p.Policy
+		}
 		if p.Title != nil {
 			s.Title = *p.Title
 		}
@@ -61,6 +64,13 @@ func Reduce(prev *State, ev Event) *State {
 		}
 		if p.NextAction != nil {
 			s.NextAction = *p.NextAction
+		}
+		if p.Status != nil && p.Status.Terminal() {
+			releaseAttempt(s, ev.At)
+			s.Status = *p.Status
+			at := ev.At
+			s.TerminalAt = &at
+			s.Review, s.Wake = nil, nil
 		}
 
 	case KWorkCancelled:
@@ -86,10 +96,12 @@ func Reduce(prev *State, ev Event) *State {
 		s.Wake = nil
 
 	case KAdmissionPrepared:
-		if terminal(s) || ev.TurnToken == "" || s.AdmissionByToken(ev.TurnToken) != nil || s.ActiveAdmission() != nil {
+		p := payload[AdmissionPreparedPayload](ev)
+		active := s.ActiveAdmission()
+		if terminal(s) || ev.TurnToken == "" || s.AdmissionByToken(ev.TurnToken) != nil ||
+			(active != nil && (active.Status != AdmissionAmbiguous || p.ClaimToken != "")) {
 			return noop(s, ev)
 		}
-		p := payload[AdmissionPreparedPayload](ev)
 		if p.SessionID == "" || p.Receipt == "" || p.PayloadSHA256 == "" ||
 			p.ProcessIdentity == "" || p.PaneGeneration == "" || p.AttemptedAt.IsZero() {
 			return noop(s, ev)
@@ -106,7 +118,7 @@ func Reduce(prev *State, ev Event) *State {
 			AttemptedAt:        p.AttemptedAt,
 			TranscriptProvider: p.TranscriptProvider, TranscriptFlag: p.TranscriptFlag, TranscriptPath: p.TranscriptPath,
 			Purpose: p.Purpose, PurposeID: p.PurposeID,
-			Status: AdmissionPrepared, PreparedAt: ev.At,
+			Status: AdmissionPrepared, PreparedAt: ev.At, PreparedSeq: ev.Seq,
 		}
 
 	case KAdmissionAmbiguous:
@@ -127,6 +139,7 @@ func Reduce(prev *State, ev Event) *State {
 		a.Status = AdmissionPrepared
 		a.Reason = ""
 		a.PreparedAt = ev.At
+		a.PreparedSeq = ev.Seq
 		a.AttemptedAt = p.AttemptedAt
 
 	case KAdmissionAccepted:
@@ -212,19 +225,10 @@ func Reduce(prev *State, ev Event) *State {
 			return noop(s, ev)
 		}
 		p := payload[DonePayload](ev)
+		// Terminal evidence supersedes the prior decision and its handler.
+		s.Review = nil
 		s.LastSummary = p.Summary
 		releaseAttempt(s, ev.At)
-		if upgrade && s.Review != nil {
-			// Keep the first unresolved actionable Event as the stable review/card
-			// identity. Later exact terminal evidence strengthens what Brain reviews;
-			// it must not manufacture a second obligation or notification.
-			if p.OK {
-				s.Review.Reason = "turn_done"
-			} else {
-				s.Review.Reason = "turn_failed"
-			}
-			s.Review.Ref = string(ev.TurnToken)
-		}
 		applyCompletionRule(s, ev, p)
 
 	case KTurnRelinquished:
@@ -241,6 +245,7 @@ func Reduce(prev *State, ev Event) *State {
 			return noop(s, ev)
 		}
 		p := payload[LostPayload](ev)
+		s.Review = nil
 		s.LastSummary = p.Reason
 		releaseAttempt(s, ev.At)
 		s.Status = StatusBlocked
@@ -251,7 +256,7 @@ func Reduce(prev *State, ev Event) *State {
 			return noop(s, ev)
 		}
 		s.Attempt.LeaseEpoch++
-		openReview(s, ev, "lease_expired", string(ev.TurnToken))
+		// A check-in deadline is supervision evidence, not a Brain decision.
 
 	case KWakeSet:
 		if terminal(s) {
@@ -282,7 +287,8 @@ func Reduce(prev *State, ev Event) *State {
 		if p.EventID == "" {
 			return noop(s, ev)
 		}
-		if terminal(s) || s.Review != nil {
+		if terminal(s) || (s.Review != nil && (s.Review.Handler == nil || s.Review.Handler.EndedAt == nil ||
+			(s.Review.Reason == p.Reason && s.Review.Ref == p.Ref))) {
 			return noop(s, ev)
 		}
 		// Opening the exact review consumes any parked Wake in the same
@@ -328,7 +334,12 @@ func Reduce(prev *State, ev Event) *State {
 		if p.EventID != s.Review.EventID || p.HandlerToken != s.Review.Handler.HandlerToken {
 			return noop(s, ev)
 		}
-		s.Review.Handler = nil
+		if s.Review.Handler.DeliveredAt != nil {
+			at := ev.At
+			s.Review.Handler.EndedAt = &at
+		} else {
+			s.Review.Handler = nil
+		}
 
 	case KReviewDeliveryResolved:
 		if s.Review == nil || s.Review.Handler == nil {
@@ -336,7 +347,7 @@ func Reduce(prev *State, ev Event) *State {
 		}
 		p := payload[ReviewDeliveryResolvedPayload](ev)
 		if p.EventID != s.Review.EventID || p.HandlerToken != s.Review.Handler.HandlerToken ||
-			s.Review.Handler.DeliveredAt != nil {
+			(s.Review.Handler.DeliveredAt != nil && s.Review.Handler.EndedAt == nil) {
 			return noop(s, ev)
 		}
 		if p.Action == ReviewDeliveryDiscard {
@@ -446,14 +457,6 @@ func applyCompletionRule(s *State, ev Event, p DonePayload) {
 	case !p.OK:
 		s.Status = StatusBlocked
 		openReview(s, ev, "turn_failed", string(ev.TurnToken))
-	case p.Final || (p.OK && p.CriteriaMet):
-		// Strong completion authority: the reporter's evidence class affirms
-		// the outcome outright (bounded signal worker terminal, criteria met).
-		s.Status = StatusDone
-		now := ev.At
-		s.TerminalAt = &now
-		s.Review = nil
-		s.Wake = nil
 	default:
 		// An unaffirmed result awaits Brain judgment. until_done changes only
 		// whether this result can implicitly complete the Work; it never queues

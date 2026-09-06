@@ -545,7 +545,7 @@ func TestBrainResolveCLI(t *testing.T) {
 		"work", "resolve", "--state-dir", stateDir, "--json=false",
 		"--work-id", "work-1", "--handling-id", "handling-1",
 		"--provider-turn-id", "provider-turn-1", "--revision", "7",
-		"--disposition", "continue", "--next-attempt-session-id", "worker-2",
+		"--disposition", "continue",
 	}, &stderr); err != nil {
 		t.Fatalf("runBrainCommand returned error: %v stderr=%s", err, stderr.String())
 	}
@@ -555,8 +555,7 @@ func TestBrainResolveCLI(t *testing.T) {
 		got := req.BrainWorkDisposition
 		if req.Type != "brain_work_resolve" || got == nil || got.WorkID != "work-1" ||
 			got.HandlingID != "handling-1" || got.ProviderTurnID != "provider-turn-1" ||
-			got.ExpectedWorkRevision != 7 || got.Disposition != brain.WorkDispositionContinue ||
-			got.NextSessionID != "worker-2" {
+			got.ExpectedWorkRevision != 7 || got.Disposition != brain.WorkDispositionContinue {
 			t.Fatalf("resolve request = %#v", req)
 		}
 	case <-time.After(2 * time.Second):

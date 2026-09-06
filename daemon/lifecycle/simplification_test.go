@@ -153,12 +153,12 @@ func TestAttemptSessionTokenFenceAndHeartbeatSemantics(t *testing.T) {
 	if _, err := e.ReportTurnDone("w-fence", attemptID("session-current", "turn-current", st.Attempt.Generation+1), DoneInput{OK: true}); !errors.Is(err, ErrStaleInput) {
 		t.Fatalf("wrong fence accepted: %v", err)
 	}
-	completed, err := e.ReportTurnDone("w-fence", attemptID("session-current", "turn-current", st.Attempt.Generation), DoneInput{OK: true, Final: true})
+	completed, err := e.ReportTurnDone("w-fence", attemptID("session-current", "turn-current", st.Attempt.Generation), DoneInput{OK: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	revision := completed.Revision
-	again, err := e.ReportTurnDone("w-fence", attemptID("session-current", "turn-current", st.Attempt.Generation), DoneInput{OK: true, Final: true})
+	again, err := e.ReportTurnDone("w-fence", attemptID("session-current", "turn-current", st.Attempt.Generation), DoneInput{OK: true})
 	if err != nil || again.Revision != revision {
 		t.Fatalf("exact duplicate completion mutated state: rev=%d -> %d err=%v", revision, again.Revision, err)
 	}
@@ -195,7 +195,7 @@ func TestLostAttemptDoesNotCompleteAndNextAttemptCanContinue(t *testing.T) {
 	}
 }
 
-func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing.T) {
+func TestLateExactTerminalSupersedesLostEventAndBrainCanContinue(t *testing.T) {
 	e, _ := newTestEngine(t)
 
 	define(t, e, "w-late-terminal", PolicyUntilDone)
@@ -206,7 +206,7 @@ func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing
 		t.Fatal(err)
 	}
 	lost, _ := e.State("w-late-terminal")
-	if lost.Attempt != nil || lost.Review == nil || lost.Review.Reason != "lease_expired" {
+	if lost.Attempt != nil || lost.Review == nil || lost.Review.Reason != "turn_lost" {
 		t.Fatalf("provisional lease result=%+v", lost)
 	}
 	eventID, lostRevision := lost.Review.EventID, lost.Revision
@@ -218,9 +218,10 @@ func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing
 		t.Fatal(err)
 	}
 	if stronger.Revision != lostRevision+1 || stronger.Review == nil ||
-		stronger.Review.EventID != eventID || stronger.Review.Reason != "turn_done" {
-		t.Fatalf("stronger evidence replaced stable Event: %+v", stronger)
+		stronger.Review.EventID == eventID || stronger.Review.Reason != "turn_done" {
+		t.Fatalf("stronger evidence did not replace provisional Event: %+v", stronger)
 	}
+	eventID = stronger.Review.EventID
 	if cards := e.Cards(); len(cards) != 1 || !cards[0].Actionable || cards[0].Reason != "turn_done" {
 		t.Fatalf("stronger evidence cards=%+v", cards)
 	}
@@ -243,7 +244,7 @@ func TestLateExactTerminalUpgradesStableLeaseEventAndBrainCanContinue(t *testing
 	if _, err := e.AcceptAdmissionBySignal("w-late-terminal", "turn-next", "session-2"); err != nil {
 		t.Fatal(err)
 	}
-	continued, err := e.AcceptReviewFollowUp("w-late-terminal", eventID, "session-2", "turn-next")
+	continued, err := e.State("w-late-terminal")
 	if err != nil {
 		t.Fatal(err)
 	}

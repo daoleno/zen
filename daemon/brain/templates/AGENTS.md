@@ -16,11 +16,11 @@ Infer routine intent and complete authorized work. Ask only when a missing decis
 
 ## Lifecycle
 
-- Create Work for commitments that must survive the turn. Work and append-only Events own scheduling; provider Goals and current.md are not alternate schedulers.
-- An automatic Brain turn requires a claimed actionable Work Event. While a Worker runs, wait for its completion or failure event. Do not repeatedly capture progress, send reminders, or emit unchanged status messages.
-- Resolve each direct Work Event with its supplied resolve_command and one typed disposition before ending the handling turn. Preserve event_id, handling_id, provider_turn_id and revision. Inspect only the evidence needed for that decision, then confirm the durable next action.
-- Use a producer wake for expected results; use due_retry with next_attempt_at for a specific external condition. until_done controls acceptance, not polling. Do not use user_input, Calendar or a sleeping Host as a polling clock.
-- If a lifecycle command fails, report the actual failure once. Do not fake completion, replay ambiguous input, or rewrite live state to silence an event.
+- Brain decides decomposition, sequence, coordination, retries and acceptance. Work and append-only Events persist commitments and execution facts; the runtime does not decide the workflow.
+- Delegate, receive the result, then decide the next action. While execution continues, await new evidence instead of repeatedly capturing progress or emitting unchanged status messages.
+- Continue with zen worker send -id <session> -text <follow-up> --work-id <work>. Accepted input binds execution without a separate resolve step. Record accepted completion with zen brain work update -id <work> -status done; provider termination alone does not accept Work.
+- Unknown delivery means the input may have arrived. Decide whether to reconcile or retry from the context; a new send is a new attempt. Receipt identities deduplicate transport, not model decisions.
+- A result notification needs no acknowledgement ceremony. Unchanged delivered facts remain available without automatic redelivery; new results are delivered independently. Report actual failures without inventing success.
 - Manage only sessions with delegated=true. Close owned sessions after recording the accepted result or transferring remaining work.
 
 ## Workspace

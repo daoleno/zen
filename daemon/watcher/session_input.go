@@ -153,7 +153,7 @@ func (err *InputSubmissionError) Error() string {
 	}
 	switch err.Result.Outcome {
 	case InputAmbiguous:
-		return fmt.Sprintf("Session input outcome is unknown and will not be replayed: %v", err.Cause)
+		return fmt.Sprintf("Session input outcome is unknown; reconcile or choose a new submission: %v", err.Cause)
 	default:
 		return fmt.Sprintf("Session input was definitely not submitted: %v", err.Cause)
 	}

@@ -80,12 +80,8 @@ func TestHostAdmissionPreservesWorkerAuthorityAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	accepted, err := reopened.AcceptAdmissionBySignal("w-host-worker", "review-follow-up", "worker")
-	if err != nil || accepted.Attempt.TurnToken != "worker-turn" || len(accepted.Admissions) != 3 {
+	if err != nil || accepted.Attempt.TurnToken != "review-follow-up" || len(accepted.Admissions) != 3 {
 		t.Fatalf("accepted follow-up stole ownership: state=%+v err=%v", accepted, err)
-	}
-	adopted, err := reopened.AcceptReviewFollowUp("w-host-worker", accepted.Review.EventID, "worker", "review-follow-up")
-	if err != nil || adopted.Attempt.TurnToken != "review-follow-up" || adopted.Review != nil {
-		t.Fatalf("typed disposition failed to adopt exact input: state=%+v err=%v", adopted, err)
 	}
 }
 
@@ -140,7 +136,7 @@ func TestPreparedAdmissionSurvivesRestartAndAcceptsExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestReviewNextAttemptRemainsPreparedUntilDisposition(t *testing.T) {
+func TestReviewNextAttemptStartsOnAcceptance(t *testing.T) {
 	for _, acceptBy := range []string{"provider", "signal"} {
 		t.Run(acceptBy, func(t *testing.T) {
 			e, _ := newTestEngine(t)
@@ -181,18 +177,9 @@ func TestReviewNextAttemptRemainsPreparedUntilDisposition(t *testing.T) {
 			}
 			prepared, _ := e.State("w-review-without-attempt")
 			admission := prepared.AdmissionByToken("turn-reviewed")
-			if prepared.Attempt != nil || prepared.Review == nil || admission == nil ||
+			if prepared.Attempt == nil || prepared.Attempt.TurnToken != "turn-reviewed" || prepared.Review != nil || admission == nil ||
 				admission.Status != AdmissionAccepted || admission.PurposeID != claimed.Review.Handler.HandlerID {
 				t.Fatalf("accepted review admission escaped its disposition: %+v", prepared)
-			}
-			resolved, err := e.AcceptReviewFollowUp(
-				"w-review-without-attempt", prepared.Review.EventID, "session-1", "turn-reviewed",
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if resolved.Attempt == nil || resolved.Attempt.TurnToken != "turn-reviewed" || resolved.Review != nil {
-				t.Fatalf("review disposition did not admit exact next Attempt: %+v", resolved)
 			}
 		})
 	}
@@ -242,7 +229,7 @@ func TestClaimedReviewAdmissionMayQueueWithoutAdoptingLiveActivity(t *testing.T)
 	}
 }
 
-func TestAmbiguousAdmissionIsDurableAndNeverReprepared(t *testing.T) {
+func TestAmbiguousAdmissionAllowsModelDirectedRetry(t *testing.T) {
 	e, _ := newTestEngine(t)
 
 	define(t, e, "w-ambiguous", PolicyUntilDone)
@@ -254,11 +241,11 @@ func TestAmbiguousAdmissionIsDurableAndNeverReprepared(t *testing.T) {
 		SessionID: "session-1", TurnToken: "turn-2", Receipt: "turn-2", PayloadSHA256: "digest-2",
 		ProcessIdentity: "process-1", PaneGeneration: "pane-1", Mode: AdmissionFresh,
 		AttemptedAt: time.Now().UTC(),
-	}); err == nil {
-		t.Fatal("ambiguous admission allowed a second mutation transaction")
+	}); err != nil {
+		t.Fatal(err)
 	}
 	st, _ := e.State("w-ambiguous")
-	if st.ActiveAdmission() == nil || st.ActiveAdmission().Status != AdmissionAmbiguous || st.Attempt != nil {
+	if st.ActiveAdmission() == nil || st.ActiveAdmission().TurnToken != "turn-2" || st.AdmissionByToken("turn-1").Status != AdmissionAmbiguous || st.Attempt != nil {
 		t.Fatalf("ambiguous state=%+v", st)
 	}
 }
@@ -273,6 +260,35 @@ func TestExactActionableEventIdentityOwnsReview(t *testing.T) {
 	st, _ := e.State("w-event")
 	if st.Review == nil || st.Review.EventID != "event-exact" {
 		t.Fatalf("exact event state=%+v", st)
+	}
+}
+
+func TestUnknownHostDeliveryDoesNotBlockModelDirectedWorkerSend(t *testing.T) {
+	e, _ := newTestEngine(t)
+	define(t, e, "unknown-host", PolicyBounded)
+	if _, err := e.OpenReviewEvent("unknown-host", "result", "old-turn", "result-event"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ClaimReview("unknown-host", "host", "handler", "host-turn"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.PrepareAdmission("unknown-host", PrepareAdmissionInput{
+		SessionID: "host", TurnToken: "host-turn", Receipt: "host-turn", ClaimToken: "handler",
+		PayloadSHA256: "digest", ProcessIdentity: "process", PaneGeneration: "pane", Mode: AdmissionFresh,
+		Purpose: AdmissionPurposeReview, PurposeID: "handler", AttemptedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.MarkAdmissionAmbiguous("unknown-host", "host-turn", "response lost"); err != nil {
+		t.Fatal(err)
+	}
+	prepareAdmissionFixture(t, e, "unknown-host", "worker", "new-worker-turn")
+	state, err := e.AcceptAdmissionBySignal("unknown-host", "new-worker-turn", "worker")
+	if err != nil || state.Attempt == nil || state.Attempt.TurnToken != "new-worker-turn" || state.Review != nil {
+		t.Fatalf("model-directed action blocked by unknown delivery: %+v %v", state, err)
+	}
+	if state.AdmissionByToken("host-turn").Status != AdmissionAmbiguous {
+		t.Fatal("lost uncertainty evidence")
 	}
 }
 

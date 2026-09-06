@@ -72,7 +72,6 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 		"ConsumeReviewDelivery",
 		"ClaimNextReviewAction",
 		"PrepareInputAdmission",
-		"AcceptReviewFollowUp",
 		"isTurnScopedSessionDedupeKey",
 	} {
 		if !strings.Contains(string(brainSource), required) {
@@ -81,6 +80,9 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 	}
 	if strings.Contains(string(brainSource), "ReleaseWorkEvent") {
 		t.Fatal("Brain store still permits eager unacknowledged claim release")
+	}
+	if strings.Contains(string(brainSource), "AcceptReviewFollowUp") {
+		t.Fatal("Brain still requires a second continuation transaction")
 	}
 	brainServiceSource, err := os.ReadFile(filepath.Join("..", "brain", "service.go"))
 	if err != nil {

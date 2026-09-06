@@ -101,7 +101,7 @@ func TestDuplicateEventsIdempotent(t *testing.T) {
 	}
 
 	before := st.Revision
-	ev := Event{WorkID: "w1", Kind: KTurnDone, TurnToken: tok1, Fence: 1, SourceID: "done:" + string(tok1), At: time.Now(), Payload: DonePayload{OK: true, CriteriaMet: true}}
+	ev := Event{WorkID: "w1", Kind: KTurnDone, TurnToken: tok1, Fence: 1, SourceID: "done:" + string(tok1), At: time.Now(), Payload: DonePayload{OK: true}}
 	once := Reduce(st, ev)
 	if once.Revision != before+1 {
 		t.Fatalf("first application did not apply: %d -> %d", before, once.Revision)
@@ -110,7 +110,7 @@ func TestDuplicateEventsIdempotent(t *testing.T) {
 	if twice.Revision != once.Revision {
 		t.Fatalf("duplicate source applied twice: rev %d -> %d", once.Revision, twice.Revision)
 	}
-	if twice.Status != StatusDone || once.Status != StatusDone {
+	if twice.Status != StatusQueued || once.Status != StatusQueued {
 		t.Fatalf("terminal settle unstable: %s vs %s", once.Status, twice.Status)
 	}
 }
@@ -154,15 +154,15 @@ func TestStaleFenceRejected(t *testing.T) {
 	admit(t, e, "w1", tok1, "s1")
 
 	// Settle turn 1; fence moves to 2 with no active Attempt.
-	if _, err := e.ReportTurnDone("w1", attemptID("s1", tok1, 1), DoneInput{OK: true, CriteriaMet: true}); err != nil {
+	if _, err := e.ReportTurnDone("w1", attemptID("s1", tok1, 1), DoneInput{OK: true}); err != nil {
 		t.Fatal(err)
 	}
 	st, err := e.State("w1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Status != StatusDone {
-		t.Fatalf("bounded criteriaMet until_done should be done, got %s", st.Status)
+	if st.Status != StatusQueued {
+		t.Fatalf("result should await Brain acceptance, got %s", st.Status)
 	}
 
 	// An exact duplicate is an idempotent no-op even when its payload differs.
@@ -173,8 +173,8 @@ func TestStaleFenceRejected(t *testing.T) {
 		t.Fatalf("late heartbeat accepted: %v", err)
 	}
 	st, _ = e.State("w1")
-	if st.Status != StatusDone {
-		t.Fatalf("terminal status disturbed: %s", st.Status)
+	if st.Status != StatusQueued {
+		t.Fatalf("result status disturbed: %s", st.Status)
 	}
 }
 
@@ -198,8 +198,8 @@ func TestLeaseExpiryAndEscalation(t *testing.T) {
 	if st.Status != StatusRunning || st.Attempt == nil {
 		t.Fatalf("expiry must not release Attempt: %+v", st)
 	}
-	if st.Review == nil || st.Review.Reason != "lease_expired" {
-		t.Fatalf("expected lease_expired review, got %+v", st.Review)
+	if st.Review != nil {
+		t.Fatalf("expiry must not request Brain attention: %+v", st.Review)
 	}
 
 	// Sweeping again at the same deadline dedupes: no new event applies at all.
@@ -211,8 +211,8 @@ func TestLeaseExpiryAndEscalation(t *testing.T) {
 	if st.Revision != rev {
 		t.Fatalf("duplicate expiry applied: %d -> %d", rev, st.Revision)
 	}
-	if n := countReviews(st, "lease_expired"); n != 1 {
-		t.Fatalf("expected single open Event, got %d", n)
+	if n := countReviews(st, "lease_expired"); n != 0 {
+		t.Fatalf("expected no lease decision, got %d", n)
 	}
 
 	// Past LostGrace the supervisor escalates to one blocked Review. It never
@@ -273,10 +273,9 @@ func TestLeaseExpiryAdmissionIsConcurrentAndRestartDurable(t *testing.T) {
 	if state.Revision != admitted.Revision+1 {
 		t.Fatalf("expiry revision=%d, want %d", state.Revision, admitted.Revision+1)
 	}
-	if state.Review == nil || state.Review.Reason != "lease_expired" {
-		t.Fatalf("canonical actionable Event=%+v", state.Review)
+	if state.Review != nil {
+		t.Fatalf("expiry admitted a decision=%+v", state.Review)
 	}
-	eventID := state.Review.EventID
 	sourceID := leaseExpiredSourceID("turn:expiry-once", deadline)
 	if !state.SeenSources[sourceID] {
 		t.Fatalf("durable source admission missing %q", sourceID)
@@ -284,7 +283,7 @@ func TestLeaseExpiryAdmissionIsConcurrentAndRestartDurable(t *testing.T) {
 	if got := countEngineEvents(e, "w-expiry-once", KLeaseExpired, sourceID); got != 1 {
 		t.Fatalf("expiry audit Events=%d, want 1", got)
 	}
-	if cards := e.Cards(); len(cards) != 1 || !cards[0].Actionable || cards[0].Reason != "lease_expired" {
+	if cards := e.Cards(); len(cards) != 1 || cards[0].Actionable {
 		t.Fatalf("actionable cards=%+v", cards)
 	}
 
@@ -303,7 +302,7 @@ func TestLeaseExpiryAdmissionIsConcurrentAndRestartDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.Revision != state.Revision || reloaded.Review == nil || reloaded.Review.EventID != eventID ||
+	if reloaded.Revision != state.Revision || reloaded.Review != nil ||
 		!reloaded.SeenSources[sourceID] {
 		t.Fatalf("reload changed expiry admission: before=%+v after=%+v", state, reloaded)
 	}
@@ -325,7 +324,7 @@ func TestObservedLongRunningProviderPhasePreventsLeaseLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	expired, _ := e.State("w-observed-long-phase")
-	if expired.Attempt == nil || expired.Review == nil || expired.Review.Reason != "lease_expired" {
+	if expired.Attempt == nil || expired.Review != nil || expired.Attempt.LeaseEpoch != 1 {
 		t.Fatalf("expiry must retain observed Attempt pending reconciliation: %+v", expired)
 	}
 
@@ -407,7 +406,7 @@ func TestProviderRunningRenewalsAreCoalescedAndSilenceStillExpires(t *testing.T)
 		t.Fatal(err)
 	}
 	expired, _ := e.State("w-silent")
-	if expired.Attempt == nil || expired.Review == nil || expired.Review.Reason != "lease_expired" {
+	if expired.Attempt == nil || expired.Review != nil || expired.Attempt.LeaseEpoch != 1 {
 		t.Fatalf("silent Attempt did not expire: %+v", expired)
 	}
 	setNow(e, silent.Attempt.LeaseDeadline.Add(LostGrace+time.Second))
@@ -552,11 +551,8 @@ func TestReviewAcceptancePersistsRowsAndEventsInOneTransactionImage(t *testing.T
 		SessionID: "session-next", TurnToken: "turn-other", Receipt: "turn-other",
 		PayloadSHA256: "digest-other", ProcessIdentity: "process-next", PaneGeneration: "pane-next",
 		Mode: AdmissionFresh, Purpose: AdmissionPurposeReview, PurposeID: claimed.Review.Handler.HandlerID, AttemptedAt: time.Now(),
-	}); !errors.Is(err, ErrAttemptActive) {
-		t.Fatalf("second review-purpose admission token accepted: %v", err)
-	}
-	if _, err := e.AcceptReviewFollowUp("w-atomic", claimed.Review.EventID, "session-next", "turn-next"); err != nil {
-		t.Fatal(err)
+	}); !errors.Is(err, ErrReviewLease) {
+		t.Fatalf("stale review-purpose accepted: %v", err)
 	}
 	reopened, err := Open(root)
 	if err != nil {
@@ -675,12 +671,12 @@ func TestUntilDoneCompletionRule(t *testing.T) {
 	if _, err := e.ResolveReview("w1", st.Review.EventID, ResolveReviewInput{Disposition: DispositionContinue, Actor: "brain"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.ReportTurnDone("w1", attemptID("s2", tok2, 3), DoneInput{OK: true, CriteriaMet: true, Summary: "all done"}); err != nil {
+	if _, err := e.ReportTurnDone("w1", attemptID("s2", tok2, 3), DoneInput{OK: true, Summary: "all done"}); err != nil {
 		t.Fatal(err)
 	}
-	st, _ = e.State("w1")
-	if st.Status != StatusDone {
-		t.Fatalf("criteriaMet must complete: %s", st.Status)
+	st, err = e.Complete("w1", 0, "brain", "accepted verified result")
+	if err != nil || st.Status != StatusDone {
+		t.Fatalf("Brain acceptance failed: %s %v", st.Status, err)
 	}
 }
 

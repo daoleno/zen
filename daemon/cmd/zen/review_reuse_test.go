@@ -11,7 +11,7 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-func TestReviewAuthorizedSendReusesCompletedSessionBeforeTypedContinue(t *testing.T) {
+func TestWorkSendReusesCompletedSessionWithoutResolve(t *testing.T) {
 	store := newControlBrainStore(t)
 	item, err := store.CreateWork(brain.Work{
 		Title: "Reuse one delegated Session", Objective: "Continue the next reviewed stage in place.",
@@ -47,7 +47,6 @@ func TestReviewAuthorizedSendReusesCompletedSessionBeforeTypedContinue(t *testin
 	if err != nil || delivered.Review == nil || delivered.Review.Lease == nil {
 		t.Fatalf("delivered Work=%+v err=%v", delivered, err)
 	}
-	lease := delivered.Review.Lease
 	fw := newFakeControlWatcher()
 	fw.turnStore = store
 	fw.workers[sessionID] = &classifier.Worker{
@@ -56,45 +55,33 @@ func TestReviewAuthorizedSendReusesCompletedSessionBeforeTypedContinue(t *testin
 	app := &controlApp{watcher: fw, brainStore: store}
 	request := control.Request{
 		Type: "worker_send", WorkerID: sessionID, Text: "Implement the reviewed second stage.", Submit: true,
-		WorkID: item.ID, EventID: delivered.Review.EventID,
-		HandlingID: lease.HandlingID, ProviderTurnID: lease.ProviderTurnID,
-		Revision: int64(lease.DeliveryWorkRevision), TurnID: "turn:review-reuse-next",
+		WorkID: item.ID,
 	}
 	response := app.HandleControlRequest(request)
-	if !response.OK || response.TurnID != request.TurnID {
-		t.Fatalf("review-authorized response=%+v", response)
+	if !response.OK || response.TurnID == "" {
+		t.Fatalf("follow-up response=%+v", response)
 	}
-	prepared, found, err := store.InputAdmission(sessionID, request.TurnID)
-	if err != nil || !found || prepared.State != watcher.InputAdmissionResolved ||
-		prepared.Purpose != string(lifecycle.AdmissionPurposeReview) || prepared.PurposeID != lease.HandlingID {
-		t.Fatalf("review admission found=%v admission=%+v err=%v", found, prepared, err)
+	state, err := store.FSM().State(lifecycle.WorkID(item.ID))
+	if err != nil || state.Attempt == nil || string(state.Attempt.TurnToken) != response.TurnID || state.Review != nil {
+		t.Fatalf("follow-up not active: %+v %v", state, err)
 	}
-	beforeContinue, err := store.FSM().State(lifecycle.WorkID(item.ID))
-	if err != nil || beforeContinue.Attempt != nil || beforeContinue.Review == nil {
-		t.Fatalf("accepted preparation activated early: state=%+v err=%v", beforeContinue, err)
-	}
-	beforeDuplicateRevision := beforeContinue.Revision
-	beforeDuplicateSends := len(fw.submitted)
-	duplicate := app.HandleControlRequest(request)
-	if !duplicate.OK || duplicate.TurnID != request.TurnID {
-		t.Fatalf("duplicate preparation response=%+v", duplicate)
-	}
-	afterDuplicate, _ := store.FSM().State(lifecycle.WorkID(item.ID))
-	if afterDuplicate.Revision != beforeDuplicateRevision || len(fw.submitted) != beforeDuplicateSends {
-		t.Fatalf("duplicate preparation churned revision/sends: %d->%d, %d->%d",
-			beforeDuplicateRevision, afterDuplicate.Revision, beforeDuplicateSends, len(fw.submitted))
-	}
-	_, continued, err := store.ResolveWorkReview(brain.WorkReviewDispositionRequest{
-		WorkID: item.ID, HandlingID: lease.HandlingID, ProviderTurnID: lease.ProviderTurnID,
-		ExpectedWorkRevision: lease.DeliveryWorkRevision, Disposition: brain.WorkDispositionContinue,
-		NextSessionID: sessionID, NextTurnToken: request.TurnID, NextAction: "Run the reviewed second stage.",
+	result, err := store.ApplyDelegatedTurnProgress(watcher.TurnFact{
+		SessionID: sessionID, TurnID: response.TurnID, Class: watcher.EvidenceControl,
+		Kind: "done", SourceID: "report-second-stage", Summary: "Verified second stage",
+		At: time.Now().UTC().Add(time.Second),
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !result.Matched || !result.Changed {
+		t.Fatalf("Worker report=%+v %v", result, err)
 	}
-	state, _ := store.FSM().State(lifecycle.WorkID(item.ID))
-	if state.Attempt == nil || state.Attempt.SessionID != sessionID || state.Attempt.TurnToken != lifecycle.TurnToken(request.TurnID) ||
-		continued.AttemptSessionID != sessionID || state.Review != nil {
-		t.Fatalf("typed continue did not activate exact Attempt: state=%+v Work=%+v", state, continued)
+	current, _ := store.Work(item.ID)
+	if current.Status == brain.WorkDone || current.Review == nil {
+		t.Fatalf("runtime accepted result for Brain: %+v", current)
+	}
+	response = app.HandleControlRequest(control.Request{
+		Type: "brain_work_update", WorkID: item.ID, WorkFields: []string{"status"},
+		BrainWork: &brain.Work{Status: brain.WorkDone},
+	})
+	if !response.OK || response.BrainWork.Status != brain.WorkDone {
+		t.Fatalf("Brain acceptance=%+v", response)
 	}
 }
