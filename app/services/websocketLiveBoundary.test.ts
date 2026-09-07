@@ -84,6 +84,28 @@ const secondServer = {
   daemonPublicKey: "public-key-b",
 };
 
+test("diff pages preserve literal paths and correlate requests with their owning server", async () => {
+  const client = new MultiServerWebSocketClient();
+  const socket = await connectClient(client, server);
+  const other = await connectClient(client, secondServer);
+  socket.open(); other.open();
+  const path = " leading [x]\t\ntrailing ";
+  const pending = client.getGitDiffPage(server.id, { targetId: "worker", cwd: "/fixture", path, scope: "working", row: 120, version: "snapshot", query: "needle" });
+  const outbound = JSON.parse(socket.sent.at(-1)!);
+  expect(outbound).toMatchObject({ type: "git_diff_page", path, scope: "working", row: 120, file_generation: "snapshot", query: "needle" });
+  const page = { path, scope: "working" as const, version: "new-snapshot", start: 120, total: 400, rows: [], stale: true, hunks: 1, previous_hunk: 0, next_hunk: -1, matches: 0, previous_match: -1, next_match: -1 };
+  other.receive({ type: "git_diff_page", request_id: outbound.request_id, page: { path: "wrong server" } });
+  expect(registeredHandlerCount(client)).toBeGreaterThan(0);
+  socket.receive({ type: "git_diff_page", request_id: outbound.request_id, page });
+  await expect(pending).resolves.toEqual(page);
+  expect(registeredHandlerCount(client)).toBe(0);
+  const failed = client.getGitDiffPage(server.id, { targetId: "worker", cwd: "/fixture", path, scope: "all", row: 0 });
+  socket.receive({ type: "error", request_id: JSON.parse(socket.sent.at(-1)!).request_id, message: "File no longer changed" });
+  await expect(failed).rejects.toThrow("File no longer changed");
+  expect(registeredHandlerCount(client)).toBe(0);
+  client.disconnectAll();
+});
+
 async function connectClient(
   client: InstanceType<typeof MultiServerWebSocketClient>,
   targetServer = server,

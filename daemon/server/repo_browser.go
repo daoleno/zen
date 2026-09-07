@@ -135,7 +135,7 @@ func (s *Server) buildGitRepoFileContent(targetID, cwd, path string) (gitRepoFil
 
 func resolveRepoBrowserPath(repoRoot, rawPath string) (relativePath string, absolutePath string, err error) {
 	cleanRoot := filepath.Clean(repoRoot)
-	trimmed := strings.TrimSpace(rawPath)
+	trimmed := rawPath
 
 	if trimmed == "" || trimmed == "." || trimmed == "/" {
 		return "", cleanRoot, nil

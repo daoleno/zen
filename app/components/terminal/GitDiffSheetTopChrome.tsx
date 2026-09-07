@@ -18,35 +18,33 @@ interface GitDiffSheetTopChromeProps {
   chrome: ReturnType<typeof buildTerminalChrome>;
   snapshot: GitDiffStatusSnapshot | null;
   loading: boolean;
+  compact?: boolean;
   activeTab: GitDiffSheetTab;
   fileCount: number;
-  showCollapseAll: boolean;
-  allDiffFilesCollapsed: boolean;
   accentColor: string;
   onClose(): void;
   onRefresh(): void;
   onTabChange(tab: GitDiffSheetTab): void;
-  onToggleAllDiffFiles(): void;
 }
 
 export function GitDiffSheetTopChrome({
   chrome,
   snapshot,
   loading,
+  compact = false,
   activeTab,
   fileCount,
-  showCollapseAll,
-  allDiffFilesCollapsed,
   accentColor,
   onClose,
   onRefresh,
   onTabChange,
-  onToggleAllDiffFiles,
 }: GitDiffSheetTopChromeProps) {
   return (
     <>
       <View style={[styles.header, { borderBottomColor: chrome.border }]}>
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Close Git Diff"
           style={styles.iconButton}
           onPress={onClose}
           activeOpacity={0.82}
@@ -77,6 +75,9 @@ export function GitDiffSheetTopChrome({
         </View>
 
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Refresh Git Diff"
+          disabled={loading}
           style={styles.iconButton}
           onPress={onRefresh}
           activeOpacity={0.82}
@@ -89,7 +90,7 @@ export function GitDiffSheetTopChrome({
         </TouchableOpacity>
       </View>
 
-      {snapshot?.available ? (
+      {snapshot?.available && !compact ? (
         <View style={[styles.modeBar, { borderBottomColor: chrome.border }]}>
           <View style={styles.modeMetaRow}>
             <View style={styles.modeSwitch}>
@@ -116,26 +117,6 @@ export function GitDiffSheetTopChrome({
                 {buildCompactSummary(snapshot)}
               </Text>
             </View>
-            {showCollapseAll ? (
-              <TouchableOpacity
-                style={[
-                  styles.collapseAllButton,
-                  {
-                    backgroundColor: chrome.surfaceMuted,
-                    borderColor: chrome.border,
-                  },
-                ]}
-                onPress={onToggleAllDiffFiles}
-                activeOpacity={0.82}
-                hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
-              >
-                <Text
-                  style={[styles.collapseAllText, { color: chrome.textMuted }]}
-                >
-                  {allDiffFilesCollapsed ? "Expand all" : "Collapse all"}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
           </View>
         </View>
       ) : null}
@@ -233,8 +214,8 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
   },
   iconButton: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
   },

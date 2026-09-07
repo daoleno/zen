@@ -1,16 +1,14 @@
 import React from "react";
-import {
-  Modal,
-  StyleSheet,
-  View,
-} from "react-native";
+import { Modal, StatusBar, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   buildTerminalChrome,
+  isLightTerminalTheme,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type {
-  GitDiffPatchPayload,
+  GitDiffPage,
+  GitDiffPageRequest,
   GitDiffStatusSnapshot,
   GitRepoBrowserEntry,
   GitRepoFileContentPayload,
@@ -29,9 +27,9 @@ interface GitDiffSheetProps {
   snapshot: GitDiffStatusSnapshot | null;
   loading: boolean;
   error: string | null;
-  patchByPath: Record<string, GitDiffPatchPayload | undefined>;
-  patchLoadingByPath: Record<string, boolean>;
-  patchErrorByPath: Record<string, string | undefined>;
+  loadPage(request: GitDiffPageRequest): Promise<GitDiffPage>;
+  refreshKey: number;
+  ownerKey: string;
   repoBrowserPath: string;
   repoBrowserEntries: GitRepoBrowserEntry[];
   repoBrowserLoading: boolean;
@@ -44,7 +42,6 @@ interface GitDiffSheetProps {
   onRefresh(): void;
   onOpenRepoPath(path: string): void;
   onOpenRepoFile(path: string): void;
-  onLoadDiffPatch(path: string): void;
   onCloseRepoFile(): void;
   onBackRepoPath(): void;
 }
@@ -55,9 +52,9 @@ export function GitDiffSheet({
   snapshot,
   loading,
   error,
-  patchByPath,
-  patchLoadingByPath,
-  patchErrorByPath,
+  loadPage,
+  refreshKey,
+  ownerKey,
   repoBrowserPath,
   repoBrowserEntries,
   repoBrowserLoading,
@@ -70,22 +67,21 @@ export function GitDiffSheet({
   onRefresh,
   onOpenRepoPath,
   onOpenRepoFile,
-  onLoadDiffPatch,
   onCloseRepoFile,
   onBackRepoPath,
 }: GitDiffSheetProps) {
   const chrome = React.useMemo(() => buildTerminalChrome(theme), [theme]);
   const [activeTab, setActiveTab] = React.useState<GitDiffSheetTab>("diff");
-  const [collapsedDiffPaths, setCollapsedDiffPaths] = React.useState<Set<string>>(
-    () => new Set(),
-  );
+  const [reviewing, setReviewing] = React.useState(false);
 
   const files = snapshot?.files ?? [];
   const changedPathSet = React.useMemo(
     () => new Set(files.map((file) => file.path)),
     [files],
   );
-  const repoFileContent = repoFilePath ? repoFileByPath[repoFilePath] : undefined;
+  const repoFileContent = repoFilePath
+    ? repoFileByPath[repoFilePath]
+    : undefined;
   const repoFileLoading = Boolean(
     repoFilePath && repoFileLoadingPath === repoFilePath && !repoFileContent,
   );
@@ -95,65 +91,22 @@ export function GitDiffSheet({
       return;
     }
     setActiveTab("diff");
-    setCollapsedDiffPaths(new Set());
-    diffStateSeedRef.current = "";
   }, [visible]);
 
-  const diffPathsSignature = React.useMemo(
-    () => files.map((file) => file.path).join("\n"),
-    [files],
-  );
-  const diffStateSeedRef = React.useRef<string>("");
-
-  React.useEffect(() => {
-    if (!visible || !snapshot?.available) {
-      return;
-    }
-
-    const seed = `${diffPathsSignature}|${files.length}`;
-    if (diffStateSeedRef.current === seed) {
-      return;
-    }
-
-    diffStateSeedRef.current = seed;
-    setCollapsedDiffPaths(new Set(files.map((file) => file.path)));
-  }, [diffPathsSignature, files, snapshot?.available, visible]);
-
-  const allDiffFilesCollapsed = files.length > 0
-    && files.every((file) => collapsedDiffPaths.has(file.path));
-
-  const toggleDiffFile = React.useCallback((path: string) => {
-    setCollapsedDiffPaths((previous) => {
-      const next = new Set(previous);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-  }, []);
-
-  const collapseAllDiffFiles = React.useCallback(() => {
-    setCollapsedDiffPaths(new Set(files.map((file) => file.path)));
-  }, [files]);
-
-  const expandAllDiffFiles = React.useCallback(() => {
-    setCollapsedDiffPaths(new Set());
-  }, []);
-
-  const repoTitle = snapshot?.repo_name || repoBaseName(snapshot?.repo_root || "") || "repo";
+  const repoTitle =
+    snapshot?.repo_name || repoBaseName(snapshot?.repo_root || "") || "repo";
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <SafeAreaView
         style={[styles.root, { backgroundColor: chrome.appBackground }]}
         edges={["top", "bottom"]}
       >
+        <StatusBar
+          barStyle={
+            isLightTerminalTheme(theme) ? "dark-content" : "light-content"
+          }
+        />
         <View
           style={[
             styles.sheet,
@@ -167,23 +120,25 @@ export function GitDiffSheet({
             chrome={chrome}
             snapshot={snapshot}
             loading={loading}
+            compact={reviewing && activeTab === "diff"}
             activeTab={activeTab}
             fileCount={files.length}
-            showCollapseAll={
-              activeTab === "diff"
-              && Boolean(snapshot?.available)
-              && !snapshot?.clean
-              && files.length > 0
-            }
-            allDiffFilesCollapsed={allDiffFilesCollapsed}
             accentColor={theme.cursor}
             onClose={onClose}
-            onRefresh={onRefresh}
-            onTabChange={setActiveTab}
-            onToggleAllDiffFiles={allDiffFilesCollapsed ? expandAllDiffFiles : collapseAllDiffFiles}
+            onRefresh={() => {
+              onRefresh();
+              if (activeTab === "browser") {
+                if (repoFilePath) onOpenRepoFile(repoFilePath);
+                else onOpenRepoPath(repoBrowserPath);
+              }
+            }}
+            onTabChange={(tab) => {
+              setActiveTab(tab);
+              if (tab === "browser") onOpenRepoPath(repoBrowserPath);
+            }}
           />
 
-          {error && !snapshot?.available ? (
+          {error ? (
             <View style={styles.contentPad}>
               <GitDiffStateCard
                 icon="warning-outline"
@@ -199,7 +154,6 @@ export function GitDiffSheet({
               <GitDiffStateCard
                 icon="sync-outline"
                 title="Inspecting repository"
-                detail="Zen is checking the current working tree."
                 accent={theme.cursor}
                 chromeText={chrome.text}
                 chromeMuted={chrome.textMuted}
@@ -210,7 +164,11 @@ export function GitDiffSheet({
             <View style={styles.contentPad}>
               <GitDiffStateCard
                 icon="git-branch-outline"
-                title={snapshot?.reason === "no_cwd" ? "No working directory yet" : "Not a git repository"}
+                title={
+                  snapshot?.reason === "no_cwd"
+                    ? "No working directory yet"
+                    : "Not a git repository"
+                }
                 detail={
                   snapshot?.reason === "no_cwd"
                     ? "This terminal has not reported a cwd yet."
@@ -221,42 +179,50 @@ export function GitDiffSheet({
                 chromeMuted={chrome.textMuted}
               />
             </View>
-          ) : activeTab === "browser" ? (
-            <GitDiffRepoBrowser
-              repoTitle={repoTitle}
-              repoBrowserPath={repoBrowserPath}
-              repoBrowserEntries={repoBrowserEntries}
-              repoBrowserLoading={repoBrowserLoading}
-              repoBrowserError={repoBrowserError}
-              repoFilePath={repoFilePath}
-              repoFileContent={repoFileContent}
-              repoFileLoading={repoFileLoading}
-              repoFileError={repoFileError}
-              changedPathSet={changedPathSet}
-              theme={theme}
-              chrome={chrome}
-              onOpenRepoPath={onOpenRepoPath}
-              onOpenRepoFile={onOpenRepoFile}
-              onCloseRepoFile={onCloseRepoFile}
-              onBackRepoPath={onBackRepoPath}
-            />
           ) : (
-            <GitDiffSheetDiffContent
-              files={files}
-              clean={snapshot.clean}
-              collapsedDiffPaths={collapsedDiffPaths}
-              patchByPath={patchByPath}
-              patchLoadingByPath={patchLoadingByPath}
-              patchErrorByPath={patchErrorByPath}
-              theme={theme}
-              chrome={chrome}
-              onLoadDiffPatch={onLoadDiffPatch}
-              onToggleDiffFile={toggleDiffFile}
-              onOpenFile={(path) => {
-                setActiveTab("browser");
-                onOpenRepoFile(path);
-              }}
-            />
+            <>
+              {activeTab === "browser" ? (
+                <GitDiffRepoBrowser
+                  repoTitle={repoTitle}
+                  repoBrowserPath={repoBrowserPath}
+                  repoBrowserEntries={repoBrowserEntries}
+                  repoBrowserLoading={repoBrowserLoading}
+                  repoBrowserError={repoBrowserError}
+                  repoFilePath={repoFilePath}
+                  repoFileContent={repoFileContent}
+                  repoFileLoading={repoFileLoading}
+                  repoFileError={repoFileError}
+                  changedPathSet={changedPathSet}
+                  theme={theme}
+                  chrome={chrome}
+                  onOpenRepoPath={onOpenRepoPath}
+                  onOpenRepoFile={onOpenRepoFile}
+                  onCloseRepoFile={onCloseRepoFile}
+                  onBackRepoPath={onBackRepoPath}
+                />
+              ) : null}
+              <View
+                style={{
+                  flex: 1,
+                  display: activeTab === "diff" ? "flex" : "none",
+                }}
+              >
+                <GitDiffSheetDiffContent
+                  key={ownerKey}
+                  files={files}
+                  clean={snapshot.clean}
+                  loadPage={loadPage}
+                  refreshKey={refreshKey}
+                  onReviewChange={setReviewing}
+                  theme={theme}
+                  chrome={chrome}
+                  onOpenFile={(path) => {
+                    setActiveTab("browser");
+                    onOpenRepoFile(path);
+                  }}
+                />
+              </View>
+            </>
           )}
         </View>
       </SafeAreaView>

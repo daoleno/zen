@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,14 +37,19 @@ type gitDiffStatusPayload struct {
 }
 
 type gitDiffFileInfo struct {
-	Path      string `json:"path"`
-	OldPath   string `json:"old_path,omitempty"`
-	Status    string `json:"status"`
-	Staged    bool   `json:"staged"`
-	Unstaged  bool   `json:"unstaged"`
-	Untracked bool   `json:"untracked"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
+	Path             string `json:"path"`
+	OldPath          string `json:"old_path,omitempty"`
+	Status           string `json:"status"`
+	Staged           bool   `json:"staged"`
+	Unstaged         bool   `json:"unstaged"`
+	Untracked        bool   `json:"untracked"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Binary           bool   `json:"binary,omitempty"`
+	StagedAdditions  int    `json:"staged_additions,omitempty"`
+	StagedDeletions  int    `json:"staged_deletions,omitempty"`
+	WorkingAdditions int    `json:"working_additions,omitempty"`
+	WorkingDeletions int    `json:"working_deletions,omitempty"`
 }
 
 type gitDiffPatchPayload struct {
@@ -133,12 +139,12 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 		return gitDiffPatchPayload{}, fmt.Errorf("current cwd is not inside a git repository")
 	}
 
-	targetPath := strings.TrimSpace(path)
+	targetPath := path
 	if targetPath == "" {
 		return gitDiffPatchPayload{}, fmt.Errorf("git diff file path is required")
 	}
 
-	files, err := listGitDiffFiles(repoRoot)
+	files, err := readGitDiffStatus(repoRoot)
 	if err != nil {
 		return gitDiffPatchPayload{}, err
 	}
@@ -156,7 +162,7 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 
 	sections := make([]gitDiffPatchSection, 0, 3)
 	if file.Staged {
-		patch, err := gitDiffPatchForFile(repoRoot, file.Path, true)
+		patch, err := gitDiffPatchForPaths(repoRoot, *file, true)
 		if err != nil {
 			return gitDiffPatchPayload{}, err
 		}
@@ -170,7 +176,7 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 	}
 
 	if file.Unstaged {
-		patch, err := gitDiffPatchForFile(repoRoot, file.Path, false)
+		patch, err := gitDiffPatchForPaths(repoRoot, *file, false)
 		if err != nil {
 			return gitDiffPatchPayload{}, err
 		}
@@ -190,6 +196,8 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 			"diff",
 			"--no-index",
 			"--no-ext-diff",
+			"--no-color",
+			"--no-textconv",
 			"--",
 			"/dev/null",
 			file.Path,
@@ -249,24 +257,24 @@ func (s *Server) buildGitDiffFileContent(targetID, cwd, path string) (gitDiffFil
 }
 
 func (s *Server) resolveGitRepoRoot(targetID, cwd string) (repoRoot string, reason string, err error) {
-	resolvedCwd := strings.TrimSpace(cwd)
+	resolvedCwd := cwd
 	if resolvedCwd == "" && targetID != "" {
 		if worker := s.watcher.GetWorker(targetID); worker != nil {
-			resolvedCwd = strings.TrimSpace(worker.Cwd)
+			resolvedCwd = worker.Cwd
 		}
 	}
 	if resolvedCwd == "" {
 		return "", gitDiffReasonNoCwd, nil
 	}
 
-	root, gitErr := gitOutput(resolvedCwd, "rev-parse", "--show-toplevel")
+	root, gitErr := gitCommandOutput(resolvedCwd, false, "rev-parse", "--show-toplevel")
 	if gitErr != nil {
 		if strings.Contains(strings.ToLower(gitErr.Error()), "not a git repository") {
 			return "", gitDiffReasonNotGitRepo, nil
 		}
 		return "", "", fmt.Errorf("resolve git repo root: %w", gitErr)
 	}
-	return strings.TrimSpace(root), "", nil
+	return strings.TrimSuffix(root, "\n"), "", nil
 }
 
 func gitBranchName(repoRoot string) string {
@@ -282,18 +290,29 @@ func gitBranchName(repoRoot string) string {
 }
 
 func listGitDiffFiles(repoRoot string) ([]gitDiffFileInfo, error) {
-	out, err := gitCommandOutput(repoRoot, false, "status", "--porcelain=v1", "--untracked-files=all")
+	files, err := readGitDiffStatus(repoRoot)
 	if err != nil {
 		return nil, err
 	}
-	out = strings.TrimRight(out, "\r\n")
-	if strings.TrimSpace(out) == "" {
+	if err := hydrateGitDiffFileStats(repoRoot, files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func readGitDiffStatus(repoRoot string) ([]gitDiffFileInfo, error) {
+	out, err := gitCommandOutput(repoRoot, false, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
 		return nil, nil
 	}
 
 	files := make([]gitDiffFileInfo, 0)
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimRight(line, "\r")
+	records := strings.Split(out, "\x00")
+	for index := 0; index < len(records); index++ {
+		line := records[index]
 		if len(line) < 3 {
 			continue
 		}
@@ -304,7 +323,14 @@ func listGitDiffFiles(repoRoot string) ([]gitDiffFileInfo, error) {
 			continue
 		}
 
-		path, oldPath := parseGitStatusPath(line[3:])
+		path, oldPath := line[3:], ""
+		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+			index++
+			if index >= len(records) {
+				return nil, fmt.Errorf("incomplete git rename status")
+			}
+			oldPath = records[index]
+		}
 		if path == "" {
 			continue
 		}
@@ -324,114 +350,170 @@ func listGitDiffFiles(repoRoot string) ([]gitDiffFileInfo, error) {
 		return files[left].Path < files[right].Path
 	})
 
-	if err := hydrateGitDiffFileStats(repoRoot, files); err != nil {
-		return nil, err
-	}
-
 	return files, nil
 }
 
 func hydrateGitDiffFileStats(repoRoot string, files []gitDiffFileInfo) error {
+	byPath := make(map[string]*gitDiffFileInfo, len(files))
 	for index := range files {
-		additions, deletions, err := gitDiffFileStats(repoRoot, files[index])
+		byPath[files[index].Path] = &files[index]
+	}
+	for _, staged := range []bool{false, true} {
+		args := []string{"diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames"}
+		if staged {
+			args = append(args, "--cached")
+		}
+		out, err := gitCommandOutput(repoRoot, false, args...)
 		if err != nil {
 			return err
 		}
-		files[index].Additions = additions
-		files[index].Deletions = deletions
+		records := strings.Split(out, "\x00")
+		for index := 0; index < len(records); index++ {
+			fields := strings.SplitN(records[index], "\t", 3)
+			if len(fields) != 3 {
+				continue
+			}
+			path := fields[2]
+			if path == "" {
+				if index+2 >= len(records) {
+					return fmt.Errorf("incomplete git rename statistics")
+				}
+				path = records[index+2]
+				index += 2
+			}
+			if file := byPath[path]; file != nil {
+				additions, _ := parseNumstatField(fields[0])
+				deletions, _ := parseNumstatField(fields[1])
+				file.Additions += additions
+				file.Deletions += deletions
+				if staged {
+					file.StagedAdditions += additions
+					file.StagedDeletions += deletions
+				} else {
+					file.WorkingAdditions += additions
+					file.WorkingDeletions += deletions
+				}
+				file.Binary = file.Binary || fields[0] == "-"
+			}
+		}
+	}
+	attributes, err := untrackedDiffAttributes(repoRoot, files)
+	if err != nil {
+		return err
+	}
+	for index := range files {
+		if !files[index].Untracked {
+			continue
+		}
+		attribute := attributes[files[index].Path]
+		if attribute == "unset" {
+			files[index].Binary = true
+			continue
+		}
+		count, binary, err := countUntrackedLines(repoRoot, files[index].Path, attribute == "set")
+		if err != nil {
+			return err
+		}
+		files[index].Additions = count
+		files[index].WorkingAdditions = count
+		files[index].Binary = binary
 	}
 	return nil
 }
 
-func gitDiffFileStats(repoRoot string, file gitDiffFileInfo) (additions int, deletions int, err error) {
-	if file.Staged {
-		stagedAdditions, stagedDeletions, err := gitNumstatForFile(repoRoot, file.Path, true)
-		if err != nil {
-			return 0, 0, err
+func untrackedDiffAttributes(repoRoot string, files []gitDiffFileInfo) (map[string]string, error) {
+	var input strings.Builder
+	for _, file := range files {
+		if file.Untracked {
+			input.WriteString(file.Path)
+			input.WriteByte(0)
 		}
-		additions += stagedAdditions
-		deletions += stagedDeletions
 	}
-	if file.Unstaged {
-		unstagedAdditions, unstagedDeletions, err := gitNumstatForFile(repoRoot, file.Path, false)
-		if err != nil {
-			return 0, 0, err
-		}
-		additions += unstagedAdditions
-		deletions += unstagedDeletions
+	attributes := make(map[string]string)
+	if input.Len() == 0 {
+		return attributes, nil
 	}
-	if file.Untracked {
-		untrackedAdditions, untrackedDeletions, err := gitUntrackedNumstatForFile(repoRoot, file.Path)
-		if err != nil {
-			return 0, 0, err
-		}
-		additions += untrackedAdditions
-		deletions += untrackedDeletions
-	}
-	return additions, deletions, nil
-}
-
-func gitNumstatForFile(repoRoot, path string, staged bool) (int, int, error) {
-	args := []string{
-		"diff",
-		"--numstat",
-		"--no-ext-diff",
-		"--find-renames",
-	}
-	if staged {
-		args = append(args, "--cached")
-	}
-	args = append(args, "--", gitLiteralPathspec(path))
-
-	out, err := gitCommandOutput(repoRoot, false, args...)
+	cmd := exec.Command("git", "-C", repoRoot, "check-attr", "-z", "--stdin", "diff")
+	cmd.Stdin = strings.NewReader(input.String())
+	out, err := cmd.Output()
 	if err != nil {
-		return 0, 0, err
+		return nil, fmt.Errorf("git diff attributes: %w", err)
 	}
-	return parseNumstatCounts(out), parseNumstatDeletions(out), nil
+	records := strings.Split(string(out), "\x00")
+	drivers := make(map[string]string)
+	for i := 0; i+2 < len(records); i += 3 {
+		value := records[i+2]
+		if value != "set" && value != "unset" && value != "unspecified" {
+			if cached, ok := drivers[value]; ok {
+				value = cached
+			} else {
+				binary, _ := gitOutput(repoRoot, "config", "--type=bool", "--get", "diff."+value+".binary")
+				resolved := "unspecified"
+				if binary == "true" {
+					resolved = "unset"
+				}
+				if binary == "false" {
+					resolved = "set"
+				}
+				drivers[value] = resolved
+				value = resolved
+			}
+		}
+		attributes[records[i]] = value
+	}
+	return attributes, nil
 }
 
-func gitUntrackedNumstatForFile(repoRoot, path string) (int, int, error) {
-	out, err := gitCommandOutput(
-		repoRoot,
-		true,
-		"diff",
-		"--no-index",
-		"--numstat",
-		"--no-ext-diff",
-		"--",
-		"/dev/null",
-		path,
-	)
+func countUntrackedLines(repoRoot, path string, forceText bool) (int, bool, error) {
+	full := filepath.Join(repoRoot, path)
+	info, err := os.Lstat(full)
 	if err != nil {
-		return 0, 0, err
+		return 0, false, err
 	}
-	return parseNumstatCounts(out), parseNumstatDeletions(out), nil
-}
-
-func parseNumstatCounts(raw string) int {
-	additions, _ := parseNumstat(raw)
-	return additions
-}
-
-func parseNumstatDeletions(raw string) int {
-	_, deletions := parseNumstat(raw)
-	return deletions
-}
-
-func parseNumstat(raw string) (additions int, deletions int) {
-	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
-		fields := strings.Split(line, "\t")
-		if len(fields) < 3 {
-			continue
+	if info.Mode()&os.ModeSymlink != 0 {
+		link, err := os.Readlink(full)
+		if err != nil {
+			return 0, false, err
 		}
-		if value, ok := parseNumstatField(fields[0]); ok {
-			additions += value
+		count := strings.Count(link, "\n")
+		if !strings.HasSuffix(link, "\n") {
+			count++
 		}
-		if value, ok := parseNumstatField(fields[1]); ok {
-			deletions += value
+		return count, false, nil
+	}
+	if !info.Mode().IsRegular() {
+		return 0, false, fmt.Errorf("cannot review non-regular file: %s", path)
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return 0, false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 32*1024)
+	count, total := 0, 0
+	var last byte
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			// Git's default binary heuristic inspects the first 8000 bytes.
+			if !forceText && total < 8000 && bytes.IndexByte(buf[:min(n, 8000-total)], 0) >= 0 {
+				return 0, true, nil
+			}
+			count += bytes.Count(buf[:n], []byte{'\n'})
+			total += n
+			last = buf[n-1]
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, false, err
 		}
 	}
-	return additions, deletions
+	if total > 0 && last != '\n' {
+		count++
+	}
+	return count, false, nil
 }
 
 func parseNumstatField(value string) (int, bool) {
@@ -447,12 +529,12 @@ func parseNumstatField(value string) (int, bool) {
 }
 
 func gitDiffTargetFile(repoRoot, path string) (*gitDiffFileInfo, error) {
-	targetPath := strings.TrimSpace(path)
+	targetPath := path
 	if targetPath == "" {
 		return nil, fmt.Errorf("git diff file path is required")
 	}
 
-	files, err := listGitDiffFiles(repoRoot)
+	files, err := readGitDiffStatus(repoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -466,24 +548,8 @@ func gitDiffTargetFile(repoRoot, path string) (*gitDiffFileInfo, error) {
 	return nil, fmt.Errorf("git diff file not found: %s", targetPath)
 }
 
-func parseGitStatusPath(raw string) (path string, oldPath string) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", ""
-	}
-
-	if strings.Contains(value, " -> ") {
-		parts := strings.SplitN(value, " -> ", 2)
-		if len(parts) == 2 {
-			return unquoteGitPath(parts[1]), unquoteGitPath(parts[0])
-		}
-	}
-
-	return unquoteGitPath(value), ""
-}
-
 func gitLiteralPathspec(path string) string {
-	path = filepath.ToSlash(strings.TrimSpace(path))
+	path = filepath.ToSlash(path)
 	path = strings.TrimPrefix(path, "./")
 	if path == "" {
 		return ":(literal)."
@@ -491,31 +557,21 @@ func gitLiteralPathspec(path string) string {
 	return ":(literal)./" + path
 }
 
-func gitDiffPatchForFile(repoRoot, path string, staged bool) (string, error) {
+func gitDiffPatchForPaths(repoRoot string, file gitDiffFileInfo, staged bool) (string, error) {
 	args := gitDiffPatchArgs(staged)
-	args = append(args, "--", gitLiteralPathspec(path))
-	patch, err := gitCommandOutput(repoRoot, false, args...)
-	if err != nil {
-		return "", err
+	args = append(args, "--", gitLiteralPathspec(file.Path))
+	if staged && file.OldPath != "" {
+		args = append(args, gitLiteralPathspec(file.OldPath))
 	}
-	if strings.TrimSpace(patch) != "" {
-		return patch, nil
-	}
-
-	fullPatch, err := gitCommandOutput(repoRoot, false, gitDiffPatchArgs(staged)...)
-	if err != nil {
-		return "", err
-	}
-	if section, ok := extractGitDiffPatchForPath(fullPatch, path); ok {
-		return section, nil
-	}
-	return patch, nil
+	return gitCommandOutput(repoRoot, false, args...)
 }
 
 func gitDiffPatchArgs(staged bool) []string {
 	args := []string{
 		"diff",
 		"--no-ext-diff",
+		"--no-color",
+		"--no-textconv",
 		"--find-renames",
 		"--submodule=diff",
 	}
@@ -525,81 +581,11 @@ func gitDiffPatchArgs(staged bool) []string {
 	return args
 }
 
-func extractGitDiffPatchForPath(patch, path string) (string, bool) {
-	path = filepath.ToSlash(strings.TrimSpace(path))
-	path = strings.TrimPrefix(path, "./")
-	if strings.TrimSpace(patch) == "" || path == "" {
-		return "", false
-	}
-
-	lines := strings.Split(patch, "\n")
-	sectionStart := -1
-	for index, line := range lines {
-		if !strings.HasPrefix(line, "diff --git ") {
-			continue
-		}
-		if sectionStart >= 0 && gitDiffSectionMatchesPath(lines[sectionStart:index], path) {
-			return strings.TrimRight(strings.Join(lines[sectionStart:index], "\n"), "\n"), true
-		}
-		sectionStart = index
-	}
-
-	if sectionStart >= 0 && gitDiffSectionMatchesPath(lines[sectionStart:], path) {
-		return strings.TrimRight(strings.Join(lines[sectionStart:], "\n"), "\n"), true
-	}
-	return "", false
-}
-
-func gitDiffSectionMatchesPath(lines []string, path string) bool {
-	for _, line := range lines {
-		for _, prefix := range []string{"--- ", "+++ ", "rename to ", "copy to "} {
-			linePath, ok := gitDiffLinePath(line, prefix)
-			if ok && linePath == path {
-				return true
-			}
-		}
-
-		if strings.HasPrefix(line, "diff --git ") &&
-			(strings.Contains(line, " a/"+path+" ") || strings.Contains(line, " b/"+path)) {
-			return true
-		}
-	}
-	return false
-}
-
-func gitDiffLinePath(line, prefix string) (string, bool) {
-	if !strings.HasPrefix(line, prefix) {
-		return "", false
-	}
-
-	value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
-	if value == "" || value == "/dev/null" {
-		return "", false
-	}
-	value = unquoteGitPath(value)
-	value = strings.TrimPrefix(value, "a/")
-	value = strings.TrimPrefix(value, "b/")
-	return filepath.ToSlash(value), true
-}
-
-func unquoteGitPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if strings.HasPrefix(value, "\"") {
-		if unquoted, err := strconv.Unquote(value); err == nil {
-			return unquoted
-		}
-	}
-	return value
-}
-
 func gitDiffStatusName(x, y byte) string {
 	if x == '?' && y == '?' {
 		return "untracked"
 	}
-	if x == 'U' || y == 'U' {
+	if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
 		return "conflict"
 	}
 	if x == 'R' || y == 'R' {

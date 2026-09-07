@@ -317,6 +317,7 @@ type clientMessage struct {
 	Lines                int                                    `json:"lines"`
 	ProcessID            int                                    `json:"process_id"`
 	Path                 string                                 `json:"path"`
+	Query                string                                 `json:"query"`
 	FileGeneration       string                                 `json:"file_generation"`
 	ID                   string                                 `json:"id"`
 	Project              string                                 `json:"project"`
@@ -805,7 +806,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.handleTelegramMessage(conn, raw)
 	case "send_input", "send_key", "send_action":
 		s.handleSessionInputMessage(conn, raw)
-	case "git_diff_status", "git_diff_patch", "git_diff_file_content", "git_repo_entries", "git_repo_file_content", "list_dir":
+	case "git_diff_status", "git_diff_patch", "git_diff_page", "git_diff_file_content", "git_repo_entries", "git_repo_file_content", "list_dir":
 		s.handleRepositoryMessage(conn, raw)
 	case "list_session_services":
 		s.handleListSessionServices(conn, raw)
@@ -1287,6 +1288,13 @@ func (s *Server) handleRepositoryMessage(conn *websocket.Conn, raw clientMessage
 			"request_id": raw.RequestID,
 			"patch":      payload,
 		})
+	case "git_diff_page":
+		payload, err := s.buildGitDiffPage(raw.TargetID, raw.Cwd, raw.Path, raw.Scope, raw.Row, raw.FileGeneration, raw.Query)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_page_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]interface{}{"type": "git_diff_page", "request_id": raw.RequestID, "page": payload})
 	case "git_diff_file_content":
 		payload, err := s.buildGitDiffFileContent(raw.TargetID, raw.Cwd, raw.Path)
 		if err != nil {

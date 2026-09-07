@@ -1655,6 +1655,41 @@ export class MultiServerWebSocketClient {
     });
   }
 
+  getGitDiffPage(
+    serverId: string,
+    options: import("./gitDiff").GitDiffPageRequest & { targetId: string; cwd: string },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<import("./gitDiff").GitDiffPage>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("git_diff_page", handlePage);
+        this.off("error", handleError);
+      };
+      const handlePage = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        resolve(payload.page);
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        reject(new Error(payload.message || "Could not load diff page."));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading diff page."));
+      }, 10000);
+      this.on("git_diff_page", handlePage);
+      this.on("error", handleError);
+      this.sendRequestNow(serverId, {
+        type: "git_diff_page", request_id: requestId, target_id: options.targetId,
+        cwd: options.cwd, path: options.path, scope: options.scope, row: options.row,
+        file_generation: options.version, query: options.query,
+      }, cleanup, reject);
+    });
+  }
+
   getGitDiffFileContent(
     serverId: string,
     options: {
