@@ -95,7 +95,7 @@ the same session. Git Diff reviews that session's repository without changing it
 **Settings > Servers** selects the single current server used throughout the
 app. **Providers > Models and accounts** configures Codex/Claude model access;
 the Brain executor control selects the CLI that runs work. They are different
-settings. **Messaging > Telegram** opens bot setup for the current server.
+settings. **Channels > Telegram** opens bot setup for the current server.
 
 Stats refreshes reference prices automatically after discovery and observed
 usage. Missing catalog prices remain unknown, not free. Reference estimates and

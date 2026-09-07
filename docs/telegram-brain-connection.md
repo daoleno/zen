@@ -5,7 +5,7 @@ Date reviewed: 2026-08-25
 ## Setup And Recovery
 
 In Android or iOS, select the intended server in **Settings > Servers**, then open
-**Messaging > Telegram**. The overview contains only the bot/status entry; setup
+**Channels > Telegram**. The overview contains only the bot/status entry; setup
 and management are in its detail screen.
 
 1. Open BotFather to create or select your bot.

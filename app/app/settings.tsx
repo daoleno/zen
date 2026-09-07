@@ -705,17 +705,14 @@ export default function SettingsScreen() {
           </View>
 
           <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">Messaging</Text>
+            <Text style={styles.sectionLabel} accessibilityRole="header">Channels</Text>
           </View>
           {currentServerId ? (
-            <>
-              <Text style={styles.emptyText}>{servers.find((server) => server.id === currentServerId)?.name}</Text>
-              <TelegramConnectionRow
-                key={currentServerId || "no-current-server"}
-                serverId={currentServerId}
-                connected={serverConnections[currentServerId] === "connected"}
-              />
-            </>
+            <TelegramConnectionRow
+              key={currentServerId || "no-current-server"}
+              serverId={currentServerId}
+              connected={serverConnections[currentServerId] === "connected"}
+            />
           ) : <Text style={styles.emptyText}>No current server</Text>}
 
           <View style={styles.sectionHeaderStandalone}>
@@ -738,9 +735,7 @@ export default function SettingsScreen() {
             >
               <View style={styles.aboutCopy}>
                 <Text style={styles.aboutTitle}>Models and accounts</Text>
-                <Text style={styles.aboutDescription}>
-                  {servers.find((server) => server.id === currentServerId)?.name || "No current server"}
-                </Text>
+                {!currentServerId ? <Text style={styles.aboutDescription}>No current server</Text> : null}
               </View>
               <Ionicons
                 name="chevron-forward"
@@ -1410,7 +1405,7 @@ function TelegramConnectionRow({
     setShowToken(false);
   };
   return (
-    <View style={styles.serverCard}>
+    <View style={styles.serverList}>
       <AnimatedPressable
         style={styles.telegramHeaderButton}
         preset="card"

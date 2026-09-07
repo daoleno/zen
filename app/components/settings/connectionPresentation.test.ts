@@ -28,13 +28,34 @@ describe("Settings connection information architecture", () => {
     expect(telegram).toContain('label="Retry"');
     expect(telegram).toContain("if (!ownerActive.current) return;");
   });
-  test("Servers, Messaging and Providers have separate entry points", () => {
-    for (const section of ["Servers", "Messaging", "Providers"]) {
+  test("Servers, Channels and Providers have separate entry points", () => {
+    for (const section of ["Servers", "Channels", "Providers"]) {
       expect(settingsSource).toMatch(new RegExp(`>\\s*${section}\\s*<`));
     }
     expect(settingsSource).toContain('accessibilityLabel="Pair a server"');
     expect(settingsSource).not.toContain("CONNECTION_KIND_OPTIONS");
     expect(settingsSource).not.toContain("Add Connection");
+  });
+  test("channel and provider summaries do not repeat current server identity", () => {
+    const overview = sourceBlock('accessibilityRole="header">Channels', '              Appearance');
+    expect(overview).not.toContain("servers.find");
+    expect(overview).toContain('serverId={currentServerId}');
+    expect(overview).toContain('serverConnections[currentServerId] === "connected"');
+    expect(overview).toContain('No current server');
+    expect(settingsSource).toContain(': server.url}');
+    expect(settingsSource).not.toMatch(/>\s*Messaging\s*</);
+  });
+  test("standalone Telegram entry uses the rounded clipped Settings group", () => {
+    const telegram = sourceBlock("function TelegramConnectionRow", "function ConnectionAction");
+    expect(telegram).toContain('<View style={styles.serverList}>');
+    expect(telegram).not.toContain('<View style={styles.serverCard}>');
+    expect(telegram).toContain('preset="card"');
+    expect(telegram).toContain('scale={0.99}');
+    expect(telegram).toContain('@{visibleStatus.bot_username}');
+    const group = sourceBlock('serverList: {', 'serverCard: {');
+    for (const style of ['overflow: "hidden"', 'borderRadius: Radii.sm', 'backgroundColor: colors.bgSurface', 'borderWidth: StyleSheet.hairlineWidth', 'borderColor: colors.border']) {
+      expect(group).toContain(style);
+    }
   });
 
   test("Telegram setup remains enterable without a reachable current server", () => {
