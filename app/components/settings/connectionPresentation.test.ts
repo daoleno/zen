@@ -2,8 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CONNECTION_KIND_OPTIONS,
-  shouldShowTelegramConnection,
   telegramSetupMode,
 } from "./connectionPresentation";
 
@@ -22,30 +20,13 @@ function sourceBlock(start: string, end: string): string {
 }
 
 describe("Settings connection information architecture", () => {
-  test("the unified add flow exposes the two distinct connection roles", () => {
-    expect(CONNECTION_KIND_OPTIONS).toEqual([
-      {
-        kind: "server",
-        label: "Zen Server",
-        icon: "server-outline",
-        participatesInCurrentServer: true,
-      },
-      {
-        kind: "telegram",
-        label: "Telegram",
-        icon: "paper-plane-outline",
-        participatesInCurrentServer: false,
-      },
-    ]);
-    expect(settingsSource).toContain(">Add Connection</Text>");
-    expect(settingsSource).toContain("CONNECTION_KIND_OPTIONS.map");
-  });
-
-  test("Telegram appears as a connection only when configured or being added", () => {
-    expect(shouldShowTelegramConnection(undefined, false)).toBe(false);
-    expect(shouldShowTelegramConnection("", false)).toBe(false);
-    expect(shouldShowTelegramConnection("zen_owner_bot", false)).toBe(true);
-    expect(shouldShowTelegramConnection(undefined, true)).toBe(true);
+  test("Servers, Messaging and Providers have separate entry points", () => {
+    for (const section of ["Servers", "Messaging", "Providers"]) {
+      expect(settingsSource).toMatch(new RegExp(`>\\s*${section}\\s*<`));
+    }
+    expect(settingsSource).toContain('accessibilityLabel="Pair a server"');
+    expect(settingsSource).not.toContain("CONNECTION_KIND_OPTIONS");
+    expect(settingsSource).not.toContain("Add Connection");
   });
 
   test("Telegram setup remains enterable without a reachable current server", () => {
@@ -75,16 +56,9 @@ describe("Settings connection information architecture", () => {
   });
 
   test("Zen Server selection preserves the established pairing path", () => {
-    const chooser = sourceBlock(
-      "const chooseConnectionKind",
-      "const openEditServer",
-    );
-    expect(chooser).toContain('if (kind === "server")');
-    expect(chooser).toContain("openCreateServer();");
-
     const pairing = sourceBlock(
       "const openCreateServer",
-      "const chooseConnectionKind",
+      "const openEditServer",
     );
     expect(pairing).toContain("setPairPresentation(openPairEditor())");
     expect(settingsSource).toContain("openPairScanner(current)");
@@ -109,9 +83,7 @@ describe("Settings connection information architecture", () => {
     expect(settingsSource).toContain(
       'key={currentServerId || "no-current-server"}',
     );
-    expect(settingsSource).toContain(
-      "telegramOpenRequest?.serverId === currentServerId",
-    );
+    expect(settingsSource).toContain("{currentServerId ? (");
     expect(settingsSource).toContain(
       ".getTelegramConnectionStatus(serverId)",
     );
@@ -186,8 +158,7 @@ describe("Settings connection information architecture", () => {
   });
 
   test("connection controls expose roles, state, and disabled state accessibly", () => {
-    expect(settingsSource).toContain('accessibilityLabel="Add connection"');
-    expect(settingsSource).toContain("accessibilityLabel={option.label}");
+    expect(settingsSource).toContain('accessibilityLabel="Pair a server"');
     expect(settingsSource).toContain("accessibilityState={{ expanded }}");
     expect(settingsSource).toContain(
       "accessibilityState={{ disabled, busy: disabled }}",
@@ -198,15 +169,9 @@ describe("Settings connection information architecture", () => {
     );
   });
 
-  test("the rejected taxonomy is absent from Settings presentation", () => {
-    const rejectedSection = ["Chan", "nels"].join("");
-    const rejectedAction = ["Channel", "Action"].join("");
-    const rejectedStyle = ["channel", "Action"].join("");
-    expect(settingsSource).not.toMatch(
-      new RegExp(`>\\s*${rejectedSection}\\s*<`),
-    );
-    expect(settingsSource).not.toContain(rejectedAction);
-    expect(settingsSource).not.toContain(rejectedStyle);
-    expect(settingsSource).not.toMatch(/>\s*Add Server\s*</);
+  test("Telegram keeps its backend operations and separates destructive actions", () => {
+    expect(settingsSource).toContain("wsClient.disableTelegramConnection");
+    expect(settingsSource).toContain("wsClient.revokeTelegramOwner");
+    expect(settingsSource).toContain("wsClient.removeTelegramConnection");
   });
 });

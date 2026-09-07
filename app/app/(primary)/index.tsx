@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
   useIsFocused,
@@ -27,7 +27,8 @@ import {
 } from "../../components/brain/brainPresentation";
 import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
 import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
-import { ZenLoopSpinner } from "../../components/ui/ZenLoopSpinner";
+import { CompactEmptyState } from "../../components/ui/CompactEmptyState";
+import { setServerAutoConnect } from "../../services/storage";
 import { ChatCanvas } from "../../components/terminal/ChatCanvas";
 import { CHAT_CHROME_HORIZONTAL_INSET } from "../../components/terminal/chatChromeMetrics";
 import { InterfaceChatSurface } from "../../components/terminal/InterfaceChatSurface";
@@ -51,8 +52,7 @@ import type { BrainWorkResultEvent } from "../../components/brain/brainWorkEvent
 import { useCurrentServer } from "../../store/currentServer";
 
 const BRAIN_EMPTY_TITLE = "Ready when you are";
-const BRAIN_EMPTY_BODY =
-  "Ask Brain to plan, delegate, or inspect the workspace.";
+const BRAIN_EMPTY_BODY = undefined;
 
 export default function BrainScreen() {
   const router = useRouter();
@@ -76,6 +76,7 @@ export default function BrainScreen() {
     currentServer: activeServer,
     hydrated: currentServerHydrated,
     switchCurrentServer,
+    isCurrentServer,
   } = useCurrentServer();
   const screenFocused = useIsFocused();
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
@@ -476,11 +477,18 @@ export default function BrainScreen() {
             />
           ) : showBrainLoading ? (
             <BrainLoadingState
-              chrome={chrome}
+              hasServer={Boolean(activeServer)}
               connected={
                 connectionState === "connected" ||
                 connectionState === "connecting"
               }
+              onSettings={() => router.push({ pathname: "/settings", params: activeServer ? {} : { addServer: Date.now().toString() } })}
+              onRetry={() => {
+                if (!activeServer || !isCurrentServer(activeServer.id)) return;
+                void setServerAutoConnect(activeServer.id, true).then(() => {
+                  if (isCurrentServer(activeServer.id)) wsClient.connectServer(activeServer);
+                }).catch((error) => setBrainActionError(String(error)));
+              }}
             />
           ) : (
             <BrainInterfaceUnavailableState
@@ -560,33 +568,26 @@ function BrainStateCard({
 }
 
 function BrainLoadingState({
-  chrome,
+  hasServer,
   connected,
+  onSettings,
+  onRetry,
 }: {
-  chrome: TerminalThemeChrome;
+  hasServer: boolean;
   connected: boolean;
+  onSettings(): void;
+  onRetry(): void;
 }) {
   return (
-    <BrainStateCard
-      chrome={chrome}
-      glyph={
-        connected ? (
-          <ZenLoopSpinner size={36} />
-        ) : (
-          <Ionicons
-            name="cloud-offline-outline"
-            size={22}
-            color={chrome.textMuted}
-          />
-        )
-      }
-      title={connected ? "Connecting to Brain" : "Brain is offline"}
-      detail={
-        connected
-          ? "Fetching the latest workspace and chat thread."
-          : "Connect a server in Settings to use Brain."
-      }
-    />
+    <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
+      <CompactEmptyState
+        icon={hasServer ? "cloud-offline-outline" : "server-outline"}
+        title={!hasServer ? "Connect your computer" : connected ? "Connecting to Brain" : "Brain is offline"}
+        busy={connected}
+        action={!hasServer ? { label: "Pair a server", icon: "qr-code-outline", onPress: onSettings } : !connected ? { label: "Retry connection", icon: "refresh-outline", onPress: onRetry } : undefined}
+        secondary={hasServer ? { label: "Server settings", icon: "settings-outline", onPress: onSettings } : undefined}
+      />
+    </ScrollView>
   );
 }
 
@@ -624,14 +625,10 @@ function createStateCardStyles(chrome: TerminalThemeChrome) {
       gap: 10,
     },
     glyphWrap: {
-      width: 72,
-      height: 72,
-      borderRadius: 36,
+      width: 48,
+      height: 48,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: chrome.accentSoft,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: chrome.border,
       marginBottom: 4,
     },
     title: {

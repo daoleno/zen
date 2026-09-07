@@ -48,9 +48,11 @@ type OwnerConfig struct {
 	RoutesPath    string
 	ListenerPath  string
 	DiscoveryPath string // secret-free TTL/LKG model id cache
-	Lookup        func(string) (string, bool)
-	Credentials   CredentialStore // Zen private store (or test fake); optional
-	Verifier      ProfileContractVerifier
+	// ModelsObserved queues downstream metadata work without blocking discovery.
+	ModelsObserved func([]string)
+	Lookup         func(string) (string, bool)
+	Credentials    CredentialStore // Zen private store (or test fake); optional
+	Verifier       ProfileContractVerifier
 	// SessionProbe checks restored sessions before new launches begin.
 	SessionProbe  func(string) (SessionLiveness, error)
 	ListenNetwork string // default "tcp"
@@ -122,6 +124,7 @@ type Owner struct {
 	listenerBackupHad    bool
 	listenerBackupSet    bool
 	discovery            *modelDiscoveryCache
+	modelsObserved       func([]string)
 	discoveryPath        string
 	discoveryLoadWarning error
 	// editHook is a test failpoint seam for Provider edit transactions
@@ -283,6 +286,7 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		verifier:        verifier,
 		started:         true,
 		discovery:       newModelDiscoveryCache(),
+		modelsObserved:  cfg.ModelsObserved,
 		discoveryPath:   strings.TrimSpace(cfg.DiscoveryPath),
 		restoreNotices:  notices,
 		codexControlDir: codexControlDir,

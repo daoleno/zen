@@ -14,7 +14,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRootNavigationState, useRouter } from "expo-router";
 import { useWindowDimensions } from "react-native";
 import {
   SafeAreaView,
@@ -72,6 +72,10 @@ import type { ProvidersSnapshot } from "../services/providers/types";
 import { StatsScreenshotDemo } from "./stats";
 import type { StatsView } from "../services/statsPayload";
 import CalendarScreen from "./calendar";
+import { OnboardingPresentation } from "../components/onboarding/OnboardingPresentation";
+import { CompactEmptyState } from "../components/ui/CompactEmptyState";
+import { sessionEmptyState } from "../services/sessionEmptyState";
+import { NewTerminalSheet } from "../components/terminal/NewTerminalSheet";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
 
 const NOOP = () => undefined;
@@ -79,9 +83,11 @@ const loadNoDemoAsset = async () => null;
 
 export default function ScreenshotDemoRoute() {
   const router = useRouter();
+  const navigation = useRootNavigationState();
   const params = useLocalSearchParams<{
     demo?: string | string[];
     state?: string | string[];
+    fixture?: string;
   }>();
   const state = resolveScreenshotDemoState(
     params.state ?? process.env.EXPO_PUBLIC_ZEN_SCREENSHOT_DEMO_STATE,
@@ -91,14 +97,18 @@ export default function ScreenshotDemoRoute() {
   const available = enabled && explicitlyRequested;
 
   useEffect(() => {
-    if (!available) router.replace("/");
-  }, [available, router]);
+    if (navigation?.key && !available) router.replace("/");
+  }, [available, navigation?.key, router]);
 
   if (!available) return null;
 
   switch (state) {
     case "sessions":
       return <SessionsDemo />;
+    case "onboarding":
+      return <OnboardingDemo key={params.fixture} />;
+    case "empty":
+      return <EmptyStatesDemo key={params.fixture} />;
     case "brain":
       return <BrainDemo />;
     case "stats":
@@ -115,6 +125,46 @@ export default function ScreenshotDemoRoute() {
     default:
       return <ChatDemo />;
   }
+}
+
+function OnboardingDemo() {
+  const params = useLocalSearchParams<{ fixture?: string }>();
+  const router = useRouter();
+  const [retrying, setRetrying] = useState(false);
+  const connection = retrying ? "connecting" : params.fixture;
+  return <OnboardingPresentation serverName="Studio computer"
+    connection={["connected", "connecting", "offline"].includes(connection ?? "") ? connection : undefined}
+    onRetry={() => setRetrying(true)}
+    onContinue={() => router.replace({ pathname: "/screenshot-demo", params: { demo: "1", state: "brain", fixture: "empty" } })}
+    onSettings={() => router.push("/settings")}
+    onPair={(mode) => router.push({ pathname: "/settings", params: { addServer: Date.now().toString(), pairMode: mode } })}
+  />;
+}
+
+function EmptyStatesDemo() {
+  const params = useLocalSearchParams<{ fixture?: string }>();
+  const router = useRouter();
+  const colors = useAppColors();
+  const [retried, setRetried] = useState(false);
+  const [cleared, setCleared] = useState(false);
+  const [terminal, setTerminal] = useState(false);
+  const connection = retried ? "connecting" : params.fixture === "offline" ? "offline" : params.fixture === "connecting" ? "connecting" : "connected";
+  const state = sessionEmptyState(params.fixture !== "no-server", connection, params.fixture === "filtered" && !cleared);
+  return <SafeAreaView style={{ flex: 1, backgroundColor: colors.bgPrimary }}>
+    <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
+      <CompactEmptyState title={state.title} icon={state.icon} busy={state.busy}
+        action={state.action ? { label: state.label, icon: state.action === "retry" ? "refresh-outline" : "add", onPress: () => {
+          if (state.action === "retry") setRetried(true);
+          else if (state.action === "clear") setCleared(true);
+          else if (state.action === "terminal") setTerminal(true);
+          else router.push({ pathname: "/settings", params: { addServer: Date.now().toString() } });
+        }} : undefined}
+        secondary={connection !== "connected" ? { label: "Server settings", icon: "settings-outline", onPress: () => router.push("/settings") } : undefined}
+      />
+    </ScrollView>
+    <NewTerminalSheet visible={terminal} title="New terminal" initialCwd="/workspace" serverId={null}
+      onClose={() => setTerminal(false)} onSubmit={() => setTerminal(false)} />
+  </SafeAreaView>;
 }
 
 function CalendarDemo() {
@@ -439,6 +489,8 @@ function ChatDemo() {
 }
 
 function BrainDemo() {
+  const { fixture } = useLocalSearchParams<{ fixture?: string }>();
+  const empty = fixture === "empty";
   const { theme: zenTheme } = useAppTheme();
   const insets = useSafeAreaInsets();
   const { chrome, theme } = useMemo(
@@ -462,9 +514,9 @@ function BrainDemo() {
     [providerActivityStartedAt],
   );
   const timeline = useInterfaceTimelineItems({
-    events: SCREENSHOT_BRAIN_EVENTS,
+    events: empty ? emptyPending : SCREENSHOT_BRAIN_EVENTS,
     pendingUserMessages: emptyPending,
-    runningActivity,
+    runningActivity: empty ? undefined : runningActivity,
     onRetryPendingUserMessage: NOOP,
   });
   const hasContent = draft.trim().length > 0;
@@ -490,12 +542,12 @@ function BrainDemo() {
               activeUpload={null}
               sendEnabled={hasContent}
               sending={false}
-              sendLabel="Queue message"
-              showStopButton={!hasContent}
+              sendLabel={empty ? "Send message" : "Queue message"}
+              showStopButton={!empty && !hasContent}
               stopEnabled
               stopLabel="Stop current turn"
               stopLoading={false}
-              providerActivityStartedAt={providerActivityStartedAt}
+              providerActivityStartedAt={empty ? undefined : providerActivityStartedAt}
               bottomPadding={Math.max(insets.bottom, 8)}
               showActionMenuButton
               actionMenuIcon="add"
@@ -528,6 +580,7 @@ function BrainDemo() {
               scrollRef={scrollRef}
               nativeFollowSuspended={false}
               items={timeline}
+              emptyTitle={empty ? "Ready when you are" : undefined}
               loading={false}
               emptyStateSuppressed={false}
               unavailable={false}
@@ -1058,6 +1111,18 @@ function SessionsDemo() {
 
 function StatsDemo() {
   const colors = useAppColors();
+  const { fixture } = useLocalSearchParams<{ fixture?: string }>();
+  const data = useMemo(() => {
+    const value = structuredClone(SCREENSHOT_STATS_FIXTURE) as unknown as StatsView;
+    if (fixture === "unpriced") {
+      for (const range of Object.values(value.ranges)) {
+        range.costKnown = false;
+        if (range.models[0]) Object.assign(range.models[0], { name: "New model", cost: 0, costKnown: false, unpricedReason: "insufficient_context" });
+      }
+      value.pricing = { basis: "Catalog reference estimates", source: "models.dev", stale: false };
+    }
+    return value;
+  }, [fixture]);
   return (
     <SafeAreaView
       style={[styles.flex, { backgroundColor: colors.bgPrimary }]}
@@ -1077,7 +1142,7 @@ function StatsDemo() {
         </View>
       </View>
       <StatsScreenshotDemo
-        statsData={SCREENSHOT_STATS_FIXTURE as unknown as StatsView}
+        statsData={data}
       />
     </SafeAreaView>
   );

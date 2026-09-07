@@ -17,6 +17,8 @@ export const SCREENSHOT_DEMO_STATES = [
   "providers",
   "skills",
   "composer",
+  "onboarding",
+  "empty",
 ] as const;
 
 export type ScreenshotDemoState = (typeof SCREENSHOT_DEMO_STATES)[number];

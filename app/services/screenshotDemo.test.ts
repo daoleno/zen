@@ -86,6 +86,8 @@ describe("screenshot demo isolation", () => {
   });
 
   test("accepts only deterministic fixture states", () => {
+    expect(resolveScreenshotDemoState("empty")).toBe("empty");
+    expect(resolveScreenshotDemoState("onboarding")).toBe("onboarding");
     expect(resolveScreenshotDemoState("sessions")).toBe("sessions");
     expect(resolveScreenshotDemoState("brain")).toBe("brain");
     expect(resolveScreenshotDemoState("stats")).toBe("stats");
@@ -95,6 +97,11 @@ describe("screenshot demo isolation", () => {
     expect(resolveScreenshotDemoState("skills")).toBe("skills");
     expect(resolveScreenshotDemoState("unknown")).toBe("chat");
     expect(resolveScreenshotDemoState(undefined)).toBe("chat");
+  });
+
+  test("fixture redirects wait for the root navigator", () => {
+    expect(demoRouteSource).toContain("useRootNavigationState");
+    expect(demoRouteSource).toContain('if (navigation?.key && !available) router.replace("/")');
   });
 
   test("providers demo renders the real Providers surface on fixture catalogs", () => {

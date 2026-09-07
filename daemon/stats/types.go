@@ -5,6 +5,16 @@ type StatsResponse struct {
 	Type              string                  `json:"type"`
 	Ranges            map[string]*RangeData   `json:"ranges"`
 	CodexSubscription *CodexSubscriptionUsage `json:"codexSubscription,omitempty"`
+	Pricing           PricingStatus           `json:"pricing"`
+}
+
+// Catalog estimates are reference prices, never the custom gateway's bill.
+type PricingStatus struct {
+	Basis     string `json:"basis"`
+	Source    string `json:"source"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+	Stale     bool   `json:"stale"`
+	LastError string `json:"lastError,omitempty"`
 }
 
 // CodexSubscriptionUsage describes official ChatGPT-backed Codex quota. It
@@ -65,6 +75,13 @@ type DayCell struct {
 
 // ModelStat tracks usage for a single LLM model.
 type ModelStat struct {
+	ID                  string  `json:"id"`
+	ReportedCost        float64 `json:"reportedCost"`
+	EstimatedCost       float64 `json:"estimatedCost"`
+	EstimateSource      string  `json:"estimateSource,omitempty"`
+	ReferenceProvider   string  `json:"referenceProvider,omitempty"`
+	PricingUpdatedAt    string  `json:"pricingUpdatedAt,omitempty"`
+	UnpricedReason      string  `json:"unpricedReason,omitempty"`
 	Name                string  `json:"name"`
 	TotalTokens         int64   `json:"totalTokens"`
 	TotalTokensKnown    bool    `json:"totalTokensKnown"`

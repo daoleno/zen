@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { unpricedReasonLabel } from '../services/unpricedReason';
 import {
   ActivityIndicator,
   Animated as NativeAnimated,
@@ -757,6 +758,16 @@ function StatsRangeScene({
                 </View>
               </View>
               <Text style={s.summarySessions}>{sessionSummary(data.sessions)}</Text>
+              {statsData?.pricing && (
+                <Text style={s.summaryNote}>
+                  Catalog prices are reference estimates, not your gateway bill.
+                  {statsData.pricing.lastError
+                    ? " Pricing refresh failed; previous estimates retained."
+                    : statsData.pricing.stale
+                      ? " Reference prices are awaiting refresh."
+                      : ""}
+                </Text>
+              )}
               {hasAvailabilityGaps && (
                 <Text style={s.summaryNote}>
                   Some agents do not report token or billing details.
@@ -773,6 +784,9 @@ function StatsRangeScene({
                     <View style={s.rowInfo}>
                       <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
                       <Text style={s.rowMeta} numberOfLines={1}>{rowActivitySummary(m)}</Text>
+                      {unpricedReasonLabel(m.unpricedReason) && (
+                        <Text style={s.rowMeta}>{unpricedReasonLabel(m.unpricedReason)}</Text>
+                      )}
                     </View>
                     <Text
                       style={[

@@ -261,11 +261,12 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("initialize provider credentials: %w", err)
 	}
 	profileOwner, err := modelprofiles.StartOwner(modelprofiles.OwnerConfig{
-		ProfilesPath:  profilesPath,
-		RoutesPath:    routesPath,
-		ListenerPath:  listenerPath,
-		DiscoveryPath: discoveryPath,
-		Credentials:   credentialStore,
+		ProfilesPath:   profilesPath,
+		RoutesPath:     routesPath,
+		ListenerPath:   listenerPath,
+		DiscoveryPath:  discoveryPath,
+		ModelsObserved: sc.ObserveModels,
+		Credentials:    credentialStore,
 		SessionProbe: func(id string) (modelprofiles.SessionLiveness, error) {
 			presence, err := w.ProbeSession(id)
 			if err != nil {

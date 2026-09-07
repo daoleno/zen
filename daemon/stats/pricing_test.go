@@ -126,7 +126,7 @@ func TestSyncPricingUpdatesRegistryAndCache(t *testing.T) {
 	}
 }
 
-func TestLoadPreviousPricingCacheForcesResync(t *testing.T) {
+func TestLoadPreviousPricingCacheCannotEstablishRatePresence(t *testing.T) {
 	prevModels := clonePricingMap(prices.models)
 	prevSource := prices.source
 	prevUpdated := prices.updatedAt
@@ -144,15 +144,15 @@ func TestLoadPreviousPricingCacheForcesResync(t *testing.T) {
 		UpdatedAt: time.Now().UTC(),
 		Source:    "models.dev",
 		Models: map[string]pricingCacheEntry{
-			"gpt-5.5": {DisplayName: "GPT-5.5", Input: 5, Output: 30, CacheRead: 0.5},
+			"old-cache-only": {DisplayName: "Old cache", Input: 5, Output: 30, CacheRead: 0.5},
 		},
 	}); err != nil {
 		t.Fatalf("persist previous cache: %v", err)
 	}
 
 	loadPricingCache(home)
-	if got, ok := currentPricing("gpt-5.5"); !ok || got.input != 5 {
-		t.Fatalf("previous cache values should still load before resync: %+v ok=%v", got, ok)
+	if _, ok := currentPricing("old-cache-only"); ok {
+		t.Fatal("previous cache cannot establish presence or tiers")
 	}
 	if !pricingIsStale() {
 		t.Fatal("previous cache should force a fresh models.dev sync")

@@ -79,10 +79,7 @@ import { RisingSheet } from "../components/ui/RisingSheet";
 import { cancelCalendarNotifications } from "../services/calendarNotifications";
 import { useCurrentServer } from "../store/currentServer";
 import {
-  CONNECTION_KIND_OPTIONS,
-  shouldShowTelegramConnection,
   telegramSetupMode,
-  type ConnectionKind,
 } from "../components/settings/connectionPresentation";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
@@ -119,6 +116,7 @@ export default function SettingsScreen() {
     addServer?: string;
     refresh?: string;
     pairingRequired?: string;
+    pairMode?: string;
   }>();
   const [servers, setServers] = useState<Storage.StoredServer[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -129,11 +127,6 @@ export default function SettingsScreen() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [draftImportValue, setDraftImportValue] = useState("");
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
-  const [addConnectionVisible, setAddConnectionVisible] = useState(false);
-  const [telegramOpenRequest, setTelegramOpenRequest] = useState<{
-    serverId: string | null;
-    nonce: number;
-  } | null>(null);
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<
     string | null
   >(null);
@@ -188,8 +181,9 @@ export default function SettingsScreen() {
     )
       return;
     openCreateServer();
+    if (params.pairMode === "scanner") openScanner();
     setHandledAutoOpenToken(params.addServer);
-  }, [handledAutoOpenToken, loaded, params.addServer]);
+  }, [handledAutoOpenToken, loaded, params.addServer, params.pairMode]);
 
   useEffect(() => {
     if (!loaded || !params.refresh || handledRefreshToken === params.refresh)
@@ -224,18 +218,6 @@ export default function SettingsScreen() {
     setDraftImportValue("");
     setCameraMountError(null);
     setPairPresentation(openPairEditor());
-  };
-
-  const chooseConnectionKind = (kind: ConnectionKind) => {
-    setAddConnectionVisible(false);
-    if (kind === "server") {
-      openCreateServer();
-      return;
-    }
-    setTelegramOpenRequest((request) => ({
-      serverId: currentServerId,
-      nonce: (request?.nonce || 0) + 1,
-    }));
   };
 
   const openEditServer = (server: Storage.StoredServer) => {
@@ -374,7 +356,7 @@ export default function SettingsScreen() {
       setCameraMountError(null);
       if (params.pairingRequired === "1") {
         router.dismissAll();
-        router.replace("/");
+        router.replace({ pathname: "/onboarding", params: { paired: "1" } });
       }
       return true;
     } catch (error: any) {
@@ -493,14 +475,14 @@ export default function SettingsScreen() {
         <View style={styles.contentInner}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
-              Connections
+              Servers
             </Text>
           </View>
 
           <View style={styles.serverList}>
             {servers.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>No paired daemons yet</Text>
+                <Text style={styles.emptyText}>No paired servers</Text>
               </View>
             ) : (
               servers.map((server) => {
@@ -701,37 +683,68 @@ export default function SettingsScreen() {
                 );
               })
             )}
-            <TelegramConnectionRow
-              key={currentServerId || "no-current-server"}
-              serverId={currentServerId}
-              connected={
-                Boolean(currentServerId) &&
-                serverConnections[currentServerId || ""] === "connected"
-              }
-              openRequest={
-                telegramOpenRequest?.serverId === currentServerId
-                  ? telegramOpenRequest?.nonce || 0
-                  : 0
-              }
-              onSetupDismiss={() => setTelegramOpenRequest(null)}
-            />
             <AnimatedPressable
               style={styles.addConnectionRow}
               preset="press"
               scale={0.99}
               accessibilityRole="button"
-              accessibilityLabel="Add connection"
-              accessibilityHint="Choose a Zen Server or Telegram connection"
+              accessibilityLabel="Pair a server"
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setAddConnectionVisible(true);
+                openCreateServer();
               }}
             >
               <View style={styles.addConnectionIcon}>
                 <Ionicons name="add" size={20} color={colors.textOnAccent} />
               </View>
               <View style={styles.addConnectionCopy}>
-                <Text style={styles.addConnectionTitle}>Add Connection</Text>
+                <Text style={styles.addConnectionTitle}>Pair a server</Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={18}
+                color={colors.textTertiary}
+              />
+            </AnimatedPressable>
+          </View>
+
+          <View style={styles.sectionHeaderStandalone}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">Messaging</Text>
+          </View>
+          {currentServerId ? (
+            <>
+              <Text style={styles.emptyText}>{servers.find((server) => server.id === currentServerId)?.name}</Text>
+              <TelegramConnectionRow
+                key={currentServerId || "no-current-server"}
+                serverId={currentServerId}
+                connected={serverConnections[currentServerId] === "connected"}
+              />
+            </>
+          ) : <Text style={styles.emptyText}>No current server</Text>}
+
+          <View style={styles.sectionHeaderStandalone}>
+            <Text style={styles.sectionLabel} accessibilityRole="header">
+              Providers
+            </Text>
+          </View>
+          <View style={styles.aboutGroup}>
+            <AnimatedPressable
+              style={styles.aboutRow}
+              preset="press"
+              scale={0.99}
+              accessibilityRole="button"
+              accessibilityLabel="Providers"
+              accessibilityHint="Manage Provider connections and API keys"
+              onPress={() => {
+                void Haptics.selectionAsync();
+                router.push("/model-profiles");
+              }}
+            >
+              <View style={styles.aboutCopy}>
+                <Text style={styles.aboutTitle}>Models and accounts</Text>
+                <Text style={styles.aboutDescription}>
+                  {servers.find((server) => server.id === currentServerId)?.name || "No current server"}
+                </Text>
               </View>
               <Ionicons
                 name="chevron-forward"
@@ -799,38 +812,6 @@ export default function SettingsScreen() {
 
           <View style={styles.sectionHeaderStandalone}>
             <Text style={styles.sectionLabel} accessibilityRole="header">
-              Agents
-            </Text>
-          </View>
-          <View style={styles.aboutGroup}>
-            <AnimatedPressable
-              style={styles.aboutRow}
-              preset="press"
-              scale={0.99}
-              accessibilityRole="button"
-              accessibilityLabel="Providers"
-              accessibilityHint="Manage Provider connections and API keys"
-              onPress={() => {
-                void Haptics.selectionAsync();
-                router.push("/model-profiles");
-              }}
-            >
-              <View style={styles.aboutCopy}>
-                <Text style={styles.aboutTitle}>Providers</Text>
-                <Text style={styles.aboutDescription}>
-                  Connect services and choose models
-                </Text>
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={colors.textTertiary}
-              />
-            </AnimatedPressable>
-          </View>
-
-          <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
               About
             </Text>
           </View>
@@ -844,46 +825,6 @@ export default function SettingsScreen() {
           </View>
         </View>
       </ScrollView>
-
-      <RisingSheet
-        visible={addConnectionVisible}
-        onClose={() => setAddConnectionVisible(false)}
-        cardStyle={styles.modalCard}
-      >
-        <Text style={styles.modalTitle} accessibilityRole="header">
-          Add Connection
-        </Text>
-        <View style={styles.connectionKindList}>
-          {CONNECTION_KIND_OPTIONS.map((option) => (
-            <AnimatedPressable
-              key={option.kind}
-              style={styles.connectionKindRow}
-              preset="press"
-              scale={0.98}
-              accessibilityRole="button"
-              accessibilityLabel={option.label}
-              onPress={() => {
-                void Haptics.selectionAsync();
-                chooseConnectionKind(option.kind);
-              }}
-            >
-              <View style={styles.connectionKindIcon}>
-                <Ionicons
-                  name={option.icon}
-                  size={20}
-                  color={colors.accentStrong}
-                />
-              </View>
-              <Text style={styles.connectionKindLabel}>{option.label}</Text>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={colors.textTertiary}
-              />
-            </AnimatedPressable>
-          ))}
-        </View>
-      </RisingSheet>
 
       {/* Unified Pair/Edit presentation: one RisingSheet Modal, editor|scanner modes */}
       <RisingSheet
@@ -1240,13 +1181,9 @@ export default function SettingsScreen() {
 function TelegramConnectionRow({
   serverId,
   connected,
-  openRequest,
-  onSetupDismiss,
 }: {
   serverId: string | null;
   connected: boolean;
-  openRequest: number;
-  onSetupDismiss(): void;
 }) {
   const { theme } = useAppTheme();
   const colors = useAppColors();
@@ -1260,10 +1197,6 @@ function TelegramConnectionRow({
   const setupMode = telegramSetupMode(serverId || undefined, connected);
   const activeServerId = setupMode === "direct" && serverId ? serverId : null;
   const visibleStatus = activeServerId ? status : null;
-
-  useEffect(() => {
-    if (openRequest > 0) setExpanded(true);
-  }, [openRequest]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1450,13 +1383,6 @@ function TelegramConnectionRow({
     : colors.textTertiary;
   const hasConfiguredBot = Boolean(visibleStatus?.bot_username);
   const hasBoundOwner = Boolean(visibleStatus?.owner_hint);
-  const visible = shouldShowTelegramConnection(
-    visibleStatus?.bot_username,
-    openRequest > 0,
-  );
-
-  if (!visible) return null;
-
   return (
     <View style={styles.serverCard}>
       <AnimatedPressable
@@ -1481,7 +1407,6 @@ function TelegramConnectionRow({
               setToken("");
               setShowToken(false);
             }
-            if (!next && !hasConfiguredBot) onSetupDismiss();
             return next;
           });
         }}
@@ -1497,20 +1422,17 @@ function TelegramConnectionRow({
                 @{visibleStatus.bot_username}
               </Text>
             ) : null}
-          </View>
-          <View
-            style={styles.telegramState}
-            accessibilityLabel={`Telegram ${stateLabel}`}
-          >
             <View
-              style={[styles.telegramStateDot, { backgroundColor: stateColor }]}
-            />
-            <Text
-              style={[styles.telegramStateText, { color: stateColor }]}
-              numberOfLines={1}
+              style={styles.telegramState}
+              accessibilityLabel={`Telegram ${stateLabel}`}
             >
-              {stateLabel}
-            </Text>
+              <View
+                style={[styles.telegramStateDot, { backgroundColor: stateColor }]}
+              />
+              <Text style={[styles.telegramStateText, { color: stateColor }]}>
+                {stateLabel}
+              </Text>
+            </View>
           </View>
           <Ionicons
             name={expanded ? "chevron-up" : "chevron-down"}
@@ -1666,7 +1588,6 @@ function TelegramConnectionRow({
                               onPress={() => {
                                 setToken("");
                                 setExpanded(false);
-                                onSetupDismiss();
                               }}
                             />
                             <ConnectionAction
@@ -1778,7 +1699,6 @@ function TelegramConnectionRow({
                         setShowToken(false);
                         if (!hasConfiguredBot) {
                           setExpanded(false);
-                          onSetupDismiss();
                         }
                       }}
                     />
@@ -2122,10 +2042,10 @@ function createStyles(theme: ResolvedZenTheme) {
       color: colors.textSecondary,
     },
     telegramState: {
-      maxWidth: 104,
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "flex-end",
+      alignSelf: "flex-start",
+      marginTop: 3,
       gap: 5,
     },
     telegramStateDot: {
@@ -2549,36 +2469,6 @@ function createStyles(theme: ResolvedZenTheme) {
       ...TypeScale.heading,
       color: colors.textPrimary,
       marginBottom: 18,
-    },
-    connectionKindList: {
-      overflow: "hidden",
-      borderRadius: Radii.sm,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    connectionKindRow: {
-      minHeight: 58,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 14,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-      backgroundColor: colors.bgSurface,
-    },
-    connectionKindIcon: {
-      width: 34,
-      height: 34,
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: Radii.xs,
-      backgroundColor: colors.surfaceActive,
-    },
-    connectionKindLabel: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      flex: 1,
-      color: colors.textPrimary,
     },
     importLead: {
       ...UiTextMetrics,

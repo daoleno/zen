@@ -1,41 +1,40 @@
-// @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const source = readFileSync(
-  join(import.meta.dir, "../app/onboarding.tsx"),
-  "utf8",
-);
+const source = readFileSync(join(import.meta.dir, "../app/onboarding.tsx"), "utf8");
+const presentation = readFileSync(join(import.meta.dir, "../components/onboarding/OnboardingPresentation.tsx"), "utf8");
+const settings = readFileSync(join(import.meta.dir, "../app/settings.tsx"), "utf8");
+const importer = readFileSync(join(import.meta.dir, "importConnection.ts"), "utf8");
 
-describe("first-run onboarding", () => {
-  test("shares the product story and complete normal LAN path", () => {
-    expect(source).toContain("Your coding agents, wherever you are.");
-    expect(source).toContain("code and");
-    expect(source).toContain("credentials stay on your computer");
-    expect(source).toContain('command: "zen doctor"');
-    expect(source).toContain('command: "zen --lan"');
-    expect(source).toContain("Run the pair command Zen prints");
-    expect(source).toContain("Scan or import pairing code");
+describe("scan-first onboarding", () => {
+  test("prioritizes scan and import, with collapsed computer setup", () => {
+    expect(presentation).toContain('useState(false)');
+    expect(presentation).toContain('onPair("scanner")');
+    expect(presentation).toContain('onPair("editor")');
+    expect(presentation).toContain("accessibilityState={{ expanded: setup }}");
+    expect(presentation.indexOf('accessibilityLabel="Scan pairing code"')).toBeLessThan(presentation.indexOf('accessibilityLabel="Computer setup"'));
   });
-
-  test("keeps pairing primary and remote or optional Link setup secondary", () => {
-    expect(source).toContain('pathname: "/settings"');
-    expect(source).toContain('pairingRequired: "1"');
-    expect(source).toContain("Remote HTTPS connection guide");
-    expect(source).toContain("Using remote HTTPS or optional Zen Link?");
-    expect(source).toContain("docs/connect-and-pair.md");
+  test("uses supported commands without inventing a pairing origin", () => {
+    expect(presentation).toContain('command: "zen doctor"');
+    expect(presentation).toContain('command: "zen --lan"');
+    expect(presentation).toContain("pairing command printed by Zen");
+    expect(presentation).not.toMatch(/192\.168|0\.0\.0\.0|zen pair http/);
+    expect(presentation).toContain("install-daemon.md");
+    expect(presentation).toContain("connect-and-pair.md");
   });
-
-  test("does not invent an unreachable pairing origin or extra first-run route", () => {
-    expect(source).not.toContain("zen pair http://0.0.0.0");
-    expect(source).not.toContain("zen pair https://your-host.example");
-    expect(source).not.toContain("Funnel");
+  test("shares enrollment pipeline without completion on UI dismissal", () => {
+    expect(source).toContain('pairingRequired: "1", pairMode: mode');
+    expect(settings).toContain('if (params.pairMode === "scanner") openScanner()');
+    expect(settings).toContain('pathname: "/onboarding", params: { paired: "1" }');
+    expect(source).not.toContain("markOnboarded");
+    expect(importer.indexOf("await markOnboarded()")).toBeGreaterThan(importer.indexOf("await saveServer("));
+    expect(importer.indexOf("await saveServer(")).toBeGreaterThan(importer.indexOf("await enrollWithDaemon("));
   });
-
-  test("keeps the primary CTA outside the scrollable instructions", () => {
-    expect(source.indexOf("</ScrollView>")).toBeLessThan(
-      source.indexOf("style={styles.actionArea}"),
-    );
+  test("paired flow reports connection progress and current-server recovery", () => {
+    expect(source).toContain("isCurrentServer(server.id)");
+    expect(presentation).toContain('label: "Retry connection"');
+    expect(presentation).toContain('label: "Open Brain"');
+    expect(presentation).toContain("busy={connecting}");
   });
 });

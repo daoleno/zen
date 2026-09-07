@@ -3,17 +3,22 @@ package stats
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
 	pricingCacheRelPath = ".zen/pricing-cache.json"
-	pricingSyncEvery    = 7 * 24 * time.Hour
-	pricingCacheVersion = 3
+	pricingSyncEvery    = 24 * time.Hour
+	pricingCacheVersion = 4
+	pricingMaxBytes     = 32 << 20
 )
 
 var (
@@ -30,19 +35,26 @@ type pricingCacheFile struct {
 }
 
 type pricingCacheEntry struct {
-	DisplayName string  `json:"displayName"`
-	Input       float64 `json:"input"`
-	Output      float64 `json:"output"`
-	CacheRead   float64 `json:"cacheRead"`
-	CacheCreate float64 `json:"cacheCreate"`
+	DisplayName string    `json:"displayName"`
+	Input       float64   `json:"input"`
+	Output      float64   `json:"output"`
+	CacheRead   float64   `json:"cacheRead"`
+	CacheCreate float64   `json:"cacheCreate"`
+	Present     uint8     `json:"present"`
+	Tiered      bool      `json:"tiered,omitempty"`
+	Provider    string    `json:"provider,omitempty"`
+	Source      string    `json:"source"`
+	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
 }
 
 type modelsDevCost struct {
-	Input        *float64 `json:"input"`
-	Output       *float64 `json:"output"`
-	CacheRead    *float64 `json:"cache_read"`
-	CacheWrite   *float64 `json:"cache_write"`
-	CacheWrite5m *float64 `json:"cache_write_5m"`
+	Input        *float64        `json:"input"`
+	Output       *float64        `json:"output"`
+	CacheRead    *float64        `json:"cache_read"`
+	CacheWrite   *float64        `json:"cache_write"`
+	CacheWrite5m *float64        `json:"cache_write_5m"`
+	Tiers        json.RawMessage `json:"tiers"`
+	ContextTier  json.RawMessage `json:"context_over_200k"`
 }
 
 func (c modelsDevCost) hasRates() bool {
@@ -103,23 +115,33 @@ func loadPricingCache(home string) {
 	if len(cache.Models) == 0 {
 		return
 	}
+	// Older caches lost rate presence and context tiers; they cannot establish prices.
+	if cache.Version != pricingCacheVersion {
+		return
+	}
 	loaded := make(map[string]modelPricing, len(cache.Models))
 	for id, item := range cache.Models {
+		if id == "" || item.Present > 15 || (item.Source != "built-in" && item.Source != "models.dev") {
+			return
+		}
+		for _, rate := range []float64{item.Input, item.Output, item.CacheRead, item.CacheCreate} {
+			if rate < 0 || math.IsInf(rate, 0) || math.IsNaN(rate) {
+				return
+			}
+		}
 		loaded[id] = modelPricing{
 			displayName: item.DisplayName,
 			input:       item.Input,
 			output:      item.Output,
 			cacheRead:   item.CacheRead,
 			cacheCreate: item.CacheCreate,
+			present:     item.Present, tiered: item.Tiered, provider: item.Provider, source: item.Source,
+			updatedAt: item.UpdatedAt,
 		}
 	}
 	prices.mu.Lock()
 	prices.models = mergePricingMaps(staticPricing, loaded)
-	if cache.Version == pricingCacheVersion {
-		prices.updatedAt = cache.UpdatedAt
-	} else {
-		prices.updatedAt = time.Time{}
-	}
+	prices.updatedAt = cache.UpdatedAt
 	prices.source = cache.Source
 	prices.mu.Unlock()
 }
@@ -139,6 +161,8 @@ func pricingIsStale() bool {
 }
 
 func syncPricing(ctx context.Context, home string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pricingSyncURL, nil)
 	if err != nil {
 		return err
@@ -160,55 +184,83 @@ func syncPricing(ctx context.Context, home string) error {
 			Cost modelsDevCost `json:"cost"`
 		} `json:"models"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, pricingMaxBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > pricingMaxBytes {
+		return fmt.Errorf("pricing catalog exceeds size limit")
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
 
-	updated := clonePricingMap(staticPricing)
+	prices.mu.RLock()
+	updated := clonePricingMap(prices.models)
+	prices.mu.RUnlock()
+	seen := map[string]string{}
+	count := 0
+	now := time.Now().UTC()
 	for provider, providerData := range payload {
 		if !pricingProviders[provider] {
 			continue
 		}
 		for modelID, modelData := range providerData.Models {
+			if modelID == "" {
+				return fmt.Errorf("pricing catalog contains an empty model ID")
+			}
 			cost := modelData.Cost
 			if !cost.hasRates() {
 				continue
 			}
 			localID := modelID
-			if provider == "anthropic" {
-				// models.dev uses stable Anthropic aliases that match our IDs in practice.
-				localID = modelID
+			if _, builtIn := staticPricing[localID]; builtIn && builtinPricingProvider(localID) != provider {
+				return fmt.Errorf("conflicting built-in pricing provider for model %q", localID)
 			}
-			current, ok := updated[localID]
-			if !ok {
-				current = modelPricing{displayName: modelDisplayName(localID, modelData.Name)}
-			} else if modelData.Name != "" {
-				current.displayName = modelData.Name
+			if previous, ok := seen[localID]; ok && previous != provider {
+				return fmt.Errorf("conflicting pricing providers for model %q", localID)
+			}
+			seen[localID] = provider
+			if previous, ok := updated[localID]; ok && previous.provider != "" && previous.provider != provider {
+				return fmt.Errorf("pricing provider changed for model %q", localID)
+			}
+			current := modelPricing{displayName: modelDisplayName(localID, modelData.Name), source: "models.dev", provider: provider, updatedAt: now,
+				tiered: meaningfulTier(cost.Tiers) || meaningfulTier(cost.ContextTier)}
+			for _, rate := range []*float64{cost.Input, cost.Output, cost.CacheRead, cost.CacheWrite, cost.CacheWrite5m} {
+				if rate != nil && (math.IsNaN(*rate) || math.IsInf(*rate, 0) || *rate < 0) {
+					return fmt.Errorf("invalid pricing rate for model %q", localID)
+				}
 			}
 			if cost.Input != nil {
 				current.input = *cost.Input
+				current.present |= rateInput
 			}
 			if cost.Output != nil {
 				current.output = *cost.Output
+				current.present |= rateOutput
 			}
 			if cost.CacheRead != nil {
 				current.cacheRead = *cost.CacheRead
+				current.present |= rateCacheRead
 			}
-			if cost.CacheWrite != nil && *cost.CacheWrite > 0 {
+			if cost.CacheWrite != nil {
 				current.cacheCreate = *cost.CacheWrite
-			} else if cost.CacheWrite5m != nil && *cost.CacheWrite5m > 0 {
+				current.present |= rateCacheCreate
+			} else if cost.CacheWrite5m != nil {
 				current.cacheCreate = *cost.CacheWrite5m
+				current.present |= rateCacheCreate
 			}
 			updated[localID] = current
+			count++
 		}
 	}
 
-	now := time.Now().UTC()
-	prices.mu.Lock()
-	prices.models = updated
-	prices.updatedAt = now
-	prices.source = "models.dev"
-	prices.mu.Unlock()
+	if count == 0 {
+		return fmt.Errorf("pricing catalog has no supported rates")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if home != "" {
 		cacheModels := make(map[string]pricingCacheEntry, len(updated))
@@ -219,15 +271,23 @@ func syncPricing(ctx context.Context, home string) error {
 				Output:      item.output,
 				CacheRead:   item.cacheRead,
 				CacheCreate: item.cacheCreate,
+				Present:     item.ratePresence(), Tiered: item.tiered, Provider: item.provider, Source: item.priceSource(), UpdatedAt: item.updatedAt,
 			}
 		}
-		_ = persistPricingCache(home, pricingCacheFile{
+		if err := persistPricingCache(home, pricingCacheFile{
 			Version:   pricingCacheVersion,
 			UpdatedAt: now,
 			Source:    "models.dev",
 			Models:    cacheModels,
-		})
+		}); err != nil {
+			return fmt.Errorf("persist pricing cache: %w", err)
+		}
 	}
+	prices.mu.Lock()
+	prices.models = updated
+	prices.updatedAt = now
+	prices.source = "models.dev"
+	prices.mu.Unlock()
 	return nil
 }
 
@@ -247,7 +307,89 @@ func persistPricingCache(home string, cache pricingCacheFile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	f, err := os.CreateTemp(filepath.Dir(path), ".pricing-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func meaningfulTier(raw json.RawMessage) bool {
+	var value any
+	if len(raw) == 0 {
+		return false
+	}
+	if json.Unmarshal(raw, &value) != nil {
+		return true
+	}
+	switch v := value.(type) {
+	case nil:
+		return false
+	case []any:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	default:
+		return true
+	}
+}
+
+// Only the curated built-in table uses these provider families, not arbitrary IDs.
+func builtinPricingProvider(id string) string {
+	if strings.HasPrefix(id, "claude-") {
+		return "anthropic"
+	}
+	if strings.HasPrefix(id, "grok-") {
+		return "xai"
+	}
+	return "openai"
+}
+
+const (
+	rateInput uint8 = 1 << iota
+	rateOutput
+	rateCacheRead
+	rateCacheCreate
+)
+
+func (p modelPricing) priceSource() string {
+	if p.source != "" {
+		return p.source
+	}
+	return "built-in"
+}
+
+func (p modelPricing) ratePresence() uint8 {
+	if p.source != "" {
+		return p.present
+	}
+	var mask uint8
+	for i, rate := range []float64{p.input, p.output, p.cacheRead, p.cacheCreate} {
+		if rate > 0 {
+			mask |= 1 << i
+		}
+	}
+	return mask
 }
 
 type httpStatusError struct {

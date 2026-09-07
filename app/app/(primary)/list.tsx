@@ -49,7 +49,8 @@ import {
   WORK_OBSERVATORY_PULL,
 } from "../../components/work/workSignalObservatoryInteraction";
 import { RisingSheet } from "../../components/ui/RisingSheet";
-import { Enter } from "../../components/ui/Enter";
+import { CompactEmptyState } from "../../components/ui/CompactEmptyState";
+import { sessionEmptyState } from "../../services/sessionEmptyState";
 import { WorkerListRowContainer } from "../../components/workers/WorkerListRowContainer";
 import { WorkerSessionSelectionBar } from "../../components/workers/WorkerSessionSelectionBar";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
@@ -60,6 +61,7 @@ import {
   getWorkerAliases,
   markWorkerOpened,
   StoredWorkerAliases,
+  setServerAutoConnect,
 } from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
 import { wsClient } from "../../services/websocket";
@@ -231,7 +233,7 @@ export default function InboxScreen() {
     (!agentsHydrated &&
       sortedWorkers.length === 0 &&
       hasConfiguredServers &&
-      (anyConnecting || waitingForInitialWorkerSnapshot));
+      waitingForInitialWorkerSnapshot);
   const useSectionHeaders = listSections.length > 1;
   const primaryIssue = currentServerId ? state.serverConnectionIssues[currentServerId] ?? null : null;
 
@@ -803,17 +805,16 @@ export default function InboxScreen() {
       : colors.disabledText;
   const bannerText =
     primaryIssue?.title || (anyConnecting ? "Connecting" : "Offline");
-  const emptyTitle = !hasConfiguredServers
-    ? "No servers"
-    : anyConnected
-      ? "No sessions yet"
-      : primaryIssue?.title || (anyConnecting ? "Connecting" : "Offline");
-  const emptySubtext = !hasConfiguredServers
-    ? "Add a server in Settings."
-    : anyConnected
-      ? "Start an agent on your daemon, or create a terminal."
-      : primaryIssue?.detail ||
-        (anyConnecting ? null : "Check server connection in Settings.");
+  const empty = sessionEmptyState(hasConfiguredServers, connectionState);
+  const retryCurrentServer = async () => {
+    if (!currentServer || !isCurrentServer(currentServer.id)) return;
+    try {
+      await setServerAutoConnect(currentServer.id, true);
+      if (isCurrentServer(currentServer.id)) wsClient.connectServer(currentServer);
+    } catch (error) {
+      Alert.alert("Connection failed", error instanceof Error ? error.message : "Could not retry this server.");
+    }
+  };
 
   const renderListWorker = useCallback<ListRenderItem<Worker>>(
     ({ item }) => (
@@ -1023,83 +1024,18 @@ export default function InboxScreen() {
             alwaysBounceVertical
             showsVerticalScrollIndicator={false}
           >
-            <Enter preset="rise" style={styles.emptyContainer}>
-              <Enter preset="pop">
-                <View style={styles.emptyBadge}>
-                  <Text style={styles.emptyIcon}>☯</Text>
-                </View>
-              </Enter>
-              <Text style={styles.emptyText}>{emptyTitle}</Text>
-              {emptySubtext ? (
-                <Text style={styles.emptySubtext}>{emptySubtext}</Text>
-              ) : null}
-              <View style={styles.emptyActions}>
-                {anyConnected ? (
-                  <AnimatedPressable
-                    style={[
-                      styles.emptyActionBtn,
-                      styles.emptyActionBtnPrimary,
-                    ]}
-                    preset="press"
-                    scale={0.95}
-                    onPress={openCreateTerminal}
-                    disabled={!!creatingServerId}
-                  >
-                    <Ionicons
-                      name="add"
-                      size={18}
-                      color={colors.textOnAccent}
-                      style={styles.emptyActionIcon}
-                    />
-                    <Text
-                      style={[
-                        styles.emptyActionText,
-                        styles.emptyActionTextPrimary,
-                      ]}
-                    >
-                      {creatingServerId ? "Starting…" : "New terminal"}
-                    </Text>
-                  </AnimatedPressable>
-                ) : (
-                  <AnimatedPressable
-                    style={[
-                      styles.emptyActionBtn,
-                      styles.emptyActionBtnPrimary,
-                    ]}
-                    preset="press"
-                    scale={0.95}
-                    onPress={() => openServerSettings(true)}
-                  >
-                    <Ionicons
-                      name="server-outline"
-                      size={18}
-                      color={colors.textOnAccent}
-                      style={styles.emptyActionIcon}
-                    />
-                    <Text
-                      style={[
-                        styles.emptyActionText,
-                        styles.emptyActionTextPrimary,
-                      ]}
-                    >
-                      Add server
-                    </Text>
-                  </AnimatedPressable>
-                )}
-                {hasConfiguredServers ? (
-                  <AnimatedPressable
-                    style={styles.emptyActionLink}
-                    preset="press"
-                    scale={0.96}
-                    onPress={() => openServerSettings(false)}
-                  >
-                    <Text style={styles.emptyActionLinkText}>
-                      Open Settings
-                    </Text>
-                  </AnimatedPressable>
-                ) : null}
-              </View>
-            </Enter>
+            <CompactEmptyState title={empty.title} icon={empty.icon} busy={empty.busy}
+              detail={primaryIssue?.detail}
+              action={empty.action ? {
+                label: creatingServerId ? "Starting..." : empty.label,
+                icon: empty.action === "retry" ? "refresh-outline" : empty.action === "terminal" ? "add" : "qr-code-outline",
+                onPress: empty.action === "retry" ? () => void retryCurrentServer() : empty.action === "terminal" ? openCreateTerminal : () => openServerSettings(true),
+                disabled: Boolean(creatingServerId),
+              } : undefined}
+              secondary={hasConfiguredServers && !anyConnected ? {
+                label: "Server settings", icon: "settings-outline", onPress: () => openServerSettings(false),
+              } : undefined}
+            />
           </Animated.ScrollView>
         ) : (
           <AnimatedSectionList
@@ -1330,11 +1266,6 @@ function createStyles(theme: ResolvedZenTheme) {
       alignItems: "center",
       justifyContent: "center",
     },
-    emptyContainer: {
-      justifyContent: "center",
-      alignItems: "center",
-      paddingHorizontal: 36,
-    },
     emptyScrollContent: {
       width: "100%",
       maxWidth: 760,
@@ -1342,80 +1273,6 @@ function createStyles(theme: ResolvedZenTheme) {
       flexGrow: 1,
       justifyContent: "center",
       paddingVertical: 44,
-    },
-    emptyBadge: {
-      width: 88,
-      height: 88,
-      borderRadius: 44,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.accentSoft,
-      marginBottom: 22,
-    },
-    emptyIcon: {
-      fontSize: 42,
-      color: colors.accent,
-      lineHeight: 48,
-    },
-    emptyText: {
-      ...UiTextMetrics,
-      ...TypeScale.heading,
-      color: colors.textPrimary,
-    },
-    emptySubtext: {
-      ...UiTextMetrics,
-      ...TypeScale.compact,
-      color: colors.textSecondary,
-      marginTop: 9,
-      maxWidth: 280,
-      textAlign: "center",
-    },
-    emptyActions: {
-      width: "100%",
-      maxWidth: 260,
-      gap: 14,
-      marginTop: 30,
-      alignItems: "center",
-    },
-    emptyActionLink: {
-      minHeight: 44,
-      justifyContent: "center",
-      paddingHorizontal: 10,
-    },
-    emptyActionLinkText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.accent,
-    },
-    emptyActionBtn: {
-      width: "100%",
-      flexDirection: "row",
-      minHeight: 48,
-      paddingHorizontal: 18,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: themedBorder,
-      backgroundColor: themedSurface,
-      gap: 8,
-    },
-    emptyActionBtnPrimary: {
-      backgroundColor: colors.accent,
-      borderColor: colors.accent,
-      ...shadow("card", colors.shadowColor),
-    },
-    emptyActionIcon: {
-      marginTop: 1,
-    },
-    emptyActionText: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      color: colors.textPrimary,
-      textAlign: "center",
-    },
-    emptyActionTextPrimary: {
-      color: colors.textOnAccent,
     },
 
     menuCard: {

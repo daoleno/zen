@@ -901,6 +901,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"type":       "stats_data",
 				"request_id": raw.RequestID,
 				"ranges":     resp.Ranges,
+				"pricing":    resp.Pricing,
 			}
 			// Official subscription usage is only meaningful for the direct
 			// ChatGPT/Codex login. When the effective Codex connection is a

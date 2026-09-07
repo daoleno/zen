@@ -140,6 +140,8 @@ func TestDiscoverProviderModelsTTLAndLKG(t *testing.T) {
 	now := time.Now()
 	owner.discovery.now = func() time.Time { return now }
 	owner.mu.Unlock()
+	var observed []string
+	owner.modelsObserved = func(ids []string) { observed = append(observed, ids...) }
 
 	first, err := owner.DiscoverProviderModels("c1", true)
 	if err != nil {
@@ -147,6 +149,9 @@ func TestDiscoverProviderModelsTTLAndLKG(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("hits=%d", hits)
+	}
+	if strings.Join(observed, ",") != "gpt-5,o3" {
+		t.Fatalf("exact discovery IDs not observed: %v", observed)
 	}
 	second, err := owner.DiscoverProviderModels("c1", false)
 	if err != nil {
@@ -165,6 +170,9 @@ func TestDiscoverProviderModelsTTLAndLKG(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Fatalf("forced refresh hits=%d", hits)
+	}
+	if len(observed) != 2 {
+		t.Fatalf("failed discovery emitted observations: %v", observed)
 	}
 	foundCache := false
 	for _, e := range third {

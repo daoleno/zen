@@ -237,6 +237,7 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
             rows={visible}
             inventory={inventory}
             filtersActive={Boolean(query.trim()) || activeFilterCount > 0}
+            onClearFilters={() => { setQuery(""); setFilters(DEFAULT_FILTERS); }}
             onChooseCopy={(skill) => setDeletePickerKey(skill.key)}
           />
           <FilterSheet
@@ -591,6 +592,7 @@ function LocalSkillsList(
     rows: LogicalSkill[];
     inventory?: SkillsInventory;
     filtersActive: boolean;
+    onClearFilters(): void;
     onChooseCopy(skill: LogicalSkill): void;
   },
 ) {
@@ -665,7 +667,8 @@ function LocalSkillsList(
         <State
           icon="search-outline"
           title="No matches"
-          detail="Adjust your search or active filters."
+          action="Clear filters"
+          onAction={props.onClearFilters}
         />
       }
       renderItem={({ item }) => (
@@ -1121,7 +1124,7 @@ function State({
   loading?: boolean;
   icon?: React.ComponentProps<typeof Ionicons>["name"];
   title: string;
-  detail: string;
+  detail?: string;
   action?: string;
   onAction?(): void;
 }) {

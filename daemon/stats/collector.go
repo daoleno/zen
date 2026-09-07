@@ -30,6 +30,7 @@ type Collector struct {
 	codexRolloutCacheMu      sync.Mutex
 	cached                   *StatsResponse
 	codexRolloutCache        map[string]codexRolloutCacheEntry
+	pricingRefresh           *pricingRefresher
 	codexUsageClient         codexUsageHTTPClient
 	codexUsageEndpoint       string
 	codexUsageTimeout        time.Duration
@@ -47,35 +48,28 @@ func NewCollector() *Collector {
 		codexUsageTimeout:  8 * time.Second,
 		now:                time.Now,
 		codexRolloutCache:  make(map[string]codexRolloutCacheEntry),
+		pricingRefresh:     newPricingRefresher(),
 	}
 }
 
 // Start begins periodic background scanning. The first scan runs immediately.
 func (c *Collector) Start(ctx context.Context) {
-	home := homeDir()
-	if pricingIsStale() {
-		go func() {
-			if err := syncPricing(ctx, home); err == nil {
-				c.refresh()
-			}
-		}()
-	}
+	pricingDone := make(chan struct{})
+	go func() {
+		defer close(pricingDone)
+		c.pricingRefresh.run(ctx, homeDir(), c.refresh)
+	}()
+	defer func() { <-pricingDone }()
 
 	c.refresh()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	pricingTicker := time.NewTicker(pricingSyncEvery)
-	defer pricingTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			c.refresh()
-		case <-pricingTicker.C:
-			if err := syncPricing(ctx, home); err == nil {
-				c.refresh()
-			}
 		}
 	}
 }
@@ -84,7 +78,19 @@ func (c *Collector) Start(ctx context.Context) {
 func (c *Collector) Stats() *StatsResponse {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.cached
+	if c.cached == nil {
+		return nil
+	}
+	copy := *c.cached
+	copy.Pricing = c.pricingRefresh.status()
+	return &copy
+}
+
+// ObserveModels only queues work; provider discovery never waits for pricing I/O.
+func (c *Collector) ObserveModels(ids []string) {
+	if c.pricingRefresh != nil {
+		c.pricingRefresh.observe(ids)
+	}
 }
 
 // ── Pricing table ──────────────────────────────────────────
@@ -95,6 +101,11 @@ type modelPricing struct {
 	output      float64
 	cacheRead   float64
 	cacheCreate float64
+	present     uint8
+	tiered      bool
+	source      string
+	provider    string
+	updatedAt   time.Time
 }
 
 var staticPricing = map[string]modelPricing{
@@ -199,6 +210,16 @@ func computeKnownCost(modelID string, input, output, _ int64, cacheRead, cacheCr
 	p, ok := currentPricing(modelID)
 	if !ok {
 		return 0, false
+	}
+	// Usage aggregates do not retain per-request context lengths.
+	if p.tiered {
+		return 0, false
+	}
+	mask := p.ratePresence()
+	for i, tokens := range []int64{input, output, cacheRead, cacheCreate} {
+		if tokens > 0 && mask&(1<<i) == 0 {
+			return 0, false
+		}
 	}
 	return float64(input)/1e6*p.input +
 		float64(output)/1e6*p.output +
@@ -314,6 +335,15 @@ func (c *Collector) refresh() {
 		modelAgg := aggregateModelsByDate(workerByDate, fromDate, "9999-99-99")
 		mergeModelAgg(modelAgg, aggregateCodexModelsByDate(codexModelsByDate, fromDate, "9999-99-99"))
 		rd.Models = buildModelStats(modelAgg)
+		if rangeName == "all" && c.pricingRefresh != nil {
+			ids := make([]string, 0, len(modelAgg))
+			for id, entry := range modelAgg {
+				if _, known := modelCostFor(id, entry); !known {
+					ids = append(ids, id)
+				}
+			}
+			c.pricingRefresh.request(ids)
+		}
 		rd.Tools = buildToolStats(aggregateToolsByDate(workerByDate, fromDate, "9999-99-99"))
 		rd.Skills = buildSkillStats(aggregateSkillsByDate(workerByDate, fromDate, "9999-99-99"))
 		rd.Projects = buildProjectStats(
@@ -1382,7 +1412,36 @@ func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 	for modelID, m := range modelAgg {
 		cost, known := modelCostFor(modelID, m)
 		costKnown := known && !m.costUnknown
+		unpricedReason := ""
+		if !costKnown {
+			switch p, exists := currentPricing(modelID); {
+			case known:
+				unpricedReason = "missing_usage"
+			case !exists:
+				unpricedReason = "missing_model"
+			case p.tiered:
+				unpricedReason = "insufficient_context"
+			default:
+				unpricedReason = "missing_rate"
+			}
+		}
+		reported := 0.0
+		if m.recorded != nil {
+			reported = m.recorded.cost
+		}
+		source, provider := "", ""
+		pricingUpdatedAt := ""
+		if p, ok := currentPricing(modelID); ok {
+			source, provider = p.priceSource(), p.provider
+			if !p.updatedAt.IsZero() {
+				pricingUpdatedAt = p.updatedAt.Format(time.RFC3339)
+			}
+		}
 		result = append(result, ModelStat{
+			ID: modelID, ReportedCost: reported, EstimatedCost: cost - reported,
+			EstimateSource: source, ReferenceProvider: provider,
+			PricingUpdatedAt:    pricingUpdatedAt,
+			UnpricedReason:      unpricedReason,
 			Name:                displayName(modelID),
 			TotalTokens:         m.totalTokens,
 			TotalTokensKnown:    !m.totalTokensUnknown,

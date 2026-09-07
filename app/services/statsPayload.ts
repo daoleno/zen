@@ -7,6 +7,7 @@ import {
 
 export interface StatsPayload {
   ranges: Record<string, RangeData>;
+  pricing?: PricingStatus;
   codexSubscription?: CodexSubscriptionUsage;
   serverId?: string;
   serverUrl?: string;
@@ -23,7 +24,16 @@ export interface CodexUsageWindow {
 
 export interface StatsView {
   ranges: Record<string, RangeData>;
+  pricing?: PricingStatus;
   codexSubscriptions: CodexSubscriptionUsage[];
+}
+
+export interface PricingStatus {
+  basis: string;
+  source: string;
+  updatedAt?: string;
+  stale: boolean;
+  lastError?: string;
 }
 
 export interface CodexSubscriptionUsage {
@@ -52,6 +62,13 @@ export interface DayCell {
 }
 
 export interface ModelStat {
+  id?: string;
+  reportedCost?: number;
+  estimatedCost?: number;
+  estimateSource?: string;
+  referenceProvider?: string;
+  pricingUpdatedAt?: string;
+  unpricedReason?: "missing_model" | "missing_rate" | "insufficient_context" | "missing_usage";
   name: string;
   totalTokens: number;
   totalTokensKnown?: boolean;
@@ -148,6 +165,7 @@ export function normalizeStatsPayload(payload: StatsPayload | null | undefined):
   const subscription = payload.codexSubscription;
   return {
     ranges,
+    pricing: payload.pricing ? { ...payload.pricing } : undefined,
     codexSubscriptions: isOfficialCodexSubscription(subscription) ? [{
       ...subscription!,
       windows: Array.isArray(subscription!.windows) ? subscription!.windows.map(window => ({ ...window })) : undefined,

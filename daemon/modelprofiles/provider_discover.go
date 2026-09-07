@@ -359,6 +359,9 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 
 	ids, metadata, discoverErr := fetchUpstreamModels(context.Background(), cache.client, probe, o.creds, o.lookup)
 	cache.putModels(key, ids, metadata, discoverErr)
+	if discoverErr == nil && o.modelsObserved != nil {
+		o.modelsObserved(ids)
+	}
 	if o.discoveryPath != "" {
 		if serr := cache.save(o.discoveryPath); serr != nil {
 			out.PersistenceDurable = false

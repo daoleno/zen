@@ -24,7 +24,11 @@ export function InterfaceTimelineEmptyState({
 }: InterfaceTimelineEmptyStateProps) {
   return (
     <View style={styles.emptyState}>
-      {busy ? <BusyGlyph chrome={chrome} /> : null}
+      {busy ? <BusyGlyph chrome={chrome} /> : (
+        <View accessible={false} style={styles.busyGlyph}>
+          <Ionicons name="chatbubble-outline" size={28} color={chrome.textMuted} />
+        </View>
+      )}
       <Text style={[styles.emptyTitle, { color: chrome.text }]}>{title}</Text>
       {body ? (
         <Text style={[styles.emptyBody, { color: chrome.textMuted }]}>
@@ -82,6 +86,9 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     ...TypeScale.heading,
+    fontSize: 22,
+    lineHeight: 28,
+    letterSpacing: 0,
     marginTop: 2,
     textAlign: "center",
   },
@@ -94,7 +101,7 @@ const styles = StyleSheet.create({
   emptyAction: {
     marginTop: 14,
     minHeight: 44,
-    borderRadius: 22,
+    borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 14,
     flexDirection: "row",
