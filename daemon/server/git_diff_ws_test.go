@@ -17,6 +17,12 @@ import (
 
 func TestGitDiffPageAuthenticatedWebSocket(t *testing.T) {
 	repo := initGitDiffTestRepo(t)
+	writeGitDiffTestFile(t, repo, "tracked.ts", "old\n")
+	runGitDiffTestGit(t, repo, "add", ".")
+	runGitDiffTestGit(t, repo, "commit", "-qm", "baseline")
+	writeGitDiffTestFile(t, repo, "tracked.ts", "new staged\n")
+	runGitDiffTestGit(t, repo, "add", "tracked.ts")
+	writeGitDiffTestFile(t, repo, "tracked.ts", "new working\n")
 	writeGitDiffTestFile(t, repo, " odd\tfile ", "new\n")
 	manager, err := auth.NewManager(t.TempDir())
 	if err != nil {
@@ -41,29 +47,37 @@ func TestGitDiffPageAuthenticatedWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if err = conn.WriteJSON(map[string]any{"type": "git_diff_page", "request_id": "page-test", "cwd": repo, "path": " odd\tfile ", "scope": "all", "row": 0, "query": "new"}); err != nil {
-		t.Fatal(err)
-	}
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	for {
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatal(err)
+	for _, path := range []string{" odd\tfile ", "tracked.ts"} {
+		for _, scope := range []string{"all", "working", "staged"} {
+			if err = conn.WriteJSON(map[string]any{"type": "git_diff_page", "request_id": "page-test", "cwd": repo, "path": path, "scope": scope, "row": 0, "query": "new"}); err != nil {
+				t.Fatal(err)
+			}
+			conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			for {
+				_, raw, err := conn.ReadMessage()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var response struct {
+					Type      string      `json:"type"`
+					RequestID string      `json:"request_id"`
+					Page      gitDiffPage `json:"page"`
+				}
+				if err = json.Unmarshal(raw, &response); err != nil {
+					t.Fatal(err)
+				}
+				if response.RequestID != "page-test" {
+					continue
+				}
+				if response.Type != "git_diff_page" || response.Page.Path != path || response.Page.Scope != scope {
+					t.Fatalf("response: %s", raw)
+				}
+				wantEmpty := path == " odd\tfile " && scope == "staged"
+				if (len(response.Page.Rows) == 0) != wantEmpty {
+					t.Fatalf("unexpected %s/%s rows: %+v", path, scope, response.Page)
+				}
+				break
+			}
 		}
-		var response struct {
-			Type      string      `json:"type"`
-			RequestID string      `json:"request_id"`
-			Page      gitDiffPage `json:"page"`
-		}
-		if err = json.Unmarshal(raw, &response); err != nil {
-			t.Fatal(err)
-		}
-		if response.RequestID != "page-test" {
-			continue
-		}
-		if response.Type != "git_diff_page" || response.Page.Path != " odd\tfile " || len(response.Page.Rows) == 0 {
-			t.Fatalf("response: %s", raw)
-		}
-		break
 	}
 }

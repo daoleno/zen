@@ -38,6 +38,12 @@ existing file-preview byte limit is separate from the complete diff reader.
 
 ## Data And Freshness
 
+Update both the mobile client and its current daemon when installing Git review.
+`Unknown message type: git_diff_page` means the connected daemon predates the
+paged reader. Verify the current server identity and deploy the matching daemon;
+reconnecting to the same old executable cannot add the handler. After an update,
+refresh the overview before reopening a file whose changes have since been committed.
+
 `git_diff_status` uses NUL-delimited status and batched statistics, preserving
 literal filenames, including whitespace and Git pathspec metacharacters.
 `git_diff_page` accepts `path`, `scope` (`all`, `working`, `staged`), zero-based
