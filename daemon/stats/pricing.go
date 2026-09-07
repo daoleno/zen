@@ -36,16 +36,17 @@ type pricingCacheFile struct {
 }
 
 type pricingCacheEntry struct {
-	DisplayName string    `json:"displayName"`
-	Input       float64   `json:"input"`
-	Output      float64   `json:"output"`
-	CacheRead   float64   `json:"cacheRead"`
-	CacheCreate float64   `json:"cacheCreate"`
-	Present     uint8     `json:"present"`
-	Tiered      bool      `json:"tiered,omitempty"`
-	Provider    string    `json:"provider,omitempty"`
-	Source      string    `json:"source"`
-	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
+	DisplayName  string             `json:"displayName"`
+	Input        float64            `json:"input"`
+	Output       float64            `json:"output"`
+	CacheRead    float64            `json:"cacheRead"`
+	CacheCreate  float64            `json:"cacheCreate"`
+	Present      uint8              `json:"present"`
+	Tiered       bool               `json:"tiered,omitempty"`
+	ContextTiers []contextPriceTier `json:"contextTiers,omitempty"`
+	Provider     string             `json:"provider,omitempty"`
+	Source       string             `json:"source"`
+	UpdatedAt    time.Time          `json:"updatedAt,omitempty"`
 }
 
 type modelsDevCost struct {
@@ -172,7 +173,7 @@ func loadPricingCache(home string) {
 	}
 	loaded := make(map[string]map[string]modelPricing)
 	loadEntry := func(provider, id string, item pricingCacheEntry) bool {
-		if id == "" || item.Present > 15 || (item.Source != "built-in" && item.Source != "models.dev") {
+		if id == "" || item.Present > 15 || !validContextPriceTiers(item.ContextTiers) || (item.Source != "built-in" && item.Source != "models.dev") {
 			return false
 		}
 		for _, rate := range []float64{item.Input, item.Output, item.CacheRead, item.CacheCreate} {
@@ -191,7 +192,8 @@ func loadPricingCache(home string) {
 			cacheRead:   item.CacheRead,
 			cacheCreate: item.CacheCreate,
 			present:     item.Present, tiered: item.Tiered, provider: item.Provider, source: item.Source,
-			updatedAt: item.UpdatedAt,
+			contextTiers: item.ContextTiers,
+			updatedAt:    item.UpdatedAt,
 		}
 		return true
 	}
@@ -299,6 +301,11 @@ func syncPricing(ctx context.Context, home string) error {
 			}
 			current := modelPricing{displayName: modelDisplayName(localID, modelData.Name), source: "models.dev", provider: provider, updatedAt: now,
 				tiered: meaningfulTier(cost.Tiers) || meaningfulTier(cost.ContextTier)}
+			var tierErr error
+			current.contextTiers, tierErr = parseContextPriceTiers(cost)
+			if tierErr != nil {
+				return fmt.Errorf("model %q: %w", localID, tierErr)
+			}
 			for _, rate := range []*float64{cost.Input, cost.Output, cost.CacheRead, cost.CacheWrite, cost.CacheWrite5m} {
 				if rate != nil && (math.IsNaN(*rate) || math.IsInf(*rate, 0) || *rate < 0) {
 					return fmt.Errorf("invalid pricing rate for model %q", localID)
@@ -347,6 +354,7 @@ func syncPricing(ctx context.Context, home string) error {
 					CacheRead:   item.cacheRead,
 					CacheCreate: item.cacheCreate,
 					Present:     item.ratePresence(), Tiered: item.tiered, Provider: item.provider, Source: item.priceSource(), UpdatedAt: item.updatedAt,
+					ContextTiers: item.contextTiers,
 				}
 			}
 		}

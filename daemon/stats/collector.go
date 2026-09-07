@@ -96,16 +96,17 @@ func (c *Collector) ObserveModels(ids []string) {
 // ── Pricing table ──────────────────────────────────────────
 
 type modelPricing struct {
-	displayName string
-	input       float64 // $ per 1M tokens
-	output      float64
-	cacheRead   float64
-	cacheCreate float64
-	present     uint8
-	tiered      bool
-	source      string
-	provider    string
-	updatedAt   time.Time
+	displayName  string
+	input        float64 // $ per 1M tokens
+	output       float64
+	cacheRead    float64
+	cacheCreate  float64
+	present      uint8
+	tiered       bool
+	contextTiers []contextPriceTier
+	source       string
+	provider     string
+	updatedAt    time.Time
 }
 
 var staticPricing = map[string]modelPricing{
@@ -224,6 +225,10 @@ func computeProviderKnownCost(provider, modelID string, occurredAt time.Time, in
 	if p.tiered {
 		return 0, false
 	}
+	return computeTariffCost(p, input, output, cacheRead, cacheCreate)
+}
+
+func computeTariffCost(p modelPricing, input, output, cacheRead, cacheCreate int64) (float64, bool) {
 	mask := p.ratePresence()
 	for i, tokens := range []int64{input, output, cacheRead, cacheCreate} {
 		if tokens > 0 && mask&(1<<i) == 0 {
@@ -1176,7 +1181,11 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 			m.outputTokens += usage.outputTokens
 			m.reasoning += usage.reasoningTokens
 			m.cacheRead += usage.cacheRead
-			addEstimatedCost(&m, "openai", modelID, time.Time{}, usage.inputTokens, usage.outputTokens, usage.cacheRead, 0)
+			cost, known := computeCodexContextCost(modelID, usage)
+			m.provider, m.modelID = "openai", modelID
+			m.estimatedCost += cost
+			m.estimated = m.estimated || known || cost > 0
+			m.costUnknown = m.costUnknown || !known
 			m.sessions++
 			models[key] = m
 
@@ -1199,10 +1208,9 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 			p.outputTokens += usage.outputTokens
 			p.reasoning += usage.reasoningTokens
 			p.cacheRead += usage.cacheRead
-			cost, known := computeProviderKnownCost("openai", modelID, time.Time{}, usage.inputTokens, usage.outputTokens, usage.cacheRead, 0)
 			p.cost += cost
-			if known {
-				p.estimatedCost += cost
+			p.estimatedCost += cost
+			if known || cost > 0 {
 				p.estimated = true
 			}
 			if !known {
@@ -1228,6 +1236,7 @@ type codexUsage struct {
 	outputTokens    int64
 	reasoningTokens int64
 	cacheRead       int64
+	byContext       map[int64]codexUsage
 }
 
 type codexRolloutCacheEntry struct {
@@ -1301,6 +1310,13 @@ func cloneCodexUsageByDate(source map[string]codexUsage) map[string]codexUsage {
 	}
 	clone := make(map[string]codexUsage, len(source))
 	for date, usage := range source {
+		if usage.byContext != nil {
+			buckets := make(map[int64]codexUsage, len(usage.byContext))
+			for context, bucket := range usage.byContext {
+				buckets[context] = bucket
+			}
+			usage.byContext = buckets
+		}
 		clone[date] = usage
 	}
 	return clone
@@ -1323,6 +1339,13 @@ func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsag
 		Payload   struct {
 			Type string `json:"type"`
 			Info *struct {
+				LastTokenUsage *struct {
+					InputTokens           int64 `json:"input_tokens"`
+					CachedInputTokens     int64 `json:"cached_input_tokens"`
+					OutputTokens          int64 `json:"output_tokens"`
+					ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+					TotalTokens           int64 `json:"total_tokens"`
+				} `json:"last_token_usage"`
 				TotalTokenUsage *struct {
 					InputTokens           int64 `json:"input_tokens"`
 					CachedInputTokens     int64 `json:"cached_input_tokens"`
@@ -1378,7 +1401,23 @@ func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsag
 			continue
 		}
 
-		byDate[date] = addCodexUsage(byDate[date], delta)
+		bucket := addCodexUsage(byDate[date], delta)
+		if bucket.byContext == nil {
+			bucket.byContext = make(map[int64]codexUsage)
+		}
+		inputContext := int64(-1)
+		if last := line.Payload.Info.LastTokenUsage; last != nil {
+			request := codexUsageFromTotals(last)
+			// Duplicate reports, missing events and cumulative gaps are not
+			// single requests. Only an exact delta match establishes context.
+			if request.totalTokens == delta.totalTokens && request.inputTokens == delta.inputTokens &&
+				request.outputTokens == delta.outputTokens && request.cacheRead == delta.cacheRead &&
+				request.reasoningTokens == delta.reasoningTokens && last.InputTokens >= last.CachedInputTokens {
+				inputContext = last.InputTokens
+			}
+		}
+		bucket.byContext[inputContext] = addCodexUsage(bucket.byContext[inputContext], delta)
+		byDate[date] = bucket
 		previous = &current
 	}
 	return byDate, nil

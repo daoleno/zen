@@ -14,6 +14,14 @@ off, and the last successful prices remain available. Changed rates recalculate
 existing usage. Source, refresh time, stale state, and refresh failure remain
 visible in Stats.
 
+For Codex, matching `last_token_usage` and cumulative deltas retain the input
+context of each request (including cached input) before daily aggregation.
+Supported catalog context tiers are applied to those requests, not to the sum
+of a day's tokens. Explicit typed context thresholds take precedence over the
+catalog's legacy `context_over_200k` alias. Duplicate token reports do not add
+cost. Missing or mismatched request evidence remains unknown; any known portion
+is still shown as a partial estimate. Price refreshes reprice retained usage.
+
 Unknown does not mean zero:
 
 - **Price not in catalog**: no matching reference price exists for the exact model.
