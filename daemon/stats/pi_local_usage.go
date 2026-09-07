@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Pi model usage is collected entirely from Pi's durable local session
@@ -15,7 +16,7 @@ import (
 // Pi records the authoritative per-turn Usage on assistant messages (input,
 // output, cache-read, cache-write, totalTokens, an optional reasoning
 // subset of output, and the exact observed cost when the provider is
-// priced), plus optional Usage on compaction and branch_summary entries
+// priced), plus the provider identity and optional Usage on compaction and branch_summary entries
 // (summary-generation LLM calls) and toolResult messages (nested LLM work).
 // This collector reads only those structured metadata fields: prompt,
 // response, reasoning and tool bodies are never read, logged or persisted.
@@ -53,9 +54,10 @@ type piCostInfo struct {
 // piSessionMessage is the message payload of a "message" session entry. Only
 // the aggregated usage fields are decoded; content bodies are not.
 type piSessionMessage struct {
-	Role  string   `json:"role"`
-	Model string   `json:"model"`
-	Usage *piUsage `json:"usage"`
+	Role     string   `json:"role"`
+	Provider string   `json:"provider"`
+	Model    string   `json:"model"`
+	Usage    *piUsage `json:"usage"`
 }
 
 // piSessionLine decodes exactly the structured metadata of one Pi session
@@ -69,6 +71,7 @@ type piSessionLine struct {
 	Timestamp string            `json:"timestamp"`
 	Cwd       string            `json:"cwd"`
 	ModelID   string            `json:"modelId"`
+	Provider  string            `json:"provider"`
 	Message   *piSessionMessage `json:"message"`
 	Usage     *piUsage          `json:"usage"`
 }
@@ -76,8 +79,10 @@ type piSessionLine struct {
 // piLedgerRecord is one counted, deduplicated billed usage record.
 type piLedgerRecord struct {
 	date         string
+	occurredAt   time.Time
 	hour         int // 0-23, for heatmap slot bucketing
 	modelID      string
+	provider     string
 	totalTokens  int64
 	inputTokens  int64
 	outputTokens int64
@@ -154,6 +159,7 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 
 	headerCwd := ""
 	inEffectModel := ""
+	inEffectProvider := ""
 	seenIDs := make(map[string]bool)
 	var records []piLedgerRecord
 
@@ -171,6 +177,9 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 		case "session":
 			headerCwd = line.Cwd
 		case "model_change":
+			if provider := normalizePricingProvider(line.Provider); provider != "" {
+				inEffectProvider = provider
+			}
 			if modelID := strings.TrimSpace(line.ModelID); modelID != "" {
 				inEffectModel = modelID
 			}
@@ -179,19 +188,24 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 			if msg == nil || msg.Usage == nil || !msg.Usage.hasTokens() {
 				continue
 			}
-			modelID := ""
+			modelID, provider := "", ""
 			switch msg.Role {
 			case "assistant":
 				// The authoritative record: the billed assistant turn carries
 				// its own recorded model identity.
 				modelID = strings.TrimSpace(msg.Model)
+				provider = normalizePricingProvider(msg.Provider)
 				if modelID != "" {
 					inEffectModel = modelID
+					if provider != "" {
+						inEffectProvider = provider
+					}
 				}
 			case "toolResult":
 				// Nested LLM work performed by the tool, when recorded; Pi
 				// totals include it, so the ledger model in effect is used.
 				modelID = inEffectModel
+				provider = inEffectProvider
 			default:
 				continue
 			}
@@ -204,7 +218,7 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 				}
 				seenIDs[line.ID] = true
 			}
-			record, ok := piRecordFromUsage(line.Timestamp, modelID, msg.Usage)
+			record, ok := piRecordFromUsage(line.Timestamp, provider, modelID, msg.Usage)
 			if ok {
 				records = append(records, record)
 			}
@@ -221,7 +235,7 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 				}
 				seenIDs[line.ID] = true
 			}
-			record, ok := piRecordFromUsage(line.Timestamp, inEffectModel, line.Usage)
+			record, ok := piRecordFromUsage(line.Timestamp, inEffectProvider, inEffectModel, line.Usage)
 			if ok {
 				records = append(records, record)
 			}
@@ -239,35 +253,37 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 	for _, rec := range records {
 		agg := ensureDateAgg(byDate, rec.date)
 
-		// Per-model aggregation. The exact observed cost travels as the
-		// recorded component with its own token bucket, so price estimates
-		// cover exactly the tokens of unrecorded sources when a model is
-		// shared (OpenCode contract).
-		model := agg.models[rec.modelID]
+		// Per-model aggregation preserves recorded provider/model identity and
+		// keeps exact charges separate from provider-tariff estimates.
+		key := modelAggKey(rec.provider, rec.modelID)
+		model := agg.models[key]
 		model.totalTokens += rec.totalTokens
 		model.inputTokens += rec.inputTokens
 		model.outputTokens += rec.outputTokens
 		model.reasoning += rec.reasoning
 		model.cacheRead += rec.cacheRead
 		model.cacheCreate += rec.cacheWrite
-		if model.recorded == nil {
-			model.recorded = &modelRecordedCost{}
-		}
-		model.recorded.cost += rec.cost
-		model.recorded.input += rec.inputTokens
-		model.recorded.output += rec.outputTokens
-		model.recorded.reasoning += rec.reasoning
-		model.recorded.cacheRead += rec.cacheRead
-		model.recorded.cacheCreate += rec.cacheWrite
-		if !rec.costObserved {
-			model.costUnknown = true
+		if rec.costObserved {
+			if model.recorded == nil {
+				model.recorded = &modelRecordedCost{}
+			}
+			model.recorded.cost += rec.cost
+			model.recorded.input += rec.inputTokens
+			model.recorded.output += rec.outputTokens
+			model.recorded.reasoning += rec.reasoning
+			model.recorded.cacheRead += rec.cacheRead
+			model.recorded.cacheCreate += rec.cacheWrite
+			model.provider, model.modelID = rec.provider, rec.modelID
+		} else {
+			// Pi's reasoning is a subset of output, so output is billed once.
+			addEstimatedCost(&model, rec.provider, rec.modelID, rec.occurredAt, rec.inputTokens, rec.outputTokens, rec.cacheRead, rec.cacheWrite)
 		}
 		modelDateKey := rec.date + "\x00" + rec.modelID
 		if !seenModelDate[modelDateKey] {
 			model.sessions++
 			seenModelDate[modelDateKey] = true
 		}
-		agg.models[rec.modelID] = model
+		agg.models[key] = model
 
 		// Time-of-day slot aggregation.
 		slot := rec.hour / 6
@@ -293,8 +309,15 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 		project.reasoning += rec.reasoning
 		project.cacheRead += rec.cacheRead
 		project.cacheCreate += rec.cacheWrite
-		project.cost += rec.cost
-		if !rec.costObserved {
+		if rec.costObserved {
+			project.cost += rec.cost
+			project.reportedCost += rec.cost
+			project.reported = true
+		} else if estimate, ok := computeProviderKnownCost(rec.provider, rec.modelID, rec.occurredAt, rec.inputTokens, rec.outputTokens, rec.cacheRead, rec.cacheWrite); ok {
+			project.cost += estimate
+			project.estimatedCost += estimate
+			project.estimated = true
+		} else {
 			project.costUnknown = true
 		}
 		projectDateKey := rec.date + "\x00" + projectName
@@ -308,7 +331,7 @@ func scanPiSessionFile(path, fallbackProject string, byDate map[string]*dateAgg)
 // piRecordFromUsage converts a counted Pi usage object into a ledger record
 // attributed to the entry's local date and hour. Records without tokens
 // (aborted/error turns, zero-usage summaries) contribute nothing.
-func piRecordFromUsage(ts, modelID string, u *piUsage) (piLedgerRecord, bool) {
+func piRecordFromUsage(ts, provider, modelID string, u *piUsage) (piLedgerRecord, bool) {
 	date := dateFromTimestamp(ts)
 	if date == "" {
 		return piLedgerRecord{}, false
@@ -322,8 +345,10 @@ func piRecordFromUsage(ts, modelID string, u *piUsage) (piLedgerRecord, bool) {
 	}
 	return piLedgerRecord{
 		date:         date,
+		occurredAt:   parseOccurrence(ts),
 		hour:         hourFromTimestamp(ts),
 		modelID:      modelID,
+		provider:     normalizePricingProvider(provider),
 		totalTokens:  total,
 		inputTokens:  u.Input,
 		outputTokens: u.Output,

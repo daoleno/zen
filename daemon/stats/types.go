@@ -1,5 +1,14 @@
 package stats
 
+type CostProvenance string
+
+const (
+	CostProvenanceReported  CostProvenance = "reported"
+	CostProvenanceEstimated CostProvenance = "estimated"
+	CostProvenanceMixed     CostProvenance = "mixed"
+	CostProvenanceUnknown   CostProvenance = "unknown"
+)
+
 // StatsResponse is sent to the app in response to a "get_stats" request.
 type StatsResponse struct {
 	Type              string                  `json:"type"`
@@ -39,77 +48,90 @@ type CodexUsageWindow struct {
 
 // RangeData holds aggregated stats for a single time range.
 type RangeData struct {
-	Cost                float64       `json:"cost"`
-	CostKnown           bool          `json:"costKnown"`
-	TotalTokens         int64         `json:"totalTokens"`
-	TotalTokensKnown    bool          `json:"totalTokensKnown"`
-	InputTokens         int64         `json:"inputTokens"`
-	OutputTokens        int64         `json:"outputTokens"`
-	ReasoningTokens     int64         `json:"reasoningTokens"`
-	CacheRead           int64         `json:"cacheRead"`
-	CacheCreate         int64         `json:"cacheCreate"`
-	TokenBreakdownKnown bool          `json:"tokenBreakdownKnown"`
-	Sessions            int           `json:"sessions"`
-	Models              []ModelStat   `json:"models"`
-	Projects            []ProjectStat `json:"projects"`
-	Skills              []SkillStat   `json:"skills"`
-	Tools               []ToolStat    `json:"tools"`
-	Days                []DayCell     `json:"days"` // Per-day activity, sorted by date ascending
+	Cost                float64        `json:"cost"`
+	CostKnown           bool           `json:"costKnown"`
+	CostReported        float64        `json:"costReported"`
+	CostEstimated       float64        `json:"costEstimated"`
+	CostProvenance      CostProvenance `json:"costProvenance"`
+	TotalTokens         int64          `json:"totalTokens"`
+	TotalTokensKnown    bool           `json:"totalTokensKnown"`
+	InputTokens         int64          `json:"inputTokens"`
+	OutputTokens        int64          `json:"outputTokens"`
+	ReasoningTokens     int64          `json:"reasoningTokens"`
+	CacheRead           int64          `json:"cacheRead"`
+	CacheCreate         int64          `json:"cacheCreate"`
+	TokenBreakdownKnown bool           `json:"tokenBreakdownKnown"`
+	Sessions            int            `json:"sessions"`
+	Models              []ModelStat    `json:"models"`
+	Projects            []ProjectStat  `json:"projects"`
+	Skills              []SkillStat    `json:"skills"`
+	Tools               []ToolStat     `json:"tools"`
+	Days                []DayCell      `json:"days"` // Per-day activity, sorted by date ascending
 }
 
 // DayCell represents a single day's aggregated activity.
 type DayCell struct {
-	Date                string  `json:"date"` // "2006-01-02"
-	TotalTokens         int64   `json:"totalTokens"`
-	TotalTokensKnown    bool    `json:"totalTokensKnown"`
-	InputTokens         int64   `json:"inputTokens"`
-	OutputTokens        int64   `json:"outputTokens"`
-	ReasoningTokens     int64   `json:"reasoningTokens"`
-	CacheRead           int64   `json:"cacheRead"`
-	CacheCreate         int64   `json:"cacheCreate"`
-	TokenBreakdownKnown bool    `json:"tokenBreakdownKnown"`
-	Cost                float64 `json:"cost"`
-	CostKnown           bool    `json:"costKnown"`
-	Sessions            int     `json:"sessions"`
+	Date                string         `json:"date"` // "2006-01-02"
+	TotalTokens         int64          `json:"totalTokens"`
+	TotalTokensKnown    bool           `json:"totalTokensKnown"`
+	InputTokens         int64          `json:"inputTokens"`
+	OutputTokens        int64          `json:"outputTokens"`
+	ReasoningTokens     int64          `json:"reasoningTokens"`
+	CacheRead           int64          `json:"cacheRead"`
+	CacheCreate         int64          `json:"cacheCreate"`
+	TokenBreakdownKnown bool           `json:"tokenBreakdownKnown"`
+	Cost                float64        `json:"cost"`
+	CostKnown           bool           `json:"costKnown"`
+	CostReported        float64        `json:"costReported"`
+	CostEstimated       float64        `json:"costEstimated"`
+	CostProvenance      CostProvenance `json:"costProvenance"`
+	Sessions            int            `json:"sessions"`
 }
 
 // ModelStat tracks usage for a single LLM model.
 type ModelStat struct {
-	ID                  string  `json:"id"`
-	ReportedCost        float64 `json:"reportedCost"`
-	EstimatedCost       float64 `json:"estimatedCost"`
-	EstimateSource      string  `json:"estimateSource,omitempty"`
-	ReferenceProvider   string  `json:"referenceProvider,omitempty"`
-	PricingUpdatedAt    string  `json:"pricingUpdatedAt,omitempty"`
-	UnpricedReason      string  `json:"unpricedReason,omitempty"`
-	Name                string  `json:"name"`
-	TotalTokens         int64   `json:"totalTokens"`
-	TotalTokensKnown    bool    `json:"totalTokensKnown"`
-	InputTokens         int64   `json:"inputTokens"`
-	OutputTokens        int64   `json:"outputTokens"`
-	ReasoningTokens     int64   `json:"reasoningTokens"`
-	CacheRead           int64   `json:"cacheRead"`
-	CacheCreate         int64   `json:"cacheCreate"`
-	TokenBreakdownKnown bool    `json:"tokenBreakdownKnown"`
-	Cost                float64 `json:"cost"`
-	CostKnown           bool    `json:"costKnown"`
-	Sessions            int     `json:"sessions"`
+	ID                  string         `json:"id"`
+	ReportedCost        float64        `json:"reportedCost"`
+	EstimatedCost       float64        `json:"estimatedCost"`
+	EstimateSource      string         `json:"estimateSource,omitempty"`
+	ReferenceProvider   string         `json:"referenceProvider,omitempty"`
+	PricingUpdatedAt    string         `json:"pricingUpdatedAt,omitempty"`
+	UnpricedReason      string         `json:"unpricedReason,omitempty"`
+	Name                string         `json:"name"`
+	Provider            string         `json:"provider,omitempty"`
+	TotalTokens         int64          `json:"totalTokens"`
+	TotalTokensKnown    bool           `json:"totalTokensKnown"`
+	InputTokens         int64          `json:"inputTokens"`
+	OutputTokens        int64          `json:"outputTokens"`
+	ReasoningTokens     int64          `json:"reasoningTokens"`
+	CacheRead           int64          `json:"cacheRead"`
+	CacheCreate         int64          `json:"cacheCreate"`
+	TokenBreakdownKnown bool           `json:"tokenBreakdownKnown"`
+	Cost                float64        `json:"cost"`
+	CostKnown           bool           `json:"costKnown"`
+	CostReported        float64        `json:"costReported"`
+	CostEstimated       float64        `json:"costEstimated"`
+	CostProvenance      CostProvenance `json:"costProvenance"`
+	Sessions            int            `json:"sessions"`
 }
 
 // ProjectStat tracks usage for a single project directory.
 type ProjectStat struct {
-	Name                string  `json:"name"`
-	TotalTokens         int64   `json:"totalTokens"`
-	TotalTokensKnown    bool    `json:"totalTokensKnown"`
-	InputTokens         int64   `json:"inputTokens"`
-	OutputTokens        int64   `json:"outputTokens"`
-	ReasoningTokens     int64   `json:"reasoningTokens"`
-	CacheRead           int64   `json:"cacheRead"`
-	CacheCreate         int64   `json:"cacheCreate"`
-	TokenBreakdownKnown bool    `json:"tokenBreakdownKnown"`
-	Cost                float64 `json:"cost"`
-	CostKnown           bool    `json:"costKnown"`
-	Sessions            int     `json:"sessions"`
+	Name                string         `json:"name"`
+	TotalTokens         int64          `json:"totalTokens"`
+	TotalTokensKnown    bool           `json:"totalTokensKnown"`
+	InputTokens         int64          `json:"inputTokens"`
+	OutputTokens        int64          `json:"outputTokens"`
+	ReasoningTokens     int64          `json:"reasoningTokens"`
+	CacheRead           int64          `json:"cacheRead"`
+	CacheCreate         int64          `json:"cacheCreate"`
+	TokenBreakdownKnown bool           `json:"tokenBreakdownKnown"`
+	Cost                float64        `json:"cost"`
+	CostKnown           bool           `json:"costKnown"`
+	CostReported        float64        `json:"costReported"`
+	CostEstimated       float64        `json:"costEstimated"`
+	CostProvenance      CostProvenance `json:"costProvenance"`
+	Sessions            int            `json:"sessions"`
 }
 
 // SkillStat tracks invocation counts for a Claude Code skill (slash command).

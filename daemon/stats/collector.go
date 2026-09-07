@@ -206,8 +206,17 @@ func computeCost(modelID string, input, output, reasoning, cacheRead, cacheCreat
 	return cost
 }
 
-func computeKnownCost(modelID string, input, output, _ int64, cacheRead, cacheCreate int64) (float64, bool) {
-	p, ok := currentPricing(modelID)
+func computeProviderKnownCost(provider, modelID string, occurredAt time.Time, input, output, cacheRead, cacheCreate int64) (float64, bool) {
+	provider = normalizePricingProvider(provider)
+	if provider == "deepseek" && (modelID == "deepseek-v4-flash" || modelID == "deepseek-v4-pro" || modelID == "deepseek-v4-flash-vision-exp") {
+		p, ok := deepSeekPricing(modelID, occurredAt)
+		if !ok {
+			return 0, false
+		}
+		return float64(input)/1e6*p.input + float64(output)/1e6*p.output +
+			float64(cacheRead)/1e6*p.cacheRead + float64(cacheCreate)/1e6*p.cacheCreate, true
+	}
+	p, ok := currentProviderPricing(provider, modelID)
 	if !ok {
 		return 0, false
 	}
@@ -225,6 +234,38 @@ func computeKnownCost(modelID string, input, output, _ int64, cacheRead, cacheCr
 		float64(output)/1e6*p.output +
 		float64(cacheRead)/1e6*p.cacheRead +
 		float64(cacheCreate)/1e6*p.cacheCreate, true
+}
+
+func computeKnownCost(modelID string, input, output, _ int64, cacheRead, cacheCreate int64) (float64, bool) {
+	return computeProviderKnownCost(inferOfficialProvider(modelID), modelID, time.Time{}, input, output, cacheRead, cacheCreate)
+}
+
+func deepSeekPricing(modelID string, occurredAt time.Time) (modelPricing, bool) {
+	if occurredAt.IsZero() {
+		return modelPricing{}, false
+	}
+	// Official reference tariff verified 2026-09-07; not an actual billed charge.
+	// https://api-docs.deepseek.com/quick_start/pricing
+	utc := occurredAt.UTC()
+	hour := utc.Hour()
+	weekday := utc.Weekday() != time.Saturday && utc.Weekday() != time.Sunday
+	peak := weekday && ((hour >= 1 && hour < 4) || (hour >= 6 && hour < 10))
+	var p modelPricing
+	switch modelID {
+	case "deepseek-v4-flash", "deepseek-v4-flash-vision-exp":
+		p = modelPricing{displayName: "DeepSeek V4 Flash", input: 0.22, output: 0.66, cacheRead: 0.007, cacheCreate: 0.22}
+	case "deepseek-v4-pro":
+		p = modelPricing{displayName: "DeepSeek V4 Pro", input: 0.66, output: 1.98, cacheRead: 0.022, cacheCreate: 0.66}
+	default:
+		return modelPricing{}, false
+	}
+	if peak {
+		p.input *= 2
+		p.output *= 2
+		p.cacheRead *= 2
+		p.cacheCreate *= 2
+	}
+	return p, true
 }
 
 func displayName(modelID string) string {
@@ -273,6 +314,10 @@ type projectAggEntry struct {
 	cacheRead             int64
 	cacheCreate           int64
 	cost                  float64
+	reportedCost          float64
+	estimatedCost         float64
+	reported              bool
+	estimated             bool
 	costUnknown           bool
 	totalTokensUnknown    bool
 	tokenBreakdownUnknown bool
@@ -380,12 +425,9 @@ type dailyEntry struct {
 	sessions int
 }
 
-// modelRecordedCost is the exact observed cost component of a model entry
-// (OpenCode): the dollar value and the token bucket it was observed on. The
-// bucket lets price estimates cover exactly the remaining unrecorded tokens
-// when a model is used by both recorded and unrecorded sources, so recorded
-// exact cost and existing collectors' price-based estimates never replace
-// each other and both flow into the aggregate.
+// modelRecordedCost is the exact provider-reported component. Token buckets
+// remain attached for compatibility with legacy model-only aggregate tests;
+// production collectors add exact and estimated records explicitly.
 type modelRecordedCost struct {
 	cost        float64
 	input       int64
@@ -396,6 +438,8 @@ type modelRecordedCost struct {
 }
 
 type modelAggEntry struct {
+	provider              string
+	modelID               string
 	totalTokens           int64
 	inputTokens           int64
 	outputTokens          int64
@@ -407,6 +451,37 @@ type modelAggEntry struct {
 	tokenBreakdownUnknown bool
 	sessions              int
 	recorded              *modelRecordedCost // nil until an exact-cost source contributes
+	estimatedCost         float64
+	estimated             bool
+}
+
+func modelAggKey(provider, modelID string) string {
+	provider = normalizePricingProvider(provider)
+	if provider == "" || provider == inferOfficialProvider(modelID) || strings.HasSuffix(modelID, "-unreported-model") {
+		return modelID
+	}
+	return provider + "\x00" + modelID
+}
+
+func splitModelAggKey(key string, m modelAggEntry) (string, string) {
+	if m.modelID != "" {
+		return m.provider, m.modelID
+	}
+	if i := strings.IndexByte(key, 0); i >= 0 {
+		return key[:i], key[i+1:]
+	}
+	return inferOfficialProvider(key), key
+}
+
+func addEstimatedCost(m *modelAggEntry, provider, modelID string, at time.Time, input, output, cacheRead, cacheCreate int64) {
+	m.provider, m.modelID = normalizePricingProvider(provider), modelID
+	cost, ok := computeProviderKnownCost(m.provider, modelID, at, input, output, cacheRead, cacheCreate)
+	if !ok {
+		m.costUnknown = true
+		return
+	}
+	m.estimatedCost += cost
+	m.estimated = true
 }
 
 // collectClaudeSessionStats scans session JSONL files and groups model/tool/skill/project
@@ -472,6 +547,7 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 		} `json:"message"`
 	}
 	type usageRecord struct {
+		occurredAt   time.Time
 		date         string
 		hour         int // 0-23, for heatmap slot bucketing
 		projectName  string
@@ -521,6 +597,7 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 				rec := messageUsage[key]
 				if rec == nil {
 					rec = &usageRecord{
+						occurredAt:  parseOccurrence(entry.Timestamp),
 						date:        date,
 						hour:        hourFromTimestamp(entry.Timestamp),
 						projectName: lineProjectName,
@@ -597,13 +674,15 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 			continue
 		}
 		agg := ensureDateAgg(byDate, rec.date)
-		m := agg.models[rec.modelID]
+		key := modelAggKey("anthropic", rec.modelID)
+		m := agg.models[key]
 		m.totalTokens += rec.totalTokens
 		m.inputTokens += rec.inputTokens
 		m.outputTokens += rec.outputTokens
 		m.reasoning += rec.reasoning
 		m.cacheRead += rec.cacheRead
 		m.cacheCreate += rec.cacheCreate
+		addEstimatedCost(&m, "anthropic", rec.modelID, rec.occurredAt, rec.inputTokens, rec.outputTokens, rec.cacheRead, rec.cacheCreate)
 		if modelSessionsByDate[rec.date] == nil {
 			modelSessionsByDate[rec.date] = make(map[string]bool)
 		}
@@ -611,7 +690,7 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 			m.sessions++
 			modelSessionsByDate[rec.date][rec.modelID] = true
 		}
-		agg.models[rec.modelID] = m
+		agg.models[key] = m
 
 		// Accumulate into time-of-day slot.
 		slot := rec.hour / 6
@@ -640,8 +719,12 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 		p.reasoning += rec.reasoning
 		p.cacheRead += rec.cacheRead
 		p.cacheCreate += rec.cacheCreate
-		cost, known := computeKnownCost(rec.modelID, rec.inputTokens, rec.outputTokens, rec.reasoning, rec.cacheRead, rec.cacheCreate)
+		cost, known := computeProviderKnownCost("anthropic", rec.modelID, rec.occurredAt, rec.inputTokens, rec.outputTokens, rec.cacheRead, rec.cacheCreate)
 		p.cost += cost
+		if known {
+			p.estimatedCost += cost
+			p.estimated = true
+		}
 		if !known {
 			p.costUnknown = true
 		}
@@ -717,12 +800,14 @@ func (c *Collector) collectGrokStats(home string) map[string]*dateAgg {
 			if date := grokFallbackSessionDate(summary, sessionDir); date != "" {
 				agg := ensureDateAgg(byDate, date)
 				sourceModelID := firstNonEmptyString(modelID, grokAgentUnreportedModelID)
-				model := agg.models[sourceModelID]
+				key := modelAggKey("xai", sourceModelID)
+				model := agg.models[key]
+				model.provider, model.modelID = "xai", sourceModelID
 				model.costUnknown = true
 				model.totalTokensUnknown = true
 				model.tokenBreakdownUnknown = true
 				model.sessions++
-				agg.models[sourceModelID] = model
+				agg.models[key] = model
 				if projectName != "" {
 					incrementProjectSession(agg, projectName)
 					project := agg.projects[projectName]
@@ -876,7 +961,9 @@ func scanGrokUpdates(path, projectName, fallbackModelID string, byDate map[strin
 		modelID := firstNonEmptyString(lastModelID, fallbackModelID, grokAgentUnreportedModelID)
 
 		agg := ensureDateAgg(byDate, date)
-		m := agg.models[modelID]
+		key := modelAggKey("xai", modelID)
+		m := agg.models[key]
+		m.provider, m.modelID = "xai", modelID
 		m.totalTokens += delta
 		m.costUnknown = true
 		m.tokenBreakdownUnknown = true
@@ -885,7 +972,7 @@ func scanGrokUpdates(path, projectName, fallbackModelID string, byDate map[strin
 			m.sessions++
 			seenModelDate[modelDateKey] = true
 		}
-		agg.models[modelID] = m
+		agg.models[key] = m
 
 		if projectName != "" {
 			p := ensureProjectAgg(agg, projectName)
@@ -964,12 +1051,14 @@ func (c *Collector) collectCursorAgentStats(home string) map[string]*dateAgg {
 		project.costUnknown = true
 		project.totalTokensUnknown = true
 		project.tokenBreakdownUnknown = true
-		model := agg.models[cursorAgentUnreportedModelID]
+		key := modelAggKey("cursor", cursorAgentUnreportedModelID)
+		model := agg.models[key]
+		model.provider, model.modelID = "cursor", cursorAgentUnreportedModelID
 		model.costUnknown = true
 		model.totalTokensUnknown = true
 		model.tokenBreakdownUnknown = true
 		model.sessions++
-		agg.models[cursorAgentUnreportedModelID] = model
+		agg.models[key] = model
 		return nil
 	})
 	if err != nil {
@@ -1080,14 +1169,16 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 				models = make(map[string]modelAggEntry)
 				modelsByDate[date] = models
 			}
-			m := models[modelID]
+			key := modelAggKey("openai", modelID)
+			m := models[key]
 			m.totalTokens += usage.totalTokens
 			m.inputTokens += usage.inputTokens
 			m.outputTokens += usage.outputTokens
 			m.reasoning += usage.reasoningTokens
 			m.cacheRead += usage.cacheRead
+			addEstimatedCost(&m, "openai", modelID, time.Time{}, usage.inputTokens, usage.outputTokens, usage.cacheRead, 0)
 			m.sessions++
-			models[modelID] = m
+			models[key] = m
 
 			if projectName == "" {
 				continue
@@ -1108,8 +1199,12 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 			p.outputTokens += usage.outputTokens
 			p.reasoning += usage.reasoningTokens
 			p.cacheRead += usage.cacheRead
-			cost, known := computeKnownCost(modelID, usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.cacheRead, 0)
+			cost, known := computeProviderKnownCost("openai", modelID, time.Time{}, usage.inputTokens, usage.outputTokens, usage.cacheRead, 0)
 			p.cost += cost
+			if known {
+				p.estimatedCost += cost
+				p.estimated = true
+			}
 			if !known {
 				p.costUnknown = true
 			}
@@ -1383,14 +1478,17 @@ func buildDailySessions(claudeByDate map[string]*dateAgg, codexDaily map[string]
 	return dailyMap
 }
 
-// modelCostFor computes a model entry's cost: the exact recorded cost plus
-// the price-based estimate for the remaining unrecorded token bucket (when a
-// recorded component exists, its tokens are excluded so the estimate covers
-// exactly the other sources' tokens). known reports whether every component
-// is priceable: when nothing needs estimation it is true, otherwise it is the
-// pricing-table outcome. This is the single source of truth used by both
-// ModelStat and DayCell so the two always agree.
+// modelCostFor adds the explicit reported and estimated components. known is
+// false when any record lacked both an exact charge and an applicable provider
+// tariff. The legacy branch supports model-only fixtures predating provider
+// identity; production records always take the explicit branch.
 func modelCostFor(modelID string, m modelAggEntry) (cost float64, known bool) {
+	if m.estimated || m.provider != "" || m.modelID != "" {
+		if m.recorded != nil {
+			cost += m.recorded.cost
+		}
+		return cost + m.estimatedCost, !m.costUnknown
+	}
 	estInput, estOutput, estReasoning, estCacheRead, estCacheCreate := m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate
 	if m.recorded != nil {
 		estInput = max64(0, estInput-m.recorded.input)
@@ -1410,11 +1508,12 @@ func modelCostFor(modelID string, m modelAggEntry) (cost float64, known bool) {
 func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 	var result []ModelStat
 	for modelID, m := range modelAgg {
+		provider, rawModelID := splitModelAggKey(modelID, m)
 		cost, known := modelCostFor(modelID, m)
 		costKnown := known && !m.costUnknown
 		unpricedReason := ""
 		if !costKnown {
-			switch p, exists := currentPricing(modelID); {
+			switch p, exists := currentProviderPricing(provider, rawModelID); {
 			case known:
 				unpricedReason = "missing_usage"
 			case !exists:
@@ -1429,20 +1528,24 @@ func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 		if m.recorded != nil {
 			reported = m.recorded.cost
 		}
-		source, provider := "", ""
+		source, referenceProvider := "", ""
 		pricingUpdatedAt := ""
-		if p, ok := currentPricing(modelID); ok {
-			source, provider = p.priceSource(), p.provider
+		if p, ok := currentProviderPricing(provider, rawModelID); ok {
+			source, referenceProvider = p.priceSource(), provider
 			if !p.updatedAt.IsZero() {
 				pricingUpdatedAt = p.updatedAt.Format(time.RFC3339)
 			}
 		}
+		if provider == "deepseek" && m.estimated {
+			source, referenceProvider = "api-docs.deepseek.com", "deepseek"
+		}
 		result = append(result, ModelStat{
-			ID: modelID, ReportedCost: reported, EstimatedCost: cost - reported,
-			EstimateSource: source, ReferenceProvider: provider,
+			ID: rawModelID, ReportedCost: reported, EstimatedCost: cost - reported,
+			EstimateSource: source, ReferenceProvider: referenceProvider,
 			PricingUpdatedAt:    pricingUpdatedAt,
 			UnpricedReason:      unpricedReason,
-			Name:                displayName(modelID),
+			Name:                displayName(rawModelID),
+			Provider:            provider,
 			TotalTokens:         m.totalTokens,
 			TotalTokensKnown:    !m.totalTokensUnknown,
 			InputTokens:         m.inputTokens,
@@ -1453,6 +1556,9 @@ func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 			TokenBreakdownKnown: !m.tokenBreakdownUnknown,
 			Cost:                cost,
 			CostKnown:           costKnown,
+			CostReported:        recordedCost(m),
+			CostEstimated:       m.estimatedCost,
+			CostProvenance:      costProvenance(m),
 			Sessions:            m.sessions,
 		})
 	}
@@ -1469,6 +1575,27 @@ func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 		return result[i].Cost > result[j].Cost
 	})
 	return result
+}
+
+func recordedCost(m modelAggEntry) float64 {
+	if m.recorded != nil {
+		return m.recorded.cost
+	}
+	return 0
+}
+func costProvenance(m modelAggEntry) CostProvenance {
+	hasReported := m.recorded != nil
+	hasEstimated := m.estimated
+	if (hasReported && hasEstimated) || ((hasReported || hasEstimated) && m.costUnknown) {
+		return CostProvenanceMixed
+	}
+	if hasReported {
+		return CostProvenanceReported
+	}
+	if hasEstimated {
+		return CostProvenanceEstimated
+	}
+	return CostProvenanceUnknown
 }
 
 func buildProjectStats(projectAgg map[string]*projectAggEntry, extra ...map[string]*projectAggEntry) []ProjectStat {
@@ -1490,6 +1617,9 @@ func buildProjectStats(projectAgg map[string]*projectAggEntry, extra ...map[stri
 			TokenBreakdownKnown: !p.tokenBreakdownUnknown,
 			Cost:                p.cost,
 			CostKnown:           !p.costUnknown,
+			CostReported:        p.reportedCost,
+			CostEstimated:       p.estimatedCost,
+			CostProvenance:      projectCostProvenance(p),
 			Sessions:            p.sessions,
 		})
 	}
@@ -1506,6 +1636,19 @@ func buildProjectStats(projectAgg map[string]*projectAggEntry, extra ...map[stri
 		return result[i].Cost > result[j].Cost
 	})
 	return result
+}
+
+func projectCostProvenance(p *projectAggEntry) CostProvenance {
+	if (p.reported && p.estimated) || ((p.reported || p.estimated) && p.costUnknown) {
+		return CostProvenanceMixed
+	}
+	if p.reported {
+		return CostProvenanceReported
+	}
+	if p.estimated {
+		return CostProvenanceEstimated
+	}
+	return CostProvenanceUnknown
 }
 
 func buildToolStats(tools map[string]int) []ToolStat {
@@ -1539,6 +1682,9 @@ func attachRangeTotals(rd *RangeData) {
 	tokenBreakdownKnown := true
 	for _, m := range rd.Models {
 		totalCost += m.Cost
+		rd.CostReported += m.CostReported
+		rd.CostEstimated += m.CostEstimated
+		rd.CostProvenance = mergeCostProvenance(rd.CostProvenance, m.CostProvenance)
 		totalTokens += m.TotalTokens
 		totalInput += m.InputTokens
 		totalOutput += m.OutputTokens
@@ -1568,6 +1714,9 @@ func attachRangeTotals(rd *RangeData) {
 	}
 	rd.Cost = totalCost
 	rd.CostKnown = costKnown
+	if rd.CostProvenance == "" {
+		rd.CostProvenance = CostProvenanceUnknown
+	}
 	rd.TotalTokens = totalTokens
 	rd.TotalTokensKnown = totalTokensKnown
 	rd.InputTokens = totalInput
@@ -1602,6 +1751,9 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 			dc.Sessions += m.sessions
 			cost, known := modelCostFor(modelID, m)
 			dc.Cost += cost
+			dc.CostReported += recordedCost(m)
+			dc.CostEstimated += m.estimatedCost
+			dc.CostProvenance = mergeCostProvenance(dc.CostProvenance, costProvenance(m))
 			if !known || m.costUnknown {
 				dc.CostKnown = false
 			}
@@ -1647,8 +1799,11 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 			dc.ReasoningTokens += m.reasoning
 			dc.CacheRead += m.cacheRead
 			dc.Sessions += m.sessions
-			cost, known := computeKnownCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
+			cost, known := modelCostFor(modelID, m)
 			dc.Cost += cost
+			dc.CostReported += recordedCost(m)
+			dc.CostEstimated += m.estimatedCost
+			dc.CostProvenance = mergeCostProvenance(dc.CostProvenance, costProvenance(m))
 			if !known || m.costUnknown {
 				dc.CostKnown = false
 			}
@@ -1664,10 +1819,23 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 	// Sort by date ascending
 	result := make([]DayCell, 0, len(dayCosts))
 	for _, dc := range dayCosts {
+		if dc.CostProvenance == "" {
+			dc.CostProvenance = CostProvenanceUnknown
+		}
 		result = append(result, *dc)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Date < result[j].Date })
 	return result
+}
+
+func mergeCostProvenance(current, next CostProvenance) CostProvenance {
+	if current == "" {
+		return next
+	}
+	if current == next {
+		return current
+	}
+	return CostProvenanceMixed
 }
 
 func homeDir() string {
@@ -1746,6 +1914,11 @@ func localDateHourFromTimestamp(ts string, loc *time.Location) (string, int, boo
 
 	local := parsed.In(loc)
 	return local.Format("2006-01-02"), local.Hour(), true
+}
+
+func parseOccurrence(ts string) time.Time {
+	parsed, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(ts))
+	return parsed
 }
 
 func localDateFromUnixTimestamp(sec int64, loc *time.Location) string {
@@ -1930,6 +2103,14 @@ func mergeModelAgg(dst, src map[string]modelAggEntry) {
 		current.reasoning += item.reasoning
 		current.cacheRead += item.cacheRead
 		current.cacheCreate += item.cacheCreate
+		if current.provider == "" {
+			current.provider = item.provider
+		}
+		if current.modelID == "" {
+			current.modelID = item.modelID
+		}
+		current.estimatedCost += item.estimatedCost
+		current.estimated = current.estimated || item.estimated
 		if item.recorded != nil {
 			if current.recorded == nil {
 				recorded := *item.recorded
@@ -2000,6 +2181,10 @@ func mergeProjectAgg(dst, src map[string]*projectAggEntry) {
 		current.cacheRead += item.cacheRead
 		current.cacheCreate += item.cacheCreate
 		current.cost += item.cost
+		current.reportedCost += item.reportedCost
+		current.estimatedCost += item.estimatedCost
+		current.reported = current.reported || item.reported
+		current.estimated = current.estimated || item.estimated
 		current.costUnknown = current.costUnknown || item.costUnknown
 		current.totalTokensUnknown = current.totalTokensUnknown || item.totalTokensUnknown
 		current.tokenBreakdownUnknown = current.tokenBreakdownUnknown || item.tokenBreakdownUnknown

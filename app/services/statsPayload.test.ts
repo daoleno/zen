@@ -158,3 +158,21 @@ describe('Pi owned-session usage contract (daemon payload to App visibility)', (
     expect(merged.ranges.week.models).toContainEqual(piDeepSeek);
   });
 });
+
+describe('provider-aware current-server costs', () => {
+  test('same model through different providers remains separate with provenance', () => {
+    const base = {
+      name: 'deepseek-v4-flash', totalTokens: 100, inputTokens: 100, outputTokens: 0,
+      reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, tokenBreakdownKnown: true,
+      totalTokensKnown: true, sessions: 1, costKnown: true,
+    };
+    const merged = normalizeStatsPayload(wirePayload({ all: rangeWith([
+      { ...base, provider: 'deepseek', cost: 0.000022, costReported: 0, costEstimated: 0.000022, costProvenance: 'estimated' as const },
+      { ...base, provider: 'opencode-go', cost: 0.00001, costReported: 0.00001, costEstimated: 0, costProvenance: 'reported' as const },
+    ]) }));
+    expect(merged.ranges.all.models).toHaveLength(2);
+    expect(merged.ranges.all.models.map(model => [model.provider, model.costProvenance])).toEqual([
+      ['deepseek', 'estimated'], ['opencode-go', 'reported'],
+    ]);
+  });
+});

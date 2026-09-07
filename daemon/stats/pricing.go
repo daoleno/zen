@@ -17,7 +17,7 @@ import (
 const (
 	pricingCacheRelPath = ".zen/pricing-cache.json"
 	pricingSyncEvery    = 24 * time.Hour
-	pricingCacheVersion = 4
+	pricingCacheVersion = 5
 	pricingMaxBytes     = 32 << 20
 )
 
@@ -28,10 +28,11 @@ var (
 )
 
 type pricingCacheFile struct {
-	Version   int                          `json:"version,omitempty"`
-	UpdatedAt time.Time                    `json:"updatedAt"`
-	Source    string                       `json:"source"`
-	Models    map[string]pricingCacheEntry `json:"models"`
+	Version   int                                     `json:"version,omitempty"`
+	UpdatedAt time.Time                               `json:"updatedAt"`
+	Source    string                                  `json:"source"`
+	Providers map[string]map[string]pricingCacheEntry `json:"providers,omitempty"`
+	Models    map[string]pricingCacheEntry            `json:"models,omitempty"`
 }
 
 type pricingCacheEntry struct {
@@ -63,13 +64,13 @@ func (c modelsDevCost) hasRates() bool {
 
 type pricingRegistry struct {
 	mu        sync.RWMutex
-	models    map[string]modelPricing
+	models    map[string]map[string]modelPricing
 	updatedAt time.Time
 	source    string
 }
 
 var prices = &pricingRegistry{
-	models: clonePricingMap(staticPricing),
+	models: staticProviderPricing(),
 	source: "built-in",
 }
 
@@ -81,15 +82,65 @@ func clonePricingMap(src map[string]modelPricing) map[string]modelPricing {
 	return out
 }
 
+func cloneProviderPricing(src map[string]map[string]modelPricing) map[string]map[string]modelPricing {
+	out := make(map[string]map[string]modelPricing, len(src))
+	for provider, models := range src {
+		out[provider] = clonePricingMap(models)
+	}
+	return out
+}
+
+func staticProviderPricing() map[string]map[string]modelPricing {
+	out := map[string]map[string]modelPricing{"anthropic": {}, "openai": {}, "xai": {}}
+	for modelID, price := range staticPricing {
+		out[inferOfficialProvider(modelID)][modelID] = price
+	}
+	return out
+}
+
 func pricingCachePath(home string) string {
 	return filepath.Join(home, pricingCacheRelPath)
 }
 
-func currentPricing(modelID string) (modelPricing, bool) {
+func currentProviderPricing(provider, modelID string) (modelPricing, bool) {
 	prices.mu.RLock()
 	defer prices.mu.RUnlock()
-	p, ok := prices.models[pricingModelID(modelID)]
+	p, ok := prices.models[normalizePricingProvider(provider)][pricingModelID(modelID)]
 	return p, ok
+}
+
+// currentPricing remains a test/display convenience for models whose official
+// provider is unambiguous. Cost calculation always uses currentProviderPricing.
+func currentPricing(modelID string) (modelPricing, bool) {
+	return currentProviderPricing(inferOfficialProvider(modelID), modelID)
+}
+
+func normalizePricingProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "deepseek", "deepseek-api":
+		return "deepseek"
+	case "openai", "openai-api", "codex":
+		return "openai"
+	case "anthropic", "anthropic-api", "claude":
+		return "anthropic"
+	case "xai", "x-ai":
+		return "xai"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func inferOfficialProvider(modelID string) string {
+	switch {
+	case strings.HasPrefix(modelID, "claude-"):
+		return "anthropic"
+	case strings.HasPrefix(modelID, "grok-"):
+		return "xai"
+	case strings.HasPrefix(modelID, "deepseek-"):
+		return "deepseek"
+	default:
+		return "openai"
+	}
 }
 
 func pricingModelID(modelID string) string {
@@ -112,24 +163,28 @@ func loadPricingCache(home string) {
 	if err := json.Unmarshal(data, &cache); err != nil {
 		return
 	}
-	if len(cache.Models) == 0 {
+	if len(cache.Providers) == 0 && len(cache.Models) == 0 {
 		return
 	}
 	// Older caches lost rate presence and context tiers; they cannot establish prices.
 	if cache.Version != pricingCacheVersion {
 		return
 	}
-	loaded := make(map[string]modelPricing, len(cache.Models))
-	for id, item := range cache.Models {
+	loaded := make(map[string]map[string]modelPricing)
+	loadEntry := func(provider, id string, item pricingCacheEntry) bool {
 		if id == "" || item.Present > 15 || (item.Source != "built-in" && item.Source != "models.dev") {
-			return
+			return false
 		}
 		for _, rate := range []float64{item.Input, item.Output, item.CacheRead, item.CacheCreate} {
 			if rate < 0 || math.IsInf(rate, 0) || math.IsNaN(rate) {
-				return
+				return false
 			}
 		}
-		loaded[id] = modelPricing{
+		provider = normalizePricingProvider(provider)
+		if loaded[provider] == nil {
+			loaded[provider] = make(map[string]modelPricing)
+		}
+		loaded[provider][id] = modelPricing{
 			displayName: item.DisplayName,
 			input:       item.Input,
 			output:      item.Output,
@@ -138,9 +193,22 @@ func loadPricingCache(home string) {
 			present:     item.Present, tiered: item.Tiered, provider: item.Provider, source: item.Source,
 			updatedAt: item.UpdatedAt,
 		}
+		return true
+	}
+	for provider, models := range cache.Providers {
+		for id, item := range models {
+			if !loadEntry(provider, id, item) {
+				return
+			}
+		}
+	}
+	for id, item := range cache.Models {
+		if !loadEntry(inferOfficialProvider(id), id, item) {
+			return
+		}
 	}
 	prices.mu.Lock()
-	prices.models = mergePricingMaps(staticPricing, loaded)
+	prices.models = mergeProviderPricing(staticProviderPricing(), loaded)
 	prices.updatedAt = cache.UpdatedAt
 	prices.source = cache.Source
 	prices.mu.Unlock()
@@ -150,6 +218,19 @@ func mergePricingMaps(base map[string]modelPricing, override map[string]modelPri
 	out := clonePricingMap(base)
 	for k, v := range override {
 		out[k] = v
+	}
+	return out
+}
+
+func mergeProviderPricing(base, override map[string]map[string]modelPricing) map[string]map[string]modelPricing {
+	out := cloneProviderPricing(base)
+	for provider, models := range override {
+		if out[provider] == nil {
+			out[provider] = make(map[string]modelPricing)
+		}
+		for id, price := range models {
+			out[provider][id] = price
+		}
 	}
 	return out
 }
@@ -196,9 +277,8 @@ func syncPricing(ctx context.Context, home string) error {
 	}
 
 	prices.mu.RLock()
-	updated := clonePricingMap(prices.models)
+	updated := cloneProviderPricing(prices.models)
 	prices.mu.RUnlock()
-	seen := map[string]string{}
 	count := 0
 	now := time.Now().UTC()
 	for provider, providerData := range payload {
@@ -214,15 +294,8 @@ func syncPricing(ctx context.Context, home string) error {
 				continue
 			}
 			localID := modelID
-			if _, builtIn := staticPricing[localID]; builtIn && builtinPricingProvider(localID) != provider {
-				return fmt.Errorf("conflicting built-in pricing provider for model %q", localID)
-			}
-			if previous, ok := seen[localID]; ok && previous != provider {
-				return fmt.Errorf("conflicting pricing providers for model %q", localID)
-			}
-			seen[localID] = provider
-			if previous, ok := updated[localID]; ok && previous.provider != "" && previous.provider != provider {
-				return fmt.Errorf("pricing provider changed for model %q", localID)
+			if updated[provider] == nil {
+				updated[provider] = make(map[string]modelPricing)
 			}
 			current := modelPricing{displayName: modelDisplayName(localID, modelData.Name), source: "models.dev", provider: provider, updatedAt: now,
 				tiered: meaningfulTier(cost.Tiers) || meaningfulTier(cost.ContextTier)}
@@ -250,8 +323,8 @@ func syncPricing(ctx context.Context, home string) error {
 				current.cacheCreate = *cost.CacheWrite5m
 				current.present |= rateCacheCreate
 			}
-			updated[localID] = current
 			count++
+			updated[provider][localID] = current
 		}
 	}
 
@@ -263,22 +336,25 @@ func syncPricing(ctx context.Context, home string) error {
 	}
 
 	if home != "" {
-		cacheModels := make(map[string]pricingCacheEntry, len(updated))
-		for id, item := range updated {
-			cacheModels[id] = pricingCacheEntry{
-				DisplayName: item.displayName,
-				Input:       item.input,
-				Output:      item.output,
-				CacheRead:   item.cacheRead,
-				CacheCreate: item.cacheCreate,
-				Present:     item.ratePresence(), Tiered: item.tiered, Provider: item.provider, Source: item.priceSource(), UpdatedAt: item.updatedAt,
+		cacheProviders := make(map[string]map[string]pricingCacheEntry, len(updated))
+		for provider, models := range updated {
+			cacheProviders[provider] = make(map[string]pricingCacheEntry, len(models))
+			for id, item := range models {
+				cacheProviders[provider][id] = pricingCacheEntry{
+					DisplayName: item.displayName,
+					Input:       item.input,
+					Output:      item.output,
+					CacheRead:   item.cacheRead,
+					CacheCreate: item.cacheCreate,
+					Present:     item.ratePresence(), Tiered: item.tiered, Provider: item.provider, Source: item.priceSource(), UpdatedAt: item.updatedAt,
+				}
 			}
 		}
 		if err := persistPricingCache(home, pricingCacheFile{
 			Version:   pricingCacheVersion,
 			UpdatedAt: now,
 			Source:    "models.dev",
-			Models:    cacheModels,
+			Providers: cacheProviders,
 		}); err != nil {
 			return fmt.Errorf("persist pricing cache: %w", err)
 		}

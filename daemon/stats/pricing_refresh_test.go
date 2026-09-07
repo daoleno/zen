@@ -19,7 +19,7 @@ func isolatePricing(t *testing.T) {
 	t.Helper()
 	prices.mu.Lock()
 	models, at, source := prices.models, prices.updatedAt, prices.source
-	prices.models = clonePricingMap(staticPricing)
+	prices.models = staticProviderPricing()
 	prices.updatedAt = time.Now()
 	prices.source = "built-in"
 	prices.mu.Unlock()
@@ -138,7 +138,7 @@ func TestPricingInvalidCatalogRetainsLastGood(t *testing.T) {
 	if err := syncPricing(context.Background(), home); err != nil {
 		t.Fatal(err)
 	}
-	before := clonePricingMap(prices.models)
+	before := cloneProviderPricing(prices.models)
 	at := prices.updatedAt
 	disk, err := os.ReadFile(pricingCachePath(home))
 	if err != nil {
@@ -147,9 +147,7 @@ func TestPricingInvalidCatalogRetainsLastGood(t *testing.T) {
 	for _, invalid := range []string{
 		"{", "{}", "null", `{"other":{"models":{"a":{"cost":{"input":1}}}}}`,
 		`{"openai":{"models":{"a":{"cost":{"input":-1}}}}}`,
-		`{"openai":{"models":{"a":{"cost":{"input":1}}}},"xai":{"models":{"a":{"cost":{"input":2}}}}}`,
 		newModelCatalog + "{}",
-		`{"openai":{"models":{"claude-sonnet-4-6":{"cost":{"input":99}}}}}`,
 	} {
 		payload = invalid
 		if err := syncPricing(context.Background(), home); err == nil {
@@ -161,6 +159,21 @@ func TestPricingInvalidCatalogRetainsLastGood(t *testing.T) {
 		got, _ := os.ReadFile(pricingCachePath(home))
 		if string(got) != string(disk) {
 			t.Fatal("last good disk replaced")
+		}
+	}
+}
+
+func TestPricingCatalogSeparatesProviderModelIdentity(t *testing.T) {
+	isolatePricing(t)
+	payload := `{"openai":{"models":{"shared":{"cost":{"input":1,"output":2}}}},"xai":{"models":{"shared":{"cost":{"input":3,"output":4}}}}}`
+	pricingServer(t, &payload)
+	if err := syncPricing(context.Background(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for provider, want := range map[string]float64{"openai": 1, "xai": 3} {
+		got, known := computeProviderKnownCost(provider, "shared", time.Time{}, 1000000, 0, 0, 0)
+		if !known || got != want {
+			t.Fatalf("%s cost %v/%v", provider, got, known)
 		}
 	}
 }
@@ -326,8 +339,8 @@ func TestPricingReportedChargesRemainSeparateFromReferenceEstimate(t *testing.T)
 func TestPricingUnpricedReasonDistinguishesCatalogFromContext(t *testing.T) {
 	isolatePricing(t)
 	prices.mu.Lock()
-	prices.models["context-required"] = modelPricing{source: "models.dev", present: rateInput | rateOutput, input: 2, output: 4, tiered: true}
-	prices.models["rate-required"] = modelPricing{source: "models.dev", present: rateInput, input: 2}
+	prices.models["openai"]["context-required"] = modelPricing{source: "models.dev", present: rateInput | rateOutput, input: 2, output: 4, tiered: true}
+	prices.models["openai"]["rate-required"] = modelPricing{source: "models.dev", present: rateInput, input: 2}
 	prices.mu.Unlock()
 	for _, tc := range []struct{ id, reason string }{
 		{"absent", "missing_model"}, {"context-required", "insufficient_context"}, {"rate-required", "missing_rate"},
@@ -352,7 +365,7 @@ func TestPricingWriteFailureRetainsRegistryAndCleansTemporaryFile(t *testing.T) 
 	if err := os.MkdirAll(pricingCachePath(home), 0700); err != nil {
 		t.Fatal(err)
 	}
-	before := clonePricingMap(prices.models)
+	before := cloneProviderPricing(prices.models)
 	if err := syncPricing(context.Background(), home); err == nil {
 		t.Fatal("write failure hidden")
 	}
@@ -382,7 +395,7 @@ func TestPricingRecomputesCachedUsageAndExposesProvenance(t *testing.T) {
 	if c.Stats().Ranges["all"].CostKnown {
 		t.Fatal("unknown usage treated as free")
 	}
-	payload := newModelCatalog
+	payload := strings.Replace(newModelCatalog, "openai", "anthropic", 1)
 	pricingServer(t, &payload)
 	c.pricingRefresh.step(context.Background(), home, c.refresh)
 	got := c.Stats()
@@ -390,7 +403,7 @@ func TestPricingRecomputesCachedUsageAndExposesProvenance(t *testing.T) {
 		t.Fatalf("cached total not recalculated: %+v", got.Ranges["all"])
 	}
 	m := got.Ranges["all"].Models[0]
-	if m.ID != "new-exact-model" || m.EstimatedCost != 2 || m.ReportedCost != 0 || m.EstimateSource != "models.dev" || m.ReferenceProvider != "openai" {
+	if m.ID != "new-exact-model" || m.EstimatedCost != 2 || m.ReportedCost != 0 || m.EstimateSource != "models.dev" || m.ReferenceProvider != "anthropic" {
 		t.Fatalf("provenance: %+v", m)
 	}
 	if !strings.Contains(got.Pricing.Basis, "not actual gateway bills") {

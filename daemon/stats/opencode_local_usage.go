@@ -50,6 +50,7 @@ func openCodeDBPath(home string) string {
 const openCodeUsageQuery = `SELECT
 	CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END AS role,
 	CASE WHEN json_valid(data) THEN json_extract(data, '$.modelID') END AS model,
+	CASE WHEN json_valid(data) THEN json_extract(data, '$.providerID') END AS provider,
 	CASE WHEN json_valid(data) THEN json_extract(data, '$.cost') END AS cost,
 	CASE WHEN json_valid(data) THEN json_extract(data, '$.tokens.input') END AS tin,
 	CASE WHEN json_valid(data) THEN json_extract(data, '$.tokens.output') END AS tout,
@@ -62,16 +63,17 @@ FROM message;`
 
 // openCodeMessageUsageRow mirrors one projected message row.
 type openCodeMessageUsageRow struct {
-	Role    json.RawMessage `json:"role"`
-	Model   json.RawMessage `json:"model"`
-	Cost    json.RawMessage `json:"cost"`
-	Tin     json.RawMessage `json:"tin"`
-	Tout    json.RawMessage `json:"tout"`
-	Trea    json.RawMessage `json:"trea"`
-	Tcr     json.RawMessage `json:"tcr"`
-	Tcw     json.RawMessage `json:"tcw"`
-	Created json.RawMessage `json:"created"`
-	Cwd     json.RawMessage `json:"cwd"`
+	Role     json.RawMessage `json:"role"`
+	Model    json.RawMessage `json:"model"`
+	Provider json.RawMessage `json:"provider"`
+	Cost     json.RawMessage `json:"cost"`
+	Tin      json.RawMessage `json:"tin"`
+	Tout     json.RawMessage `json:"tout"`
+	Trea     json.RawMessage `json:"trea"`
+	Tcr      json.RawMessage `json:"tcr"`
+	Tcw      json.RawMessage `json:"tcw"`
+	Created  json.RawMessage `json:"created"`
+	Cwd      json.RawMessage `json:"cwd"`
 }
 
 // collectOpenCodeStats reads OpenCode usage from the local structured
@@ -79,11 +81,10 @@ type openCodeMessageUsageRow struct {
 // (request) counts, input/output/reasoning/cache tokens, and cost when those
 // exact fields exist. Each usage row counts as one request; rows without any
 // token usage contribute nothing; a row without a cost field keeps the
-// model's cost unknown rather than inventing one. Rows are aggregated by the
-// (provider, model) pair recorded in the message; the shared model map is
-// keyed by model ID exactly like every other collector, so a model served by
-// multiple providers sums its observed facts. The database is opened
-// read-only so the live CLI is never disturbed.
+// model's cost unknown unless that exact provider/model has a tariff. Rows are
+// aggregated by the recorded (provider, model) identity; equal model IDs from
+// different providers remain separate. The database is opened read-only so
+// the live CLI is never disturbed.
 func (c *Collector) collectOpenCodeStats(home string) map[string]*dateAgg {
 	byDate := make(map[string]*dateAgg)
 
@@ -118,6 +119,7 @@ func (c *Collector) collectOpenCodeStats(home string) map[string]*dateAgg {
 		if modelID == "" {
 			continue
 		}
+		provider := normalizePricingProvider(firstRawString(row.Provider))
 		seconds, ok := unixTimestampFromRaw(row.Created)
 		if !ok {
 			continue
@@ -142,11 +144,10 @@ func (c *Collector) collectOpenCodeStats(home string) map[string]*dateAgg {
 
 		agg := ensureDateAgg(byDate, date)
 
-		// Per-model aggregation: the exact observed cost travels as the
-		// recorded component with its own token bucket, so price estimates
-		// cover exactly the tokens of unrecorded sources when a model is
-		// shared.
-		model := agg.models[modelID]
+		// Per-model aggregation keeps provider-reported and tariff-estimated
+		// records as separate additive components.
+		key := modelAggKey(provider, modelID)
+		model := agg.models[key]
 		model.totalTokens += int64(input + output + reasoning + cacheRead + cacheWrite)
 		model.inputTokens += int64(input)
 		model.outputTokens += int64(output)
@@ -154,32 +155,46 @@ func (c *Collector) collectOpenCodeStats(home string) map[string]*dateAgg {
 		model.cacheRead += int64(cacheRead)
 		model.cacheCreate += int64(cacheWrite)
 		model.sessions++
-		if model.recorded == nil {
-			model.recorded = &modelRecordedCost{}
+		if costOK {
+			if model.recorded == nil {
+				model.recorded = &modelRecordedCost{}
+			}
+			model.recorded.cost += cost
+			model.recorded.input += int64(input)
+			model.recorded.output += int64(output)
+			model.recorded.reasoning += int64(reasoning)
+			model.recorded.cacheRead += int64(cacheRead)
+			model.recorded.cacheCreate += int64(cacheWrite)
+			model.provider, model.modelID = provider, modelID
+		} else {
+			// OpenCode reports reasoning separately from output, so both use the
+			// provider's output tariff. Input excludes cache.read/write buckets.
+			addEstimatedCost(&model, provider, modelID, time.Unix(seconds, 0), int64(input), int64(output+reasoning), int64(cacheRead), int64(cacheWrite))
 		}
-		model.recorded.cost += cost
-		model.recorded.input += int64(input)
-		model.recorded.output += int64(output)
-		model.recorded.reasoning += int64(reasoning)
-		model.recorded.cacheRead += int64(cacheRead)
-		model.recorded.cacheCreate += int64(cacheWrite)
-		if !costOK {
-			model.costUnknown = true
-		}
-		agg.models[modelID] = model
+		agg.models[key] = model
 
 		// Per-project aggregation from the message working directory.
 		if projectName := openCodeProjectName(row.Cwd); projectName != "" {
 			project := ensureProjectAgg(agg, projectName)
+			costAvailable := costOK
 			project.totalTokens += int64(input + output + reasoning + cacheRead + cacheWrite)
 			project.inputTokens += int64(input)
 			project.outputTokens += int64(output)
 			project.reasoning += int64(reasoning)
 			project.cacheRead += int64(cacheRead)
 			project.cacheCreate += int64(cacheWrite)
-			project.cost += cost
+			if costOK {
+				project.cost += cost
+				project.reportedCost += cost
+				project.reported = true
+			} else if estimate, ok := computeProviderKnownCost(provider, modelID, time.Unix(seconds, 0), int64(input), int64(output+reasoning), int64(cacheRead), int64(cacheWrite)); ok {
+				project.cost += estimate
+				project.estimatedCost += estimate
+				project.estimated = true
+				costAvailable = true
+			}
 			project.sessions++
-			if !costOK {
+			if !costAvailable {
 				project.costUnknown = true
 			}
 		}

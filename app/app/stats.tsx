@@ -133,6 +133,16 @@ function fmtAvailableCost(cost: number, costKnown?: boolean): string {
   return fmtAvailable(cost, costKnown, fmtCost);
 }
 
+function costSourceLabel(source?: 'reported' | 'estimated' | 'mixed' | 'unknown'): string {
+  switch (source) {
+    case 'reported': return 'Reported';
+    case 'estimated': return 'Estimated';
+    case 'mixed': return 'Mixed';
+    case 'unknown': return 'Unavailable';
+    default: return 'Estimated'; // Older daemons exposed estimate-only costs.
+  }
+}
+
 function fmtAvailableTokens(tokens: number, totalTokensKnown?: boolean): string {
   return fmtAvailable(tokens, totalTokensKnown, fmt);
 }
@@ -217,7 +227,7 @@ function dayAccessibilityValue(day: DayCell): string {
   return [
     `${fmtAvailableTokens(day.totalTokens, day.totalTokensKnown)} tokens`,
     sessionSummary(day.sessions),
-    `${fmtAvailableCost(day.cost, day.costKnown)} estimated cost`,
+    `${fmtAvailableCost(day.cost, day.costKnown)} ${costSourceLabel(day.costProvenance).toLowerCase()} cost`,
   ].join(', ');
 }
 
@@ -733,7 +743,7 @@ function StatsRangeScene({
             {hasData && <View style={[s.card, s.summaryCard]}>
               <View style={s.summaryMetrics}>
                 <View style={s.summaryMetric}>
-                  <Text style={s.summaryLabel}>Estimated cost</Text>
+                  <Text style={s.summaryLabel}>Cost · {costSourceLabel(data.costProvenance)}</Text>
                   <Text
                     style={[
                       s.summaryValue,
@@ -780,10 +790,10 @@ function StatsRangeScene({
               <View style={s.card}>
                 <Text style={s.label}>Models</Text>
                 {(expandedSections.has('models') ? rankedModels : visibleModels).map((m) => (
-                  <View key={m.name} style={s.row}>
+                  <View key={`${m.provider ?? ''}:${m.name}`} style={s.row}>
                     <View style={s.rowInfo}>
                       <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
-                      <Text style={s.rowMeta} numberOfLines={1}>{rowActivitySummary(m)}</Text>
+                      <Text style={s.rowMeta}>{[m.provider, rowActivitySummary(m), costSourceLabel(m.costProvenance)].filter(Boolean).join(' · ')}</Text>
                       {unpricedReasonLabel(m.unpricedReason) && (
                         <Text style={s.rowMeta}>{unpricedReasonLabel(m.unpricedReason)}</Text>
                       )}
@@ -817,7 +827,7 @@ function StatsRangeScene({
                   <View key={p.name} style={s.row}>
                     <View style={s.rowInfo}>
                       <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
-                      <Text style={s.rowMeta} numberOfLines={1}>{rowActivitySummary(p)}</Text>
+                      <Text style={s.rowMeta} numberOfLines={1}>{[rowActivitySummary(p), costSourceLabel(p.costProvenance)].join(' · ')}</Text>
                     </View>
                     <Text
                       style={[

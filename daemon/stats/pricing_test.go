@@ -45,7 +45,7 @@ func TestSyncPricingUpdatesRegistryAndCache(t *testing.T) {
 
 	prevURL := pricingSyncURL
 	prevClient := pricingHTTPClient
-	prevModels := clonePricingMap(prices.models)
+	prevModels := cloneProviderPricing(prices.models)
 	prevSource := prices.source
 	prevUpdated := prices.updatedAt
 	pricingSyncURL = srv.URL
@@ -106,7 +106,7 @@ func TestSyncPricingUpdatesRegistryAndCache(t *testing.T) {
 
 	// Reset registry to built-in snapshot, then ensure disk cache restores synced values.
 	prices.mu.Lock()
-	prices.models = clonePricingMap(staticPricing)
+	prices.models = staticProviderPricing()
 	prices.updatedAt = time.Time{}
 	prices.source = "built-in"
 	prices.mu.Unlock()
@@ -127,7 +127,7 @@ func TestSyncPricingUpdatesRegistryAndCache(t *testing.T) {
 }
 
 func TestLoadPreviousPricingCacheCannotEstablishRatePresence(t *testing.T) {
-	prevModels := clonePricingMap(prices.models)
+	prevModels := cloneProviderPricing(prices.models)
 	prevSource := prices.source
 	prevUpdated := prices.updatedAt
 	t.Cleanup(func() {
@@ -156,5 +156,29 @@ func TestLoadPreviousPricingCacheCannotEstablishRatePresence(t *testing.T) {
 	}
 	if !pricingIsStale() {
 		t.Fatal("previous cache should force a fresh models.dev sync")
+	}
+}
+
+func TestPricingCacheKeepsSameModelSeparateByProvider(t *testing.T) {
+	previous := cloneProviderPricing(prices.models)
+	previousSource, previousUpdated := prices.source, prices.updatedAt
+	t.Cleanup(func() {
+		prices.mu.Lock()
+		defer prices.mu.Unlock()
+		prices.models, prices.source, prices.updatedAt = previous, previousSource, previousUpdated
+	})
+	home := t.TempDir()
+	cache := pricingCacheFile{Version: pricingCacheVersion, UpdatedAt: time.Now().UTC(), Source: "fixture", Providers: map[string]map[string]pricingCacheEntry{
+		"openai":    {"shared-model": {Input: 1, Output: 2, Present: rateInput | rateOutput, Source: "models.dev"}},
+		"anthropic": {"shared-model": {Input: 3, Output: 4, Present: rateInput | rateOutput, Source: "models.dev"}},
+	}}
+	if err := persistPricingCache(home, cache); err != nil {
+		t.Fatal(err)
+	}
+	loadPricingCache(home)
+	openAI, ok1 := currentProviderPricing("openai", "shared-model")
+	anthropic, ok2 := currentProviderPricing("anthropic", "shared-model")
+	if !ok1 || !ok2 || openAI.input != 1 || anthropic.input != 3 {
+		t.Fatalf("provider collision: openai=%+v anthropic=%+v", openAI, anthropic)
 	}
 }

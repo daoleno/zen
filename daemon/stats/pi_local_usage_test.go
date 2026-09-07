@@ -102,6 +102,17 @@ func piModelByName(t *testing.T, models []ModelStat, name string) ModelStat {
 	return ModelStat{}
 }
 
+func piModelByProvider(t *testing.T, models []ModelStat, provider, name string) ModelStat {
+	t.Helper()
+	for _, m := range models {
+		if m.Provider == provider && m.Name == name {
+			return m
+		}
+	}
+	t.Fatalf("model %s/%s not found in %+v", provider, name, models)
+	return ModelStat{}
+}
+
 func piProjectByName(t *testing.T, projects []ProjectStat, name string) ProjectStat {
 	t.Helper()
 	for _, p := range projects {
@@ -260,7 +271,7 @@ func TestPiWholeLedgerCountsBranchesRetriesAndDuplicatesOnce(t *testing.T) {
 		t.Fatal("missing pi day")
 	}
 
-	model := day.models["deepseek-v4-flash"]
+	model := day.models[modelAggKey("opencode-go", "deepseek-v4-flash")]
 	// Both billed records count (450), the duplicate snapshot does not (would be 600).
 	if model.totalTokens != 450 || model.inputTokens != 300 || model.outputTokens != 150 {
 		t.Fatalf("deepseek ledger totals = %+v, want 450 total (300 input, 150 output)", model)
@@ -304,7 +315,7 @@ func TestPiCompactionAndBranchSummaryUsageFollowsModelInEffect(t *testing.T) {
 		t.Fatal("missing pi day")
 	}
 
-	deepseek := day.models["deepseek-v4-flash"]
+	deepseek := day.models[modelAggKey("opencode-go", "deepseek-v4-flash")]
 	if deepseek.totalTokens != 200 || !piClose(deepseek.recorded.cost, 0.0005) {
 		t.Fatalf("deepseek (assistant + compaction) = %+v, want 200 tokens and 0.0005 cost", deepseek)
 	}
@@ -369,14 +380,14 @@ func TestPiMalformedAndPartialFilesFailSoft(t *testing.T) {
 	if zen == nil {
 		t.Fatal("missing pi day from partially malformed files")
 	}
-	deepseek := zen.models["deepseek-v4-flash"]
+	deepseek := zen.models[modelAggKey("opencode-go", "deepseek-v4-flash")]
 	if deepseek.totalTokens != 15 || deepseek.inputTokens != 10 {
 		t.Fatalf("file A deepseek = %+v, want only the 15-token valid record (10 input + 5 output)", deepseek)
 	}
 	if zen.projects["zen"] == nil || zen.projects["zen"].sessions != 1 {
 		t.Fatalf("file A project = %+v, want header-cwd project zen with 1 session", zen.projects["zen"])
 	}
-	grok := zen.models["x-ai/grok-4.1-fast"]
+	grok := zen.models[modelAggKey("openrouter", "x-ai/grok-4.1-fast")]
 	if grok.totalTokens != 30 || grok.sessions != 1 {
 		t.Fatalf("file B grok = %+v, want 30 tokens and 1 session", grok)
 	}
@@ -425,8 +436,8 @@ func TestPiCostUnknownWhenNotPriced(t *testing.T) {
 		t.Fatalf("mixed-cost model = %+v, want 4500 tokens, 0.004 observed cost, unknown overall", mixed)
 	}
 	free := piModelByName(t, stats, displayName("gpt-5.1-codex"))
-	if free.TotalTokens != 150 || free.Cost != 0 || free.CostKnown {
-		t.Fatalf("unpriced model = %+v, want 150 tokens, zero cost, unknown", free)
+	if free.TotalTokens != 150 || !piClose(free.Cost, 0.000625) || !free.CostKnown || free.CostProvenance != "estimated" {
+		t.Fatalf("known-provider model = %+v, want official estimate", free)
 	}
 	paid := piModelByName(t, stats, displayName("claude-opus-4-8"))
 	if paid.TotalTokens != 1500 || !piClose(paid.Cost, 0.005) || !paid.CostKnown {
@@ -549,17 +560,12 @@ func TestPiSameModelMixedSourcesMergeCost(t *testing.T) {
 	mergeModelAgg(merged, aggregateModelsByDate(opencodeByDate, "0000-00-00", "9999-99-99"))
 	stats := buildModelStats(merged)
 
-	if len(stats) != 1 {
-		t.Fatalf("model stats = %+v, want a single deepseek row", stats)
+	if len(stats) != 2 {
+		t.Fatalf("model stats = %+v, want provider-specific deepseek rows", stats)
 	}
-	model := stats[0]
-	if model.TotalTokens != 4500 {
-		t.Fatalf("merged total = %d, want 4500", model.TotalTokens)
-	}
-	// The exact observed Pi cost is preserved; the unrecorded source keeps
-	// the model's overall cost unknown (no DeepSeek price is fabricated).
-	if !piClose(model.Cost, 0.005) || model.CostKnown {
-		t.Fatalf("merged cost = %v known=%v, want 0.005 observed and unknown overall", model.Cost, model.CostKnown)
+	model := piModelByProvider(t, stats, "opencode-go", "deepseek-v4-flash")
+	if model.TotalTokens != 1500 || !piClose(model.Cost, 0.005) || !model.CostKnown || model.CostProvenance != "reported" {
+		t.Fatalf("provider-reported row = %+v", model)
 	}
 }
 
@@ -587,13 +593,27 @@ func TestPiUsesLocalTimezoneBuckets(t *testing.T) {
 	if day == nil {
 		t.Fatal("missing local-date bucket")
 	}
-	if day.models["deepseek-v4-flash"].totalTokens != 60 || day.models["deepseek-v4-flash"].sessions != 1 {
-		t.Fatalf("model = %+v, want 60 tokens and 1 session on the local date", day.models["deepseek-v4-flash"])
+	model := day.models[modelAggKey("opencode-go", "deepseek-v4-flash")]
+	if model.totalTokens != 60 || model.sessions != 1 {
+		t.Fatalf("model = %+v, want 60 tokens and 1 session on the local date", model)
 	}
 	if day.slots[0].totalTokens != 60 || day.slots[0].sessions != 1 {
 		t.Fatalf("night slot = %+v, want 60 tokens and 1 session", day.slots[0])
 	}
 	if day.projects["zen"].sessions != 1 {
 		t.Fatalf("project sessions = %d, want 1", day.projects["zen"].sessions)
+	}
+}
+
+func TestPiOfficialDeepSeekMissingRecordedCostUsesOccurrenceEstimate(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+	home := t.TempDir()
+	writePiSession(t, home, "--tmp-deepseek--", "2026-08-17T01-00-00-000Z.jsonl",
+		piHeader("/tmp/deepseek", "2026-08-17T01:00:00Z"),
+		piAssistantLine("a1", "2026-08-17T01:00:00Z", "deepseek", "deepseek-v4-flash", piUsageJSON(1_000_000, 1_000_000, 1_000_000, 1_000_000, nil, 0)))
+	stats := buildModelStats(aggregateModelsByDate((&Collector{}).collectPiStats(home), "0000-00-00", "9999-99-99"))
+	model := piModelByProvider(t, stats, "deepseek", "deepseek-v4-flash")
+	if !model.CostKnown || model.CostProvenance != "estimated" || !piClose(model.Cost, 2.214) {
+		t.Fatalf("official DeepSeek peak estimate = %+v", model)
 	}
 }

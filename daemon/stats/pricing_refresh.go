@@ -100,7 +100,7 @@ func (r *pricingRefresher) step(ctx context.Context, home string, refreshed func
 	r.pending = false
 	r.mu.Unlock()
 	prices.mu.RLock()
-	before := clonePricingMap(prices.models)
+	before := cloneProviderPricing(prices.models)
 	prices.mu.RUnlock()
 	err := r.sync(ctx, home)
 	r.mu.Lock()
@@ -123,15 +123,19 @@ func (r *pricingRefresher) step(ctx context.Context, home string, refreshed func
 		return
 	}
 	prices.mu.RLock()
-	after := clonePricingMap(prices.models)
+	after := cloneProviderPricing(prices.models)
 	prices.mu.RUnlock()
-	for id, p := range before {
-		p.updatedAt = time.Time{}
-		before[id] = p
+	for _, models := range before {
+		for id, p := range models {
+			p.updatedAt = time.Time{}
+			models[id] = p
+		}
 	}
-	for id, p := range after {
-		p.updatedAt = time.Time{}
-		after[id] = p
+	for _, models := range after {
+		for id, p := range models {
+			p.updatedAt = time.Time{}
+			models[id] = p
+		}
 	}
 	changed := !reflect.DeepEqual(before, after)
 	if changed && ctx.Err() == nil {

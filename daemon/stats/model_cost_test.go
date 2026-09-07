@@ -3,6 +3,7 @@ package stats
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 // The price-based estimate for 2000 input tokens of gpt-5.5 (input $5/1M):
@@ -14,6 +15,108 @@ func recordedEntry(modelID string, cost float64, input int64) modelAggEntry {
 		totalTokens: input,
 		inputTokens: input,
 		recorded:    &modelRecordedCost{cost: cost, input: input},
+	}
+}
+
+func TestDeepSeekV4PricingUsesOccurrenceUTCWindowsAndBuckets(t *testing.T) {
+	tests := []struct {
+		at   string
+		peak bool
+	}{
+		{"2026-08-17T00:59:59Z", false}, {"2026-08-17T01:00:00Z", true},
+		{"2026-08-17T03:59:59Z", true}, {"2026-08-17T04:00:00Z", false},
+		{"2026-08-17T05:59:59Z", false}, {"2026-08-17T06:00:00Z", true},
+		{"2026-08-17T09:59:59Z", true}, {"2026-08-17T10:00:00Z", false},
+	}
+	models := []struct {
+		id                 string
+		input, output, hit float64
+	}{
+		{"deepseek-v4-flash", 0.22, 0.66, 0.007},
+		{"deepseek-v4-pro", 0.66, 1.98, 0.022},
+	}
+	for _, model := range models {
+		for _, tc := range tests {
+			at, err := time.Parse(time.RFC3339, tc.at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := computeProviderKnownCost("deepseek", model.id, at, 1e6, 1e6, 1e6, 1e6)
+			multiplier := 1.0
+			if tc.peak {
+				multiplier = 2
+			}
+			want := (model.input*2 + model.output + model.hit) * multiplier
+			if !ok || !piClose(got, want) {
+				t.Errorf("%s at %s = %v,%v want %v", model.id, tc.at, got, ok, want)
+			}
+		}
+	}
+}
+
+func TestDeepSeekHistoricalTimestampIsDeterministicAndProviderAware(t *testing.T) {
+	at := time.Date(2026, 8, 17, 1, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60)) // 17:00 UTC previous day: off-peak
+	first, ok := computeProviderKnownCost("deepseek-api", "deepseek-v4-flash", at, 1e6, 1e6, 1e6, 0)
+	second, ok2 := computeProviderKnownCost("deepseek", "deepseek-v4-flash", at, 1e6, 1e6, 1e6, 0)
+	if !ok || !ok2 || first != second || !piClose(first, 0.887) {
+		t.Fatalf("historical cost = %v/%v known=%v/%v", first, second, ok, ok2)
+	}
+	if _, ok := computeProviderKnownCost("opencode-go", "deepseek-v4-flash", at, 1e6, 1e6, 1e6, 0); ok {
+		t.Fatal("third-party DeepSeek model must not receive official DeepSeek price")
+	}
+}
+
+func TestDeepSeekWeekendsRemainOffPeak(t *testing.T) {
+	for _, day := range []string{"2026-09-05T01:00:00Z", "2026-09-06T06:00:00Z"} {
+		at, _ := time.Parse(time.RFC3339, day)
+		got, known := computeProviderKnownCost("deepseek", "deepseek-v4-flash-vision-exp", at, 1000000, 0, 0, 0)
+		if !known || got != 0.22 {
+			t.Fatalf("weekend rate %v/%v", got, known)
+		}
+	}
+}
+
+func TestDeepSeekCacheBucketsDoNotDoubleChargeCachedInput(t *testing.T) {
+	at := time.Date(2026, 8, 17, 4, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		model             string
+		miss, hit, output float64
+	}{
+		{"deepseek-v4-flash", 0.22, 0.007, 0.66},
+		{"deepseek-v4-pro", 0.66, 0.022, 1.98},
+	} {
+		cacheHitOnly, ok := computeProviderKnownCost("deepseek", tc.model, at, 0, 0, 1e6, 0)
+		cacheMissOnly, ok2 := computeProviderKnownCost("deepseek", tc.model, at, 1e6, 0, 0, 0)
+		cacheCreateOnly, ok3 := computeProviderKnownCost("deepseek", tc.model, at, 0, 0, 0, 1e6)
+		outputOnly, ok4 := computeProviderKnownCost("deepseek", tc.model, at, 0, 1e6, 0, 0)
+		if !ok || !ok2 || !ok3 || !ok4 || !piClose(cacheHitOnly, tc.hit) || !piClose(cacheMissOnly, tc.miss) || !piClose(cacheCreateOnly, tc.miss) || !piClose(outputOnly, tc.output) {
+			t.Fatalf("%s buckets hit=%v miss=%v create=%v output=%v", tc.model, cacheHitOnly, cacheMissOnly, cacheCreateOnly, outputOnly)
+		}
+	}
+}
+
+func TestCostProvenanceReportedEstimatedMixedAndUnknown(t *testing.T) {
+	at := time.Date(2026, 8, 17, 4, 0, 0, 0, time.UTC)
+	reported := modelAggEntry{provider: "opencode-go", modelID: "deepseek-v4-flash", recorded: &modelRecordedCost{cost: 0.25}}
+	estimated := modelAggEntry{}
+	addEstimatedCost(&estimated, "deepseek", "deepseek-v4-flash", at, 1e6, 0, 0, 0)
+	mixed := reported
+	mixed.estimated, mixed.estimatedCost = true, 0.22
+	unknown := modelAggEntry{provider: "opencode-go", modelID: "deepseek-v4-flash", costUnknown: true}
+	for name, tc := range map[string]struct {
+		entry      modelAggEntry
+		provenance CostProvenance
+		known      bool
+	}{
+		"reported": {reported, "reported", true}, "estimated": {estimated, "estimated", true},
+		"mixed": {mixed, "mixed", true}, "unknown": {unknown, "unknown", false},
+	} {
+		if got := costProvenance(tc.entry); got != tc.provenance {
+			t.Errorf("%s provenance = %s", name, got)
+		}
+		if _, known := modelCostFor(tc.entry.modelID, tc.entry); known != tc.known {
+			t.Errorf("%s known = %v", name, known)
+		}
 	}
 }
 

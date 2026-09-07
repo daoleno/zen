@@ -46,7 +46,15 @@ export interface CodexSubscriptionUsage {
   serverLabel?: string;
 }
 
-export interface DayCell {
+export type CostProvenance = "reported" | "estimated" | "mixed" | "unknown";
+
+interface CostBreakdown {
+  costReported?: number;
+  costEstimated?: number;
+  costProvenance?: CostProvenance;
+}
+
+export interface DayCell extends CostBreakdown {
   date: string;
   totalTokens: number;
   totalTokensKnown?: boolean;
@@ -61,7 +69,8 @@ export interface DayCell {
   sessions: number;
 }
 
-export interface ModelStat {
+export interface ModelStat extends CostBreakdown {
+  provider?: string;
   id?: string;
   reportedCost?: number;
   estimatedCost?: number;
@@ -83,7 +92,7 @@ export interface ModelStat {
   sessions: number;
 }
 
-export interface ProjectStat {
+export interface ProjectStat extends CostBreakdown {
   name: string;
   totalTokens: number;
   totalTokensKnown?: boolean;
@@ -109,7 +118,7 @@ export interface ToolStat {
   calls: number;
 }
 
-export interface RangeData {
+export interface RangeData extends CostBreakdown {
   cost: number;
   costKnown?: boolean;
   totalTokens: number;

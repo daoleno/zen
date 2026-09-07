@@ -125,7 +125,7 @@ func TestCollectOpenCodeStatsAggregatesObservedFacts(t *testing.T) {
 		t.Fatal("zero-usage assistant row must not create a model")
 	}
 	glm := day2Agg.models["glm-4.7-free"]
-	if glm.sessions != 1 || glm.inputTokens != 600 || glm.recorded == nil || glm.recorded.cost != 0 || !glm.costUnknown {
+	if glm.sessions != 1 || glm.inputTokens != 600 || glm.recorded != nil || !glm.costUnknown {
 		t.Fatalf("missing-cost model must stay cost unknown: %#v", glm)
 	}
 
@@ -154,6 +154,28 @@ func TestCollectOpenCodeStatsAggregatesObservedFacts(t *testing.T) {
 	}
 	if day1Agg.slots[1].sessions != 1 {
 		t.Fatalf("slot 1 day1 = %#v", day1Agg.slots[1])
+	}
+}
+
+func TestCollectOpenCodeStatsKeepsProviderIdentityForSameModel(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+	home := t.TempDir()
+	created := int64(1786082400000) // 2026-08-07 06:00 UTC, peak
+	writeOpenCodeDBFixture(t, home, []string{
+		`{"role":"assistant","providerID":"deepseek","modelID":"deepseek-v4-flash","tokens":{"input":1000000,"output":1000000,"reasoning":1000000,"cache":{"read":1000000,"write":0}},"time":{"created":` + jsonNumber(float64(created)) + `}}`,
+		`{"role":"assistant","providerID":"opencode-go","modelID":"deepseek-v4-flash","cost":0.25,"tokens":{"input":1000000,"output":1000000,"reasoning":0,"cache":{"read":1000000,"write":0}},"time":{"created":` + jsonNumber(float64(created)) + `}}`,
+	})
+	models := buildModelStats(aggregateModelsByDate((&Collector{}).collectOpenCodeStats(home), "0000-00-00", "9999-99-99"))
+	if len(models) != 2 {
+		t.Fatalf("same-model providers collapsed: %+v", models)
+	}
+	direct := piModelByProvider(t, models, "deepseek", "deepseek-v4-flash")
+	thirdParty := piModelByProvider(t, models, "opencode-go", "deepseek-v4-flash")
+	if direct.CostProvenance != "estimated" || !piClose(direct.Cost, 3.094) {
+		t.Fatalf("direct estimate = %+v", direct)
+	}
+	if thirdParty.CostProvenance != "reported" || thirdParty.Cost != 0.25 {
+		t.Fatalf("third-party reported cost = %+v", thirdParty)
 	}
 }
 
