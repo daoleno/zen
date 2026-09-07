@@ -7,8 +7,10 @@ import React, {
 } from "react";
 import {
   Alert,
+  KeyboardAvoidingView,
   LayoutAnimation,
   Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -544,7 +546,7 @@ export default function SettingsScreen() {
                           </Text>
                           <Text style={styles.serverUrl} numberOfLines={1}>
                             {server.transportKind === "link"
-                              ? "Zen Link · route selected automatically"
+                              ? "Zen Link"
                               : server.url}
                           </Text>
                           <View style={styles.serverStatus}>
@@ -607,15 +609,9 @@ export default function SettingsScreen() {
                             accent={colors.accent}
                             title={
                               hydrated
-                                ? "Connected, no active agents yet"
-                                : "Connected, waiting for agent data"
+                                ? "No active agents"
+                                : "Loading agents"
                             }
-                            detail={
-                              hydrated
-                                ? "Zen is connected to this daemon, but it has not reported any live agents yet."
-                                : "Zen is connected to this daemon and waiting for the first worker list to arrive."
-                            }
-                            hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding terminals."
                           />
                         ) : null}
 
@@ -1036,15 +1032,12 @@ export default function SettingsScreen() {
                 {editingServer.transportKind === "link" ? (
                   <View style={styles.identityCard}>
                     <Text style={styles.identityLabel}>Connection path</Text>
-                    <Text style={styles.fieldHint}>
-                      Zen Link chooses a pinned relay candidate automatically.
-                      The saved daemon remains the same current server.
-                    </Text>
+                    <Text style={styles.fieldHint}>Zen Link</Text>
                   </View>
                 ) : (
                   <>
                     <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
-                      Advanced / Self-managed endpoint
+                      Server endpoint
                     </Text>
                     <TextInput
                       style={styles.input}
@@ -1058,10 +1051,6 @@ export default function SettingsScreen() {
                       autoCapitalize="none"
                       autoCorrect={false}
                     />
-                    <Text style={styles.fieldHint}>
-                      Full-origin endpoint from LAN, Tailscale, Cloudflare
-                      Tunnel, or your reverse proxy.
-                    </Text>
                   </>
                 )}
 
@@ -1194,6 +1183,10 @@ function TelegramConnectionRow({
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const ownerActive = useRef(false);
+  const ownerEpoch = useRef(0);
   const setupMode = telegramSetupMode(serverId || undefined, connected);
   const activeServerId = setupMode === "direct" && serverId ? serverId : null;
   const visibleStatus = activeServerId ? status : null;
@@ -1201,11 +1194,17 @@ function TelegramConnectionRow({
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
+      ownerEpoch.current++;
+      ownerActive.current = connected && Boolean(serverId);
+      setBusy(false);
+      setLoadError(null);
       if (!serverId || !connected) {
         setStatus(null);
         setLoading(false);
         return () => {
           cancelled = true;
+          ownerActive.current = false;
+          ownerEpoch.current++;
           setToken("");
           setShowToken(false);
         };
@@ -1217,36 +1216,48 @@ function TelegramConnectionRow({
           if (!cancelled) setStatus(next);
         })
         .catch(() => {
-          if (!cancelled) setStatus(null);
+          if (!cancelled) {
+            setStatus(null);
+            setLoadError("Telegram status could not be loaded.");
+          }
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
         });
       return () => {
         cancelled = true;
+        ownerActive.current = false;
+        ownerEpoch.current++;
         setToken("");
         setShowToken(false);
       };
-    }, [connected, serverId]),
+    }, [connected, serverId, reload]),
   );
 
   const runStatusMutation = async (
     operation: () => Promise<TelegramConnectionStatus>,
   ) => {
+    if (!ownerActive.current) return;
+    const epoch = ownerEpoch.current;
     setBusy(true);
     try {
-      setStatus(await operation());
+      const next = await operation();
+      if (epoch !== ownerEpoch.current) return;
+      setStatus(next);
     } catch (error: any) {
+      if (epoch !== ownerEpoch.current) return;
       Alert.alert(
         "Telegram connection",
         error?.message || "The connection could not be updated.",
       );
     } finally {
-      setBusy(false);
+      if (epoch === ownerEpoch.current) setBusy(false);
     }
   };
 
   const configure = async () => {
+    if (!ownerActive.current) return;
+    const epoch = ownerEpoch.current;
     const credential = token.trim();
     if (!serverId || !credential) {
       setToken("");
@@ -1260,9 +1271,11 @@ function TelegramConnectionRow({
         serverId,
         credential,
       );
+      if (epoch !== ownerEpoch.current) return;
       setStatus(next);
       setShowToken(false);
     } catch (error: any) {
+      if (epoch !== ownerEpoch.current) return;
       setToken("");
       Alert.alert(
         "Telegram setup failed",
@@ -1270,8 +1283,10 @@ function TelegramConnectionRow({
       );
     } finally {
       // The credential must not survive submission in component state.
-      setToken("");
-      setBusy(false);
+      if (epoch === ownerEpoch.current) {
+        setToken("");
+        setBusy(false);
+      }
     }
   };
 
@@ -1300,20 +1315,26 @@ function TelegramConnectionRow({
   };
 
   const beginBinding = async () => {
-    if (!serverId) return;
+    if (!serverId || !ownerActive.current) return;
+    const epoch = ownerEpoch.current;
     setBusy(true);
     try {
       const challenge = await wsClient.beginTelegramBinding(serverId);
+      if (epoch !== ownerEpoch.current) return;
       await Linking.openURL(challenge.url);
-      setStatus(await wsClient.getTelegramConnectionStatus(serverId));
+      if (epoch !== ownerEpoch.current) return;
+      const next = await wsClient.getTelegramConnectionStatus(serverId);
+      if (epoch !== ownerEpoch.current) return;
+      setStatus(next);
     } catch (error: any) {
+      if (epoch !== ownerEpoch.current) return;
       setToken("");
       Alert.alert(
         "Telegram owner binding",
         error?.message || "The private Telegram chat could not be opened.",
       );
     } finally {
-      setBusy(false);
+      if (epoch === ownerEpoch.current) setBusy(false);
     }
   };
 
@@ -1383,6 +1404,11 @@ function TelegramConnectionRow({
     : colors.textTertiary;
   const hasConfiguredBot = Boolean(visibleStatus?.bot_username);
   const hasBoundOwner = Boolean(visibleStatus?.owner_hint);
+  const closeDetails = () => {
+    setExpanded(false);
+    setToken("");
+    setShowToken(false);
+  };
   return (
     <View style={styles.serverCard}>
       <AnimatedPressable
@@ -1393,11 +1419,7 @@ function TelegramConnectionRow({
         accessibilityLabel={`Telegram${
           visibleStatus?.bot_username ? `, @${visibleStatus.bot_username}` : ""
         }, ${stateLabel}`}
-        accessibilityHint={
-          expanded
-            ? "Hide Telegram details and actions"
-            : "Show Telegram details and actions"
-        }
+        accessibilityHint="Open Telegram details and actions"
         accessibilityState={{ expanded }}
         onPress={() => {
           void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1435,17 +1457,31 @@ function TelegramConnectionRow({
             </View>
           </View>
           <Ionicons
-            name={expanded ? "chevron-up" : "chevron-down"}
+            name="chevron-forward"
             size={18}
             color={colors.textTertiary}
           />
         </View>
       </AnimatedPressable>
 
-      {expanded ? (
-        <View style={styles.telegramExpandedContent}>
+      <RisingSheet visible={expanded} onClose={closeDetails} layout="fullscreen" cardStyle={{ backgroundColor: colors.bgPrimary }}>
+        <SafeAreaView style={{ flex: 1 }}>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+            <View style={styles.telegramHeader}>
+              <AnimatedPressable onPress={closeDetails} accessibilityRole="button" accessibilityLabel="Back to Settings" style={{ width: 48, height: 48, alignItems: "center", justifyContent: "center" }}>
+                <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
+              </AnimatedPressable>
+              <Text style={styles.telegramTitle} accessibilityRole="header">Telegram</Text>
+            </View>
+        <ScrollView contentContainerStyle={styles.telegramExpandedContent} keyboardShouldPersistTaps="handled">
+          {!loading && !loadError ? <Text style={styles.telegramDetail}>{stateLabel}</Text> : null}
           {!activeServerId ? (
             renderLocalTelegramSetup()
+          ) : loading ? <Text style={styles.telegramDetail}>Loading</Text> : loadError ? (
+            <View style={styles.telegramSetup}>
+              <Text style={styles.telegramErrorText}>{loadError}</Text>
+              <ConnectionAction icon="refresh" label="Retry" onPress={() => setReload(value => value + 1)} />
+            </View>
           ) : (
             <>
               {status?.last_error ? (
@@ -1785,8 +1821,10 @@ function TelegramConnectionRow({
               ) : null}
             </>
           )}
-        </View>
-      ) : null}
+        </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </RisingSheet>
     </View>
   );
 }
@@ -1850,8 +1888,8 @@ function ServerNoticeCard({
   icon: React.ComponentProps<typeof Ionicons>["name"];
   accent: string;
   title: string;
-  detail: string;
-  hint: string;
+  detail?: string;
+  hint?: string;
 }) {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -1862,8 +1900,8 @@ function ServerNoticeCard({
         <Ionicons name={icon} size={15} color={accent} />
         <Text style={styles.noticeTitle}>{title}</Text>
       </View>
-      <Text style={styles.noticeDetail}>{detail}</Text>
-      <Text style={styles.noticeHint}>{hint}</Text>
+      {detail ? <Text style={styles.noticeDetail}>{detail}</Text> : null}
+      {hint ? <Text style={styles.noticeHint}>{hint}</Text> : null}
     </View>
   );
 }

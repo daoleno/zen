@@ -2,6 +2,31 @@
 
 Date reviewed: 2026-08-25
 
+## Setup And Recovery
+
+In Android or iOS, select the intended server in **Settings > Servers**, then open
+**Messaging > Telegram**. The overview contains only the bot/status entry; setup
+and management are in its detail screen.
+
+1. Open BotFather to create or select your bot.
+2. Paste its token into the secure token field and continue. Zen verifies and
+   stores it on that server; the mobile field is cleared after submission or exit.
+3. Choose **Connect Telegram** and complete the one-time link in your private bot
+   chat. Zen obtains the owner identity from the authenticated Telegram message,
+   not a manually entered username.
+
+For local setup on the machine running Zen, use `zen telegram setup`. A failed
+status load shows Retry; an offline server must be reconnected in Settings.
+Never paste a bot token into Brain or a public issue.
+
+**Disable** stops sending and receiving. **Revoke** removes the verified owner
+and requires a new binding. **Remove** deletes the daemon's bot credentials,
+binding, offsets, and delivery state. None of these deletes Telegram cloud
+messages. Bot conversations are Telegram cloud chats, not end-to-end encrypted
+Secret Chats.
+
+The sections below retain the protocol and security design evidence.
+
 ## Product Boundary
 
 Telegram is an outbound-network, daemon-owned adapter for the canonical Zen Brain. It is not a

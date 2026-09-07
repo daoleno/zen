@@ -19,6 +19,7 @@ describe("Settings copy density", () => {
       "Advanced / Self-managed: run zen pair",
       "Bot chats are Telegram cloud chats. The token remains on this daemon.",
       "Create a bot with BotFather, then enter its token once.",
+      "Full-origin endpoint from LAN, Tailscale, Cloudflare",
     ]) {
       expect(source).not.toContain(redundantCopy);
     }
@@ -29,7 +30,7 @@ describe("Settings copy density", () => {
       "Camera permission required",
       "Allow camera access to scan a zen pairing QR code.",
       "Scan the one-time QR from zen pair, or paste its pairing link.",
-      "Full-origin endpoint from LAN, Tailscale, Cloudflare",
+      'accessibilityLabel="Server endpoint"',
       "Telegram cloud messages are not deleted.",
       'accessibilityRole="radiogroup"',
       'accessibilityRole="radio"',

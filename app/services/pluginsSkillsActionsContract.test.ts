@@ -214,7 +214,8 @@ describe("local-only Skills surface contract", () => {
   });
   test("protected Plugins never fake an uninstall", () => {
     expect(pluginsPresentation).toContain("uninstallable.length === 0");
-    expect(pluginsPresentation).toContain("can never report success");
+    expect(pluginsPresentation).toContain("copy.capability.canUninstall ?");
+    expect(pluginsPresentation).toContain("{pluginReadonlyReason(copy)}");
     expect(screen).toContain("evaluatePluginUninstall(copy)");
     expect(screen).toContain("copies remain");
   });

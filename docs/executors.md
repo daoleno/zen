@@ -57,7 +57,12 @@ Recommendations:
 
 ## Credentials
 
-Zen does not store provider API keys. Authenticate each CLI the way that tool normally expects (`codex login`, Claude login, Cursor, Grok, Pi `/login` or provider API keys, OpenCode `auth`, etc.) on the daemon host before expecting sessions to work.
+For **Official login / Direct**, authenticate each CLI on the daemon host using
+its own login flow. For a custom Codex or Claude endpoint, **Settings > Providers >
+Models and accounts** stores the supplied API key on the current daemon through
+Zen's credential store. The mobile form does not display stored secrets; leaving
+an existing key empty preserves it. Switching the current server rebinds the
+configuration. Selecting a model connection does not change the Brain executor.
 
 ## Custom executors
 

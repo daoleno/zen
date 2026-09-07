@@ -658,11 +658,6 @@ function StatsRangeScene({
     : range === 'day'
       ? 'No activity today'
       : `No ${RANGE_OPTIONS.find(opt => opt.key === range)?.label.toLowerCase()} activity`;
-  const emptySubtext = !hasAnyStats
-    ? 'Connect to a server with Claude Code, Codex, Grok, Cursor Agent, OpenCode, or Pi history to start collecting data.'
-    : latestDay
-      ? `Latest activity: ${shortDate(latestDay.date)}. Stats read Claude Code, Codex, Grok, Cursor Agent, OpenCode, and Pi history from the daemon host.`
-      : 'Stats read Claude Code, Codex, Grok, Cursor Agent, OpenCode, and Pi history from the daemon host.';
 
   return (
     <View
@@ -679,7 +674,7 @@ function StatsRangeScene({
         <View style={s.emptyContainer}>
           <Text style={s.emptyIcon}>{'∷'}</Text>
           <Text style={s.emptyText}>{emptyTitle}</Text>
-          <Text style={s.emptySubtext}>{emptySubtext}</Text>
+          {latestDay ? <Text style={s.emptySubtext}>Latest activity: {shortDate(latestDay.date)}</Text> : null}
         </View>
       ) : (
         <ScrollView
@@ -771,6 +766,10 @@ function StatsRangeScene({
               {statsData?.pricing && (
                 <Text style={s.summaryNote}>
                   Catalog prices are reference estimates, not your gateway bill.
+                  {` Source: ${statsData.pricing.source}.`}
+                  {statsData.pricing.updatedAt
+                    ? ` Updated ${new Date(statsData.pricing.updatedAt).toLocaleString()}.`
+                    : " Not yet refreshed."}
                   {statsData.pricing.lastError
                     ? " Pricing refresh failed; previous estimates retained."
                     : statsData.pricing.stale
@@ -792,11 +791,14 @@ function StatsRangeScene({
                 {(expandedSections.has('models') ? rankedModels : visibleModels).map((m) => (
                   <View key={`${m.provider ?? ''}:${m.name}`} style={s.row}>
                     <View style={s.rowInfo}>
-                      <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
+                      <Text style={s.rowName}>{m.id || m.name}</Text>
                       <Text style={s.rowMeta}>{[m.provider, rowActivitySummary(m), costSourceLabel(m.costProvenance)].filter(Boolean).join(' · ')}</Text>
                       {unpricedReasonLabel(m.unpricedReason) && (
                         <Text style={s.rowMeta}>{unpricedReasonLabel(m.unpricedReason)}</Text>
                       )}
+                      {m.estimateSource && <Text style={s.rowMeta}>
+                        {m.estimateSource}{m.pricingUpdatedAt ? ` / ${new Date(m.pricingUpdatedAt).toLocaleDateString()}` : " / reference tariff"}
+                      </Text>}
                     </View>
                     <Text
                       style={[

@@ -51,8 +51,7 @@ import {
 import type { BrainWorkResultEvent } from "../../components/brain/brainWorkEvent";
 import { useCurrentServer } from "../../store/currentServer";
 
-const BRAIN_EMPTY_TITLE = "Ready when you are";
-const BRAIN_EMPTY_BODY = undefined;
+const BRAIN_EMPTY_TITLE = "No messages yet";
 
 export default function BrainScreen() {
   const router = useRouter();
@@ -470,7 +469,6 @@ export default function BrainScreen() {
               readOnly={targetedThreadReadOnly}
               onSwitchToTerminal={openBrainTerminal}
               emptyTitle={BRAIN_EMPTY_TITLE}
-              emptyBody={BRAIN_EMPTY_BODY}
               renderComposerAccessory={renderBrainComposerAccessory}
               composerModelControl={brainModelSheet.composerControl}
               onComposerModelControlPress={() => brainModelSheet.open()}

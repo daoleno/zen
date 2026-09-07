@@ -122,7 +122,6 @@ export function GitDiffRepoBrowser({
           <GitDiffStateCard
             icon="folder-open-outline"
             title="No files here"
-            detail="This folder does not contain visible repository entries."
             accent={chrome.textSubtle}
             chromeText={chrome.text}
             chromeMuted={chrome.textMuted}

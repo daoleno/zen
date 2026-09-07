@@ -20,6 +20,14 @@ function sourceBlock(start: string, end: string): string {
 }
 
 describe("Settings connection information architecture", () => {
+  test("compact Telegram entry opens focused details with error recovery", () => {
+    const telegram = sourceBlock("function TelegramConnectionRow", "function ConnectionAction");
+    expect(telegram).toContain('visible={expanded} onClose={closeDetails} layout="fullscreen"');
+    expect(telegram).toContain('accessibilityLabel="Back to Settings"');
+    expect(telegram).toContain("ScrollView contentContainerStyle={styles.telegramExpandedContent}");
+    expect(telegram).toContain('label="Retry"');
+    expect(telegram).toContain("if (!ownerActive.current) return;");
+  });
   test("Servers, Messaging and Providers have separate entry points", () => {
     for (const section of ["Servers", "Messaging", "Providers"]) {
       expect(settingsSource).toMatch(new RegExp(`>\\s*${section}\\s*<`));
@@ -110,7 +118,7 @@ describe("Settings connection information architecture", () => {
     expect(telegram).toContain('label="Connect Telegram"');
     expect(telegram).toContain('icon="open-outline"');
     expect(telegram).not.toContain("Bind Owner");
-    expect(telegram).not.toContain("Open Telegram");
+    expect(telegram).not.toContain('label="Open Telegram"');
   });
 
   test("token input is secure, explicitly pasted, and cleared on every exit", () => {

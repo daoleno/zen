@@ -284,6 +284,8 @@ function CurrentWorkDetail() {
 
         {remoteBanner ? (
           <AnimatedPressable
+            accessibilityRole="button"
+            accessibilityLabel="Load remote changes"
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               setDraftBody(item.body);
@@ -302,7 +304,7 @@ function CurrentWorkDetail() {
               color={colors.textPrimary}
             />
             <Text style={styles.bannerText}>
-              Remote changes — tap to load.
+              Load remote changes
             </Text>
           </AnimatedPressable>
         ) : null}

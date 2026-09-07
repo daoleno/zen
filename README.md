@@ -8,7 +8,8 @@
 
 <p align="center">
   Zen keeps coding agents running on your own computer and gives you Chat, live Terminal,
-  Sessions, and persistent Brain on your phone. Your code and credentials stay on your machine.
+  Sessions, and persistent Brain on your phone. The daemon owns execution and stored credentials;
+  paired devices receive the conversation and files you open, and AI providers receive requests.
 </p>
 
 <p align="center">
@@ -72,7 +73,7 @@ Then, on the computer that has `tmux` and an authenticated coding-agent CLI:
 
 ```bash
 zen doctor
-zen
+zen --lan
 ```
 
 Use the normal self-managed path: `zen --lan` on trusted Wi-Fi/Tailnet and run
@@ -84,6 +85,26 @@ Zen Link is optional source capability for operators who explicitly configure
 repository does not configure, start, deploy, or claim a live Link service.
 
 Get the mobile app from the [Android guide](docs/android.md) or [public TestFlight](https://testflight.apple.com/join/rTKCDzMt), then open it and scan or import the pairing code.
+
+## First actions
+
+After pairing, open **Brain** for a persistent conversation, or **Sessions** to
+open an existing agent or launch a terminal. Chat and Terminal are two views of
+the same session. Git Diff reviews that session's repository without changing it.
+
+**Settings > Servers** selects the single current server used throughout the
+app. **Providers > Models and accounts** configures Codex/Claude model access;
+the Brain executor control selects the CLI that runs work. They are different
+settings. **Messaging > Telegram** opens bot setup for the current server.
+
+Stats refreshes reference prices automatically after discovery and observed
+usage. Missing catalog prices remain unknown, not free. Reference estimates and
+reported charges are identified separately; see [Usage and pricing](docs/usage-and-pricing.md).
+
+If pairing fails, check the endpoint with `zen doctor`, then use Retry or generate
+a new one-time pairing code. An offline server does not silently switch to another
+computer. See [Troubleshooting](docs/troubleshooting.md) and
+[Telegram setup](docs/telegram-brain-connection.md#setup-and-recovery).
 
 For Link, LAN, Tailscale, Cloudflare Tunnel, and reverse proxy options, see
 [Connect and pair](docs/connect-and-pair.md). Relay operators start with

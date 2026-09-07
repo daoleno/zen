@@ -513,7 +513,6 @@ function SessionFilePreviewBody({
         chrome={chrome}
         icon={<ActivityIndicator color={chrome.accent} />}
         title="Opening file"
-        detail="Resolving from the live Session."
       />
     );
   }
@@ -608,7 +607,6 @@ function SessionFilePreviewBody({
             />
           }
           title="Preview not supported"
-          detail="This binary type has metadata only. Zen does not read it into memory or send it through JSON."
         />
       );
   }
@@ -728,7 +726,7 @@ function PreviewState({
   chrome: TerminalThemeChrome;
   icon: React.ReactNode;
   title: string;
-  detail: string;
+  detail?: string;
   action?: string;
   onAction?: () => void;
 }) {
@@ -736,12 +734,12 @@ function PreviewState({
     <View style={styles.state}>
       {icon}
       <Text style={[styles.stateTitle, { color: chrome.text }]}>{title}</Text>
-      <Text
+      {detail ? <Text
         selectable
         style={[styles.stateDetail, { color: chrome.textMuted }]}
       >
         {detail}
-      </Text>
+      </Text> : null}
       {action && onAction ? (
         <TouchableOpacity
           accessibilityRole="button"

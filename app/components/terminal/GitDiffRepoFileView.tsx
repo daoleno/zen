@@ -85,7 +85,6 @@ export function GitDiffRepoFileView({
           <GitDiffStateCard
             icon="sync-outline"
             title="Loading file"
-            detail="Fetching the current working tree snapshot."
             accent={theme.cursor}
             chromeText={chrome.text}
             chromeMuted={chrome.textMuted}

@@ -20,6 +20,10 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 - [Optional Zen Link Relay operations](zen-link-relay.md) covers the inert-by-default single-region relay source, explicit connector config, local E2E, limits, upgrade, and rollback. No Link service is deployed by this repository.
 - [Brain lifecycle](brain-lifecycle.md) explains Work, Event, Session, active Attempt, current operational relationships, and durable backlog.
 - [Notifications](notifications.md) explains the current notification model.
+- [Telegram setup and recovery](telegram-brain-connection.md#setup-and-recovery)
+- [Usage and pricing](usage-and-pricing.md)
+- [Git review](git-review.md)
+- [Mobile copy boundaries](mobile-copy.md)
 
 ## Development and maintenance
 

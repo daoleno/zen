@@ -248,7 +248,7 @@ describe("client-first Providers surface contract", () => {
       'const CLIENTS: ProviderClient[] = ["codex", "claude"]',
     );
     expect(presentationSource).toContain("Official login");
-    expect(presentationSource).toContain("No Zen routing");
+    expect(presentationSource).toContain('subtitle="Direct"');
     expect(presentationSource).toContain("onUseDirect(client)");
   });
 

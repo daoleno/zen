@@ -31,7 +31,6 @@ import {
 } from "../constants/tokens";
 import {
   calendarDateKey,
-  executes,
   formatCalendarTime,
   groupAgenda,
   itemInstant,
@@ -306,21 +305,22 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
           <View style={{ flex: 1 }}>
             <Text style={styles.permissionTitle}>
               {notificationState === "denied"
-                ? "Reminder notifications are disabled"
+                ? "Reminders disabled"
                 : notificationState === "unavailable"
-                  ? "Reminder notifications are unavailable"
-                  : "Reminder notifications are not enabled"}
+                  ? "Reminders unavailable"
+                  : "Reminders not enabled"}
             </Text>
           </View>
           {notificationState !== "unavailable" ? (
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel={notificationState === "denied" ? "Open notification settings" : "Enable reminders"}
               onPress={() => void enableNotifications()}
               style={styles.permissionAction}
             >
-              <Text style={styles.permissionActionText}>
-                {notificationState === "denied" ? "Open settings" : "Enable"}
-              </Text>
+              {notificationState === "denied" ? (
+                <Ionicons name="settings-outline" size={20} color={colors.accent} />
+              ) : <Text style={styles.permissionActionText}>Enable</Text>}
             </Pressable>
           ) : null}
         </View>
@@ -508,6 +508,7 @@ function CalendarRow({ item, onPress }: { item: ServerItem; onPress(): void }) {
           {new Date(itemInstant(item)).toLocaleTimeString(undefined, {
             hour: "numeric",
             minute: "2-digit",
+            hour12: false,
             timeZone: item.timezone,
           })}
         </Text>
@@ -542,12 +543,6 @@ function CalendarRow({ item, onPress }: { item: ServerItem; onPress(): void }) {
             }
           />
           <Text style={styles.metaText}>{statuses[item.status]}</Text>
-          {executes(item) ? (
-            <>
-              <Text style={styles.metaDot}>·</Text>
-              <Text style={styles.executeText}>Zen executes</Text>
-            </>
-          ) : null}
         </View>
       </View>
       <Ionicons name="chevron-forward" size={17} color={colors.textTertiary} />
@@ -1394,7 +1389,6 @@ function createStyles(colors: any) {
     },
     metaText: { ...TypeScale.caption, color: colors.textTertiary },
     metaDot: { color: colors.textTertiary },
-    executeText: { ...TypeScale.caption, color: colors.accent },
     empty: {
       minHeight: 52,
       paddingVertical: Spacing.sm,

@@ -7,7 +7,7 @@ import { withAlpha } from "./colorWithAlpha";
 interface GitDiffStateCardProps {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
-  detail: string;
+  detail?: string;
   accent: string;
   chromeText: string;
   chromeMuted: string;
@@ -39,7 +39,7 @@ export function GitDiffStateCard({
         <Ionicons name={icon} size={18} color={accent} />
       )}
       <Text style={[styles.stateTitle, { color: chromeText }]}>{title}</Text>
-      <Text style={[styles.stateDetail, { color: chromeMuted }]}>{detail}</Text>
+      {detail ? <Text style={[styles.stateDetail, { color: chromeMuted }]}>{detail}</Text> : null}
     </View>
   );
 }

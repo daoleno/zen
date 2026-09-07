@@ -59,7 +59,8 @@ describe("Calendar screen contract", () => {
       expect(source).toContain(value);
   });
   test("has graceful notification denial and keyboard-safe editor", () => {
-    expect(source).toContain("Reminder notifications are");
+    expect(source).toContain("Reminders disabled");
+    expect(source).toContain("Open notification settings");
     expect(source).toContain("syncCalendarNotifications");
     expect(source).toContain("KeyboardAvoidingView");
     expect(source).toContain('Platform.OS === "ios" ? "padding" : "height"');

@@ -157,9 +157,6 @@ export function ProvidersPresentation({
         {!currentServerAvailable || offline ? (
           <View style={styles.stateBlock}>
             <Text style={styles.stateTitle}>Offline</Text>
-            <Text style={styles.stateBody}>
-              Connect the current server to configure model access.
-            </Text>
             <Pressable onPress={onOpenSettings} accessibilityRole="button">
               <Text style={styles.link}>Open Settings</Text>
             </Pressable>
@@ -214,13 +211,6 @@ export function ProvidersPresentation({
 
         {catalog ? (
           <>
-            <View style={styles.intro}>
-              <Text style={styles.introTitle}>Model connections</Text>
-              <Text style={styles.introBody}>
-                Configure each client separately. Official login stays direct;
-                Zen only routes Sessions that use a custom endpoint.
-              </Text>
-            </View>
             {CLIENTS.map((client) => (
               <ClientConnectionCard
                 key={client}
@@ -303,16 +293,13 @@ function ClientConnectionCard({
         </View>
         <View style={styles.rowCopy}>
           <Text style={styles.clientTitle}>{label}</Text>
-          <Text style={styles.clientSummary}>
-            {direct ? "Official login · Direct" : "Custom endpoint"}
-          </Text>
         </View>
       </View>
 
       <View style={styles.group} accessibilityRole="radiogroup">
         <ChoiceRow
           title="Official login"
-          subtitle={`Use ${label}'s own account. No Zen routing.`}
+          subtitle="Direct"
           selected={direct}
           disabled={disabled || direct}
           onPress={onUseDirect}
@@ -1072,9 +1059,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       gap: 6,
     },
     noticeText: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textPrimary },
-    intro: { gap: 5, paddingHorizontal: 2 },
-    introTitle: { ...UiTextMetrics, ...TypeScale.title, color: colors.textPrimary },
-    introBody: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textSecondary },
     clientSection: { gap: 10 },
     clientHeader: {
       minHeight: 46,
@@ -1092,7 +1076,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.surfaceSubtle,
     },
     clientTitle: { ...UiTextMetrics, ...TypeScale.compact, color: colors.textPrimary, fontWeight: "700" },
-    clientSummary: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 1 },
     group: {
       overflow: "hidden",
       borderRadius: Radii.xs,

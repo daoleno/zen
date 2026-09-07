@@ -7,7 +7,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -39,6 +38,7 @@ import { MANAGED_SKILL_AGENTS } from "../../services/skillsScreenModel";
 import { AgentLogoSet } from "../agents/AgentLogoSet";
 import { ExtensionListRow } from "../extensions/ExtensionListRow";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
+import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 import { PluginSkillsDirectory } from "./PluginSkillsDirectory";
 
 interface PluginsPresentationProps {
@@ -150,13 +150,13 @@ export function PluginsPresentation(props: PluginsPresentationProps) {
             size={19}
             color={colors.textTertiary}
           />
-          <TextInput
+          <MobileSingleLineInput
             accessibilityLabel="Search installed Plugins"
             value={query}
             onChangeText={setQuery}
-            placeholder="Search installed Plugins"
+            placeholder="Search Plugins"
             placeholderTextColor={colors.textTertiary}
-            style={[styles.input, { color: colors.textPrimary }]}
+            containerStyle={{ flex: 1 }}
           />
           {query ? (
             <Pressable
@@ -230,7 +230,6 @@ export function PluginsPresentation(props: PluginsPresentationProps) {
             <PluginState
               icon="extension-puzzle-outline"
               title="Plugin details"
-              detail="Select an installed Plugin to inspect its components, availability, location, and uninstall capability."
             />
           )}
         </View>
@@ -290,7 +289,6 @@ function PluginsList(
       <PluginState
         icon="server-outline"
         title="No current server"
-        detail="Choose a server in Settings to view its installed Plugins."
         action="Open Settings"
         onAction={props.onOpenSettings}
       />
@@ -313,7 +311,6 @@ function PluginsList(
       <PluginState
         loading
         title="Loading installed Plugins"
-        detail="Reading local Plugin managers and safe cache locations."
       />
     );
   }
@@ -322,7 +319,6 @@ function PluginsList(
       <PluginState
         icon="extension-puzzle-outline"
         title="No installed Plugins"
-        detail="No local Plugins were found for supported Agents on this server."
       />
     );
   }
@@ -342,7 +338,6 @@ function PluginsList(
         <PluginState
           icon="search-outline"
           title="No matches"
-          detail="Adjust your Plugin search or filters."
         />
       }
       renderItem={({ item }) => (
@@ -460,18 +455,13 @@ function PluginInspector({
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={styles.inspectorScroll}>
-        <PluginDetailSection title="Overview">
+        {copy.description ? <PluginDetailSection title="Overview">
           <Text style={{ color: colors.textSecondary }}>
-            {copy.description ||
-              `${plugin.displayName} is provided by ${pluginCopyLabel(copy)}.`}
+            {copy.description}
           </Text>
-        </PluginDetailSection>
+        </PluginDetailSection> : null}
         {skillEntries.length ? (
           <PluginDetailSection title={`Skills (${skillEntries.length})`}>
-            <Text style={[styles.metadata, { color: colors.textTertiary }]}>
-              Provided and managed by this Plugin. Expand a Skill to read its
-              files.
-            </Text>
             <PluginSkillsDirectory
               entries={skillEntries}
               onInspectCopy={onInspectSkillCopy}
@@ -535,9 +525,6 @@ function PluginInspector({
           </PluginDetailSection>
         )}
         <View style={styles.lifecycleSection}>
-          <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
-            Uninstall
-          </Text>
           {copy.capability.canUninstall ? (
             <>
               <Text style={[styles.metadata, { color: colors.textTertiary }]}>
@@ -579,10 +566,6 @@ function PluginInspector({
               </View>
               <Text style={[styles.metadata, { color: colors.textTertiary }]}>
                 {pluginReadonlyReason(copy)}
-              </Text>
-              <Text style={[styles.metadata, { color: colors.textTertiary }]}>
-                Zen does not attempt to remove this copy, so an uninstall here
-                can never report success for it.
               </Text>
             </>
           )}
@@ -938,7 +921,7 @@ function PluginState({
   loading?: boolean;
   icon?: React.ComponentProps<typeof Ionicons>["name"];
   title: string;
-  detail: string;
+  detail?: string;
   action?: string;
   onAction?(): void;
 }) {
@@ -953,9 +936,9 @@ function PluginState({
       <Text style={[styles.stateTitle, { color: colors.textPrimary }]}>
         {title}
       </Text>
-      <Text style={[styles.stateDetail, { color: colors.textTertiary }]}>
+      {detail ? <Text style={[styles.stateDetail, { color: colors.textTertiary }]}>
         {detail}
-      </Text>
+      </Text> : null}
       {action && onAction ? (
         <Pressable onPress={onAction} style={styles.stateAction}>
           <Text style={{ color: colors.accent }}>{action}</Text>
@@ -998,7 +981,7 @@ const styles = StyleSheet.create({
   },
   search: {
     flex: 1,
-    height: 44,
+    height: 48,
     borderWidth: 1,
     borderRadius: 6,
     flexDirection: "row",
@@ -1006,7 +989,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     gap: 8,
   },
-  input: { flex: 1, fontFamily: Typography.uiFont, paddingVertical: 0 },
   smallIcon: {
     width: 32,
     height: 40,
@@ -1015,7 +997,7 @@ const styles = StyleSheet.create({
   },
   filterButton: {
     minWidth: 44,
-    height: 44,
+    height: 48,
     paddingHorizontal: 10,
     borderWidth: 1,
     borderRadius: 6,

@@ -47,7 +47,8 @@ export function NewTerminalAdvancedForm({
           style={[styles.input, styles.inputFlex]}
           value={cwd}
           onChangeText={onCwdChange}
-          placeholder="Leave empty for shell default"
+          placeholder="Shell default"
+          accessibilityLabel="Working directory"
           placeholderTextColor={colors.textSecondary}
           autoCapitalize="none"
           autoCorrect={false}
@@ -61,6 +62,7 @@ export function NewTerminalAdvancedForm({
             tone="input"
             style={styles.folderBtn}
             onPress={onPickDirectory}
+            accessibilityLabel="Choose working directory"
           />
         ) : null}
       </View>

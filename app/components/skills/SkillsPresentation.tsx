@@ -7,7 +7,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -15,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { TypeScale, Typography, useAppColors } from "../../constants/tokens";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
+import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 import type {
   InstalledPluginCopy,
   PluginInventory,
@@ -180,13 +180,13 @@ export function SkillsPresentation(props: SkillsPresentationProps) {
                 size={19}
                 color={colors.textTertiary}
               />
-              <TextInput
+              <MobileSingleLineInput
                 accessibilityLabel="Search local Skills"
                 value={query}
                 onChangeText={setQuery}
-                placeholder="Search local Skills"
+                placeholder="Search Skills"
                 placeholderTextColor={colors.textTertiary}
-                style={[styles.input, { color: colors.textPrimary }]}
+                containerStyle={{ flex: 1 }}
               />
               {query ? (
                 <Pressable
@@ -603,7 +603,6 @@ function LocalSkillsList(
       <State
         icon="server-outline"
         title="No current server"
-        detail="Choose a server in Settings to view its local Skills."
         action="Open Settings"
         onAction={props.onOpenSettings}
       />
@@ -628,7 +627,6 @@ function LocalSkillsList(
       <State
         loading
         title="Loading local Skills"
-        detail="Reading supported Agent locations on the current server."
       />
     );
   if ((props.inventory?.skills.length ?? 0) === 0)
@@ -636,7 +634,6 @@ function LocalSkillsList(
       <State
         icon="folder-open-outline"
         title="No local Skills"
-        detail="No Skill packages were found in supported Agent locations."
       />
     );
   if (
@@ -647,8 +644,7 @@ function LocalSkillsList(
     return (
       <State
         icon="extension-puzzle-outline"
-        title="No independently managed Skills"
-        detail={`Every local Skill is provided by an installed Plugin. Open the Plugins tab to inspect ${props.pluginOwnedSkillCount === 1 ? "it" : "them"}.`}
+        title="All Skills belong to Plugins"
       />
     );
   return (
@@ -852,7 +848,6 @@ function Inspector(
       <State
         loading
         title="Loading Skill"
-        detail="Reading the selected local copy."
       />
     );
   if (!detail && props.inspectState.status === "error")
@@ -949,9 +944,6 @@ function Inspector(
         ) : null}
         {canDelete ? (
           <View style={styles.lifecycleSection}>
-            <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
-              Delete
-            </Text>
             <Text style={[styles.metadata, { color: colors.textTertiary }]}>
               Permanently delete this copy from {location.label}.
             </Text>
@@ -1143,9 +1135,9 @@ function State({
       <Text style={[styles.stateTitle, { color: colors.textPrimary }]}>
         {title}
       </Text>
-      <Text style={[styles.stateDetail, { color: colors.textTertiary }]}>
+      {detail ? <Text style={[styles.stateDetail, { color: colors.textTertiary }]}>
         {detail}
-      </Text>
+      </Text> : null}
       {action && onAction ? <Action label={action} onPress={onAction} /> : null}
     </View>
   );
@@ -1203,7 +1195,7 @@ const styles = StyleSheet.create({
   },
   search: {
     flex: 1,
-    height: 44,
+    height: 48,
     borderWidth: 1,
     borderRadius: 6,
     flexDirection: "row",
@@ -1211,7 +1203,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     gap: 8,
   },
-  input: { flex: 1, fontFamily: Typography.uiFont, paddingVertical: 0 },
   smallIcon: {
     width: 32,
     height: 40,
@@ -1220,7 +1211,7 @@ const styles = StyleSheet.create({
   },
   filterButton: {
     minWidth: 44,
-    height: 44,
+    height: 48,
     paddingHorizontal: 10,
     borderWidth: 1,
     borderRadius: 6,

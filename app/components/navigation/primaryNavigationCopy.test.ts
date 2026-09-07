@@ -49,7 +49,8 @@ describe("navigation and Skills copy density", () => {
     expect(settingsSource).toContain("connectionLabel(connectionState)");
   });
   test("Skills chrome is a compact local manager", () => {
-    expect(skillsSource).toContain('placeholder="Search local Skills"');
+    expect(skillsSource).toContain('placeholder="Search Skills"');
+    expect(skillsSource).toContain("<MobileSingleLineInput");
     expect(skillsSource).toContain("RefreshControl");
     expect(skillsSource).toContain('accessibilityLabel="Filter Skills"');
     expect(skillsSource).not.toContain("Track local Skills");

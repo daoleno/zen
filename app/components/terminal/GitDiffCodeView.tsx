@@ -51,7 +51,6 @@ export function GitDiffCodeSnapshotPanel({
         <GitDiffStateCard
           icon="cube-outline"
           title="Binary file"
-          detail="Zen does not render binary file content."
           accent={theme.cursor}
           chromeText={chrome.text}
           chromeMuted={chrome.textMuted}

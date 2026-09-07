@@ -48,7 +48,6 @@ export function OnboardingPresentation({ serverName, connection, error, onPair, 
           <>
             <View style={styles.heading}>
               <Text accessibilityRole="header" style={[styles.title, { color: colors.textPrimary }]}>Connect your computer</Text>
-              <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Your workspace, on this phone.</Text>
             </View>
             <View style={styles.actions}>
               <AnimatedPressable accessibilityRole="button" accessibilityLabel="Scan pairing code"
@@ -105,7 +104,6 @@ const styles = StyleSheet.create({
   brandName: { ...TypeScale.heading, fontSize: 27, letterSpacing: 0 },
   heading: { gap: 10, paddingTop: 24, paddingBottom: 28 },
   title: { ...TypeScale.heading, fontSize: 26, lineHeight: 33, letterSpacing: 0 },
-  subtitle: { ...TypeScale.body },
   actions: { gap: 12 },
   primary: { borderRadius: 8, minHeight: 54, padding: 15, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12 },
   secondary: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, minHeight: 54, padding: 15, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12 },
