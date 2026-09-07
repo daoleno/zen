@@ -61,8 +61,9 @@ decisions are scripted evidence, not demonstrations of actual AI judgment.
 
 ## Explicit Real-Provider Gate
 
-Reuse an authorized configured provider whose selected model advertises Chat
-Completions support. Bind `ZEN_BDD_BASE_URL`, `ZEN_BDD_MODEL` and
+Reuse the authorized active connection and inspect its compiled protocol/auth
+binding, not just a provider catalog label. Bind `ZEN_BDD_PROTOCOL`
+(`responses` or `chat_completions`), `ZEN_BDD_BASE_URL`, `ZEN_BDD_MODEL` and
 `ZEN_BDD_API_KEY` from that same connection; do not mix a credential with an
 unrelated endpoint or require a new provider account. The test never changes
 Zen's current provider or reads/modifies live lifecycle state.
@@ -73,13 +74,25 @@ ZEN_BDD_REAL_PROVIDER=1 ZEN_BDD_MAX_CALLS=2 \
   -run '^TestBDD_ZEN011_RealProviderDecision$'
 ```
 
-The three bound configuration values must already be in the environment;
+The four bound configuration values must already be in the environment;
 never put credentials in command arguments, artifacts or the repository.
 Reuse Zen's provider catalog and private credential-store reference when
 preparing the child environment, without printing secrets. Check provider
-metadata before spending the two-call budget. The request uses only `model`,
-`messages`, `max_tokens` and `stream:false`; JSON is prompted and independently
-parsed/checked, without requiring provider-specific JSON mode or reasoning.
+metadata before spending the two-call budget. A catalog's `openai` label alone
+does not prove Chat Completions permission or the connection's auth mode.
+The selected connection must support Bearer authentication for the chosen API.
+There is no automatic protocol/model/provider fallback after a denial.
+
+Chat Completions uses `model`, `messages`, `max_tokens` and `stream:false`.
+Responses uses `model`, `input`, `max_output_tokens:128`, `stream:false`,
+`store:false`, and `reasoning:{effort:"low"}`. Select a Responses model whose
+documented/configured capabilities support that effort. The token cap includes
+reasoning tokens; insufficient budget is a retained incomplete response, not
+permission to increase the cap or retry. Only completed assistant `output_text`
+is read; reasoning content is ignored, refusal/incomplete output cannot pass.
+JSON is prompted and independently parsed/checked without special JSON mode.
+These shapes follow the official [Responses create reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
+and [authentication/request-ID guidance](https://developers.openai.com/api/reference/overview).
 Zen's existing endpoint builder and safe HTTP transport enforce URL validation,
 no ambient proxy and no redirects; the real gate requires HTTPS.
 Bounds: at most **two HTTP requests**, **2048 input
@@ -91,7 +104,7 @@ price; the operator must approve the selected model's current pricing.
 
 `behavior-provider.yml` provides the same manually dispatched gate with an
 explicit budget checkbox. Its repository variables `ZEN_BDD_BASE_URL` and
-`ZEN_BDD_MODEL` must be bound to repository secret `ZEN_BDD_API_KEY`; there is
+`ZEN_BDD_MODEL` and `ZEN_BDD_PROTOCOL` must be bound to repository secret `ZEN_BDD_API_KEY`; there is
 no dispatch-time endpoint override that could redirect the secret elsewhere.
 It is never a PR dependency. No configured secret,
 model or budget acknowledgment is an `environment_failure`, not a skip.
@@ -99,7 +112,12 @@ Transport, HTTP errors (including authentication/rate limits), truncation and
 invalid protocol envelopes are `provider_environment_failure`. Valid provider
 content that fails the independent oracle or explicit decision contract is
 `behavior_failure`. None is converted to success or retried. No response bodies
-or keys are logged. Successful structured evidence is emitted only after state,
+or keys are logged. Failed HTTP calls retain status, call index, recognized
+allowlisted error code/type and a bounded validated `x-request-id` when present;
+arbitrary error messages, unknown enum values and headers are not logged.
+This improves future failure evidence without reconstructing missing details
+from an older run or treating every 403 as a proven permission diagnosis.
+Successful structured evidence is emitted only after state,
 delivery, persisted decision, cleanup and unrelated-Session assertions pass.
 
 The real-provider path deliberately isolates reasoning from native transport:

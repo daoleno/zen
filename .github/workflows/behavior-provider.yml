@@ -30,6 +30,7 @@ jobs:
           ZEN_BDD_REAL_PROVIDER: "1"
           ZEN_BDD_MAX_CALLS: "2"
           ZEN_BDD_BASE_URL: ${{ vars.ZEN_BDD_BASE_URL }}
+          ZEN_BDD_PROTOCOL: ${{ vars.ZEN_BDD_PROTOCOL }}
           ZEN_BDD_MODEL: ${{ vars.ZEN_BDD_MODEL }}
           ZEN_BDD_API_KEY: ${{ secrets.ZEN_BDD_API_KEY }}
         run: |

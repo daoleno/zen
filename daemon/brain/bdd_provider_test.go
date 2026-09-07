@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -36,7 +37,7 @@ func TestBDD_ZEN011_RealProviderDecision(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	call := bddProviderCaller(ctx, endpoint, key, model)
+	call := bddProviderCaller(ctx, endpoint, key, model, os.Getenv("ZEN_BDD_PROTOCOL"))
 	runBDDProviderDecision(t, call, "real-provider-hybrid")
 }
 
@@ -50,7 +51,16 @@ func bddConfiguredProvider() (endpoint, key, model string, err error) {
 	if parseErr != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", "", "", fmt.Errorf("environment_failure: require credential-free HTTPS provider base URL")
 	}
-	endpoint, err = modelprofiles.UpstreamRequestURL(base, "/v1/chat/completions")
+	path := ""
+	switch os.Getenv("ZEN_BDD_PROTOCOL") {
+	case "chat_completions":
+		path = "/v1/chat/completions"
+	case "responses":
+		path = "/v1/responses"
+	default:
+		return "", "", "", fmt.Errorf("environment_failure: require explicit ZEN_BDD_PROTOCOL=chat_completions or responses")
+	}
+	endpoint, err = modelprofiles.UpstreamRequestURL(base, path)
 	if err != nil {
 		return "", "", "", fmt.Errorf("environment_failure: invalid provider base URL")
 	}
@@ -61,7 +71,7 @@ type bddProviderCall func(string) (string, error)
 
 // One request per invocation, at most two requests, no redirects or retries.
 // Input bytes and output tokens are hard-capped independently of model pricing.
-func bddProviderCaller(ctx context.Context, endpoint, key, model string) bddProviderCall {
+func bddProviderCaller(ctx context.Context, endpoint, key, model, protocol string) bddProviderCall {
 	calls := 0
 	client := modelprofiles.NewSafeHTTPClient(40 * time.Second)
 	client.Timeout = 40 * time.Second
@@ -70,10 +80,20 @@ func bddProviderCaller(ctx context.Context, endpoint, key, model string) bddProv
 			return "", fmt.Errorf("environment_failure: request budget exceeded")
 		}
 		calls++
-		body, err := json.Marshal(map[string]any{
+		payload := map[string]any{
 			"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}},
 			"max_tokens": 128, "stream": false,
-		})
+		}
+		if protocol == "responses" {
+			payload = map[string]any{
+				"model": model, "input": []map[string]string{{"role": "user", "content": prompt}},
+				"max_output_tokens": 128, "stream": false, "store": false,
+				"reasoning": map[string]string{"effort": "low"},
+			}
+		} else if protocol != "chat_completions" {
+			return "", fmt.Errorf("environment_failure: unsupported protocol")
+		}
+		body, err := json.Marshal(payload)
 		if err != nil {
 			return "", err
 		}
@@ -85,11 +105,14 @@ func bddProviderCaller(ctx context.Context, endpoint, key, model string) bddProv
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("provider_environment_failure: request failed or timed out")
+			return "", fmt.Errorf("provider_environment_failure: call %d request failed or timed out", calls)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("provider_environment_failure: HTTP %d (not retried)", resp.StatusCode)
+			return "", bddProviderFailure(resp, calls, key)
+		}
+		if protocol == "responses" {
+			return bddResponsesText(resp.Body, calls)
 		}
 		var result struct {
 			Choices []struct {
@@ -107,6 +130,71 @@ func bddProviderCaller(ctx context.Context, endpoint, key, model string) bddProv
 		}
 		return result.Choices[0].Message.Content, nil
 	}
+}
+
+// Only recognized diagnostic enums and bounded opaque request IDs can leave
+// the response. Never log messages, raw bodies, arbitrary headers or secrets.
+func bddProviderFailure(resp *http.Response, call int, key string) error {
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 32768)).Decode(&body)
+	allowed := map[string]bool{"invalid_api_key": true, "authentication_error": true, "permission_denied": true, "permission_error": true, "access_denied": true, "insufficient_permissions": true, "model_not_found": true, "rate_limit_exceeded": true, "rate_limit_error": true, "insufficient_quota": true, "invalid_request_error": true, "unsupported_parameter": true, "unsupported_value": true}
+	evidence := map[string]any{"http_status": resp.StatusCode, "call": call, "retried": false}
+	for name, value := range map[string]string{"error_code": body.Error.Code, "error_type": body.Error.Type} {
+		if allowed[value] && !strings.Contains(value, key) {
+			evidence[name] = value
+		}
+	}
+	id := resp.Header.Get("x-request-id")
+	if bddRequestID.MatchString(id) && !strings.Contains(id, key) {
+		evidence["request_id"] = id
+	}
+	raw, _ := json.Marshal(evidence)
+	return fmt.Errorf("provider_environment_failure: %s", raw)
+}
+
+var bddRequestID = regexp.MustCompile(`^(req_[A-Za-z0-9_-]{8,80}|[a-fA-F0-9-]{16,64}|[0-9]{14,32}[A-Za-z0-9]{0,40})$`)
+
+func bddResponsesText(body io.Reader, call int) (string, error) {
+	var response struct {
+		Status string          `json:"status"`
+		Error  json.RawMessage `json:"error"`
+		Output []struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Status  string `json:"status"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, 32768)).Decode(&response); err != nil || response.Status != "completed" || (len(response.Error) > 0 && string(response.Error) != "null") {
+		return "", fmt.Errorf("provider_environment_failure: call %d invalid or incomplete Responses envelope", call)
+	}
+	var output strings.Builder
+	for _, item := range response.Output {
+		if item.Type == "reasoning" {
+			continue
+		}
+		if item.Type != "message" || item.Role != "assistant" || item.Status != "completed" {
+			return "", fmt.Errorf("provider_environment_failure: call %d unexpected Responses output", call)
+		}
+		for _, content := range item.Content {
+			if content.Type != "output_text" {
+				return "", fmt.Errorf("behavior_failure: call %d Responses refusal or non-text output", call)
+			}
+			output.WriteString(content.Text)
+		}
+	}
+	if strings.TrimSpace(output.String()) == "" {
+		return "", fmt.Errorf("provider_environment_failure: call %d missing Responses text", call)
+	}
+	return output.String(), nil
 }
 
 func runBDDProviderDecision(t *testing.T, call bddProviderCall, evidenceKind string) {
@@ -205,10 +293,73 @@ func runBDDProviderDecision(t *testing.T, call bddProviderCall, evidenceKind str
 }
 
 func TestBDD_ZEN012_ProviderPathBudgetAndFailures(t *testing.T) {
+	t.Run("responses-loop", func(t *testing.T) {
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			var request struct {
+				Model string `json:"model"`
+				Input []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"input"`
+				MaxOutputTokens int   `json:"max_output_tokens"`
+				Store           *bool `json:"store"`
+				Stream          *bool `json:"stream"`
+				Reasoning       struct {
+					Effort string `json:"effort"`
+				} `json:"reasoning"`
+				Messages json.RawMessage `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != "scripted-model" || len(request.Input) != 1 || request.Input[0].Role != "user" || request.MaxOutputTokens != 128 || request.Store == nil || *request.Store || request.Stream == nil || *request.Stream || request.Reasoning.Effort != "low" || len(request.Messages) != 0 || r.Header.Get("Authorization") != "Bearer test-key" {
+				t.Error("incorrect Responses request/auth contract")
+				w.WriteHeader(400)
+				return
+			}
+			content := `{"disposition":"complete"}`
+			if strings.HasPrefix(request.Input[0].Content, "Compute ") {
+				var a, b int
+				if _, err := fmt.Sscanf(request.Input[0].Content, "Compute %d + %d", &a, &b); err != nil {
+					t.Error(err)
+				}
+				content = fmt.Sprintf(`{"sum":%d}`, a+b)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": []any{map[string]any{"type": "reasoning"}, map[string]any{"type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]string{"type": "output_text", "text": content}}}}})
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		call := bddProviderCaller(ctx, server.URL, "test-key", "scripted-model", "responses")
+		runBDDProviderDecision(t, call, "scripted-responses-not-AI")
+		if _, err := call("third request"); err == nil || calls.Load() != 2 {
+			t.Fatal("Responses call budget violated")
+		}
+	})
+	t.Run("responses-incomplete-and-refusal", func(t *testing.T) {
+		for _, body := range []string{`{"status":"incomplete","output":[]}`, `{"status":"completed","output":[]}`, `{"status":"completed","error":{"code":"server_error"}}`, `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","text":"secret"}]}]}`} {
+			if _, err := bddResponsesText(strings.NewReader(body), 1); err == nil || strings.Contains(err.Error(), "secret") {
+				t.Fatal("incomplete/refused output accepted or exposed")
+			}
+		}
+	})
+	t.Run("safe-failure-evidence", func(t *testing.T) {
+		resp := &http.Response{StatusCode: 403, Header: http.Header{"X-Request-Id": []string{"req_safe12345678"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"permission_denied","type":"permission_error","message":"private-body test-secret"}}`))}
+		err := bddProviderFailure(resp, 1, "test-secret")
+		if !strings.Contains(err.Error(), `"http_status":403`) || !strings.Contains(err.Error(), `"call":1`) || !strings.Contains(err.Error(), "permission_denied") || !strings.Contains(err.Error(), "req_safe12345678") || strings.Contains(err.Error(), "private-body") || strings.Contains(err.Error(), "test-secret") {
+			t.Fatalf("unsafe/incomplete diagnostic: %v", err)
+		}
+		resp.Header.Set("X-Request-Id", "req_test-secret1234")
+		resp.Body = io.NopCloser(strings.NewReader(`{"error":{"code":"test-secret","type":"private-body"}}`))
+		err = bddProviderFailure(resp, 2, "test-secret")
+		if strings.Contains(err.Error(), "test-secret") || strings.Contains(err.Error(), "private-body") || strings.Contains(err.Error(), "request_id") {
+			t.Fatal("untrusted metadata leaked")
+		}
+	})
 	t.Run("bound-configuration", func(t *testing.T) {
 		t.Setenv("ZEN_BDD_API_KEY", "test-key")
 		t.Setenv("ZEN_BDD_MODEL", "configured-chat-model")
 		t.Setenv("ZEN_BDD_MAX_CALLS", "2")
+		t.Setenv("ZEN_BDD_PROTOCOL", "chat_completions")
 		for _, base := range []string{"https://provider.example", "https://provider.example/v1"} {
 			t.Setenv("ZEN_BDD_BASE_URL", base)
 			endpoint, key, model, err := bddConfiguredProvider()
@@ -221,6 +372,15 @@ func TestBDD_ZEN012_ProviderPathBudgetAndFailures(t *testing.T) {
 			if _, _, _, err := bddConfiguredProvider(); err == nil {
 				t.Fatal("unsafe or missing binding accepted")
 			}
+		}
+		t.Setenv("ZEN_BDD_BASE_URL", "https://provider.example/v1")
+		t.Setenv("ZEN_BDD_PROTOCOL", "responses")
+		if endpoint, _, _, err := bddConfiguredProvider(); err != nil || endpoint != "https://provider.example/v1/responses" {
+			t.Fatal("Responses binding failed")
+		}
+		t.Setenv("ZEN_BDD_PROTOCOL", "unknown")
+		if _, _, _, err := bddConfiguredProvider(); err == nil {
+			t.Fatal("unknown protocol accepted")
 		}
 	})
 	for _, mode := range []string{"scripted-loop", "rate-limit", "truncated", "invalid-envelope", "timeout"} {
@@ -271,7 +431,7 @@ func TestBDD_ZEN012_ProviderPathBudgetAndFailures(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
-			call := bddProviderCaller(ctx, server.URL, "test-key", "scripted-model")
+			call := bddProviderCaller(ctx, server.URL, "test-key", "scripted-model", "chat_completions")
 			if mode == "scripted-loop" {
 				runBDDProviderDecision(t, call, "scripted-not-AI")
 				if _, err := call("third request"); err == nil {
