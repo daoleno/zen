@@ -34,6 +34,6 @@ describe("mobile chrome copy", () => {
     expect(source("components/plugins/PluginsPresentation.tsx")).toContain("Permanently removes only this exact copy");
     expect(source("components/skills/SkillsPresentation.tsx")).toContain("Permanently delete this copy");
     expect(source("app/stats.tsx")).toContain("fmtAvailableCost(data.cost, data.costKnown)");
-    expect(source("app/stats.tsx")).toContain("unpricedReasonLabel(m.unpricedReason)");
+    expect(source("app/stats.tsx")).toContain("unpricedReasonLabel(model.unpricedReason)");
   });
 });

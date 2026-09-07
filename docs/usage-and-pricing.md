@@ -8,6 +8,13 @@ not a charge, Zen can estimate from a reference catalog. The screen distinguishe
 reported, estimated, mixed, and unknown costs, and preserves exact model/provider
 identities. A gateway's actual billing may differ from a public reference tariff.
 
+The model overview shows one name/amount line and one tokens/sessions line.
+Amounts containing reference estimates use an approximation mark; missing
+amounts remain a dash. Provider names appear only to distinguish identical model
+IDs. Tap a model for its full selectable name, exact amount, mixed-cost breakdown,
+source, refresh time, token details, and any missing-price reason. Summary totals
+remain visible at the top; model diagnostics are not repeated in the list.
+
 Provider model discovery and newly observed usage request an asynchronous catalog
 refresh. Requests are bounded, repeated requests coalesce, failed refreshes back
 off, and the last successful prices remain available. Changed rates recalculate

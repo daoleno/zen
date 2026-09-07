@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { unpricedReasonLabel } from '../services/unpricedReason';
+import { costEstimateMark, statsModelHeading, statsModelKey } from '../services/statsCostPresentation';
 import {
   ActivityIndicator,
   Animated as NativeAnimated,
@@ -33,6 +34,7 @@ import { useCurrentServer } from '../store/currentServer';
 import { wsClient } from '../services/websocket';
 import { AnimatedPressable } from '../components/ui/AnimatedPressable';
 import { RisingSheet } from '../components/ui/RisingSheet';
+import { IconButton } from '../components/ui/IconButton';
 import {
   codexAuthSummary,
   codexRemainingPercent,
@@ -58,6 +60,7 @@ import {
   normalizeStatsPayload,
   type DayCell,
   type ModelStat,
+  type PricingStatus,
   type ProjectStat,
   type RangeData,
   type StatsView,
@@ -343,6 +346,11 @@ export default function StatsScreen() {
   const [loading, setLoading] = useState(true);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [daySelection, setDaySelection] = useState<{ serverId: string | null; day: DayCell } | null>(null);
+  const [modelSelection, setModelSelection] = useState<{ serverId: string | null; range: TimeRange; key: string } | null>(null);
+  const selectedModel = modelSelection?.serverId === currentServerId && modelSelection?.range === range
+    ? statsData?.ranges[range]?.models.find(model => statsModelKey(model) === modelSelection.key) ?? null
+    : null;
+  useEffect(() => setModelSelection(null), [currentServerId, range]);
   const selectedDay = daySelection?.serverId === currentServerId ? daySelection?.day ?? null : null;
   const setSelectedDay = (day: DayCell | null) => setDaySelection(day ? { serverId: currentServerId, day } : null);
   const [nestedHorizontalScrollActive, setNestedHorizontalScrollActive] = useState(false);
@@ -450,6 +458,7 @@ export default function StatsScreen() {
             toggleSection={toggleSection}
             selectedDay={selectedDay}
             setSelectedDay={setSelectedDay}
+            onSelectModel={model => setModelSelection({ serverId: currentServerId, range: route.key, key: statsModelKey(model) })}
             onNestedHorizontalGestureStart={beginNestedHorizontalGesture}
             onNestedHorizontalGestureEnd={endNestedHorizontalGesture}
           />
@@ -458,6 +467,7 @@ export default function StatsScreen() {
       />
 
       <DayDetailSheet selectedDay={selectedDay} onClose={() => setSelectedDay(null)} />
+      <ModelDetailSheet model={selectedModel} pricing={statsData?.pricing} onClose={() => setModelSelection(null)} />
     </SafeAreaView>
   );
 }
@@ -471,6 +481,7 @@ export function StatsScreenshotDemo({
     new Set(),
   );
   const [selectedDay, setSelectedDay] = useState<DayCell | null>(null);
+  const [selectedModel, setSelectedModel] = useState<ModelStat | null>(null);
   const toggleSection = useCallback((section: string) => {
     setExpandedSections((previous) => {
       const next = new Set(previous);
@@ -491,6 +502,7 @@ export function StatsScreenshotDemo({
         toggleSection={toggleSection}
         selectedDay={selectedDay}
         setSelectedDay={setSelectedDay}
+        onSelectModel={setSelectedModel}
         onNestedHorizontalGestureStart={() => undefined}
         onNestedHorizontalGestureEnd={() => undefined}
       />
@@ -498,6 +510,7 @@ export function StatsScreenshotDemo({
         selectedDay={selectedDay}
         onClose={() => setSelectedDay(null)}
       />
+      <ModelDetailSheet model={selectedModel} pricing={statsData.pricing} onClose={() => setSelectedModel(null)} />
     </View>
   );
 }
@@ -582,6 +595,7 @@ interface StatsRangeSceneProps {
   toggleSection(section: string): void;
   selectedDay: DayCell | null;
   setSelectedDay(day: DayCell | null): void;
+  onSelectModel(model: ModelStat): void;
   onNestedHorizontalGestureStart(): void;
   onNestedHorizontalGestureEnd(): void;
 }
@@ -595,6 +609,7 @@ function StatsRangeScene({
   toggleSection,
   selectedDay,
   setSelectedDay,
+  onSelectModel,
   onNestedHorizontalGestureStart,
   onNestedHorizontalGestureEnd,
 }: StatsRangeSceneProps) {
@@ -608,11 +623,6 @@ function StatsRangeScene({
   const days = data.days ?? [];
 
   const rankedModels = useMemo(() => sortByActivity(data.models ?? []), [data.models]);
-  const modelActivityUsesTokens = useMemo(() => activityUsesTokens(rankedModels), [rankedModels]);
-  const maxModelActivity = useMemo(
-    () => Math.max(...rankedModels.map(model => activityValue(model, modelActivityUsesTokens)), 1),
-    [modelActivityUsesTokens, rankedModels],
-  );
   const rankedProjects = useMemo(() => sortByActivity(data.projects ?? []), [data.projects]);
   const projectActivityUsesTokens = useMemo(() => activityUsesTokens(rankedProjects), [rankedProjects]);
   const maxProjectActivity = useMemo(
@@ -640,9 +650,6 @@ function StatsRangeScene({
     ? shortDate(activityDays[activityDays.length - 1].date)
     : '';
   const heatmapColumns = useMemo(() => buildActivityCalendarColumns(activityDays), [activityDays]);
-  const hasAvailabilityGaps = !isCostKnown(data) ||
-    !isTotalTokensKnown(data) ||
-    !isTokenBreakdownKnown(data);
 
   const hasData = hasRangeStats(data);
   const codexSubscriptions = (statsData?.codexSubscriptions ?? [])
@@ -765,21 +772,15 @@ function StatsRangeScene({
               <Text style={s.summarySessions}>{sessionSummary(data.sessions)}</Text>
               {statsData?.pricing && (
                 <Text style={s.summaryNote}>
-                  Catalog prices are reference estimates, not your gateway bill.
-                  {` Source: ${statsData.pricing.source}.`}
+                  {statsData.pricing.source}
                   {statsData.pricing.updatedAt
-                    ? ` Updated ${new Date(statsData.pricing.updatedAt).toLocaleString()}.`
-                    : " Not yet refreshed."}
+                    ? ` · ${new Date(statsData.pricing.updatedAt).toLocaleDateString()}`
+                    : ''}
                   {statsData.pricing.lastError
-                    ? " Pricing refresh failed; previous estimates retained."
+                    ? ' · Refresh failed'
                     : statsData.pricing.stale
-                      ? " Reference prices are awaiting refresh."
-                      : ""}
-                </Text>
-              )}
-              {hasAvailabilityGaps && (
-                <Text style={s.summaryNote}>
-                  Some agents do not report token or billing details.
+                      ? ' · Outdated'
+                      : ''}
                 </Text>
               )}
             </View>}
@@ -789,31 +790,22 @@ function StatsRangeScene({
               <View style={s.card}>
                 <Text style={s.label}>Models</Text>
                 {(expandedSections.has('models') ? rankedModels : visibleModels).map((m) => (
-                  <View key={`${m.provider ?? ''}:${m.name}`} style={s.row}>
-                    <View style={s.rowInfo}>
-                      <Text style={s.rowName}>{m.id || m.name}</Text>
-                      <Text style={s.rowMeta}>{[m.provider, rowActivitySummary(m), costSourceLabel(m.costProvenance)].filter(Boolean).join(' · ')}</Text>
-                      {unpricedReasonLabel(m.unpricedReason) && (
-                        <Text style={s.rowMeta}>{unpricedReasonLabel(m.unpricedReason)}</Text>
-                      )}
-                      {m.estimateSource && <Text style={s.rowMeta}>
-                        {m.estimateSource}{m.pricingUpdatedAt ? ` / ${new Date(m.pricingUpdatedAt).toLocaleDateString()}` : " / reference tariff"}
-                      </Text>}
+                  <AnimatedPressable
+                    key={statsModelKey(m)}
+                    style={s.modelRow}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${m.id || m.name}, ${m.provider || ''}, ${costSourceLabel(m.costProvenance)} cost ${fmtAvailableCost(m.cost, m.costKnown)}, ${rowActivitySummary(m)}`}
+                    accessibilityHint="Open model usage and pricing details"
+                    onPress={() => onSelectModel(m)}
+                  >
+                    <View style={s.modelHeading}>
+                      <Text style={[s.rowName, s.rowInfo]} numberOfLines={1} ellipsizeMode="middle">{statsModelHeading(m, data.models)}</Text>
+                      <Text style={[s.rowCost, s.modelAmount, !isCostKnown(m) && m.cost === 0 && s.rowValueUnavailable]} numberOfLines={1}>
+                        {costEstimateMark(m.cost, m.costKnown, m.costProvenance)}{fmtAvailableCost(m.cost, m.costKnown)}
+                      </Text>
                     </View>
-                    <Text
-                      style={[
-                        s.rowCost,
-                        !isCostKnown(m) && m.cost === 0 && s.rowValueUnavailable,
-                      ]}
-                    >
-                      {fmtAvailableCost(m.cost, m.costKnown)}
-                    </Text>
-                    <Bar
-                      ratio={activityValue(m, modelActivityUsesTokens) / maxModelActivity}
-                      color={colors.accent}
-                      trackColor={colors.borderSubtle}
-                    />
-                  </View>
+                    <Text style={s.rowMeta} numberOfLines={1}>{rowActivitySummary(m)}</Text>
+                  </AnimatedPressable>
                 ))}
                 {data.models.length > MAX_LIST_ITEMS && (
                   <ExpandToggle expanded={expandedSections.has('models')} total={data.models.length} onPress={() => toggleSection('models')} colors={colors} />
@@ -1091,6 +1083,58 @@ function StatsRangeScene({
 }
 
 // ── Small components ───────────────────────────────────────
+
+function ModelDetailSheet({ model, pricing, onClose }: {
+  model: ModelStat | null;
+  pricing?: PricingStatus;
+  onClose(): void;
+}) {
+  const { colors } = useAppTheme();
+  const s = useMemo(() => createStyles(colors), [colors]);
+  const money = (value: number) => value.toLocaleString(undefined, {
+    style: 'currency', currency: 'USD', maximumFractionDigits: 6,
+  });
+  const reported = model?.costReported ?? model?.reportedCost;
+  const estimated = model?.costEstimated ?? model?.estimatedCost;
+  const facts: Array<[string, string | undefined]> = model ? [
+    ['Provider', model.provider],
+    ['Price type', costSourceLabel(model.costProvenance)],
+    ['Cost', fmtAvailable(model.cost, model.costKnown, money)],
+    ['Reported', model.costProvenance === 'mixed' && reported !== undefined && reported > 0 ? money(reported) : undefined],
+    ['Estimated', model.costProvenance === 'mixed' && estimated !== undefined && estimated > 0 ? money(estimated) : undefined],
+    ['Tokens', fmtAvailableTokens(model.totalTokens, model.totalTokensKnown)],
+    ['Sessions', String(model.sessions)],
+    ['Input', fmtAvailableTokens(model.inputTokens, model.tokenBreakdownKnown)],
+    ['Output', fmtAvailableTokens(model.outputTokens, model.tokenBreakdownKnown)],
+    ['Reasoning', fmtAvailableTokens(model.reasoningTokens, model.tokenBreakdownKnown)],
+    ['Cache read', fmtAvailableTokens(model.cacheRead, model.tokenBreakdownKnown)],
+    ['Cache write', fmtAvailableTokens(model.cacheCreate, model.tokenBreakdownKnown)],
+    ['Source', model.estimateSource],
+    ['Reference provider', model.referenceProvider],
+    ['Updated', model.pricingUpdatedAt ? new Date(model.pricingUpdatedAt).toLocaleString() : undefined],
+  ] : [];
+  return (
+    <RisingSheet visible={model !== null} onClose={onClose} align="bottom" cardStyle={s.modelDetailCard}>
+      {model ? <>
+        <View style={s.modelDetailHeader}>
+          <Text selectable accessibilityRole="header" style={[s.rowName, s.rowInfo]}>{model.id || model.name}</Text>
+          <IconButton icon="close" accessibilityLabel="Close model details" onPress={onClose} tone="ghost" />
+        </View>
+        <ScrollView contentContainerStyle={s.modelDetailContent}>
+          {facts.filter(([, value]) => value !== undefined).map(([label, value]) => (
+            <View key={label} style={s.modelFact}>
+              <Text style={s.rowMeta}>{label}</Text>
+              <Text selectable style={s.modelFactValue}>{value}</Text>
+            </View>
+          ))}
+          {unpricedReasonLabel(model.unpricedReason) ? <Text selectable style={s.rowMeta}>{unpricedReasonLabel(model.unpricedReason)}</Text> : null}
+          {estimated !== undefined && estimated > 0 && pricing?.basis ? <Text selectable style={s.rowMeta}>{pricing.basis}</Text> : null}
+          {pricing?.lastError ? <Text selectable style={s.rowMeta}>{pricing.lastError}</Text> : null}
+        </ScrollView>
+      </> : null}
+    </RisingSheet>
+  );
+}
 
 function DayDetailSheet({
   selectedDay,
@@ -1541,6 +1585,22 @@ function createStyles(colors: typeof Colors) {
     },
 
     // Rank rows
+    modelRow: {
+      gap: 4,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
+    modelHeading: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    modelAmount: { width: 96, flexShrink: 0 },
+    modelDetailCard: {
+      width: '100%', maxWidth: 560, maxHeight: '85%',
+      padding: 16, borderRadius: 8, backgroundColor: colors.modalSurface,
+    },
+    modelDetailHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingBottom: 12 },
+    modelDetailContent: { gap: 12, paddingBottom: 16 },
+    modelFact: { gap: 2 },
+    modelFactValue: { ...TypeScale.compact, ...UiTextMetrics, color: colors.textPrimary },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
