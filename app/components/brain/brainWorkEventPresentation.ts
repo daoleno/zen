@@ -10,6 +10,7 @@ export type BrainWorkLifecycle =
   | "done"
   | "cancelled"
   | "needs_you"
+  | "uncertain"
   | "failed";
 
 export type BrainWorkLifecyclePresentation = {
@@ -23,6 +24,7 @@ export type BrainWorkLifecyclePresentation = {
     | "Done"
     | "Cancelled"
     | "Needs you"
+    | "Needs review"
     | "Failed";
   icon:
     | "ellipsis-horizontal-circle-outline"
@@ -111,6 +113,9 @@ export function brainWorkEventLifecycle(
       terminal: false,
     };
   }
+  if (event.kind === "session.uncertain") {
+    return lifecyclePresentation("uncertain");
+  }
   if (event.attention === "blocked") {
     return lifecyclePresentation("blocked");
   }
@@ -152,6 +157,14 @@ export function brainCurrentWorkLifecycle(
     return lifecyclePresentation("reviewing");
   }
   if (
+    event?.kind === "session.uncertain" &&
+    event.work_id === work.work_id &&
+    event.current_result &&
+    !work.attempt_session_id
+  ) {
+    return lifecyclePresentation("uncertain");
+  }
+  if (
     work.attention_state === "queued" ||
     work.attention_state === "reserved" ||
     work.progress_mode === "ready"
@@ -185,6 +198,14 @@ function lifecyclePresentation(
   lifecycle: BrainWorkLifecycle,
 ): BrainWorkLifecyclePresentation {
   switch (lifecycle) {
+    case "uncertain":
+      return {
+        lifecycle,
+        label: "Needs review",
+        icon: "alert-circle-outline",
+        tone: "attention",
+        terminal: false,
+      };
     case "needs_you":
       return {
         lifecycle,

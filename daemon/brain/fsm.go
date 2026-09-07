@@ -314,7 +314,7 @@ func fsmProjectLifecycle(st *lifecycle.State, database *presentationDatabase, it
 		case "lease_expired":
 			return WorkNeedsInput, "Inspect the delegated Session lease expiry.", waitFor
 		case "turn_lost":
-			return WorkNeedsInput, "Confirm whether the delegated Session received the prompt; delivery will not be replayed.", waitFor
+			return WorkNeedsInput, "Inspect the delegated Session outcome and exit evidence; input will not be replayed.", waitFor
 		case "submission_ambiguous", "submission_failed":
 			return WorkNeedsInput, "Confirm whether the delegated Session received the prompt; delivery will not be replayed.", waitFor
 		default:
@@ -674,9 +674,19 @@ func (s *Store) SweepLifecycle() error {
 }
 
 func cardEventForCanonicalReview(database presentationDatabase, canonical WorkEvent) WorkEvent {
+	// Loss can originate in the supervisor without a provider result row.
+	// The canonical review must still replace the old running card.
+	lost := canonical.Kind == "turn_lost"
+	if lost {
+		canonical.Kind = "session.uncertain"
+		canonical.Summary = "Session outcome is unknown; execution evidence was lost."
+	}
 	for _, evidence := range database.BrainWorkEvents {
 		if evidence.WorkID != canonical.WorkID || !isProjectedWorkResultEvent(evidence.Kind) ||
 			!strings.Contains(evidence.DedupeKey, ":turn:"+canonical.PayloadRef+":") {
+			continue
+		}
+		if lost && evidence.Kind != "session.uncertain" {
 			continue
 		}
 		canonical.Kind = evidence.Kind

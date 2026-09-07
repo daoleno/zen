@@ -107,6 +107,14 @@ Rules:
 
 ## Runtime ownership
 
+Brain review events are separate from classifier OS alerts. Loss of delegated
+execution evidence opens one canonical review event even if no provider result
+arrives. Its lineage card shows **Needs review**, not Working or a fabricated
+completion. Claiming that event shows Reviewing; ending a handling attempt does
+not automatically replay input or reopen an unchanged event. A newer canonical
+result can replace the loss event. These facts do not imply guaranteed OS push
+delivery or that an accepted prompt was never received.
+
 Current OSS-core behavior is intentionally simple:
 
 - The daemon is the only runtime lifecycle/result OS-alert producer. The app registers its Expo token, presents incoming pushes, and handles deep links; it does not mirror agent or scheduled-result state into local alerts.

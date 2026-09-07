@@ -36,6 +36,21 @@ function resultEvent(
 }
 
 describe("Brain Work event source presentation", () => {
+  test("unclaimed loss remains reviewable, never Working or completed", () => {
+    const event = resultEvent({ kind: "session.uncertain" });
+    expect(brainWorkEventLifecycle(event)).toMatchObject({
+      label: "Needs review", tone: "attention", terminal: false,
+    });
+    const current: BrainCurrentWork = {
+      work_id: event.work_id, revision: 5, title: event.work_title,
+      status: "needs_input", attention_state: "queued", unread_result: true,
+    };
+    expect(brainCurrentWorkLifecycle(current, event).label).toBe("Needs review");
+    expect(brainCurrentWorkLifecycle({ ...current, attention_state: "reviewing" }, event).label).toBe("Reviewing");
+    expect(brainCurrentWorkLifecycle({ ...current, status: "done" }, event).label).toBe("Done");
+    expect(brainCurrentWorkLifecycle({ ...current, status: "running", attention_state: undefined, attempt_session_id: "new-owner" }, { ...event, current_result: false }).label).toBe("Working");
+    expect(brainWorkEventLifecycle({ ...event, review_state: "resolved" }).label).toBe("Done");
+  });
   test("removes Zen's canonical Session identity suffix", () => {
     expect(brainWorkEventSourceLabel(resultEvent())).toBe(
       "zen-brain-event-cards",

@@ -250,7 +250,7 @@ func TestTurnFactsNeverRegressTerminalWork(t *testing.T) {
 			t.Fatal(err)
 		}
 		if after.Status != WorkNeedsInput ||
-			!strings.Contains(after.NextAction, "Confirm whether the delegated Session received the prompt") {
+			!strings.Contains(after.NextAction, "Inspect the delegated Session outcome and exit evidence") {
 			t.Fatalf("active Work after uncertain = %+v", after)
 		}
 		row, found := turnEvent(t, store, workItem.ID, "session:"+sessionID+":turn:"+turnID+":session.uncertain")
