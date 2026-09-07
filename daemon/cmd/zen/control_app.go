@@ -210,6 +210,11 @@ func (a *controlApp) handleBrainWorkResolve(req control.Request) control.Respons
 	}
 	event, item, err := a.brainService.ResolveWorkReview(*req.BrainWorkDisposition)
 	if err != nil {
+		if errors.Is(err, brain.ErrWorkCleanupPending) {
+			response := brainWorkControlError(err)
+			response.BrainWork, response.BrainWorkEvent = &item, &event
+			return response
+		}
 		return brainWorkControlError(err)
 	}
 	return control.Response{OK: true, BrainWork: &item, BrainWorkEvent: &event}
@@ -813,6 +818,11 @@ func (a *controlApp) handleBrainWorkUpdate(req control.Request) control.Response
 	}
 	item, err := a.brainService.UpdateWork(strings.TrimSpace(req.WorkID), update)
 	if err != nil {
+		if errors.Is(err, brain.ErrWorkCleanupPending) {
+			response := brainWorkControlError(err)
+			response.BrainWork = &item
+			return response
+		}
 		return brainWorkControlError(err)
 	}
 	return control.Response{OK: true, BrainWork: &item}
@@ -831,6 +841,11 @@ func (a *controlApp) handleBrainWorkClose(req control.Request) control.Response 
 		Actor:  strings.TrimSpace(req.Actor), Reason: strings.TrimSpace(req.Reason),
 	})
 	if err != nil {
+		if errors.Is(err, brain.ErrWorkCleanupPending) {
+			response := brainWorkControlError(err)
+			response.BrainWork = &item
+			return response
+		}
 		return brainWorkControlError(err)
 	}
 	return control.Response{OK: true, BrainWork: &item, Confirmation: "Brain Work closed under audited operator authority."}
@@ -891,6 +906,8 @@ func (a *controlApp) handleBrainWorkEventResolve(req control.Request) control.Re
 func brainWorkControlError(err error) control.Response {
 	code := "brain_work_failed"
 	switch {
+	case errors.Is(err, brain.ErrWorkCleanupPending):
+		code = "brain_work_cleanup_pending"
 	case errors.Is(err, brain.ErrWorkNotFound):
 		code = "brain_work_not_found"
 	case errors.Is(err, brain.ErrWorkConflict):

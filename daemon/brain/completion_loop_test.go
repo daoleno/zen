@@ -10,7 +10,9 @@ import (
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
-func TestCompletionLoopDurableDecisionCleanup(t *testing.T) {
+// ZEN001: Given a delegated result, when Brain explicitly decides, then only
+// its completed owned Session is reclaimed; restart and duplicates preserve it.
+func TestBDD_ZEN001_DurableDecisionCleanup(t *testing.T) {
 	for _, scenario := range []string{"done", "failed", "accept-before-cleanup-crash", "cleanup-failure", "reused-session"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
@@ -150,7 +152,9 @@ func TestCompletionLoopDurableDecisionCleanup(t *testing.T) {
 
 // Transport is scripted; all result, admission and decision persistence is real.
 // This reproduces the Sep 6 unfinished handler blocking the Sep 7 result.
-func TestCompletionLoopStaleDeliveredHandlerIncident(t *testing.T) {
+// ZEN002: Given an unfinished historical handler, when independent Work ends,
+// then its exact result reaches the free Brain lane without deleting history.
+func TestBDD_ZEN002_StaleDeliveredHandlerIncident(t *testing.T) {
 	t.Run("missed-terminal-edge", func(t *testing.T) { testCompletionLoopStaleDeliveredHandler(t, false) })
 	t.Run("transcript-replacement-and-restart", func(t *testing.T) { testCompletionLoopStaleDeliveredHandler(t, true) })
 }
@@ -222,5 +226,59 @@ func testCompletionLoopStaleDeliveredHandler(t *testing.T, replaced bool) {
 	}
 	if lease.HandlingID == oldLease.HandlingID {
 		t.Fatal("independent result reused old handling")
+	}
+}
+
+type bddCleanupWatcher struct{ *fakeWatcher }
+
+func (w *bddCleanupWatcher) KillCompletedSession(sessionID, turnID string) error {
+	if sessionID == "historical" {
+		return errors.New("historical ownership conflict")
+	}
+	return w.fakeWatcher.KillCompletedSession(sessionID, turnID)
+}
+
+func TestBDD_ZEN006_UnrelatedCleanupCannotInvalidateDecision(t *testing.T) {
+	// Given historical accepted Work with a genuine cleanup ownership conflict.
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &bddCleanupWatcher{&fakeWatcher{turnStore: store, sessions: map[string]*classifier.Worker{
+		"historical": {ID: "historical", Delegated: true, State: classifier.StateDone},
+		"current":    {ID: "current", Delegated: true, State: classifier.StateDone},
+	}}}
+	service := NewService(store, fw, nil)
+	for _, sessionID := range []string{"historical", "current"} {
+		item, err := store.CreateWork(Work{Title: sessionID, Objective: "decision scope"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.SubmitDelegatedWorkInput(sessionID, "scoped task", item.ID, sessionID+"-turn", "", "", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if result, err := service.ApplyDelegatedTurnProgress(watcher.TurnFact{SessionID: sessionID, TurnID: sessionID + "-turn", Class: watcher.EvidenceControl, Kind: "done", SourceID: "done", At: time.Now()}); err != nil || !result.Changed {
+			t.Fatalf("report: %+v %v", result, err)
+		}
+		done := WorkDone
+		if sessionID == "historical" {
+			if _, err := store.UpdateWork(item.ID, WorkUpdate{Status: &done}); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		// When an independent decision is saved, cleanup is scoped to that Work.
+		closed, err := service.UpdateWork(item.ID, WorkUpdate{Status: &done})
+		if err != nil || closed.Status != WorkDone {
+			t.Fatalf("unrelated failure made decision ambiguous: %+v %v", closed, err)
+		}
+	}
+	// Then the independent Session is removed, while global recovery truthfully
+	// surfaces (and does not blanket-ignore) the historical ownership conflict.
+	if fw.HasSession("current") || !fw.HasSession("historical") {
+		t.Fatal("incorrect cleanup scope")
+	}
+	if err := service.ReconcileCompletedSessions(); err == nil {
+		t.Fatal("ownership conflict swallowed")
 	}
 }

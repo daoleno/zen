@@ -29,6 +29,7 @@ var (
 	// route-bindings.json durability was not proven. Host bind/success audit
 	// must not proceed.
 	ErrRouteTransferNotDurable = errors.New("brain host route transfer applied but not durable")
+	ErrWorkCleanupPending      = errors.New("Work decision persisted; Session cleanup pending")
 )
 
 const codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
@@ -160,7 +161,7 @@ func (s *Service) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkE
 	if err != nil {
 		return event, item, err
 	}
-	return event, item, s.reconcileCompletedSessions(item.ID)
+	return event, item, s.cleanupAfterWorkDecision(item.ID)
 }
 
 // UpdateWork is the ordinary model decision path, with the same cleanup as a
@@ -173,7 +174,14 @@ func (s *Service) UpdateWork(id string, update WorkUpdate) (Work, error) {
 	if err != nil {
 		return item, err
 	}
-	return item, s.reconcileCompletedSessions(item.ID)
+	return item, s.cleanupAfterWorkDecision(item.ID)
+}
+
+func (s *Service) cleanupAfterWorkDecision(workID string) error {
+	if err := s.reconcileCompletedSessions(workID); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrWorkCleanupPending, workID, err)
+	}
+	return nil
 }
 
 // ReconcileCompletedSessions derives cleanup from durable Work acceptance and
@@ -221,7 +229,7 @@ func (s *Service) CloseWork(request WorkCloseRequest) (Work, error) {
 	if err != nil {
 		return item, err
 	}
-	return item, s.reconcileCompletedSessions(item.ID)
+	return item, s.cleanupAfterWorkDecision(item.ID)
 }
 
 // ReconcileSignalSystemStartup is the one bounded LISTEN-then-snapshot pass:
@@ -1769,6 +1777,15 @@ func (s *Service) ReconcileDelegatedSessions(workers []*classifier.Worker) {
 			continue
 		}
 		if worker == nil {
+			// Inventory is a discovery snapshot, not proof of process death. A
+			// restarted watcher may not have rediscovered an owned Session yet.
+			if s.watcher == nil {
+				continue
+			}
+			presence, probeErr := s.watcher.ProbeSession(item.AttemptSessionID)
+			if probeErr != nil || presence != watcher.SessionPresenceAbsent {
+				continue
+			}
 			if !item.AttemptDelegated && !hasTurn {
 				// A bare non-delegated relationship is not a Zen-managed Session
 				// authority. It is excluded from CurrentWork projection, but this

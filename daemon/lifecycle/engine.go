@@ -720,9 +720,7 @@ func (e *Engine) ReportTurnDone(id WorkID, attempt AttemptIdentity, in DoneInput
 			if st.SeenSources["done:"+string(attempt.TurnToken)] {
 				return nil, nil
 			}
-			if st.Attempt != nil || terminal(st) || st.Review == nil ||
-				st.Review.Ref != string(attempt.TurnToken) ||
-				(st.Review.Reason != "turn_lost" && st.Review.Reason != "lease_expired") {
+			if !recoverableTerminal(st, attempt.TurnToken, attempt.Fence) {
 				return nil, ErrStaleInput
 			}
 		}
@@ -732,6 +730,15 @@ func (e *Engine) ReportTurnDone(id WorkID, attempt AttemptIdentity, in DoneInput
 			Payload: DonePayload{OK: in.OK, Summary: in.Summary},
 		}}, nil
 	})
+}
+
+// CanRecoverTerminal checks durable producer eligibility, independent of whether
+// Brain has dismissed the provisional loss review by choosing to wait.
+func (e *Engine) CanRecoverTerminal(id WorkID, sessionID string, token TurnToken) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	identity, found := e.admittedAttemptLocked(id, token)
+	return found && identity.SessionID == sessionID && recoverableTerminal(e.works[id], token, identity.Fence)
 }
 
 // ReportTurnLost releases an Attempt after evidence loss or lease escalation.

@@ -1,12 +1,16 @@
 package watcher
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 // No tmux command is needed: stale ownership must fail before any transport IO.
-func TestCompletedSessionCleanupSerializesWithNewInput(t *testing.T) {
+// ZEN007: Given old cleanup waiting for the input lock, when a new turn is
+// admitted first, then cleanup rejects the old identity before transport IO.
+func TestBDD_ZEN007_CompletedCleanupSerializesWithNewInput(t *testing.T) {
 	w := New(time.Second)
 	ledger := &fakeTurnLedger{turns: map[string]TurnSnapshot{
 		"worker": {SessionID: "worker", TurnID: "old", Status: TurnDone, SignalProtocol: true},
@@ -29,6 +33,26 @@ func TestCompletedSessionCleanupSerializesWithNewInput(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cleanup did not release input serialization")
+	}
+}
+
+func TestBDD_ZEN008_AlreadyReclaimedSessionCleanupIsIdempotent(t *testing.T) {
+	// Given exact completed ownership in the ledger but a reclaimed tmux window.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte("#!/bin/sh\necho \"can't find window: missing:@1\" >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	w := New(0)
+	w.SetTurnLedger(&fakeTurnLedger{turns: map[string]TurnSnapshot{
+		"missing:@1": {SessionID: "missing:@1", TurnID: "completed", Status: TurnDone, SignalProtocol: true},
+	}})
+	// When cleanup is reconciled repeatedly, proven absence is success, not an
+	// ownership conflict. Other ownership checks remain covered separately.
+	for range 2 {
+		if err := w.KillCompletedSession("missing:@1", "completed"); err != nil {
+			t.Fatalf("already reclaimed: %v", err)
+		}
 	}
 }
 

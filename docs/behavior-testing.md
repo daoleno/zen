@@ -1,0 +1,115 @@
+# Executable Behavior Contracts
+
+Zen uses ordinary Go tests with stable `TestBDD_ZENnnn_...` names, comments
+describing Given/When/Then, and assertions against production state and effects.
+There is no Cucumber dependency, custom scenario language, scheduler or test
+agent. A passing provider exit or a model's assertion of PASS is not an oracle.
+
+## Scenarios
+
+| ID / executable suffix | Given | When | Then |
+| --- | --- | --- | --- |
+| ZEN001 `DurableDecisionCleanup/done` | Admitted delegated Worker | Exact terminal report emits Work change, then scripted Brain accepts | Durable result reaches Brain before Work closes; only completed owned Session is removed |
+| ZEN001 `.../failed` | Worker failure | Scripted Brain inspects failure and cancels | Failure remains failure, not implicit success |
+| ZEN001 `.../accept-before-cleanup-crash` | Decision saved without teardown | Store reopens and cleanup reconciles | Saved decision survives and exact Session is reclaimed idempotently |
+| ZEN001 `.../cleanup-failure` | Injected teardown failure | Decision persists; explicit recovery reconciles after fault removal | Failure is visible, acceptance durable, no business input replay |
+| ZEN001 `.../reused-session` | Closed old Work, new turn in same Session | Old cleanup runs after reopen | New owner, user Session and Host survive |
+| ZEN002 `StaleDeliveredHandlerIncident` | Historical delivered handler never ended | Independent Worker completes, including transcript replacement/restart | New result reaches free Brain lane without manually deleting old handling; summary is terminal evidence |
+| ZEN003 `BusyBrainDefersUntilProviderTurnEnds` | Exact foreground provider Activity running | Result arrives, then foreground terminal edge | No interrupt or premature admission; result delivered when lane becomes free |
+| ZEN004 `CLIReportToDecisionAndSessionRemoval` | Canonical admission and isolated Unix control server | Actual CLI reports exact turn; scripted Brain explicitly accepts | Production control/Store/Service delivery and cleanup, duplicate report no-op, closure survives reopen |
+| ZEN005 `PartialResultNeedsScopedFollowup` | Objective needs A and B; result contains A only | Scripted Brain asks only for missing B, then runtime reopens | Incomplete result is not accepted; later result requires explicit acceptance; no replay of original input |
+| ZEN006 `UnrelatedCleanupCannotInvalidateDecision` | Historical cleanup ownership conflict | Independent Work is accepted | Decision succeeds with scoped cleanup; global recovery still reports the genuine historical conflict |
+| ZEN007 `CompletedCleanupSerializesWithNewInput` | Old cleanup waiting for input lock | New turn acquires ownership first | Production watcher rejects old cleanup before transport IO |
+| ZEN008 `AlreadyReclaimedSessionCleanupIsIdempotent` | Completed ledger identity, missing tmux window | Production watcher cleanup runs twice | Proven absence succeeds idempotently through the actual cleanup boundary |
+| ZEN009 `LostOriginalResultSurvivesWaitAndRestart` | Original admitted turn provisionally lost | Brain waits and Store restarts before exact supplied terminal progress | Original result supersedes loss and requires fresh judgment; duplicates dedupe; cancelled/superseded turns cannot revive |
+| ZEN010 `IncompleteInventoryDoesNotDeclareOriginalLost` | Discovery snapshot lacks original Session | Authoritative probe says present, unreadable, or absent | Only proven absence records loss; present/unreadable preserves original progress eligibility without replay |
+| ZEN011 `RealProviderDecision` | Fresh arithmetic objective and independent numeric oracle | Two real API calls produce Worker result and Brain judgment | Actual delivered result checked, explicit decision persisted, exact cleanup asserted; opt-in hybrid, not native E2E |
+| ZEN012 `ProviderPathBudgetAndFailures` | Same provider harness using scripted HTTP | Full loop, 429, truncation, invalid envelope or timeout | Correct side effects or classified failure; no retry and no third call |
+| ZEN013 `DecisionSavedWithCleanupPending` | Cleanup failure on current completed Session | Control accepts Work | `brain_work_cleanup_pending` includes persisted Work; recovery completes only cleanup, not the business action |
+
+ZEN001 also submits duplicate control and bound provider terminals, asserts no
+extra input, and reopens the Store. ZEN002 covers interrupted Host handling.
+The watcher cleanup lock and missing-resource tests run in the full Go gate;
+they exercise the actual watcher boundary rather than the scripted Session map.
+Stable IDs are retained when contracts change.
+
+## Local And CI
+
+From `daemon/`:
+
+```sh
+go test -count=1 -timeout 120s ./brain ./cmd/zen ./watcher -run '^TestBDD_'
+go test -json -count=1 -timeout 120s ./brain ./cmd/zen ./watcher -run '^TestBDD_'
+go test ./...
+go test -race -p 1 ./...
+go vet ./...
+go build ./cmd/zen
+```
+
+Use `GOMAXPROCS=2`, `-p 1`, and `GOTMPDIR="$ZEN_BUILD_TMPDIR"` in shared,
+resource-constrained sessions. Tests use temporary directories and isolated
+sockets/HTTP listeners with cleanup, not the user's daemon. Do not restart or
+deploy the dev daemon for these gates. Watchers already owned by the user may
+react to source changes; that is not a controlled deployment or live proof.
+
+PR CI runs the deterministic contracts and uploads standard `go test -json`
+JSONL, including `Test`, `Action`, `Package` and elapsed-time fields. Consumers
+must use terminal `pass`/`fail`/`skip` test actions and the process exit status,
+not text containing PASS. A skipped ZEN011 is not real-provider success. Keep
+failed runs; never rerun unchanged real calls until green. Deterministic test
+decisions are scripted evidence, not demonstrations of actual AI judgment.
+
+## Explicit Real-Provider Gate
+
+With an approved DeepSeek model and credentials supplied by the operator:
+
+```sh
+ZEN_BDD_REAL_PROVIDER=1 ZEN_BDD_MAX_CALLS=2 ZEN_BDD_MODEL="$APPROVED_MODEL" \
+  go test -json -count=1 -timeout 120s ./brain \
+  -run '^TestBDD_ZEN011_RealProviderDecision$'
+```
+
+`DEEPSEEK_API_KEY` must already be in the environment; never put credentials
+in commands, artifacts or the repository. The fixed official HTTPS endpoint
+does not follow redirects. Bounds: at most **two HTTP requests**, **2048 input
+bytes per request**, **128 maximum output tokens per request**, **40 seconds
+per HTTP request**, **90 seconds for the shared provider context**, and a
+**120-second Go test deadline**. No tools, background agents or native provider
+processes are launched. This is a token/request budget, not a guaranteed dollar
+price; the operator must approve the selected model's current pricing.
+
+`behavior-provider.yml` provides the same manually dispatched gate with an
+explicit budget checkbox. It is never a PR dependency. No configured secret,
+model or budget acknowledgment is an `environment_failure`, not a skip.
+Transport, HTTP errors (including authentication/rate limits), truncation and
+invalid protocol envelopes are `provider_environment_failure`. Valid provider
+content that fails the independent oracle or explicit decision contract is
+`behavior_failure`. None is converted to success or retried. No response bodies
+or keys are logged. Successful structured evidence is emitted only after state,
+delivery, persisted decision, cleanup and unrelated-Session assertions pass.
+
+The real-provider path deliberately isolates reasoning from native transport:
+Session sends/removal use the existing fake watcher, but Store, lifecycle,
+event admission and explicit disposition use production code. The scripted
+ZEN012 path verifies that harness offline. Neither proves native provider
+launch/discovery or actual automatic Brain execution. A native no-watch
+experiment requires its own producer-triggered Brain event, actual model
+decision and observed owned Session removal; keep its private identities and
+evidence in Brain `worklog/`, not this repository. Existing real acceptance
+evidence need not be rerun just because deterministic coverage expands.
+
+## Recovery Limits
+
+Inventory absence is not process death: reconciliation now requires an
+authoritative absent Session probe. Unknown transport fails closed. A lost
+producer's durable loss fact and last execution fence permit exact late
+terminal evidence even after a wait decision clears the provisional review.
+Newer execution or terminal Work invalidates that authority. No progress report
+is forged to settle an original incident, and passing a reproduction does not
+retroactively prove that a previously rejected live report was delivered.
+
+These regressions cover an owned Session missing from discovery and the
+wait/restart supplied-progress rejection. They do not prove arbitrary orphaned
+native-process recovery after the underlying tmux Session truly disappears.
+The process may still run outside discoverable ownership; that uncertainty
+must remain distinct from success and must never authorize business replay.

@@ -219,14 +219,12 @@ func Reduce(prev *State, ev Event) *State {
 
 	case KTurnDone:
 		upgrade := !eventMatchesAttempt(s, ev)
-		if upgrade && (s.Attempt != nil || terminal(s) || s.Review == nil ||
-			s.Review.Ref != string(ev.TurnToken) ||
-			(s.Review.Reason != "turn_lost" && s.Review.Reason != "lease_expired")) {
+		if upgrade && !recoverableTerminal(s, ev.TurnToken, ev.Fence) {
 			return noop(s, ev)
 		}
 		p := payload[DonePayload](ev)
 		// Terminal evidence supersedes the prior decision and its handler.
-		s.Review = nil
+		s.Review, s.Wake = nil, nil
 		s.LastSummary = p.Summary
 		releaseAttempt(s, ev.At)
 		applyCompletionRule(s, ev, p)
@@ -437,6 +435,17 @@ func releaseAttempt(s *State, at time.Time) {
 	}
 	s.Fence++ // I3: fence strictly increases on every Attempt transition
 	s.Attempt = nil
+}
+
+func recoverableTerminal(s *State, token TurnToken, fence uint64) bool {
+	if s == nil || s.Attempt != nil || terminal(s) || fence == 0 || s.Fence != fence+1 {
+		return false
+	}
+	// A loss releases (and increments) the fence; any newer execution invalidates
+	// this authority. Review resolution does not erase the producer's loss fact.
+	return s.SeenSources["lost:"+string(token)] ||
+		(s.Review != nil && s.Review.Ref == string(token) &&
+			(s.Review.Reason == "turn_lost" || s.Review.Reason == "lease_expired"))
 }
 
 func openReview(s *State, ev Event, reason, ref string) {

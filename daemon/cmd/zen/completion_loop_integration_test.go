@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -32,9 +33,59 @@ func (w *completionControlWatcher) UpdateWorkerProgress(id string, progress clas
 	return w.fakeControlWatcher.UpdateWorkerProgress(id, progress)
 }
 
+func TestBDD_ZEN013_DecisionSavedWithCleanupPending(t *testing.T) {
+	// Given a genuine cleanup failure on this exact completed owned Session.
+	root := t.TempDir()
+	store, err := brain.NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(brain.Work{Title: "cleanup pending", Objective: "unambiguous decision"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &completionControlWatcher{newFakeControlWatcher()}
+	fw.turnStore = store
+	fw.workers["worker"] = &classifier.Worker{ID: "worker", Delegated: true, State: classifier.StateDone}
+	service := brain.NewService(store, fw, nil)
+	app := &controlApp{watcher: fw, brainStore: store, brainService: service}
+	admitted := app.HandleControlRequest(control.Request{Type: "worker_send", WorkerID: "worker", WorkID: item.ID, Text: "scoped task", Submit: true})
+	if !admitted.OK {
+		t.Fatalf("admission: %+v", admitted)
+	}
+	if result, err := service.ApplyDelegatedTurnProgress(watcher.TurnFact{SessionID: "worker", TurnID: admitted.TurnID, Class: watcher.EvidenceControl, Kind: "done", SourceID: "done", At: time.Now()}); err != nil || !result.Changed {
+		t.Fatalf("report: %+v %v", result, err)
+	}
+	fw.killErr, fw.killLeavesLive = errors.New("owned generation cleanup unavailable"), true
+	// When control commits acceptance, the failure response names the remaining
+	// effect and carries durable Work instead of implying decision failure.
+	response := app.HandleControlRequest(control.Request{Type: "brain_work_update", WorkID: item.ID, WorkFields: []string{"status"}, BrainWork: &brain.Work{Status: brain.WorkDone}})
+	if response.OK || response.Error == nil || response.Error.Code != "brain_work_cleanup_pending" || response.BrainWork == nil || response.BrainWork.Status != brain.WorkDone {
+		t.Fatalf("ambiguous decision response: %+v", response)
+	}
+	reopened, err := brain.NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := reopened.Work(item.ID)
+	if err != nil || closed.Status != brain.WorkDone || fw.GetWorker("worker") == nil {
+		t.Fatalf("durability/cleanup: %+v %v", closed, err)
+	}
+	// Then explicit fault removal plus ordinary recovery completes only cleanup.
+	fw.killErr, fw.killLeavesLive, fw.turnStore = nil, false, reopened
+	if err := brain.NewService(reopened, fw, nil).ReconcileCompletedSessions(); err != nil {
+		t.Fatal(err)
+	}
+	if fw.GetWorker("worker") != nil || len(fw.submitted) != 1 {
+		t.Fatal("cleanup failed or business action replayed")
+	}
+}
+
 // Real CLI, Unix control server, Store, Service and admission ledger. Provider
 // transport and the explicit model decision are scripted, not a live LLM test.
-func TestCLICompletionReportToDecisionAndSessionRemoval(t *testing.T) {
+// ZEN004: Given an admitted Worker, when its real CLI submits exact progress,
+// then durable delivery, explicit decision and exact cleanup complete in order.
+func TestBDD_ZEN004_CLIReportToDecisionAndSessionRemoval(t *testing.T) {
 	root := t.TempDir()
 	store, err := brain.NewStore(root)
 	if err != nil {

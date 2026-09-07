@@ -41,6 +41,10 @@ input is idempotent; an old token, wrong session, or wrong fence is rejected.
 Attempt loss releases execution authority but never completes Work. A later
 Attempt can reuse the viable Session or start anew from the Work's
 durable objective, completion criteria, context, and workspace facts.
+The last lost execution remains eligible for exact authoritative terminal
+evidence after an explicit wait and restart. Eligibility follows its durable
+loss fact and execution fence, not whether the provisional Review is still
+displayed. A newer execution or closed Work invalidates that authority.
 
 ### Supervision And Decisions
 
@@ -141,6 +145,9 @@ terminal or superseding Turn evidence retires interrupted handlers; accepted
 delivery remains consumed across restart. Unresolved results remain available
 for ordinary model decisions without a mandatory receipt-resolution command.
 Provider transcript probe errors defer mutation until evidence is readable.
+An incomplete discovery inventory also cannot prove process death: restart
+reconciliation requires an authoritative absent Session probe before recording
+loss. Present or unreadable Session transport preserves the original Attempt.
 
 Terminal summaries come from the canonical lifecycle result, with the Session
 reference matched by exact Work and Turn identity, never the first running
@@ -156,6 +163,13 @@ generation. A newer execution, user Session, Host or uncertain result is not
 eligible. Resource/route release failures remain errors and can be retried
 without undoing acceptance or replaying a notification. This guarantees durable
 deduped results and idempotent effects, not exactly-once model execution.
+Control reports a post-decision cleanup failure as `brain_work_cleanup_pending`
+and includes the saved Work (and resolved Event for a typed disposition). It
+does not imply acceptance failed. Cleanup during a decision is scoped to its
+Work; unrelated historical cleanup conflicts remain visible in reconciliation.
+
+Executable Given/When/Then contracts, deterministic CI commands and the bounded
+opt-in provider gate are documented in [Behavior Testing](behavior-testing.md).
 
 ## Worker Upgrade
 

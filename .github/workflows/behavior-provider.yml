@@ -1,0 +1,48 @@
+name: Explicit Bounded Provider Behavior
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Approved DeepSeek model (two calls, 128 output tokens each)
+        required: true
+        type: string
+      approve_budget:
+        description: Authorize at most two paid calls; no retries
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    if: inputs.approve_budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - name: Real-provider hybrid gate (not native daemon E2E)
+        working-directory: daemon
+        shell: bash
+        env:
+          ZEN_BDD_REAL_PROVIDER: "1"
+          ZEN_BDD_MAX_CALLS: "2"
+          ZEN_BDD_MODEL: ${{ inputs.model }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          go test -json -count=1 -timeout 120s ./brain -run '^TestBDD_ZEN011_RealProviderDecision$' | tee "$RUNNER_TEMP/zen-bdd-provider.jsonl"
+      - name: Preserve success, failure or environment outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zen-bdd-provider-${{ github.run_id }}
+          path: ${{ runner.temp }}/zen-bdd-provider.jsonl
+          if-no-files-found: warn
+          retention-days: 7

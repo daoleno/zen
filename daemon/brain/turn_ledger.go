@@ -839,18 +839,12 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 		if controlOwnershipLoss {
 			break
 		}
-		// Unknown is final for scheduling until a later authoritative Provider
-		// terminal upgrades it (C.2.4) — except for signal-protocol Turns,
-		// whose semantic terminal authority is exact Control done/failed only
-		// (C.2.10). A terminal may use the recorded tuple or ActivityID, OR it
-		// may safely adopt a previously unbound terminal whose non-empty
-		// tuple/ActivityID and StartedAt prove it belongs to this turn's
-		// admission window. Running, attention, control, liveness, pane,
-		// stale, blind and replay-only facts remain ignored.
-		if fact.Class != watcher.EvidenceProvider ||
-			(fact.Kind != "done" && fact.Kind != "failed") ||
-			turn.SignalProtocol ||
-			!providerFactBinds(turn, fact) {
+		// Unknown is provisional, never permission to replay input. Only an
+		// exact signal-contract terminal or a bound provider terminal upgrades
+		// it. Store admission and lifecycle fences still reject superseded turns.
+		exactControl := fact.Class == watcher.EvidenceControl && turn.SignalProtocol
+		boundProvider := fact.Class == watcher.EvidenceProvider && providerFactBinds(turn, fact)
+		if (fact.Kind != "done" && fact.Kind != "failed") || (!exactControl && !boundProvider) {
 			return mutation, nil
 		}
 	}
@@ -1401,8 +1395,7 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 	activeAttempt := state.Attempt != nil && state.Attempt.SessionID == fact.SessionID &&
 		state.Attempt.TurnToken == lifecycle.TurnToken(fact.TurnID)
 	lateTerminal := state.Attempt == nil && (fact.Kind == "done" || fact.Kind == "failed") &&
-		state.Review != nil && state.Review.Ref == fact.TurnID &&
-		state.Review.Reason == "turn_lost"
+		s.fsm.CanRecoverTerminal(state.ID, fact.SessionID, lifecycle.TurnToken(fact.TurnID))
 	current, currentFound := currentTurnForSession(*database, fact.SessionID)
 	duplicateTerminal := state.Attempt == nil && (fact.Kind == "done" || fact.Kind == "failed") &&
 		currentFound && current.TurnID == fact.TurnID && current.SignalProtocol &&

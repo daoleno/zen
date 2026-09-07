@@ -1149,7 +1149,9 @@ func TestHostGenerationReplacementRetiresForegroundAndAllowsNextTurn(t *testing.
 	}
 }
 
-func TestHostOutputDefersPendingReviewUntilProviderTurnEnds(t *testing.T) {
+// ZEN003: Given actual foreground execution, when a result arrives, then it is
+// deferred without interruption and delivered after the exact terminal edge.
+func TestBDD_ZEN003_BusyBrainDefersUntilProviderTurnEnds(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
