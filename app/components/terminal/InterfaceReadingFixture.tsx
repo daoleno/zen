@@ -19,7 +19,7 @@ import { readingFixtureMessage as message } from "./interfaceReadingFixtureData"
 
 const noop = () => {};
 const images: Record<string, number> = {
-  "large.jpg": require("../../assets/reading-fixture/large.jpg"),
+  "large.jpg": require("../../assets/reading-fixture/large-jpeg.jpg"),
   "normal.png": require("../../assets/reading-fixture/normal.png"),
   "large.png": require("../../assets/reading-fixture/large.png"),
   "tall.png": require("../../assets/reading-fixture/tall.png"),

@@ -109,7 +109,7 @@ jobs:
 
       - name: Test App release contracts
         working-directory: app
-        run: bun test appConfig.test.js releaseArtifactsWorkflow.test.js iosReleaseWorkflow.test.js
+        run: bun test appConfig.test.js androidAssetNames.test.js releaseArtifactsWorkflow.test.js iosReleaseWorkflow.test.js
 
       - name: Commit and annotate exact prepared release
         env:

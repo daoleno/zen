@@ -166,6 +166,10 @@ jobs:
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
 
+      - name: Reject Android asset resource-name collisions
+        working-directory: app
+        run: bun test androidAssetNames.test.js
+
       - name: Restore pinned Zig and Ghostty source caches
         uses: actions/cache@v4
         with:

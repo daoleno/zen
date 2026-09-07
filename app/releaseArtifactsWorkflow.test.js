@@ -17,6 +17,18 @@ const nativeVerifier = fs.readFileSync(
 const appPackage = fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8');
 
 describe('release asset workflow contract', () => {
+  it('rejects RN-normalized asset collisions before native and signed builds', () => {
+    const gate = workflow.indexOf('run: bun test androidAssetNames.test.js');
+    expect(gate).toBeGreaterThan(0);
+    expect(gate).toBeLessThan(workflow.indexOf('- name: Restore pinned Zig and Ghostty source caches'));
+    const preparation = fs.readFileSync(
+      path.join(__dirname, '..', '.github', 'workflows', 'release-next-beta.yml'), 'utf8',
+    );
+    expect(preparation).toContain('androidAssetNames.test.js');
+    expect(preparation.indexOf('androidAssetNames.test.js')).toBeLessThan(
+      preparation.indexOf('- name: Commit and annotate exact prepared release'),
+    );
+  });
   it('uses immutable stable or beta tag pushes as the only automatic publication path', () => {
     expect(workflow).toMatch(
       /push:\s*\n\s*tags:\s*\n\s*- "v\*\.\*\.\*"\s*\n\s*- "v\*\.\*\.\*-beta\.\*"/,
