@@ -83,6 +83,8 @@ gh workflow run release-next-beta.yml \
 
 Review the requested machine-readable version/tag, identity checks, tests, atomic push, and downstream dispatch. The workflow uses only `GITHUB_TOKEN`; it has no PAT, release service, database, external action bot, or second publication engine.
 
+Before dispatch, maintainers can commit a version-scoped Markdown supplement at `docs/releases/reviewed/vX.Y.Z.md` (including the beta suffix when applicable). Preparation inserts only that target's reviewed highlights and known limitations before the generated commit range in the canonical notes. It does not replace the commit range, installation guidance or verified identity sections. Do not precreate the canonical `docs/releases/vX.Y.Z.md`, which remains a generated, fail-closed output.
+
 ### Maintainer fallback: manual annotated tag
 
 If the preparation workflow is unavailable, a maintainer may perform the same tracked identity and canonical-notes updates manually, run `./scripts/verify-release-identity.sh` and the release tests, commit and push that exact change to `main`, then use the existing annotated-tag path:

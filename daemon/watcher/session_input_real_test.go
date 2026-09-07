@@ -18,6 +18,11 @@ func TestRealTmuxInputQueueSurvivesLinkedViewRemoval(t *testing.T) {
 	if out, err := tmuxHarnessCommand(h.selected, "new-session", "-d", "-s", "view", ";", "link-window", "-k", "-s", target, "-t", "view:0").CombinedOutput(); err != nil {
 		t.Fatalf("link view: %v: %s", err, out)
 	}
+	// Older tmux versions require an attached client even for show-messages -J.
+	startAttachedTmuxClient(t, h.realTmux, h.physical, "view")
+	waitForHarness(t, "attached linked view", func() bool {
+		return attachedClientCount(h.realTmux, h.physical, "view") == 1
+	})
 	t.Setenv("TMUX_PANE", callerPane.paneID)
 	if err := io.loadBuffer(h.selected, "handoff-test", "printf 'QUEUE_%s\\n' VERIFIED"); err != nil {
 		t.Fatal(err)

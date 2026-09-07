@@ -235,7 +235,7 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
         previous_notes = (root / f"docs/releases/{CURRENT_TAG}.md").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(previous_notes.count(CURRENT_TAG), 2)
+        self.assertEqual(previous_notes.splitlines()[0], f"# Zen {CURRENT_TAG}")
         self.assertEqual(
             [
                 line
@@ -347,6 +347,27 @@ class PrepareReleaseIntegrationTests(unittest.TestCase):
             "Play Store",
         ):
             self.assertIn(marker, notes)
+
+    def test_includes_only_the_target_versions_reviewed_notes(self):
+        root = self.create_repo()
+        reviewed = root / "docs/releases/reviewed"
+        reviewed.mkdir()
+        supplement = "## Highlights\n\nReviewed feature.\n\n## Known limitations\n\nNot fixed."
+        (reviewed / f"{NEXT_TAG}.md").write_text(supplement + "\n", encoding="utf-8")
+        (reviewed / "v99.0.0.md").write_text("Unrelated future notes.\n", encoding="utf-8")
+        git(root, "add", "docs/releases/reviewed")
+        git(root, "commit", "-m", "Review release context")
+
+        result = self.run_script(root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        notes = (root / f"docs/releases/{NEXT_TAG}.md").read_text(encoding="utf-8")
+        self.assertIn(supplement + "\n\n## What changed", notes)
+        self.assertIn("Add reviewed release change", notes)
+        self.assertNotIn("Unrelated future notes", notes)
+        self.assertNotIn(
+            f"docs/releases/reviewed/{NEXT_TAG}.md",
+            json.loads(result.stdout)["changed_paths"],
+        )
 
     def test_fails_closed_when_there_are_no_commits(self):
         result = self.run_script(self.create_repo(with_commit=False))

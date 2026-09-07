@@ -309,6 +309,7 @@ def build_release_notes(
     android_version_code: int,
     android_abi: str,
     certificate: str,
+    reviewed_notes: str = "",
 ) -> str:
     marketing_version = next_version.split("-beta.", 1)[0]
     release_description = (
@@ -317,11 +318,12 @@ def build_release_notes(
     changes = "\n".join(
         f"- {markdown_subject(subject)} (`{sha[:7]}`)" for sha, subject in commits
     )
+    reviewed_section = f"{reviewed_notes}\n\n" if reviewed_notes else ""
     return f"""# Zen {next_tag}
 
 {release_description} the reviewed changes on `main` since `{current_tag}`.
 
-## What changed
+{reviewed_section}## What changed
 
 {changes}
 
@@ -546,6 +548,11 @@ def prepare(root: Path, target_version: str | None = None) -> dict[str, object]:
         android_version_code=next_version_code,
         android_abi=release_android_abi,
         certificate=note_facts["certificate"],
+        reviewed_notes=(
+            read_text(root, f"docs/releases/reviewed/{next_tag}.md").strip()
+            if (root / f"docs/releases/reviewed/{next_tag}.md").is_file()
+            else ""
+        ),
     )
 
     originals = {
