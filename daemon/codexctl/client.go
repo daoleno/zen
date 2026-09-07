@@ -212,10 +212,10 @@ func (c *Client) Close() error {
 		close(c.closed)
 		conn := c.conn
 		c.mu.Unlock()
-		_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 		_ = conn.Close()
 	})
-	return c.closeErr
+	return c.Err()
 }
 
 // Err returns the terminal connection error once the read pump has stopped.

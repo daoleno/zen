@@ -25,6 +25,7 @@ type fakeAppServer struct {
 	srv        *http.Server
 	upgrader   websocket.Upgrader
 	mu         sync.Mutex
+	writeMu    sync.Mutex
 	requests   []map[string]any
 	clients    []*websocket.Conn
 	// settingsUpdateHook runs after a thread/settings/update request is
@@ -122,6 +123,8 @@ func (f *fakeAppServer) broadcast(method string, params any) {
 	raw, _ := json.Marshal(map[string]any{"method": method, "params": params})
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.writeMu.Lock()
+	defer f.writeMu.Unlock()
 	for _, ws := range f.clients {
 		_ = ws.WriteMessage(websocket.TextMessage, raw)
 	}
@@ -189,12 +192,45 @@ func (f *fakeAppServer) serve(ws *websocket.Conn) {
 
 func (f *fakeAppServer) reply(ws *websocket.Conn, id uint64, result any) {
 	raw, _ := json.Marshal(map[string]any{"id": id, "result": result})
+	f.writeMu.Lock()
+	defer f.writeMu.Unlock()
 	_ = ws.WriteMessage(websocket.TextMessage, raw)
 }
 
 func (f *fakeAppServer) replyErr(ws *websocket.Conn, id uint64, code int, message string) {
 	raw, _ := json.Marshal(map[string]any{"id": id, "error": map[string]any{"code": code, "message": message}})
+	f.writeMu.Lock()
+	defer f.writeMu.Unlock()
 	_ = ws.WriteMessage(websocket.TextMessage, raw)
+}
+
+func TestClientCloseConcurrentWithRequestAndRemoteClose(t *testing.T) {
+	f := startFakeAppServer(t)
+	c := openFake(t, f)
+	start := make(chan struct{})
+	var done sync.WaitGroup
+	for i := range 8 {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			<-start
+			if i%2 == 0 {
+				_ = c.Close()
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, _ = c.call(ctx, methodThreadLoadedList, nil)
+		}()
+	}
+	close(start)
+	f.closeClients()
+	done.Wait()
+	select {
+	case <-c.closed:
+	default:
+		t.Fatal("concurrent close did not close client")
+	}
 }
 
 func openFake(t *testing.T, f *fakeAppServer) *Client {
