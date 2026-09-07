@@ -44,6 +44,9 @@ import {
   type SessionFileBinarySource,
   type SessionFileMetadata,
   type SessionFilePreviewState,
+  type SessionFileRequest,
+  type SessionFileBinaryRequest,
+  type SessionFileTextPreview,
 } from "../../services/sessionFilePreview";
 import {
   createSessionFileDownloadLifecycleOwner,
@@ -63,6 +66,29 @@ import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 import { SessionFilePreviewContext } from "./SessionFilePreviewContext";
 import { SessionFilePdfPreview } from "./SessionFilePdfPreview";
 
+export interface SessionFilePreviewLoader {
+  metadata(
+    serverId: string,
+    request: SessionFileRequest,
+  ): Promise<SessionFileMetadata>;
+  text(
+    serverId: string,
+    request: SessionFileBinaryRequest,
+  ): Promise<SessionFileTextPreview>;
+  binary(
+    serverId: string,
+    daemonId: string,
+    request: SessionFileBinaryRequest,
+  ): Promise<SessionFileBinarySource>;
+}
+
+const sessionFilePreviewLoader: SessionFilePreviewLoader = {
+  metadata: (serverId, request) =>
+    wsClient.getSessionFileMetadata(serverId, request),
+  text: (serverId, request) => wsClient.getSessionFileText(serverId, request),
+  binary: buildSessionFileBinarySource,
+};
+
 interface SessionFilePreviewSheetProps {
   reference: string | null;
   serverId: string;
@@ -75,6 +101,7 @@ interface SessionFilePreviewSheetProps {
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onClose(): void;
+  loader?: SessionFilePreviewLoader;
 }
 
 export function SessionFilePreviewSheet({
@@ -89,6 +116,7 @@ export function SessionFilePreviewSheet({
   chrome,
   theme,
   onClose,
+  loader = sessionFilePreviewLoader,
 }: SessionFilePreviewSheetProps) {
   const [state, dispatch] = useReducer(
     reduceSessionFilePreviewState,
@@ -135,7 +163,7 @@ export function SessionFilePreviewSheet({
         startedAt,
         path: state.reference!,
       };
-      const metadata = await wsClient.getSessionFileMetadata(serverId, request);
+      const metadata = await loader.metadata(serverId, request);
       if (cancelled) return;
       dispatch({ type: "metadata_loaded", metadata });
 
@@ -154,15 +182,12 @@ export function SessionFilePreviewSheet({
         metadata,
       );
       if (renderer === "markdown" || renderer === "text") {
-        const text = await wsClient.getSessionFileText(
-          serverId,
-          generationRequest,
-        );
+        const text = await loader.text(serverId, generationRequest);
         if (!cancelled) dispatch({ type: "text_loaded", text });
         return;
       }
       if (renderer === "image" || renderer === "pdf") {
-        const source = await buildSessionFileBinarySource(
+        const source = await loader.binary(
           serverId,
           daemonId,
           generationRequest,
@@ -187,6 +212,7 @@ export function SessionFilePreviewSheet({
       cancelled = true;
     };
   }, [
+    loader,
     workerId,
     daemonId,
     processId,

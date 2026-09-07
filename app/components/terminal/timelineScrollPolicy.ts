@@ -3,6 +3,9 @@ export const TIMELINE_BOTTOM_THRESHOLD = 96;
 /** Fixed virtualization settings. Scroll position remains owned by FlatList. */
 export function timelineListStabilityProps() {
   return {
+    // Preserve mounted content, including native drag/fling momentum. Follow
+    // intent stays in usePinnedTimeline: never add a native auto-follow threshold.
+    maintainVisibleContentPosition: { minIndexForVisible: 0 },
     removeClippedSubviews: false,
     // Selectable Android text must not implicitly scroll the timeline.
     scrollsChildToFocus: false,

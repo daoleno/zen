@@ -31,6 +31,7 @@ interface StructuredChatInsetScrollViewProps extends ScrollViewProps {
   keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>;
   clearanceObservationRequest?: SharedValue<number>;
   inverted?: boolean;
+  onReadingInsetChange?(inset: number): void;
   onClearanceChange(
     intentToken: number,
     clearance: number,
@@ -56,6 +57,7 @@ export const StructuredChatInsetScrollView = forwardRef<
     contentInset,
     inverted = false,
     onClearanceChange,
+    onReadingInsetChange,
     scrollIndicatorInsets,
     ...rest
   },
@@ -104,6 +106,8 @@ export const StructuredChatInsetScrollView = forwardRef<
     },
     (current, previous) => {
       effectiveClearance.value = current.clearance;
+      if (onReadingInsetChange && current.clearance !== previous?.clearance)
+        runOnJS(onReadingInsetChange)(current.clearance);
       const currentSample = current.focusSample;
       const previousSample = previous?.focusSample;
       if (
@@ -125,6 +129,7 @@ export const StructuredChatInsetScrollView = forwardRef<
       clearanceObservationRequest,
       keyboardLifecycleGate,
       onClearanceChange,
+      onReadingInsetChange,
     ],
   );
 

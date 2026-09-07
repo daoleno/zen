@@ -62,6 +62,7 @@ import {
   screenshotDemoRouteOptedIn,
 } from "../services/screenshotDemo";
 import { InterfaceDevicePerformanceDemoGate } from "../components/terminal/InterfaceDevicePerformanceDemo";
+import { InterfaceReadingFixture } from "../components/terminal/InterfaceReadingFixture";
 import { ProvidersPresentation } from "../components/providers/ProvidersPresentation";
 import { SessionModelSheet } from "../components/providers/SessionModelSheet";
 import {
@@ -119,6 +120,8 @@ export default function ScreenshotDemoRoute() {
       return <ProvidersDemo />;
     case "profile":
       return <InterfaceDevicePerformanceDemoGate />;
+    case "reading":
+      return <InterfaceReadingFixture />;
     case "composer":
       return <ComposerStatesDemo />;
     case "chat":
@@ -456,7 +459,6 @@ function ChatDemo() {
           renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
             <InterfaceTimelineView
               scrollRef={scrollRef}
-              nativeFollowSuspended={false}
               items={timeline}
               loading={false}
               emptyStateSuppressed={false}
@@ -578,7 +580,6 @@ function BrainDemo() {
           renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
             <InterfaceTimelineView
               scrollRef={scrollRef}
-              nativeFollowSuspended={false}
               items={timeline}
               emptyTitle={empty ? "Ready when you are" : undefined}
               loading={false}

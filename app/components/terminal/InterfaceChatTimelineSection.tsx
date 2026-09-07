@@ -28,7 +28,11 @@ import { useInterfaceTimelineItems } from "./useInterfaceTimelineItems";
 import type { TurnFocusSpacerRequest } from "./turnFocusState";
 import type { StructuredChatKeyboardLifecycleGate } from "./chatKeyboardOverlayPolicy";
 import { SessionFilePreviewContext } from "./SessionFilePreviewContext";
-import { SessionFilePreviewSheet } from "./SessionFilePreviewSheet";
+import {
+  SessionFilePreviewSheet,
+  type SessionFilePreviewLoader,
+} from "./SessionFilePreviewSheet";
+import type { TimelineReadingPosition } from "./timelineReadingPosition";
 
 interface InterfaceChatTimelineSectionProps {
   serverId: string;
@@ -53,7 +57,7 @@ interface InterfaceChatTimelineSectionProps {
   error?: string | null;
   commandMenuOpen: boolean;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
-  nativeFollowSuspended: boolean;
+  readingPosition?: TimelineReadingPosition;
   textSelectable: boolean;
   extraContentPadding: SharedValue<number>;
   keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>;
@@ -91,6 +95,7 @@ interface InterfaceChatTimelineSectionProps {
   onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   onRetryPendingUserMessage(id: string): void;
+  filePreviewLoader?: SessionFilePreviewLoader;
 }
 
 export function InterfaceChatTimelineSection({
@@ -113,7 +118,7 @@ export function InterfaceChatTimelineSection({
   error,
   commandMenuOpen,
   scrollRef,
-  nativeFollowSuspended,
+  readingPosition,
   textSelectable,
   extraContentPadding,
   keyboardLifecycleGate,
@@ -143,6 +148,7 @@ export function InterfaceChatTimelineSection({
   onUnavailableAction,
   showUnavailableAction,
   onRetryPendingUserMessage,
+  filePreviewLoader,
 }: InterfaceChatTimelineSectionProps) {
   const [filePreviewReference, setFilePreviewReference] = useState<
     string | null
@@ -194,8 +200,9 @@ export function InterfaceChatTimelineSection({
   return (
     <SessionFilePreviewContext.Provider value={filePreviewContext}>
       <InterfaceTimelineView
+        key={readingPosition?.scope}
+        readingPosition={readingPosition}
         scrollRef={scrollRef}
-        nativeFollowSuspended={nativeFollowSuspended}
         items={timelineItems}
         loading={loading}
         error={error}
@@ -242,6 +249,7 @@ export function InterfaceChatTimelineSection({
         truncateBody={truncateRunes}
       />
       <SessionFilePreviewSheet
+        loader={filePreviewLoader}
         reference={filePreviewReference}
         serverId={serverId}
         serverUrl={serverUrl}

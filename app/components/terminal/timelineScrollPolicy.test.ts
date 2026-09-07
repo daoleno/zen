@@ -64,6 +64,7 @@ describe("timeline scroll policy", () => {
 
   test("list integration leaves position ownership to the native list", () => {
     expect(timelineListStabilityProps()).toEqual({
+      maintainVisibleContentPosition: { minIndexForVisible: 0 },
       removeClippedSubviews: false,
       scrollsChildToFocus: false,
       windowSize: 5,
@@ -78,9 +79,7 @@ describe("timeline scroll policy", () => {
   });
 
   test("list virtualization remains fixed across interaction state", () => {
-    expect(timelineListStabilityProps()).not.toHaveProperty(
-      "maintainVisibleContentPosition",
-    );
+    expect(timelineListStabilityProps().maintainVisibleContentPosition).not.toHaveProperty("autoscrollToTopThreshold");
     expect(timelineListStabilityProps()).not.toHaveProperty(
       "disableVirtualization",
     );

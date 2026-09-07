@@ -45,6 +45,10 @@ import {
 } from "./InterfaceTimelineGrouping";
 import type { PatchFileSummary } from "./InterfaceTimelineActivityTypes";
 import { timelineListStabilityProps } from "./timelineScrollPolicy";
+import {
+  initialTimelineReadingWindow,
+  type TimelineReadingPosition,
+} from "./timelineReadingPosition";
 import { StructuredChatInsetScrollView } from "./StructuredChatInsetScrollView";
 import type { StructuredChatKeyboardLifecycleGate } from "./chatKeyboardOverlayPolicy";
 import {
@@ -73,15 +77,9 @@ type TurnFocusCellMeasurement = {
 const TURN_FOCUS_SPACER_USES_NATIVE_MEASUREMENT = Platform.OS !== "web";
 const TURN_FOCUS_ZERO_EPSILON = 0.5;
 
-const TimelineCellView = View as React.ComponentType<
-  React.ComponentProps<typeof View> & {
-    onFocusCapture?: CellRendererProps<TimelineRenderItem>["onFocusCapture"];
-  }
->;
-
 interface InterfaceTimelineViewProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
-  nativeFollowSuspended: boolean;
+  readingPosition?: TimelineReadingPosition;
   items: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
@@ -134,7 +132,7 @@ interface InterfaceTimelineViewProps {
 
 export function InterfaceTimelineView({
   scrollRef,
-  nativeFollowSuspended,
+  readingPosition,
   items,
   loading,
   error,
@@ -183,6 +181,9 @@ export function InterfaceTimelineView({
   const turnFocusCellMeasurementRef = React.useRef<TurnFocusCellMeasurement>(
     {},
   );
+  const readingPositionRef = React.useRef(readingPosition);
+  const viewportRef = React.useRef<View>(null);
+  readingPositionRef.current = readingPosition;
   const renderProjectionCacheRef =
     React.useRef<TimelineRenderProjectionCache | null>(null);
   const previousItemsRef = React.useRef(items);
@@ -193,10 +194,7 @@ export function InterfaceTimelineView({
   perfItemCountRef.current = items.length;
   React.useEffect(() => {
     const previousPerfItems = previousPerfItemsRef.current;
-    if (
-      isTimelineProjectionPerfEnabled() &&
-      previousPerfItems !== items
-    ) {
+    if (isTimelineProjectionPerfEnabled() && previousPerfItems !== items) {
       recordTimelineListDataIdentityProbe({
         previousItems: previousPerfItems,
         nextItems: items,
@@ -212,12 +210,74 @@ export function InterfaceTimelineView({
     onItemsMutated?.();
   }, [items, onItemsMutated]);
   const renderItems = React.useMemo(() => {
-    const projected = projectTimelineRenderItems(items, {
-      showDateDividers: zenTheme.chat.showDateDividers,
-    }, renderProjectionCacheRef.current);
+    const projected = projectTimelineRenderItems(
+      items,
+      {
+        showDateDividers: zenTheme.chat.showDateDividers,
+      },
+      renderProjectionCacheRef.current,
+    );
     renderProjectionCacheRef.current = projected.cache;
     return projected.items;
   }, [items, zenTheme.chat.showDateDividers]);
+  // A remounted variable-height list measures a small prefix around the saved
+  // message, rather than guessing an offset through thousands of unmounted rows.
+  const readingIds = React.useMemo(
+    () => renderItems.map((item) => item.id),
+    [renderItems],
+  );
+  const resolveReadingAlias = (anchor: TimelineReadingPosition["initialAnchor"]) => {
+    const id = resolveTurnFocusAnchorItemId(anchor?.id, renderItems);
+    return anchor && id && id !== anchor.id ? { ...anchor, id } : anchor;
+  };
+  const [readingWindow, setReadingWindow] = React.useState(() =>
+    initialTimelineReadingWindow(readingIds, resolveReadingAlias(readingPosition?.initialAnchor)),
+  );
+  const resolvedWindow =
+    readingWindow ??
+    initialTimelineReadingWindow(
+      readingIds,
+      readingPosition?.current().mode === "detached"
+        ? resolveReadingAlias(readingPosition.current().anchor)
+        : undefined,
+    );
+  const newestBoundary = resolvedWindow?.start;
+  const boundaryIndex = newestBoundary
+    ? Math.max(
+        0,
+        renderItems.findIndex((item) => item.id === newestBoundary),
+      )
+    : 0;
+  const windowItems = React.useMemo(
+    () => (boundaryIndex ? renderItems.slice(boundaryIndex) : renderItems),
+    [boundaryIndex, renderItems],
+  );
+  React.useLayoutEffect(() => {
+    if (readingWindow === null && resolvedWindow !== null)
+      setReadingWindow(resolvedWindow);
+  }, [readingWindow, resolvedWindow]);
+  React.useLayoutEffect(() => {
+    readingPosition?.onItems(readingIds, resolveTurnFocusAnchorItemId(readingPosition.current().anchor?.id, renderItems));
+  }, [readingPosition, readingIds, renderItems]);
+  React.useLayoutEffect(() => {
+    if (!readingPosition) return;
+    readingPosition.revealLatest.current = () => {
+      if (resolvedWindow !== null && !newestBoundary) return false;
+      setReadingWindow({ initialCount: 8 });
+      return true;
+    };
+    return () => {
+      readingPosition.revealLatest.current = null;
+    };
+  }, [newestBoundary, readingPosition, resolvedWindow]);
+  const revealNewerRows = React.useCallback(() => {
+    if (!boundaryIndex || !readingPosition?.userScrolling()) return;
+    const next = Math.max(0, boundaryIndex - 40);
+    setReadingWindow({
+      start: next ? renderItems[next].id : undefined,
+      initialCount: resolvedWindow?.initialCount ?? 8,
+    });
+  }, [boundaryIndex, readingPosition, renderItems, resolvedWindow]);
   const turnFocusAnchorItemId = resolveTurnFocusAnchorItemId(
     turnFocusPendingMessageId,
     renderItems,
@@ -277,6 +337,7 @@ export function InterfaceTimelineView({
       <TurnFocusTimelineCell
         {...props}
         measurementRef={turnFocusCellMeasurementRef}
+        readingPositionRef={readingPositionRef}
       />
     ),
     [],
@@ -290,12 +351,14 @@ export function InterfaceTimelineView({
         clearanceObservationRequest={turnFocusClearanceRequest}
         inverted
         onClearanceChange={onClearanceChange ?? ignoreClearanceChange}
+        onReadingInsetChange={readingPosition?.onInsetChange}
       />
     ),
     [
       extraContentPadding,
       keyboardLifecycleGate,
       onClearanceChange,
+      readingPosition,
       turnFocusClearanceRequest,
     ],
   );
@@ -380,51 +443,68 @@ export function InterfaceTimelineView({
 
   return (
     <TimelineTextSelectableContext.Provider value={textSelectionContext}>
-      <View style={styles.timelineStage}>
-        <FlatList<TimelineRenderItem>
-          accessibilityLabel="Conversation timeline"
-          testID="structured-chat-timeline"
-          ref={
-            scrollRef as React.RefObject<FlatList<TimelineRenderItem> | null>
-          }
-          data={renderItems}
-          ListHeaderComponent={
-            turnFocusSpacer ? (
-              <TurnFocusSpacer
-                request={turnFocusSpacer}
-                onLayout={onTurnFocusSpacerLayout}
-              />
-            ) : null
-          }
-          CellRendererComponent={renderTimelineCell}
-          keyExtractor={(item) => item.id}
-          renderItem={renderItem}
-          style={styles.timeline}
-          contentContainerStyle={[
-            styles.timelineContent,
-            { paddingBottom: Math.max(12, topChromeInset) },
-          ]}
-          inverted
-          renderScrollComponent={renderScrollComponent}
-          {...listStabilityProps}
-          keyboardDismissMode={
-            Platform.OS === "ios" ? "interactive" : "on-drag"
-          }
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          scrollEventThrottle={32}
-          onLayout={onLayout}
-          onScroll={onScroll}
-          onScrollBeginDrag={onScrollBeginDrag}
-          onScrollEndDrag={onScrollEndDrag}
-          onMomentumScrollBegin={onMomentumScrollBegin}
-          onMomentumScrollEnd={onMomentumScrollEnd}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          onTouchCancel={handleTouchCancel}
-          onContentSizeChange={onContentSizeChange}
-          onViewableItemsChanged={handleViewableItemsChanged}
-        />
+      <View
+        ref={viewportRef}
+        collapsable={false}
+        style={styles.timelineStage}
+        onLayout={() =>
+          viewportRef.current?.measureInWindow((_x, y) =>
+            readingPositionRef.current?.onViewportOrigin(y),
+          )
+        }
+      >
+        {resolvedWindow ? (
+          <FlatList<TimelineRenderItem>
+            accessibilityLabel="Conversation timeline"
+            testID="structured-chat-timeline"
+            ref={
+              scrollRef as React.RefObject<FlatList<TimelineRenderItem> | null>
+            }
+            data={windowItems}
+            ListHeaderComponent={
+              turnFocusSpacer ? (
+                <TurnFocusSpacer
+                  request={turnFocusSpacer}
+                  onLayout={onTurnFocusSpacerLayout}
+                />
+              ) : null
+            }
+            CellRendererComponent={renderTimelineCell}
+            keyExtractor={(item) => item.id}
+            renderItem={renderItem}
+            style={styles.timeline}
+            contentContainerStyle={[
+              styles.timelineContent,
+              { paddingBottom: Math.max(12, topChromeInset) },
+            ]}
+            inverted
+            renderScrollComponent={renderScrollComponent}
+            {...listStabilityProps}
+            initialNumToRender={resolvedWindow.initialCount}
+            onStartReached={revealNewerRows}
+            onStartReachedThreshold={1}
+            keyboardDismissMode={
+              Platform.OS === "ios" ? "interactive" : "on-drag"
+            }
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            scrollEventThrottle={32}
+            onLayout={onLayout}
+            onScroll={onScroll}
+            onScrollBeginDrag={() => {
+              onScrollBeginDrag();
+              revealNewerRows();
+            }}
+            onScrollEndDrag={onScrollEndDrag}
+            onMomentumScrollBegin={onMomentumScrollBegin}
+            onMomentumScrollEnd={onMomentumScrollEnd}
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchCancel}
+            onContentSizeChange={onContentSizeChange}
+            onViewableItemsChanged={handleViewableItemsChanged}
+          />
+        ) : null}
 
         {items.length === 0 ? (
           <View style={styles.emptyOverlay}>{emptyContent}</View>
@@ -445,17 +525,34 @@ function TurnFocusTimelineCell({
   children,
   item,
   measurementRef,
-  onFocusCapture,
+  readingPositionRef,
   onLayout,
   style,
 }: CellRendererProps<TimelineRenderItem> & {
   measurementRef: React.RefObject<TurnFocusCellMeasurement>;
+  readingPositionRef: React.RefObject<TimelineReadingPosition | undefined>;
 }) {
+  const cellRef = React.useRef<View>(null);
+  React.useLayoutEffect(
+    () => () => readingPositionRef.current?.onCellUnmount(item.id),
+    [item.id, readingPositionRef],
+  );
   const handleLayout = React.useCallback(
     (event: LayoutChangeEvent) => {
       // This positioned content cell includes newer Activity/divider siblings;
       // a wrapper inside renderItem would only report its local y (normally 0).
       onLayout?.(event);
+      readingPositionRef.current?.onCellLayout(
+        item.id,
+        {
+          offset: event.nativeEvent.layout.y,
+          length: event.nativeEvent.layout.height,
+        },
+        (callback) =>
+          cellRef.current?.measureInWindow((_x, y, _width, height) =>
+            callback(y, height),
+          ),
+      );
       const measurement = measurementRef.current;
       const geometry = turnFocusRowGeometryFromCell(
         measurement.pendingMessageId,
@@ -472,18 +569,18 @@ function TurnFocusTimelineCell({
         geometry.newestEdgeOffset,
       );
     },
-    [item.id, measurementRef, onLayout],
+    [item.id, measurementRef, onLayout, readingPositionRef],
   );
 
   return (
-    <TimelineCellView
+    <View
+      ref={cellRef}
       collapsable={false}
-      onFocusCapture={onFocusCapture}
       onLayout={handleLayout}
       style={style}
     >
       {children}
-    </TimelineCellView>
+    </View>
   );
 }
 

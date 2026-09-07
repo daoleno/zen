@@ -45,6 +45,7 @@ import {
   useRelativeTimeLabel,
 } from "./InterfaceChatSurfaceHooks";
 import { resolveRunningProviderActivity } from "./providerActivity";
+import { resolveInterfaceReadingIdentity, type InterfaceReadingIdentity } from "./interfaceChatSessionIdentity";
 import { shouldClearTurnFocusForSurfaceLifecycle } from "./turnFocusState";
 import {
   resolveInterfaceComposerInitialFocusEffect,
@@ -406,9 +407,17 @@ export function useInterfaceChatSurfaceState({
     () => resolveRunningProviderActivity(conversation?.activity),
     [conversation?.activity],
   );
+  const readingIdentityRef = useRef<InterfaceReadingIdentity | undefined>(undefined);
+  const readingIdentity = resolveInterfaceReadingIdentity(
+    conversationCacheKey,
+    Boolean(conversationScopeKey),
+    conversation?.available ? conversation.session_id : undefined,
+    readingIdentityRef.current,
+  );
+  readingIdentityRef.current = readingIdentity;
   const timeline = usePinnedTimeline(
     events.length + pendingUserMessages.length + (runningActivity ? 1 : 0),
-    conversationCacheKey,
+    readingIdentity.key,
     topChromeInset,
   );
   const handleKeyboardLifecycleInvalidate = useCallback(

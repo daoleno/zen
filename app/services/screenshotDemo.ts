@@ -14,6 +14,7 @@ export const SCREENSHOT_DEMO_STATES = [
   "stats",
   "calendar",
   "profile",
+  "reading",
   "providers",
   "skills",
   "composer",

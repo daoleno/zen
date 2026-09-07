@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   type FlatList,
   Keyboard,
@@ -23,6 +30,17 @@ import {
   timelineDistanceFromLatest,
   type TimelineScrollState,
 } from "./timelineScrollPolicy";
+import {
+  captureTimelineReadingAnchor,
+  recallTimelineReadingPosition,
+  rememberTimelineReadingPosition,
+  resolveTimelineReadingAnchor,
+  timelineReadingOffset,
+  type TimelineCellFrame,
+  type TimelineReadingAnchor,
+  type TimelineReadingPosition,
+  type MeasureTimelineCell,
+} from "./timelineReadingPosition";
 import {
   createTurnFocusState,
   reduceTurnFocus,
@@ -109,10 +127,14 @@ export function usePinnedTimeline(
   topChromeInset: number = 0,
 ) {
   const scrollRef = useRef<FlatList<ZenTimelineItem>>(null);
-  const resetKeyRef = useRef(resetKey);
-  const scrollStateRef = useRef<TimelineScrollState>(
-    INITIAL_TIMELINE_SCROLL_STATE,
+  const initialReading = useMemo(
+    () => recallTimelineReadingPosition(resetKey),
+    [resetKey],
   );
+  const resetKeyRef = useRef(resetKey);
+  const scrollStateRef = useRef<TimelineScrollState>({
+    mode: initialReading.mode,
+  });
   const userDraggingRef = useRef(false);
   const userMomentumRef = useRef(false);
   const timelineTouchActiveRef = useRef(false);
@@ -121,6 +143,22 @@ export function usePinnedTimeline(
   const latestOffsetRef = useRef(0);
   const rawContentOffsetRef = useRef(0);
   const distanceFromLatestRef = useRef(0);
+  const readingAnchorRef = useRef<TimelineReadingAnchor | undefined>(
+    initialReading.anchor,
+  );
+  const cellFramesRef = useRef(new Map<string, TimelineCellFrame>());
+  const readingIdsRef = useRef<string[]>([]);
+  const viewportHeightRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  const contentTranslationRef = useRef(0);
+  const nativeInsetRef = useRef(0);
+  const viewportOriginRef = useRef<number | undefined>(undefined);
+  const cellMeasuresRef = useRef(new Map<string, MeasureTimelineCell>());
+  const scrollGeometryRef = useRef<{ height?: number; viewport?: number }>({});
+  const readingLayoutFrameRef = useRef<number | null>(null);
+  const revealLatestRef = useRef<(() => boolean) | null>(null);
+  const readingScopeRef = useRef(resetKey);
+  const readingEpochRef = useRef(0);
   const textSelectionActiveRef = useRef(false);
   const textSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -132,8 +170,12 @@ export function usePinnedTimeline(
     requestEpoch: 0,
   });
   const reducedMotion = useReducedMotion();
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
-  const [nativeFollowSuspended, setNativeFollowSuspended] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(
+    initialReading.mode === "detached",
+  );
+  const [nativeFollowSuspended, setNativeFollowSuspended] = useState(
+    initialReading.mode === "detached",
+  );
   const textSelectable = true;
   const [turnFocusPendingMessageId, setTurnFocusPendingMessageId] =
     useState<string>();
@@ -159,12 +201,249 @@ export function usePinnedTimeline(
     );
   }, [itemCount]);
 
+  const saveReadingPosition = useCallback(() => {
+    rememberTimelineReadingPosition(readingScopeRef.current, {
+      mode: scrollStateRef.current.mode,
+      anchor: readingAnchorRef.current,
+    });
+  }, []);
+  const captureReadingPosition = useCallback(() => {
+    if (scrollStateRef.current.mode !== "detached") return;
+    const anchor = captureTimelineReadingAnchor(
+      cellFramesRef.current,
+      readingIdsRef.current,
+      rawContentOffsetRef.current,
+      viewportHeightRef.current,
+      topChromeInset,
+      contentTranslationRef.current,
+    );
+    if (anchor) readingAnchorRef.current = anchor;
+    saveReadingPosition();
+    const origin = viewportOriginRef.current;
+    const offset = rawContentOffsetRef.current;
+    const epoch = readingEpochRef.current;
+    if (anchor && origin !== undefined)
+      cellMeasuresRef.current.get(anchor.id)?.((screenY) => {
+        if (
+          readingEpochRef.current !== epoch ||
+          readingAnchorRef.current !== anchor ||
+          rawContentOffsetRef.current !== offset
+        )
+          return;
+        readingAnchorRef.current = {
+          ...anchor,
+          intraOffset: origin + topChromeInset - screenY,
+          nativeInset: nativeInsetRef.current,
+        };
+        saveReadingPosition();
+      });
+  }, [saveReadingPosition, topChromeInset]);
+  const sampleContentOrigin = useCallback((id: string) => {
+    const frame = cellFramesRef.current.get(id);
+    const measure = cellMeasuresRef.current.get(id);
+    const offset = rawContentOffsetRef.current;
+    const origin = viewportOriginRef.current;
+    const epoch = readingEpochRef.current;
+    if (
+      !frame ||
+      !measure ||
+      origin === undefined ||
+      viewportHeightRef.current <= 0
+    )
+      return;
+    measure((screenY) => {
+      if (
+        readingEpochRef.current !== epoch ||
+        rawContentOffsetRef.current !== offset ||
+        cellFramesRef.current.get(id) !== frame
+      )
+        return;
+      contentTranslationRef.current =
+        origin +
+        viewportHeightRef.current -
+        frame.offset -
+        frame.length +
+        offset -
+        screenY;
+    });
+  }, []);
+  const reconcileReadingLayout = useCallback(() => {
+    if (readingLayoutFrameRef.current !== null) return;
+    readingLayoutFrameRef.current = requestAnimationFrame(() => {
+      readingLayoutFrameRef.current = null;
+      const anchor = readingAnchorRef.current;
+      if (
+        implicitAnchorSuspended() ||
+        viewportHeightRef.current <= 0 ||
+        contentHeightRef.current <= 0 ||
+        turnFocusSuppressesOrdinaryFollow(turnFocusStateRef.current)
+      )
+        return;
+      if (scrollStateRef.current.mode === "attached") {
+        if (
+          Math.abs(rawContentOffsetRef.current - latestOffsetRef.current) > 1
+        ) {
+          scrollRef.current?.scrollToOffset({
+            offset: latestOffsetRef.current,
+            animated: false,
+          });
+          rawContentOffsetRef.current = latestOffsetRef.current;
+          distanceFromLatestRef.current = 0;
+        }
+        return;
+      }
+      if (!anchor) return;
+      const frame = cellFramesRef.current.get(anchor.id);
+      if (!frame) return;
+      const applyOffset = (target: number) => {
+        const maximum = Math.max(
+          latestOffsetRef.current,
+          contentHeightRef.current - viewportHeightRef.current + nativeInsetRef.current,
+        );
+        target = Math.max(latestOffsetRef.current, Math.min(maximum, target));
+        if (Math.abs(target - rawContentOffsetRef.current) <= 1) return;
+        scrollRef.current?.scrollToOffset({ offset: target, animated: false });
+        rawContentOffsetRef.current = target;
+        distanceFromLatestRef.current = timelineDistanceFromLatest(
+          target,
+          latestOffsetRef.current,
+        );
+      };
+      const measure = cellMeasuresRef.current.get(anchor.id);
+      const origin = viewportOriginRef.current;
+      if (measure && origin !== undefined) {
+        const offset = rawContentOffsetRef.current;
+        const epoch = readingEpochRef.current;
+        measure((screenY) => {
+          if (
+            readingEpochRef.current !== epoch ||
+            readingAnchorRef.current !== anchor ||
+            cellFramesRef.current.get(anchor.id) !== frame ||
+            implicitAnchorSuspended() ||
+            rawContentOffsetRef.current !== offset
+          )
+            return;
+          // Read the native position after the keyboard decorator has applied
+          // its translation; a requested inset alone is not a mounted origin.
+          contentTranslationRef.current =
+            origin +
+            viewportHeightRef.current -
+            frame.offset -
+            frame.length +
+            offset -
+            screenY;
+          const insetDelta =
+            anchor.nativeInset === undefined
+              ? 0
+              : nativeInsetRef.current - anchor.nativeInset;
+          applyOffset(
+            offset +
+              origin +
+              topChromeInset -
+              anchor.intraOffset -
+              screenY +
+              insetDelta,
+          );
+        });
+      } else {
+        applyOffset(
+          timelineReadingOffset(
+            anchor,
+            frame,
+            viewportHeightRef.current,
+            topChromeInset,
+            contentTranslationRef.current,
+          ),
+        );
+      }
+    });
+  }, [implicitAnchorSuspended, topChromeInset]);
+  const readingPosition = useMemo<TimelineReadingPosition>(
+    () => ({
+      scope: resetKey,
+      initialAnchor:
+        initialReading.mode === "detached" ? initialReading.anchor : undefined,
+      revealLatest: revealLatestRef,
+      onItems(ids, anchorAlias) {
+        readingIdsRef.current = ids;
+        if (readingAnchorRef.current && anchorAlias && anchorAlias !== readingAnchorRef.current.id && ids.includes(anchorAlias)) {
+          readingAnchorRef.current = { ...readingAnchorRef.current, id: anchorAlias };
+        }
+        if (ids.length && readingAnchorRef.current)
+          readingAnchorRef.current = resolveTimelineReadingAnchor(
+            readingAnchorRef.current,
+            ids,
+          );
+        reconcileReadingLayout();
+      },
+      onCellLayout(id, frame, measure) {
+        cellFramesRef.current.set(id, frame);
+        if (measure) cellMeasuresRef.current.set(id, measure);
+        sampleContentOrigin(id);
+        if (id === readingAnchorRef.current?.id) reconcileReadingLayout();
+      },
+      onCellUnmount(id) {
+        cellFramesRef.current.delete(id);
+        cellMeasuresRef.current.delete(id);
+      },
+      onViewportOrigin(origin) {
+        viewportOriginRef.current = origin;
+        const id =
+          readingAnchorRef.current?.id ??
+          cellFramesRef.current.keys().next().value;
+        if (id) sampleContentOrigin(id);
+        reconcileReadingLayout();
+      },
+      onInsetChange(inset) {
+        nativeInsetRef.current = Platform.OS === "android" ? inset : 0;
+        contentTranslationRef.current = nativeInsetRef.current;
+        const id =
+          readingAnchorRef.current?.id ??
+          cellFramesRef.current.keys().next().value;
+        if (id) sampleContentOrigin(id);
+        reconcileReadingLayout();
+      },
+      userScrolling: () => userDraggingRef.current || userMomentumRef.current,
+      current: () => {
+        const anchor = readingAnchorRef.current;
+        const frame = anchor ? cellFramesRef.current.get(anchor.id) : undefined;
+        const insetDelta =
+          anchor?.nativeInset === undefined
+            ? 0
+            : nativeInsetRef.current - anchor.nativeInset;
+        return {
+          mode: scrollStateRef.current.mode,
+          anchor,
+          contentOffset: rawContentOffsetRef.current,
+          viewportHeight: viewportHeightRef.current,
+          observedIntraOffset: frame
+            ? frame.offset +
+              frame.length +
+              contentTranslationRef.current -
+              rawContentOffsetRef.current -
+              viewportHeightRef.current +
+              topChromeInset +
+              insetDelta
+            : undefined,
+        };
+      },
+    }),
+    [
+      initialReading,
+      reconcileReadingLayout,
+      resetKey,
+      sampleContentOrigin,
+      topChromeInset,
+    ],
+  );
+
   const scrollToLatestOffset = useCallback(
     (animated: boolean, exactLatestOffset?: number) => {
       if (!scrollRef.current) {
         return;
       }
       const latestOffset = exactLatestOffset ?? latestOffsetRef.current;
+      if (revealLatestRef.current?.()) return;
       scrollRef.current.scrollToOffset({
         offset: latestOffset,
         animated,
@@ -253,9 +532,11 @@ export function usePinnedTimeline(
 
   const attachToLatest = useCallback(() => {
     scrollStateRef.current = returnTimelineToBottom();
+    readingAnchorRef.current = undefined;
+    saveReadingPosition();
     setNativeFollowSuspended(implicitAnchorSuspended());
     setShowJumpToLatest(false);
-  }, [implicitAnchorSuspended]);
+  }, [implicitAnchorSuspended, saveReadingPosition]);
 
   const detachFromLatest = useCallback(() => {
     scrollStateRef.current = { mode: "detached" };
@@ -264,10 +545,9 @@ export function usePinnedTimeline(
   }, [updateJumpButton]);
 
   const handleTimelineItemsMutated = useCallback(() => {
-    if (implicitAnchorSuspended()) {
-      detachFromLatest();
-    }
-  }, [detachFromLatest, implicitAnchorSuspended]);
+    // Data is not a user intent. Native preservation handles live mutations.
+    updateJumpButton();
+  }, [updateJumpButton]);
 
   const scrollToLatest = useCallback(
     (animated: boolean = true, exactLatestOffset?: number) => {
@@ -316,6 +596,13 @@ export function usePinnedTimeline(
       if (!pendingMessageId) {
         return;
       }
+      if (implicitAnchorSuspended()) {
+        cancelTurnFocus(textSelectionActiveRef.current ? "selection" : "touch");
+        return;
+      }
+      attachToLatest();
+      revealLatestRef.current?.();
+      readingAnchorRef.current = undefined;
       turnFocusIntentSeqRef.current += 1;
       transitionTurnFocus({
         type: "intent",
@@ -339,6 +626,7 @@ export function usePinnedTimeline(
     },
     [
       cancelTurnFocus,
+      attachToLatest,
       implicitAnchorSuspended,
       reducedMotion,
       resetKey,
@@ -378,8 +666,9 @@ export function usePinnedTimeline(
         height,
         requestEpoch,
       });
+      reconcileReadingLayout();
     },
-    [transitionTurnFocus],
+    [reconcileReadingLayout, transitionTurnFocus],
   );
 
   const updateTurnFocusGeometry = useCallback(
@@ -415,24 +704,31 @@ export function usePinnedTimeline(
   );
 
   const clearTurnFocusForLifecycle = useCallback(() => {
+    saveReadingPosition();
     cancelTurnFocus("lifecycle");
-  }, [cancelTurnFocus]);
+  }, [cancelTurnFocus, saveReadingPosition]);
 
   const resetForConversation = useCallback(
     (generation: string) => {
       resumeImplicitAnchorAfterTextSelection();
-      scrollStateRef.current = returnTimelineToBottom();
+      const saved = recallTimelineReadingPosition(generation);
+      readingScopeRef.current = generation;
+      scrollStateRef.current = { mode: saved.mode };
+      readingAnchorRef.current = saved.anchor;
+      cellFramesRef.current.clear();
+      cellMeasuresRef.current.clear();
+      rawContentOffsetRef.current = 0;
       userDraggingRef.current = false;
       userMomentumRef.current = false;
       timelineTouchActiveRef.current = false;
-      setNativeFollowSuspended(false);
+      setNativeFollowSuspended(saved.mode === "detached");
       automaticReturnsInFlightRef.current = 0;
       applyTurnFocusEvent({ type: "reset", generation });
       distanceFromLatestRef.current = timelineDistanceFromLatest(
         rawContentOffsetRef.current,
         latestOffsetRef.current,
       );
-      setShowJumpToLatest(false);
+      setShowJumpToLatest(saved.mode === "detached");
     },
     [applyTurnFocusEvent, resumeImplicitAnchorAfterTextSelection],
   );
@@ -453,6 +749,18 @@ export function usePinnedTimeline(
   const updateScrollPosition = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>, userDriven: boolean) => {
       const { contentOffset, contentInset } = event.nativeEvent;
+      const height = event.nativeEvent.contentSize?.height;
+      const viewport = event.nativeEvent.layoutMeasurement?.height;
+      const previousGeometry = scrollGeometryRef.current;
+      const geometryChanged =
+        (height !== undefined &&
+          previousGeometry.height !== undefined &&
+          height !== previousGeometry.height) ||
+        (viewport !== undefined &&
+          previousGeometry.viewport !== undefined &&
+          viewport !== previousGeometry.viewport);
+      scrollGeometryRef.current = { height, viewport };
+      userDriven = userDriven && !geometryChanged;
       latestOffsetRef.current =
         Platform.OS === "ios" ? -Math.max(0, contentInset.top) : 0;
       rawContentOffsetRef.current = contentOffset.y;
@@ -479,11 +787,17 @@ export function usePinnedTimeline(
       }
       if (nextScrollState.mode === "detached" && userDriven) {
         detachFromLatest();
+        captureReadingPosition();
         return;
       }
       updateJumpButton();
     },
-    [attachToLatest, detachFromLatest, updateJumpButton],
+    [
+      attachToLatest,
+      captureReadingPosition,
+      detachFromLatest,
+      updateJumpButton,
+    ],
   );
 
   const handleScroll = useCallback(
@@ -492,8 +806,10 @@ export function usePinnedTimeline(
         event,
         userDraggingRef.current || userMomentumRef.current,
       );
+      if (!userDraggingRef.current && !userMomentumRef.current)
+        reconcileReadingLayout();
     },
-    [updateScrollPosition],
+    [reconcileReadingLayout, updateScrollPosition],
   );
 
   const handleScrollBeginDrag = useCallback(() => {
@@ -559,28 +875,18 @@ export function usePinnedTimeline(
 
   const handleContentSizeChange = useCallback(
     (_: number, height: number) => {
-      // flexGrow can keep the content-container height constant while the live
-      // response moves the focused turn boundary. Positioned cell layout is the
-      // focus owner's geometry signal. For ordinary live mutations, the
-      // FlatList's native visible-child owner atomically preserves history or
-      // follows within its newest-edge threshold; issuing a second JS scroll
-      // here races that adjustment and can move or blank the settled viewport.
+      contentHeightRef.current = height;
+      // Native preservation owns mutations during touch/inertia. At rest this
+      // hook reconciles the same reading anchor or the attached newest edge.
       if (turnFocusSuppressesOrdinaryFollow(turnFocusStateRef.current)) {
         return;
       }
-      if (itemCount === 0 || height <= 0) {
-        attachToLatest();
-        return;
-      }
-      if (implicitAnchorSuspended()) {
-        detachFromLatest();
-        return;
-      }
+      if (itemCount === 0 || height <= 0 || implicitAnchorSuspended()) return;
+      reconcileReadingLayout();
       updateJumpButton();
     },
     [
-      attachToLatest,
-      detachFromLatest,
+      reconcileReadingLayout,
       implicitAnchorSuspended,
       itemCount,
       updateJumpButton,
@@ -589,6 +895,8 @@ export function usePinnedTimeline(
 
   const handleLayout = useCallback(
     (event: LayoutChangeEvent) => {
+      viewportHeightRef.current = event.nativeEvent.layout.height;
+      reconcileReadingLayout();
       const focusWasSuppressing = turnFocusSuppressesOrdinaryFollow(
         turnFocusStateRef.current,
       );
@@ -604,7 +912,6 @@ export function usePinnedTimeline(
         return;
       }
       if (itemCount === 0) {
-        attachToLatest();
         return;
       }
       if (implicitAnchorSuspended()) {
@@ -614,12 +921,12 @@ export function usePinnedTimeline(
       updateJumpButton();
     },
     [
-      attachToLatest,
       implicitAnchorSuspended,
       itemCount,
       topChromeInset,
       updateTurnFocusGeometry,
       updateJumpButton,
+      reconcileReadingLayout,
     ],
   );
 
@@ -630,7 +937,18 @@ export function usePinnedTimeline(
     [clearTextSelectionTimer],
   );
 
-  useEffect(() => {
+  useLayoutEffect(
+    () => () => {
+      saveReadingPosition();
+      readingEpochRef.current++;
+      if (readingLayoutFrameRef.current !== null)
+        cancelAnimationFrame(readingLayoutFrameRef.current);
+      readingLayoutFrameRef.current = null;
+    },
+    [resetKey, saveReadingPosition],
+  );
+
+  useLayoutEffect(() => {
     if (resetKeyRef.current === resetKey) {
       return;
     }
@@ -644,30 +962,22 @@ export function usePinnedTimeline(
 
   useEffect(() => {
     if (itemCount === 0) {
-      attachToLatest();
       return;
     }
     if (turnFocusSuppressesOrdinaryFollow(turnFocusStateRef.current)) {
       return;
     }
     if (implicitAnchorSuspended()) {
-      detachFromLatest();
       return;
     }
     // Item-count changes update the list only. Do not reposition the reader
     // from a lifecycle or data subscription callback.
     updateJumpButton();
-  }, [
-    attachToLatest,
-    detachFromLatest,
-    implicitAnchorSuspended,
-    itemCount,
-    resetKey,
-    updateJumpButton,
-  ]);
+  }, [implicitAnchorSuspended, itemCount, resetKey, updateJumpButton]);
 
   return {
     scrollRef,
+    readingPosition,
     nativeFollowSuspended,
     showJumpToLatest,
     textSelectable,

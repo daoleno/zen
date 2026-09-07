@@ -298,7 +298,7 @@ export function InterfaceDevicePerformanceDemo({
           renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
             <InterfaceTimelineView
               scrollRef={pinned.scrollRef}
-              nativeFollowSuspended={pinned.nativeFollowSuspended}
+              readingPosition={pinned.readingPosition}
               items={timeline}
               loading={false}
               emptyStateSuppressed={false}

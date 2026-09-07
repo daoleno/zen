@@ -58,7 +58,7 @@ export interface InterfaceChatBodyProps {
   loading: boolean;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
-  nativeFollowSuspended: boolean;
+  readingPosition?: import("./timelineReadingPosition").TimelineReadingPosition;
   timelineTextSelectable: boolean;
   turnFocusClearanceRequest: SharedValue<number>;
   turnFocusSpacer: SharedValue<TurnFocusSpacerRequest>;
@@ -152,7 +152,7 @@ export function InterfaceChatBody({
   loading,
   error,
   scrollRef,
-  nativeFollowSuspended,
+  readingPosition,
   timelineTextSelectable,
   turnFocusClearanceRequest,
   turnFocusSpacer,
@@ -298,7 +298,7 @@ export function InterfaceChatBody({
           error={error}
           commandMenuOpen={composerPresentation.showCommandMenu}
           scrollRef={scrollRef}
-          nativeFollowSuspended={nativeFollowSuspended}
+          readingPosition={readingPosition}
           textSelectable={timelineTextSelectable}
           extraContentPadding={extraContentPadding}
           keyboardLifecycleGate={keyboardLifecycleGate}

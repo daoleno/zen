@@ -39,9 +39,7 @@ describe("timeline history viewport stability", () => {
       before.find((item) => item.id === "history-anchor")?.id,
     );
     expect(after).not.toBe(before);
-    expect(timelineListStabilityProps()).not.toHaveProperty(
-      "maintainVisibleContentPosition",
-    );
+    expect(timelineListStabilityProps().maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
   });
 
   test("same-ID streaming update keeps the mounted item key", () => {
@@ -62,14 +60,12 @@ describe("timeline history viewport stability", () => {
       partial.map((item) => item.id),
     );
     expect(complete).not.toBe(partial);
-    expect(timelineListStabilityProps()).not.toHaveProperty(
-      "maintainVisibleContentPosition",
-    );
+    expect(timelineListStabilityProps().maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
   });
 
   test("newest-edge follow is not injected by list mutations", () => {
     const props = timelineListStabilityProps();
-    expect(props).not.toHaveProperty("maintainVisibleContentPosition");
+    expect(props.maintainVisibleContentPosition).not.toHaveProperty("autoscrollToTopThreshold");
     expect(props.windowSize).toBe(5);
     expect(props).not.toHaveProperty("disableVirtualization");
   });
@@ -169,8 +165,8 @@ describe("timeline history viewport stability", () => {
       "const scrollToLatest = useCallback(",
     );
 
-    expect(mutationOwner).toContain("if (implicitAnchorSuspended())");
-    expect(mutationOwner).toContain("detachFromLatest();");
+    expect(mutationOwner).not.toContain("detachFromLatest();");
+    expect(mutationOwner).not.toContain("attachToLatest();");
     expect(viewSource).toContain(
       "previousItemsRef.current = items;\n    onItemsMutated?.();",
     );
