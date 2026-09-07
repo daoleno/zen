@@ -25,7 +25,8 @@ Infer routine intent and complete authorized work. Ask only when a missing decis
 
 ## Workspace
 
-- Use the supplied repository and cwd; preserve unrelated changes. Use a worktree only for concurrent-write isolation or explicit user request, under $ZEN_WORKTREE_ROOT.
+- Edit the supplied repository and cwd directly by default; preserve unrelated changes. Use a worktree under $ZEN_WORKTREE_ROOT only for an explicit user request, concrete conflicting edits, or a justified necessary isolation reason. Briefly explain the actual reason; concurrent Workers do not necessarily conflict.
+- When using a worktree, integration into the owning target repository and requested delivery remain part of completion. A candidate branch or passing tests alone are not a delivered outcome.
 - Use TMPDIR/TMP/TEMP for scratch and $ZEN_BUILD_TMPDIR for large builds. Remove owned artifacts and unneeded child processes when finished.
 
 ## Tools

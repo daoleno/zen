@@ -312,6 +312,32 @@ func TestNewStoreKeepsStatePersonalityWithoutImportingStateNotes(t *testing.T) {
 	}
 }
 
+func TestGeneratedWorkspaceDirectRepositoryAndDelivery(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"AGENTS.md", "policies/delegation.md"} {
+		raw, err := os.ReadFile(filepath.Join(store.WorkspacePath(), path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, required := range []string{
+			"Edit the supplied repository and cwd directly by default",
+			"preserve unrelated changes",
+			"explicit user request, concrete conflicting edits, or a justified necessary isolation reason",
+			"Briefly explain the actual reason",
+			"concurrent Workers do not necessarily conflict",
+			"integration into the owning target repository and requested delivery remain part of completion",
+			"A candidate branch or passing tests alone are not a delivered outcome",
+		} {
+			if !strings.Contains(string(raw), required) {
+				t.Errorf("generated %s missing %q", path, required)
+			}
+		}
+	}
+}
+
 func TestNewStoreEnsuresWorkspaceCommunicationRules(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)

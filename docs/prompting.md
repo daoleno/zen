@@ -47,6 +47,14 @@ after Host interruption. These guarantees are implemented and tested in
 parsers, permission UI and historical documents are not active instructions.
 Private runtime overlays remain outside repository ownership.
 
+Brain and Worker guidance defaults to editing the supplied repository directly,
+preserving unrelated changes. Worktrees are exceptions for an explicit user
+request, concrete conflicting edits, or justified necessary isolation; explain
+the actual reason briefly. Concurrent Workers or a dirty repository alone do
+not establish a conflict. Worktree use does not remove integration into the
+owning target repository or requested delivery from the completion criteria.
+This is contextual prompt guidance, not an automatic worktree policy engine.
+
 The compact role is repeated at Host activation intentionally: a resumed provider process needs the current instructions even if its retained history contains older text. Activation uses the role text's SHA-256 digest, not a manually maintained version. The digest stays in internal receipt/state metadata, never in the model prompt. Other workflow policies refer to AGENTS.md instead of restating that role.
 
 ## Verification And Rollout

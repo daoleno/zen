@@ -1635,7 +1635,9 @@ func lifecycleProtocol(profile string) string {
 	return strings.TrimSpace(fmt.Sprintf(`Zen lifecycle protocol:
 Profile: %s.
 Complete the scoped objective and acceptance criteria. Ask Brain only for a material decision or missing authority; continue independent authorized work.
-Preserve unrelated changes in the supplied cwd. Use $ZEN_WORKTREE_ROOT only for required concurrent-write isolation. Use TMPDIR/TMP/TEMP for scratch and $ZEN_BUILD_TMPDIR for large builds.
+Edit the supplied repository and cwd directly by default; preserve unrelated changes. Use a worktree under $ZEN_WORKTREE_ROOT only for an explicit user request, concrete conflicting edits, or a justified necessary isolation reason. Briefly explain the actual reason; concurrent Workers do not necessarily conflict.
+When using a worktree, integration into the owning target repository and requested delivery remain part of completion. A candidate branch or passing tests alone are not a delivered outcome.
+Use TMPDIR/TMP/TEMP for scratch and $ZEN_BUILD_TMPDIR for large builds.
 Keep descendants and resources within this Session's ownership. Reuse named resources; report resource limits rather than bypassing them. Clean up owned scratch and unneeded children before completion.
 Return the report in the Worker result. Persist Brain reports only in the runtime Brain worklog/ when requested, never in the project repository.
 Run meaningful, risk-proportionate checks and required repository gates. Repeat only for edits, failures or unresolved concerns; report unverified limitations.
