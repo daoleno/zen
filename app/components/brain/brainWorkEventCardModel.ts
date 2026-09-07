@@ -36,7 +36,6 @@ export function brainWorkEventCardModel(
   const summary = clean(brainWorkEventSummary(event));
   const facts: string[] = [];
   addFact(facts, waitFact(event.wait_for), summary);
-  details.forEach((fact) => addFact(facts, fact, summary));
   addFact(facts, nextActionFact(event.next_action), summary);
 
   return {
@@ -160,6 +159,7 @@ function waitFact(value: string | undefined): string | undefined {
 
 function nextActionFact(value: string | undefined): string | undefined {
   const nextAction = clean(value);
+  if (nextAction === "Review the delegated Session result." || nextAction === "Review the delegated Session failure.") return undefined;
   return nextAction ? `Next: ${nextAction}` : undefined;
 }
 
@@ -184,10 +184,10 @@ function equivalent(left: string | undefined, right: string | undefined) {
     return false;
   }
   const normalize = (value: string) =>
-    value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const a = normalize(left);
   const b = normalize(right);
-  return a === b || a.includes(b) || b.includes(a);
+  return Boolean(a && b) && (a === b || a.includes(b) || b.includes(a));
 }
 
 function clean(value: string | undefined): string | undefined {

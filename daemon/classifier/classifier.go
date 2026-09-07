@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // WorkerState represents the classified state of a tmux-managed Worker.
@@ -292,10 +293,20 @@ func lastNonEmpty(lines []string, n int) []string {
 
 func truncate(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	if maxLen < 3 {
+		return strings.Repeat(".", maxLen)
+	}
+	end := maxLen - 3
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end] + "..."
 }
 
 func summarize(lines []string) string {

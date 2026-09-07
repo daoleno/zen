@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { BrainWorkResultEvent } from "./brainWorkEvent";
 import { brainWorkEventCardModel } from "./brainWorkEventCardModel";
 
@@ -22,6 +23,17 @@ function event(
 }
 
 describe("Brain Work card density", () => {
+  test("full diagnostic payload is accessible in focused details, not repeated on the card", () => {
+    const input = event({ event_kind: "verification", summary: "中文研究材料已完成", details_json: '{"offline_tests":22,"replay_rows":5,"capture_hashes_verified":33}' });
+    expect(brainWorkEventCardModel(input).facts).toEqual([]);
+    expect(input.details_json).toContain('"offline_tests":22');
+    const details = readFileSync(new URL("./BrainWorkEventDetailSheet.tsx", import.meta.url), "utf8");
+    expect(details).toContain("event?.details_json");
+    expect(details).toContain("selectable");
+    expect(details).toContain("ScrollView");
+    expect(details).toContain("Open session");
+    expect(brainWorkEventCardModel({ ...input, next_action: "Review the delegated Session result." }).facts).toEqual([]);
+  });
   test("collapses lifecycle-only provider prose to a minimal row", () => {
     expect(brainWorkEventCardModel(event())).toEqual({
       density: "minimal",
@@ -62,7 +74,6 @@ describe("Brain Work card density", () => {
       summary: "Publishing image",
       facts: [
         "Waiting for Preview iOS archive",
-        "CI run: 32645890201",
         "Next: Promote the verified build",
       ],
     });
@@ -94,7 +105,7 @@ describe("Brain Work card density", () => {
     });
   });
 
-  test("degrades unknown details safely to bounded scalar facts", () => {
+  test("retains summary without promoting diagnostics into default card bullets", () => {
     const model = brainWorkEventCardModel(
       event({
         summary: "Checking external state",
@@ -111,10 +122,7 @@ describe("Brain Work card density", () => {
     expect(model).toEqual({
       density: "rich",
       summary: "Checking external state",
-      facts: [
-        "Custom stage: mirror",
-        "Candidates: android, ios",
-      ],
+      facts: [],
     });
     expect(JSON.stringify(model)).not.toContain("secret");
     expect(JSON.stringify(model)).not.toContain("Criteria met");
@@ -127,6 +135,11 @@ describe("Brain Work card density", () => {
     expect(
       brainWorkEventCardModel(event({ details_json: '["release"]' })).density,
     ).toBe("minimal");
+  });
+
+  test("Chinese action text is not treated as equivalent to unrelated Chinese summary", () => {
+    const model = brainWorkEventCardModel(event({ summary: "研究材料已完成", event_kind: "artifact", next_action: "验证发布结果" }));
+    expect(model.facts).toEqual(["Next: 验证发布结果"]);
   });
 
   test("shows real user input and external blockers as semantic context", () => {

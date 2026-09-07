@@ -11,7 +11,7 @@ func SanitizeConversationProjection(conversation CodexConversation) CodexConvers
 	for _, event := range conversation.Events {
 		if isGoalInternalContextEvent(event) ||
 			event.Kind == "user_message" &&
-				isCanonicalDirectWorkEventInput(event.Body) {
+				IsDirectWorkEventPresentationInput(event.Body) {
 			continue
 		}
 		event.Title = CleanCodexDisplayText(event.Title)

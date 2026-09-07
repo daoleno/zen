@@ -18,6 +18,7 @@ import { BrainExecutorIcon } from "../../components/brain/BrainExecutorIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
+import { BrainWorkEventDetailSheet } from "../../components/brain/BrainWorkEventDetailSheet";
 import { SessionModelSheet } from "../../components/providers/SessionModelSheet";
 import { useSessionProviderSheet } from "../../components/terminal/screen/useSessionProviderSheet";
 import {
@@ -385,36 +386,41 @@ export default function BrainScreen() {
     [availableExecutors, chrome, hostExecutor?.id],
   );
 
+  const [selectedWorkResult, setSelectedWorkResult] = useState<{ event: BrainWorkResultEvent; serverId: string } | null>(null);
+  useEffect(() => setSelectedWorkResult(null), [activeServer?.id, brainChatScopeKey]);
   const activateWorkResult = useCallback(
-    (event: BrainWorkResultEvent, canOpenSession: boolean) => {
+    (event: BrainWorkResultEvent) => {
       if (!activeServer) {
         return;
       }
       if (event.unread) {
         wsClient.markBrainWorkRead(activeServer.id, event.work_id);
       }
-      if (event.session_id && canOpenSession) {
-        router.push({
-          pathname: "/terminal/[id]",
-          params: {
-            id: event.session_id,
-            serverId: activeServer.id,
-          },
-        });
-      }
+      setSelectedWorkResult({ event, serverId: activeServer.id });
     },
-    [activeServer, router],
+    [activeServer],
   );
   const openSessionIds = useMemo(
     () => new Set((activeBrain?.workers ?? []).map((agent) => agent.id)),
     [activeBrain?.workers],
   );
+  const detailEvent = selectedWorkResult?.serverId === activeServer?.id ? selectedWorkResult?.event ?? null : null;
 
   return (
     <SafeAreaView
       style={[styles.screen, { backgroundColor: chrome.appBackground }]}
       edges={[]}
     >
+      <BrainWorkEventDetailSheet
+        event={detailEvent}
+        chrome={chrome}
+        onClose={() => setSelectedWorkResult(null)}
+        onOpenSession={detailEvent?.session_id && openSessionIds.has(detailEvent.session_id) && activeServer ? () => {
+          const id = detailEvent.session_id!;
+          setSelectedWorkResult(null);
+          router.push({ pathname: "/terminal/[id]", params: { id, serverId: activeServer.id } });
+        } : undefined}
+      />
       {brainActionError || targetedThreadReadOnly ? (
         <View style={{ paddingTop: topChromeInset }}>
           {brainActionError ? (

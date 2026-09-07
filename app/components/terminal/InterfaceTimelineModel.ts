@@ -461,7 +461,7 @@ export function attachBrainWorkEventActions(
     );
     const work = currentWorkById.get(item.event.work_id);
     const onPress =
-      onActivate && (item.event.unread || canOpenSession)
+      onActivate
         ? () => onActivate(item.event, canOpenSession)
         : undefined;
     return {

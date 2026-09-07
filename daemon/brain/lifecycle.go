@@ -3350,6 +3350,13 @@ func currentWakePresent(wake *WorkWake, present map[string]bool) bool {
 }
 
 func compactWorkResultText(value string) string {
+	// Older progress summaries could end in a partial UTF-8 rune. Keep an
+	// honest abbreviation in presentation without rewriting durable evidence.
+	if strings.HasSuffix(value, "...") {
+		prefix := strings.TrimSuffix(value, "...")
+		prefix = strings.ToValidUTF8(prefix, "\ufffd")
+		value = strings.TrimRight(prefix, "\ufffd") + "..."
+	}
 	normalized := strings.ReplaceAll(value, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	paragraphs := strings.Split(normalized, "\n\n")

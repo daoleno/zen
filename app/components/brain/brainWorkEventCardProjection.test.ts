@@ -61,6 +61,22 @@ function assertBrainWorkEventCard(
 }
 
 describe("Brain Work Event dedicated card projection", () => {
+  test("same-event lifecycle and diagnostics updates invalidate cached cards", () => {
+    const before = workResultEvent("session.done", "same-event");
+    const initial = projectZenTimeline([before], null);
+    const changes: Partial<CodexConversationEvent>[] = [
+      { work_review_state: "resolved" }, { work_session_state: "not_required" },
+      { work_result_current: false }, { work_phase: "verifying" },
+      { work_attention: "user_input" }, { work_event_kind: "verification" },
+      { work_details_json: '{"offline_tests":22}' }, { work_next_action: "验证结果" }, { work_wait_for: "发布验证" },
+    ];
+    for (const change of changes) {
+      const next = { ...before, ...change };
+      const projected = projectZenTimeline([next], initial.cache);
+      expect(projected.items).toEqual(buildZenTimeline([next]));
+      expect(projected.items[0]).not.toBe(initial.items[0]);
+    }
+  });
   test("real-time work_result status kinds become brain-work-event cards", () => {
     for (const kind of PROJECTED_KINDS) {
       const event = workResultEvent(kind, `live-${kind}`);

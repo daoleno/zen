@@ -95,10 +95,10 @@ func TestSanitizeConversationProjectionDropsDirectWorkEventInput(t *testing.T) {
 			{ID: "user", Kind: "user_message", Body: "A real foreground message"},
 		},
 	})
-	if len(conversation.Events) != 7 {
+	if len(conversation.Events) != 5 {
 		t.Fatalf("sanitized events = %#v", conversation.Events)
 	}
-	for index, id := range []string{"malformed", "partial", "unknown", "reordered", "spaced", "padded", "user"} {
+	for index, id := range []string{"malformed", "partial", "unknown", "padded", "user"} {
 		if conversation.Events[index].ID != id {
 			t.Fatalf("event[%d] = %#v, want %q", index, conversation.Events[index], id)
 		}

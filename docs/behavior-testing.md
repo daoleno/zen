@@ -130,6 +130,29 @@ decision and observed owned Session removal; keep its private identities and
 evidence in Brain `worklog/`, not this repository. Existing real acceptance
 evidence need not be rerun just because deterministic coverage expands.
 
+## Brain Card Presentation
+
+`TestBDD_BrainCardUnicodeDeliveryHistoryAndAcceptance` runs the actual progress
+validator, direct-event emitter and parser, persisted provider/timeline projection,
+duplicate delivery and explicit review acceptance. When Bun is installed, its
+API payloads execute the mobile timeline projection for live, accepted and
+reconnected history. This is deterministic transport testing, not a live AI run.
+`TestBrainCardPresentationSubscriptionAndReconnect` also exercises the production
+WebSocket subscription handler with a legacy escaped-replacement envelope.
+
+Progress summaries retain their byte budget without splitting UTF-8 code points.
+Admission remains byte-exact. Presentation recognizes only a complete reserved
+event object with the exact schema, nonempty identities and no duplicate keys;
+JSON whitespace, key order and Unicode escaping may normalize. Quoted examples,
+partial/unknown envelopes and assistant results remain conversation content.
+Legacy damaged summary tails are abbreviated only in the card projection; the
+stored evidence is not rewritten. Diagnostic JSON is available in card details,
+not expanded into default-card counters. Work lifecycle and diagnostic changes
+invalidate mobile projection caches even when the event identity is unchanged.
+
+Run `go test ./brain -run BDD_BrainCard` and
+`go test ./server -run BrainCardPresentation` from `daemon/`.
+
 ## Recovery Limits
 
 Inventory absence is not process death: reconciliation now requires an

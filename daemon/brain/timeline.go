@@ -570,7 +570,7 @@ func providerEventMaterializable(event work.CodexConversationEvent) bool {
 	}
 	switch strings.TrimSpace(event.Kind) {
 	case timelineKindUserMessage:
-		if work.IsCanonicalDirectWorkEventInput(event.Body) {
+		if work.IsDirectWorkEventPresentationInput(event.Body) {
 			return false
 		}
 		_, hasExactTimestamp := exactProviderEventTimestamp(event)
@@ -833,7 +833,7 @@ func TimelineItemsToConversationEvents(items []TimelineItem) []work.CodexConvers
 func timelineItemToConversationEvent(item TimelineItem, seq int) (work.CodexConversationEvent, bool) {
 	switch item.Kind {
 	case timelineKindUserMessage:
-		if work.IsCanonicalDirectWorkEventInput(item.Body) {
+		if work.IsDirectWorkEventPresentationInput(item.Body) {
 			// Transport-only Session Input must never become a visible user row.
 			// Presentable Work outcomes own the work_card / work_result path.
 			return work.CodexConversationEvent{}, false
@@ -870,7 +870,7 @@ func timelineItemToConversationEvent(item TimelineItem, seq int) (work.CodexConv
 			Kind:            "status",
 			Role:            "assistant",
 			Title:           item.Title,
-			Body:            firstNonEmpty(item.Summary, item.Body),
+			Body:            compactWorkResultText(firstNonEmpty(item.Summary, item.Body)),
 			Status:          firstNonEmpty(item.EventKind, item.Status),
 			Source:          workResultConversationSource,
 			WorkID:          item.WorkID,

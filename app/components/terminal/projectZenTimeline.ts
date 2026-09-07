@@ -540,6 +540,15 @@ function isBoundedStreamingFieldDelta(
     previous.work_session_id === next.work_session_id &&
     previous.session_name === next.session_name &&
     previous.unread === next.unread &&
+    previous.work_review_state === next.work_review_state &&
+    previous.work_session_state === next.work_session_state &&
+    previous.work_result_current === next.work_result_current &&
+    previous.work_phase === next.work_phase &&
+    previous.work_attention === next.work_attention &&
+    previous.work_event_kind === next.work_event_kind &&
+    previous.work_details_json === next.work_details_json &&
+    previous.work_next_action === next.work_next_action &&
+    previous.work_wait_for === next.work_wait_for &&
     previous.explanation === next.explanation &&
     sameStringArray(previous.files, next.files) &&
     sameFileChanges(previous.file_changes, next.file_changes) &&
