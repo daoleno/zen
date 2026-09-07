@@ -24,7 +24,7 @@ func TestWorkUpdateCompletionCLICommitsCanonicalContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &controlApp{brainStore: store}
+	app := &controlApp{brainStore: store, brainService: brain.NewService(store, nil, nil)}
 	server := &control.Server{Path: socket, Handler: app}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

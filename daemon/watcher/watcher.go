@@ -4534,15 +4534,53 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
-// KillSession terminates the tmux window backing a single agent.
-// Worker IDs use the form session:window_id, so killing the window
-// exits only that agent instead of the whole tmux session.
-//
-// A target that is already missing is an idempotent success for the kill
-// itself. Delegated resource release still runs when a bound unit is known and
-// must succeed before KillSession returns nil — a resource-release failure
-// after a successful (or already-missing) kill is retryable and typed as
-// ErrDelegatedResourceRelease.
+// KillCompletedSession shares the input lock with sends, so acceptance cleanup
+// cannot kill a newer turn admitted between its eligibility read and teardown.
+func (w *Watcher) KillCompletedSession(sessionID, turnID string) error {
+	return w.sessionInputOwner().serialized(sessionID, func() error {
+		if w.turnLedger == nil {
+			return fmt.Errorf("completed Session cleanup requires canonical ledger")
+		}
+		turn, found, err := w.turnLedger.Turn(sessionID)
+		if err != nil {
+			return err
+		}
+		if !found || turn.TurnID != turnID || !turn.SignalProtocol ||
+			(turn.Status != TurnDone && turn.Status != TurnFailed) {
+			return fmt.Errorf("completed Session %s ownership changed", sessionID)
+		}
+		pending, err := w.pendingInputAdmissions(sessionID)
+		if err != nil {
+			return err
+		}
+		if len(pending) != 0 {
+			return fmt.Errorf("completed Session %s has pending input", sessionID)
+		}
+		presence, err := w.ProbeSession(sessionID)
+		if err != nil {
+			return err
+		}
+		if presence == SessionPresenceAbsent {
+			return w.KillSession(sessionID)
+		}
+		worker := w.GetWorker(sessionID)
+		if worker == nil || worker.Hidden || !worker.Delegated {
+			return fmt.Errorf("Session %s is not an owned delegated Worker", sessionID)
+		}
+		owned, err := w.ResolveOwnedGeneration(sessionID)
+		if err != nil {
+			return err
+		}
+		if owned.ProcessIdentity != turn.ProcessIdentity || owned.PaneGeneration != turn.PaneGeneration {
+			return fmt.Errorf("completed Session %s generation changed", sessionID)
+		}
+		return w.KillSession(sessionID)
+	})
+}
+
+// KillSession terminates only the owned window and releases its delegated
+// resources. Missing windows are idempotent; resource release errors remain
+// retryable as ErrDelegatedResourceRelease.
 func (w *Watcher) KillSession(sessionID string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {

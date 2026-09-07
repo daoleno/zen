@@ -46,6 +46,7 @@ type Watcher interface {
 	SubmitBrainHostInput(sessionID, payload, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
+	KillCompletedSession(sessionID, turnID string) error
 	// ProbeProviderEvidence returns the current provider-native observation
 	// for a session; the Host foreground gate and delegated admission window
 	// consume it.
@@ -121,6 +122,13 @@ func (s *Service) teardownHostSession(sessionID string) error {
 }
 
 func (s *Service) teardownOwnedSession(sessionID string) error {
+	if s == nil || s.watcher == nil {
+		return nil
+	}
+	return s.teardownSessionWith(sessionID, s.watcher.KillSession)
+}
+
+func (s *Service) teardownSessionWith(sessionID string, kill func(string) error) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || s == nil || s.watcher == nil {
 		return nil
@@ -131,7 +139,7 @@ func (s *Service) teardownOwnedSession(sessionID string) error {
 		release = routes.ReleaseSession
 		controlSocket = routes.CodexControlSocket(sessionID)
 	}
-	result := modelprofiles.TeardownSession(sessionID, s.watcher.KillSession, s.sessionLivenessProbe, release)
+	result := modelprofiles.TeardownSession(sessionID, kill, s.sessionLivenessProbe, release)
 	if result.Err == nil && controlSocket != "" {
 		// Session confirmed dead: kill any orphaned Codex app-server and
 		// remove daemon-owned socket/pid/log artifacts.
@@ -142,9 +150,8 @@ func (s *Service) teardownOwnedSession(sessionID string) error {
 	return result.Err
 }
 
-// ResolveWorkReview commits Brain's typed disposition. Lifecycle releases the
-// canonical owner in the same transition; transport teardown is owned by the
-// explicit Session close path, not a parallel finalization lifecycle.
+// ResolveWorkReview commits Brain's decision before reclaiming its completed
+// owned Sessions. A crash between those effects is recovered from the decision.
 func (s *Service) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkEvent, Work, error) {
 	if s == nil || s.store == nil {
 		return WorkEvent{}, Work{}, fmt.Errorf("brain store is not configured")
@@ -153,7 +160,53 @@ func (s *Service) ResolveWorkReview(request WorkReviewDispositionRequest) (WorkE
 	if err != nil {
 		return event, item, err
 	}
-	return event, item, nil
+	return event, item, s.reconcileCompletedSessions(item.ID)
+}
+
+// UpdateWork is the ordinary model decision path, with the same cleanup as a
+// typed disposition. Repeating a saved decision also retries teardown.
+func (s *Service) UpdateWork(id string, update WorkUpdate) (Work, error) {
+	if s == nil || s.store == nil {
+		return Work{}, fmt.Errorf("brain store is not configured")
+	}
+	item, err := s.store.UpdateWork(id, update)
+	if err != nil {
+		return item, err
+	}
+	return item, s.reconcileCompletedSessions(item.ID)
+}
+
+// ReconcileCompletedSessions derives cleanup from durable Work acceptance and
+// exact completed delegated turns. No completion flag, timer or second workflow
+// is needed: removed Sessions are idempotent and newer executions are fenced.
+func (s *Service) ReconcileCompletedSessions() error {
+	return s.reconcileCompletedSessions("")
+}
+
+func (s *Service) reconcileCompletedSessions(workID string) error {
+	if s == nil || s.store == nil || s.watcher == nil {
+		return nil
+	}
+	turns, err := s.store.CompletedOwnedTurns(workID)
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, turn := range turns {
+		err := s.teardownSessionWith(turn.SessionID, func(id string) error {
+			return s.watcher.KillCompletedSession(id, turn.TurnID)
+		})
+		result = errors.Join(result, err)
+	}
+	return result
+}
+
+// ReconcileWorkChange is the producer-driven wake after durable persistence.
+// Cleanup failure belongs to its Work and must not block independent delivery.
+func (s *Service) ReconcileWorkChange() error {
+	cleanupErr := s.ReconcileCompletedSessions()
+	_, deliveryErr := s.ReconcileHostLane()
+	return errors.Join(cleanupErr, deliveryErr)
 }
 
 // CloseWork applies the explicit actor/revision-gated terminal transition,
@@ -168,7 +221,7 @@ func (s *Service) CloseWork(request WorkCloseRequest) (Work, error) {
 	if err != nil {
 		return item, err
 	}
-	return item, nil
+	return item, s.reconcileCompletedSessions(item.ID)
 }
 
 // ReconcileSignalSystemStartup is the one bounded LISTEN-then-snapshot pass:
@@ -220,8 +273,9 @@ func (s *Service) ReconcileSignalSystemStartup(workers []*classifier.Worker, lim
 			}
 		}
 	}
+	cleanupErr := s.ReconcileCompletedSessions()
 	_, dispatchErr := s.ReconcileHostLane()
-	return !admissionMore && !handlingMore, dispatchErr
+	return !admissionMore && !handlingMore, errors.Join(cleanupErr, dispatchErr)
 }
 
 func (s *Service) sessionLivenessProbe(sessionID string) (modelprofiles.SessionLiveness, error) {
@@ -832,9 +886,8 @@ func admissionFromObservation(observation watcher.ProviderActivityObservation) w
 //
 //  1. reconcile every existing delivery receipt (exact-once Lifecycle admission state)
 //     and every prepared Brain input against its exact request receipt
-//  2. reconcile a Host foreground turn from strong exact terminal evidence,
-//     without making that turn or ambient provider Activity an admission gate
-//  3. one delivered Event awaiting its typed disposition: stop
+//  2. reconcile a Host foreground turn from strong exact terminal evidence
+//  3. current provider execution: defer internal input until its terminal edge
 //  4. pending Brain user admission: stop (durable user-steering gate)
 //  5. select one fair pending Work key
 //  6. atomically claim its current Event head
@@ -933,11 +986,13 @@ func (s *Service) reconcileHostLaneLocked() (bool, error) {
 			return false, err
 		}
 	}
-	// Step 3: one delivered review awaits its typed disposition. The Host is
-	// mid-review; no new admission may overtake it.
-	if delivered, err := s.store.HasLiveDeliveredReview(); err != nil {
+	// Delivery is durable result history, not execution ownership. Only the
+	// current provider activity serializes internal input; an old unfinished
+	// handler cannot strand another Work. Pending input below covers mutation
+	// before an activity becomes observable.
+	if observation, found, err := s.watcher.ProbeProviderEvidence(hostID); err != nil {
 		return false, err
-	} else if delivered {
+	} else if found && providerStatusRunning(observation.Status) {
 		return false, nil
 	}
 	// Step 4: a pending Brain user admission is the durable user-steering
@@ -1116,9 +1171,25 @@ func (s *Service) reconcileReviewLeasesLocked() error {
 		return err
 	}
 	for _, claimed := range leases {
-		// Delivered leases await the typed disposition (lane stop gate) and
-		// ended leases await re-claim; neither is receipt-reconciled here.
-		if claimed.DeliveredAt != nil || claimed.HandlingEndedAt != nil {
+		if claimed.HandlingEndedAt != nil {
+			continue
+		}
+		if claimed.DeliveredAt != nil {
+			turn, found, err := s.store.TurnByID(claimed.DeliveryHostSessionID, claimed.ProviderTurnID)
+			if err != nil {
+				return err
+			}
+			current, currentFound, err := s.store.Turn(claimed.DeliveryHostSessionID)
+			if err != nil {
+				return err
+			}
+			// A missed terminal edge or superseding admitted turn ends only
+			// this handling. Delivery remains consumed, never replayed.
+			if found && watcher.TurnImmutable(turn.Status) || currentFound && current.TurnID != claimed.ProviderTurnID {
+				if _, _, err := s.store.EndReviewDelivery(claimed.WorkID, claimed.HandlingID, claimed.ProviderTurnID); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		hostID := claimed.DeliveryHostSessionID

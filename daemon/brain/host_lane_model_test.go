@@ -71,9 +71,9 @@ type hostLaneResult struct {
 // reconcileHostLaneModel is the pure transition model. Order is frozen:
 //
 //  1. reconcile the existing delivery receipt
-//  2. one delivered Event awaiting disposition: stop
-//  3. pending user admission: stop
-//  4. reconcile exact foreground terminal evidence without gating admission
+//  2. reconcile exact foreground terminal evidence
+//  3. current provider execution or pending user admission: defer
+//  4. delivered history never owns execution
 //  5. claim one fair pending Work key at the serialization boundary
 //  6. submit once; mark delivered only from the accepted receipt
 func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
@@ -89,7 +89,7 @@ func reconcileHostLaneModel(s hostLaneState) hostLaneResult {
 	if s.ForegroundTurn {
 		out.ClosedForegroundTurn = s.ForegroundTerminalEvidence
 	}
-	if s.DeliveredAwaitingDisposition {
+	if s.AmbientProviderActivityLive || s.ForegroundTurn && !s.ForegroundTerminalEvidence {
 		out.Stop = true
 		return out
 	}
@@ -149,14 +149,14 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 			want:  hostLaneResult{HeldReceipt: true, ClaimedEvent: true, SubmittedEvent: true},
 		},
 		{
-			name:  "delivered Event awaiting disposition stops the lane",
+			name:  "delivered result does not own execution lane",
 			state: hostLaneState{DeliveredAwaitingDisposition: true, PendingWork: true},
-			want:  hostLaneResult{Stop: true},
+			want:  hostLaneResult{ClaimedEvent: true, SubmittedEvent: true},
 		},
 		{
-			name:  "delivered handling stops even at a terminal foreground boundary",
+			name:  "terminal foreground admits independent result despite old handling",
 			state: hostLaneState{DeliveredAwaitingDisposition: true, ForegroundTurn: true, ForegroundTerminalEvidence: true, PendingWork: true},
-			want:  hostLaneResult{Stop: true, ClosedForegroundTurn: true},
+			want:  hostLaneResult{ClaimedEvent: true, SubmittedEvent: true, ClosedForegroundTurn: true},
 		},
 		{
 			name:  "pending user admission stops the lane",
@@ -164,14 +164,14 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 			want:  hostLaneResult{Stop: true},
 		},
 		{
-			name:  "live foreground turn admits without closing the foreground",
+			name:  "live foreground execution defers internal delivery",
 			state: hostLaneState{ForegroundTurn: true, PendingWork: true},
-			want:  hostLaneResult{ClaimedEvent: true, SubmittedEvent: true},
+			want:  hostLaneResult{Stop: true},
 		},
 		{
-			name:  "ambient provider Activity does not gate provider-native queuing",
+			name:  "actual provider execution defers internal delivery",
 			state: hostLaneState{AmbientProviderActivityLive: true, PendingWork: true},
-			want:  hostLaneResult{ClaimedEvent: true, SubmittedEvent: true},
+			want:  hostLaneResult{Stop: true},
 		},
 		{
 			name:  "foreground turn with terminal evidence closes it even with no pending Work",
@@ -191,7 +191,7 @@ func TestHostLaneReducerTransitionTable(t *testing.T) {
 		{
 			name:  "reopen after delivered-but-unhandled Event never replays",
 			state: hostLaneState{DeliveredAwaitingDisposition: true},
-			want:  hostLaneResult{Stop: true},
+			want:  hostLaneResult{},
 		},
 		{
 			name:  "reopen after handled Event with no pending Work is a no-op",
@@ -253,13 +253,11 @@ func TestHostLaneReducerIdempotentOneShot(t *testing.T) {
 	for _, state := range states {
 		first := reconcileHostLaneModel(state)
 		if first.SubmittedEvent {
-			// After a submission the delivered gate stops the lane: the
-			// delivered Event awaits disposition until a typed disposition
-			// records it handled.
+			// Delivery consumes this event, leaving no claimable pending work.
 			second := reconcileHostLaneModel(hostLaneState{
 				DeliveredAwaitingDisposition: true,
 			})
-			if !second.Stop || second.SubmittedEvent || second.ClaimedEvent {
+			if second.SubmittedEvent || second.ClaimedEvent {
 				t.Fatalf("post-submit state=%+v second pass=%+v replayed", state, second)
 			}
 		}
@@ -306,7 +304,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			},
 		},
 		{
-			name:  "live foreground turn admits while preserving foreground",
+			name:  "live foreground execution defers internal delivery",
 			state: hostLaneState{ForegroundTurn: true, PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
 				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
@@ -318,7 +316,7 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			},
 		},
 		{
-			name:  "ambient provider Activity admits through native queue",
+			name:  "current provider Activity defers internal delivery",
 			state: hostLaneState{AmbientProviderActivityLive: true, PendingWork: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
 				fw.providerEvidence[hostID] = watcher.ProviderActivityObservation{
@@ -348,13 +346,13 @@ func TestHostLaneReducerModelBindsProduction(t *testing.T) {
 			},
 		},
 		{
-			name:  "delivered Event awaiting disposition stops the lane",
+			name:  "delivered Event is not re-claimed",
 			state: hostLaneState{DeliveredAwaitingDisposition: true},
 			setup: func(t *testing.T, store *Store, fw *fakeWatcher, service *Service) {
 				item := createSignalTestWork(t, store, "model delivered", "zen-worker-model:@5")
 				appendSignalTestEvent(t, store, item, "model-delivered")
 				// First pass delivers at the serialized boundary; the assertion pass
-				// then observes the delivered handling gate.
+				// then observes the consumed delivery with no pending event.
 				if woke, err := service.ReconcileHostLane(); err != nil || !woke {
 					t.Fatalf("model delivery pass woke=%v err=%v", woke, err)
 				}

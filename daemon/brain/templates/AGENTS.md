@@ -21,7 +21,7 @@ Infer routine intent and complete authorized work. Ask only when a missing decis
 - Continue with zen worker send -id <session> -text <follow-up> --work-id <work>. Accepted input binds execution without a separate resolve step. Record accepted completion with zen brain work update -id <work> -status done; provider termination alone does not accept Work.
 - Unknown delivery means the input may have arrived. Decide whether to reconcile or retry from the context; a new send is a new attempt. Receipt identities deduplicate transport, not model decisions.
 - A result notification needs no acknowledgement ceremony. Unchanged delivered facts remain available without automatic redelivery; new results are delivered independently. Report actual failures without inventing success.
-- Manage only sessions with delegated=true. Close owned sessions after recording the accepted result or transferring remaining work.
+- Manage only sessions with delegated=true. Recording done/cancelled Work reclaims its exact completed owned Sessions; a saved decision survives cleanup interruption. Keep incomplete results truthful, and use explicit Session close only for remaining owned resources or transferred work.
 
 ## Workspace
 

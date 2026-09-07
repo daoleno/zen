@@ -582,7 +582,6 @@ func validatePresentationDatabaseWithSourceThread(database presentationDatabase,
 		dedupeKeys[key] = struct{}{}
 	}
 	inFlightByWork := map[string]string{}
-	globalDelivered := ""
 	for index, event := range database.BrainWorkEvents {
 		if targetID := strings.TrimSpace(event.CoalescedInto); targetID != "" {
 			targetIndex := workEventIndex(database.BrainWorkEvents, targetID)
@@ -600,12 +599,6 @@ func validatePresentationDatabaseWithSourceThread(database presentationDatabase,
 				return fmt.Errorf("brain_work[%d]: Work %q already has an in-flight review lease", index, item.ID)
 			}
 			inFlightByWork[item.ID] = review.EventID
-			if review.Lease.DeliveredAt != nil {
-				if globalDelivered != "" {
-					return fmt.Errorf("brain_work[%d]: Host already has live delivered review %q", index, globalDelivered)
-				}
-				globalDelivered = item.ID
-			}
 		}
 	}
 	for index, item := range database.BrainWork {
@@ -2454,9 +2447,8 @@ func (s *Store) ClaimNextReviewAction(hostSessionID string) (WorkReviewAction, b
 	return action, found, nil
 }
 
-// HasLiveDeliveredReview reports whether one delivered review still awaits its
-// exact typed disposition. The Host lane stops while it is true: the Host is
-// mid-review and no new admission may overtake the disposition.
+// HasLiveDeliveredReview reports unfinished delivery history, not whether
+// Brain is executing. It must never be used as an admission gate.
 func (s *Store) HasLiveDeliveredReview() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2636,10 +2628,9 @@ func (s *Store) LeasedReviewActions() ([]WorkReviewAction, error) {
 	return out, nil
 }
 
-// LiveReviewHandlings returns every delivered review lease that still owns the
-// Host effect. The schema admits at most one globally, but the bounded API
-// keeps startup reconciliation explicit and safe if persisted state is
-// corrupt.
+// LiveReviewHandlings returns unfinished delivered history for bounded startup
+// reconciliation. Multiple independent results may await model decisions;
+// none of these records establishes execution ownership.
 func (s *Store) LiveReviewHandlings(limit int) ([]WorkReviewAction, bool, error) {
 	if limit <= 0 {
 		return nil, false, fmt.Errorf("Host handling batch limit must be positive")

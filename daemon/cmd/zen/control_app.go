@@ -44,6 +44,7 @@ type controlWatcher interface {
 	SubmitDelegatedWorkInput(sessionID, payload, workID, turnID, purpose, purposeID string, acceptedAt time.Time) (watcher.InputResult, error)
 	SubmitBrainHostInput(sessionID, payload, claimToken, workID, providerTurnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
+	KillCompletedSession(sessionID, turnID string) error
 	CapturePaneContent(sessionID string) (string, error)
 	ProbeProviderEvidence(sessionID string) (watcher.ProviderActivityObservation, bool, error)
 	ResolveOwnedGeneration(sessionID string) (watcher.OwnedGeneration, error)
@@ -807,7 +808,10 @@ func (a *controlApp) handleBrainWorkUpdate(req control.Request) control.Response
 	if len(req.WorkFields) == 0 {
 		return control.ErrorResponse("invalid_brain_work", "At least one Brain Work field is required.")
 	}
-	item, err := a.brainStore.UpdateWork(strings.TrimSpace(req.WorkID), update)
+	if a.brainService == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work decision service is not configured.")
+	}
+	item, err := a.brainService.UpdateWork(strings.TrimSpace(req.WorkID), update)
 	if err != nil {
 		return brainWorkControlError(err)
 	}

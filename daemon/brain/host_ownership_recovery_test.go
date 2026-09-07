@@ -283,7 +283,7 @@ func TestHistoricalHostTurnDoesNotLockOutOrdinaryUserInput(t *testing.T) {
 	}
 }
 
-func TestCurrentUnreadableProviderActivityDoesNotCreateSchedulerGate(t *testing.T) {
+func TestUnreadableProviderDefersUntilExecutionCanBeProbed(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -303,11 +303,15 @@ func TestCurrentUnreadableProviderActivityDoesNotCreateSchedulerGate(t *testing.
 		providerProbeErr: map[string]error{hostID: errors.New("provider transcript unreadable")},
 		turnStore:        store,
 	}
-	if delivered, err := NewService(store, fw, nil).ReconcileHostLane(); err != nil || !delivered {
+	if delivered, err := NewService(store, fw, nil).ReconcileHostLane(); err == nil || delivered {
 		t.Fatalf("unreadable current Activity delivery=%v err=%v", delivered, err)
 	}
 	after, _ := store.FSM().State(lifecycle.WorkID(item.ID))
-	if after.Review == nil || after.Review.Handler == nil || after.Review.Handler.DeliveredAt == nil || len(fw.sentCalls) != 1 {
-		t.Fatalf("unreadable Activity did not delegate admission safety: after=%+v sends=%d", after, len(fw.sentCalls))
+	if after.Review == nil || after.Review.Handler != nil || len(fw.sentCalls) != 0 {
+		t.Fatalf("unreadable Activity mutated provider: after=%+v sends=%d", after, len(fw.sentCalls))
+	}
+	delete(fw.providerProbeErr, hostID)
+	if delivered, err := NewService(store, fw, nil).ReconcileHostLane(); err != nil || !delivered {
+		t.Fatalf("recovered probe: %v %v", delivered, err)
 	}
 }

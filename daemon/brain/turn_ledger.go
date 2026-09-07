@@ -1403,7 +1403,11 @@ func (s *Store) prepareDelegatedSignalTurnLocked(database *presentationDatabase,
 	lateTerminal := state.Attempt == nil && (fact.Kind == "done" || fact.Kind == "failed") &&
 		state.Review != nil && state.Review.Ref == fact.TurnID &&
 		state.Review.Reason == "turn_lost"
-	if !activeAttempt && !lateTerminal {
+	current, currentFound := currentTurnForSession(*database, fact.SessionID)
+	duplicateTerminal := state.Attempt == nil && (fact.Kind == "done" || fact.Kind == "failed") &&
+		currentFound && current.TurnID == fact.TurnID && current.SignalProtocol &&
+		(current.Status == watcher.TurnDone || current.Status == watcher.TurnFailed)
+	if !activeAttempt && !lateTerminal && !duplicateTerminal {
 		return errDelegatedTurnMismatch
 	}
 	if lateTerminal {

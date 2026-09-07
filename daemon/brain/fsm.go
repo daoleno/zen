@@ -186,6 +186,14 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 			database.BrainWorkEvents = append(database.BrainWorkEvents, projected)
 			canonicalIndex = len(database.BrainWorkEvents) - 1
 		}
+		// Projection may predate the terminal report or survive a torn write.
+		// Refresh content without changing event identity, ordering or delivery.
+		if st.Review.Reason == "turn_done" || st.Review.Reason == "turn_failed" {
+			projected := canonicalReviewEvent(*database, workID, st)
+			database.BrainWorkEvents[canonicalIndex].Summary = projected.Summary
+			database.BrainWorkEvents[canonicalIndex].PayloadRef = projected.PayloadRef
+			database.BrainWorkEvents[canonicalIndex].SourceName = projected.SourceName
+		}
 		// Lifecycle owns actionability. Development-era provider rows remain
 		// audit evidence, but only the canonical review identity can be claimed.
 		for eventIndex := range database.BrainWorkEvents {
@@ -256,7 +264,19 @@ func canonicalReviewEvent(database presentationDatabase, workID string, st *life
 		Summary: st.Review.Reason, Actionable: true, CreatedAt: st.Review.OpenedAt,
 		WorkRevision: st.Revision,
 	}
-	for _, evidence := range database.BrainWorkEvents {
+	if st.Review.Reason == "turn_done" || st.Review.Reason == "turn_failed" {
+		projected.Summary = firstNonEmpty(st.LastSummary, projected.Summary)
+		for _, turn := range database.BrainTurns {
+			if turn.WorkID == workID && turn.TurnID == st.Review.Ref && !isHostHandlingTurn(turn) {
+				projected.PayloadRef = "session:" + turn.SessionID
+				projected.SourceName = turn.SessionID
+				break
+			}
+		}
+		return projected
+	}
+	for index := len(database.BrainWorkEvents) - 1; index >= 0; index-- {
+		evidence := database.BrainWorkEvents[index]
 		if evidence.WorkID != workID || !isSessionLifecycleKind(evidence.Kind) ||
 			!strings.Contains(evidence.DedupeKey, ":turn:"+st.Review.Ref+":") {
 			continue

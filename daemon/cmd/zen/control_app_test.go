@@ -522,6 +522,20 @@ func (w *fakeControlWatcher) SubmitBrainHostInput(
 	}, err
 }
 
+func (w *fakeControlWatcher) KillCompletedSession(sessionID, turnID string) error {
+	turn, found, err := w.turnStore.Turn(sessionID)
+	if err != nil {
+		return err
+	}
+	if !found || turn.TurnID != turnID || !watcher.TurnImmutable(turn.Status) {
+		return fmt.Errorf("completed Session ownership changed")
+	}
+	if worker := w.GetWorker(sessionID); worker != nil && (worker.Hidden || !worker.Delegated) {
+		return fmt.Errorf("not a delegated Worker")
+	}
+	return w.KillSession(sessionID)
+}
+
 func (w *fakeControlWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
 	if w.killLeavesLive && w.killErr != nil {

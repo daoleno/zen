@@ -126,6 +126,37 @@ lease. Wake represents a requested future input, not an invented program plan.
 Completion policies remain descriptive Work metadata; neither policy starts
 follow-ups or accepts Worker reports. No compatibility or migration layer is added.
 
+### Completion Loop
+
+The canonical path is Worker report, durable Turn/result, Work-change event,
+serialized Host admission, receipt-confirmed delivery, Brain decision, durable
+Work closure, then removal of the exact completed owned Session. The server
+subscribes before its startup snapshot and reconciles durable Work changes;
+heartbeat polling and client snapshot reads are not required producer wakes.
+
+Only current provider execution defers internal result input. Delivered review
+metadata is history, not evidence that Brain is running. There is no global
+delivered-review gate or global single-unfinished-handler validation. Exact
+terminal or superseding Turn evidence retires interrupted handlers; accepted
+delivery remains consumed across restart. Unresolved results remain available
+for ordinary model decisions without a mandatory receipt-resolution command.
+Provider transcript probe errors defer mutation until evidence is readable.
+
+Terminal summaries come from the canonical lifecycle result, with the Session
+reference matched by exact Work and Turn identity, never the first running
+progress row. Repeated terminal Control/provider reports are idempotent for the
+current Turn; superseded identities cannot mutate a reused Session.
+
+`work update`, typed disposition and explicit Work close share cleanup. Cleanup
+is derived from closed Work and current terminal delegated Turns rather than a
+second persisted workflow. Startup and durable Work-change events recover a
+decision saved before teardown. Under the Session input lock, teardown rechecks
+the exact Turn, pending admissions, delegated ownership, and process/pane
+generation. A newer execution, user Session, Host or uncertain result is not
+eligible. Resource/route release failures remain errors and can be retried
+without undoing acceptance or replaying a notification. This guarantees durable
+deduped results and idempotent effects, not exactly-once model execution.
+
 ## Worker Upgrade
 
 The Worker release changes CLI/control and mobile wire names together. Use

@@ -135,6 +135,10 @@ func (w *brainServiceTestWatcher) KillSession(string) error {
 	return nil
 }
 
+func (w *brainServiceTestWatcher) KillCompletedSession(string, string) error {
+	return fmt.Errorf("completed Session cleanup not configured in this fixture")
+}
+
 func (w *brainServiceTestWatcher) CapturePaneContent(string) (string, error) {
 	return "", nil
 }

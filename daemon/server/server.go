@@ -3004,6 +3004,9 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				brainWorkSub = nil
 				continue
 			}
+			if err := s.brain.ReconcileWorkChange(); err != nil {
+				log.Printf("brain durable Work change reconciliation failed: %v", err)
+			}
 			s.broadcastBrainSnapshot()
 		}
 	}

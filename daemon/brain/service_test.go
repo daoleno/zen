@@ -607,6 +607,20 @@ func (w *fakeWatcher) setReceiptOutcome(receipt string, outcome watcher.InputOut
 	w.outcomes[receipt] = outcome
 }
 
+func (w *fakeWatcher) KillCompletedSession(sessionID, turnID string) error {
+	turn, found, err := w.turnStore.Turn(sessionID)
+	if err != nil {
+		return err
+	}
+	if !found || turn.TurnID != turnID || !watcher.TurnImmutable(turn.Status) {
+		return fmt.Errorf("completed Session ownership changed")
+	}
+	if worker := w.GetWorker(sessionID); worker != nil && (worker.Hidden || !worker.Delegated) {
+		return fmt.Errorf("not a delegated Worker")
+	}
+	return w.KillSession(sessionID)
+}
+
 func (w *fakeWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
 	if w.killLeavesLive && w.killErr != nil {
@@ -1135,7 +1149,7 @@ func TestHostGenerationReplacementRetiresForegroundAndAllowsNextTurn(t *testing.
 	}
 }
 
-func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
+func TestHostOutputDefersPendingReviewUntilProviderTurnEnds(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1178,15 +1192,13 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 
 	item := createSignalTestWork(t, store, "Ready behind persistent Host", "zen-worker-worker:@1")
 	event := appendSignalTestEvent(t, store, item, "persistent-host-output")
-	if woke, err := service.ReconcileHostLane(); err != nil || !woke {
-		t.Fatalf("busy Host did not admit pending review: woke=%v err=%v", woke, err)
+	if woke, err := service.ReconcileHostLane(); err != nil || woke {
+		t.Fatalf("busy Host admitted pending review: woke=%v err=%v", woke, err)
 	}
-	lease := requireReviewDelivered(t, store, item.ID)
 	if active, err := store.CurrentHostForegroundTurn(); err != nil || active == nil ||
 		active.ProviderActivityID != activityID {
 		t.Fatalf("queued admission replaced foreground Activity A: active=%+v err=%v", active, err)
 	}
-	deliveredRevision := lease.DeliveryWorkRevision
 
 	if woke, err := service.ObserveHostSessionEvent(watcher.SessionEvent{
 		Type: "worker_output", WorkerID: "other-hidden-host:@1",
@@ -1199,9 +1211,9 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 	}); err != nil || woke {
 		t.Fatalf("running provider output replayed delivered review: woke=%v err=%v", woke, err)
 	}
-	stable := requireReviewDelivered(t, store, item.ID)
-	if len(fw.sentCalls) != 2 || stable.DeliveryWorkRevision != deliveredRevision {
-		t.Fatalf("reducer replay churned queued admission: sends=%d revision=%d want=%d", len(fw.sentCalls), stable.DeliveryWorkRevision, deliveredRevision)
+	current, _ := store.Work(item.ID)
+	if current.Review == nil || current.Review.Lease != nil {
+		t.Fatalf("busy provider claimed result: %+v", current.Review)
 	}
 
 	settledAt := now.Add(time.Second)
@@ -1212,18 +1224,19 @@ func TestHostOutputAdmitsPendingReviewWhileProviderTurnIsRunning(t *testing.T) {
 		Type: "provider_activity_change", WorkerID: hostID,
 		Worker: &classifier.Worker{ID: hostID, Hidden: true, State: classifier.StateDone},
 	})
-	if err != nil || woke {
-		t.Fatalf("terminal provider output replayed review: woke=%v err=%v", woke, err)
+	if err != nil || !woke {
+		t.Fatalf("terminal provider output did not admit review: woke=%v err=%v", woke, err)
 	}
+	lease := requireReviewDelivered(t, store, item.ID)
 	if active, err := store.CurrentHostForegroundTurn(); err != nil || active != nil {
 		t.Fatalf("terminal provider boundary left foreground active=%+v err=%v", active, err)
 	}
 	if lease.HostSessionID != hostID {
 		t.Fatalf("pending review delivered through wrong Host: %+v", lease)
 	}
-	if len(fw.sentCalls) != 2 || !strings.Contains(fw.sentCalls[0].text, event.ID) ||
-		!strings.Contains(fw.sentCalls[1].text, brainWorkerRoleContract) {
-		t.Fatalf("Host queue calls=%+v, want review %s followed by one activation", fw.sentCalls, event.ID)
+	if len(fw.sentCalls) != 2 || !strings.Contains(fw.sentCalls[1].text, event.ID) ||
+		!strings.Contains(fw.sentCalls[0].text, brainWorkerRoleContract) {
+		t.Fatalf("Host calls=%+v, want activation then terminal-triggered review %s", fw.sentCalls, event.ID)
 	}
 }
 

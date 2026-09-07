@@ -52,7 +52,7 @@ func TestWorkSendReusesCompletedSessionWithoutResolve(t *testing.T) {
 	fw.workers[sessionID] = &classifier.Worker{
 		ID: sessionID, Name: "Reusable", Command: "codex", Delegated: true, State: classifier.StateDone,
 	}
-	app := &controlApp{watcher: fw, brainStore: store}
+	app := &controlApp{watcher: fw, brainStore: store, brainService: brain.NewService(store, fw, nil)}
 	request := control.Request{
 		Type: "worker_send", WorkerID: sessionID, Text: "Implement the reviewed second stage.", Submit: true,
 		WorkID: item.ID,
