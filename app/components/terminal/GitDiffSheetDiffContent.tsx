@@ -1,6 +1,6 @@
 import React, {
   useDeferredValue,
-  useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -9,6 +9,7 @@ import {
   FlatList,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -29,6 +30,8 @@ import {
 } from "../../services/gitDiff";
 import { GitDiffReader, type GitDiffPosition } from "./GitDiffReader";
 import { DiffIconButton } from "./GitDiffReviewControls";
+import { BottomSheetFrame } from "../ui/BottomSheetFrame";
+import { Ionicons } from "@expo/vector-icons";
 
 interface GitDiffSheetDiffContentProps {
   files: GitDiffFileInfo[];
@@ -58,6 +61,8 @@ export function GitDiffSheetDiffContent({
   const [wrap, setWrap] = useState(true);
   const [fontSize, setFontSize] = useState(12);
   const [showSearch, setShowSearch] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [showHeaders, setShowHeaders] = useState(false);
   const positions = useRef(new Map<string, GitDiffPosition>());
   const overviewOffset = useRef(0);
   const filtered = useMemo(
@@ -67,7 +72,7 @@ export function GitDiffSheetDiffContent({
   const index = filtered.findIndex((file) => file.path === selected);
   const file = index >= 0 ? filtered[index] : null;
   const reviewing = Boolean(file);
-  useEffect(() => {
+  useLayoutEffect(() => {
     onReviewChange?.(reviewing);
   }, [reviewing, onReviewChange]);
   const positionKey = JSON.stringify([selected, scope]);
@@ -167,33 +172,10 @@ export function GitDiffSheetDiffContent({
                 {file.path}
               </Text>
               <Text style={[styles.meta, { color: chrome.textMuted }]}>
-                {index + 1} / {filtered.length} · {file.status}
+                {file.status}
                 {file.old_path ? ` · from ${file.old_path}` : ""}
               </Text>
             </View>
-            <DiffIconButton
-              icon="chevron-back"
-              label="Previous file"
-              chrome={chrome}
-              disabled={index === 0}
-              onPress={() => setSelected(filtered[index - 1].path)}
-            />
-            <DiffIconButton
-              icon="chevron-forward"
-              label="Next file"
-              chrome={chrome}
-              disabled={index === filtered.length - 1}
-              onPress={() => setSelected(filtered[index + 1].path)}
-            />
-          </View>
-          <View style={[styles.tools, { borderColor: chrome.border }]}>
-            <Text style={[styles.comparison, { color: chrome.textMuted }]}>
-              {scope === "staged"
-                ? "HEAD → index"
-                : scope === "working"
-                  ? "Index → working tree"
-                  : "Staged + working tree"}
-            </Text>
             <DiffIconButton
               icon="search"
               label="Search diff"
@@ -201,37 +183,10 @@ export function GitDiffSheetDiffContent({
               selected={showSearch}
               onPress={() => setShowSearch((value) => !value)}
             />
-            <DiffIconButton
-              icon="return-down-back"
-              label={wrap ? "Disable line wrap" : "Enable line wrap"}
-              chrome={chrome}
-              selected={wrap}
-              onPress={() => setWrap((value) => !value)}
-            />
-            <DiffIconButton
-              icon="remove"
-              label="Smaller code text"
-              chrome={chrome}
-              disabled={fontSize <= 10}
-              onPress={() => setFontSize((value) => value - 2)}
-            />
-            <DiffIconButton
-              icon="add"
-              label="Larger code text"
-              chrome={chrome}
-              disabled={fontSize >= 20}
-              onPress={() => setFontSize((value) => value + 2)}
-            />
-            <DiffIconButton
-              icon="document-text-outline"
-              label="Open working file"
-              chrome={chrome}
-              disabled={file.status === "deleted"}
-              onPress={() => onOpenFile(file.path)}
-            />
+            <DiffIconButton icon="ellipsis-horizontal" label="Diff options" chrome={chrome} onPress={() => setOptionsOpen(true)} />
           </View>
           <GitDiffReader
-            key={positionKey}
+            key={`${positionKey}:${refreshKey}`}
             path={file.path}
             scope={scope}
             theme={theme}
@@ -239,7 +194,7 @@ export function GitDiffSheetDiffContent({
             loadPage={loadPage}
             refreshKey={refreshKey}
             position={
-              positions.current.get(positionKey) ?? { row: 0, offset: 0 }
+              positions.current.get(positionKey) ?? { offset: 0 }
             }
             onPosition={(position) =>
               positions.current.set(positionKey, position)
@@ -247,7 +202,30 @@ export function GitDiffSheetDiffContent({
             wrap={wrap}
             fontSize={fontSize}
             showSearch={showSearch}
+            showHeaders={showHeaders}
           />
+          <BottomSheetFrame visible={optionsOpen} onClose={() => setOptionsOpen(false)} maxHeight="75%" cardStyle={{ backgroundColor: chrome.surface }}>
+            <View style={styles.option}>
+              <Text style={{ color: chrome.text }}>Wrap lines</Text>
+              <Switch accessibilityLabel="Wrap lines" value={wrap} onValueChange={setWrap} />
+            </View>
+            <View style={styles.option}>
+              <Text style={{ color: chrome.text }}>Text size</Text>
+              <View style={styles.stepper}>
+                <DiffIconButton icon="remove" label="Smaller code text" chrome={chrome} disabled={fontSize <= 10} onPress={() => setFontSize(value => value - 2)} />
+                <Text style={{ color: chrome.text }}>{fontSize}</Text>
+                <DiffIconButton icon="add" label="Larger code text" chrome={chrome} disabled={fontSize >= 20} onPress={() => setFontSize(value => value + 2)} />
+              </View>
+            </View>
+            <View style={styles.option}>
+              <Text style={{ color: chrome.text }}>Patch headers</Text>
+              <Switch accessibilityLabel="Patch headers" value={showHeaders} onValueChange={setShowHeaders} />
+            </View>
+            <Pressable accessibilityRole="button" accessibilityLabel="Open working file" disabled={file.status === "deleted"} onPress={() => { setOptionsOpen(false); onOpenFile(file.path); }} style={styles.option}>
+              <Text style={{ color: file.status === "deleted" ? chrome.textSubtle : chrome.text }}>Open working file</Text>
+              <Ionicons name="document-text-outline" size={20} color={file.status === "deleted" ? chrome.textSubtle : chrome.text} />
+            </Pressable>
+          </BottomSheetFrame>
         </>
       ) : (
         <>
@@ -330,12 +308,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  tools: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  comparison: { flex: 1, minWidth: 0, fontSize: 11, paddingLeft: 12 },
+  option: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 52, gap: 12 },
+  stepper: { flexDirection: "row", alignItems: "center" },
   overviewMeta: { paddingHorizontal: 12, paddingVertical: 6, fontSize: 11 },
   empty: { padding: 24, textAlign: "center", fontSize: 14 },
 });
