@@ -61,17 +61,28 @@ decisions are scripted evidence, not demonstrations of actual AI judgment.
 
 ## Explicit Real-Provider Gate
 
-With an approved DeepSeek model and credentials supplied by the operator:
+Reuse an authorized configured provider whose selected model advertises Chat
+Completions support. Bind `ZEN_BDD_BASE_URL`, `ZEN_BDD_MODEL` and
+`ZEN_BDD_API_KEY` from that same connection; do not mix a credential with an
+unrelated endpoint or require a new provider account. The test never changes
+Zen's current provider or reads/modifies live lifecycle state.
 
 ```sh
-ZEN_BDD_REAL_PROVIDER=1 ZEN_BDD_MAX_CALLS=2 ZEN_BDD_MODEL="$APPROVED_MODEL" \
+ZEN_BDD_REAL_PROVIDER=1 ZEN_BDD_MAX_CALLS=2 \
   go test -json -count=1 -timeout 120s ./brain \
   -run '^TestBDD_ZEN011_RealProviderDecision$'
 ```
 
-`DEEPSEEK_API_KEY` must already be in the environment; never put credentials
-in commands, artifacts or the repository. The fixed official HTTPS endpoint
-does not follow redirects. Bounds: at most **two HTTP requests**, **2048 input
+The three bound configuration values must already be in the environment;
+never put credentials in command arguments, artifacts or the repository.
+Reuse Zen's provider catalog and private credential-store reference when
+preparing the child environment, without printing secrets. Check provider
+metadata before spending the two-call budget. The request uses only `model`,
+`messages`, `max_tokens` and `stream:false`; JSON is prompted and independently
+parsed/checked, without requiring provider-specific JSON mode or reasoning.
+Zen's existing endpoint builder and safe HTTP transport enforce URL validation,
+no ambient proxy and no redirects; the real gate requires HTTPS.
+Bounds: at most **two HTTP requests**, **2048 input
 bytes per request**, **128 maximum output tokens per request**, **40 seconds
 per HTTP request**, **90 seconds for the shared provider context**, and a
 **120-second Go test deadline**. No tools, background agents or native provider
@@ -79,7 +90,10 @@ processes are launched. This is a token/request budget, not a guaranteed dollar
 price; the operator must approve the selected model's current pricing.
 
 `behavior-provider.yml` provides the same manually dispatched gate with an
-explicit budget checkbox. It is never a PR dependency. No configured secret,
+explicit budget checkbox. Its repository variables `ZEN_BDD_BASE_URL` and
+`ZEN_BDD_MODEL` must be bound to repository secret `ZEN_BDD_API_KEY`; there is
+no dispatch-time endpoint override that could redirect the secret elsewhere.
+It is never a PR dependency. No configured secret,
 model or budget acknowledgment is an `environment_failure`, not a skip.
 Transport, HTTP errors (including authentication/rate limits), truncation and
 invalid protocol envelopes are `provider_environment_failure`. Valid provider

@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -28,14 +30,31 @@ func TestBDD_ZEN011_RealProviderDecision(t *testing.T) {
 	if os.Getenv("ZEN_BDD_REAL_PROVIDER") != "1" {
 		t.Skip("opt-in real provider: see docs/behavior-testing.md; not real-AI evidence when skipped")
 	}
-	key, model := os.Getenv("DEEPSEEK_API_KEY"), os.Getenv("ZEN_BDD_MODEL")
-	if key == "" || model == "" || os.Getenv("ZEN_BDD_MAX_CALLS") != "2" {
-		t.Fatal("environment_failure: require DEEPSEEK_API_KEY, explicit ZEN_BDD_MODEL, ZEN_BDD_MAX_CALLS=2")
+	endpoint, key, model, err := bddConfiguredProvider()
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	call := bddProviderCaller(ctx, "https://api.deepseek.com/chat/completions", key, model)
+	call := bddProviderCaller(ctx, endpoint, key, model)
 	runBDDProviderDecision(t, call, "real-provider-hybrid")
+}
+
+func bddConfiguredProvider() (endpoint, key, model string, err error) {
+	key, model = os.Getenv("ZEN_BDD_API_KEY"), os.Getenv("ZEN_BDD_MODEL")
+	base := os.Getenv("ZEN_BDD_BASE_URL")
+	if key == "" || model == "" || base == "" || os.Getenv("ZEN_BDD_MAX_CALLS") != "2" {
+		return "", "", "", fmt.Errorf("environment_failure: require bound ZEN_BDD_BASE_URL, ZEN_BDD_API_KEY, ZEN_BDD_MODEL and ZEN_BDD_MAX_CALLS=2")
+	}
+	u, parseErr := url.Parse(base)
+	if parseErr != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", "", "", fmt.Errorf("environment_failure: require credential-free HTTPS provider base URL")
+	}
+	endpoint, err = modelprofiles.UpstreamRequestURL(base, "/v1/chat/completions")
+	if err != nil {
+		return "", "", "", fmt.Errorf("environment_failure: invalid provider base URL")
+	}
+	return endpoint, key, model, nil
 }
 
 type bddProviderCall func(string) (string, error)
@@ -44,7 +63,8 @@ type bddProviderCall func(string) (string, error)
 // Input bytes and output tokens are hard-capped independently of model pricing.
 func bddProviderCaller(ctx context.Context, endpoint, key, model string) bddProviderCall {
 	calls := 0
-	client := &http.Client{Timeout: 40 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := modelprofiles.NewSafeHTTPClient(40 * time.Second)
+	client.Timeout = 40 * time.Second
 	return func(prompt string) (string, error) {
 		if calls >= 2 || len(prompt) > 2048 {
 			return "", fmt.Errorf("environment_failure: request budget exceeded")
@@ -52,7 +72,7 @@ func bddProviderCaller(ctx context.Context, endpoint, key, model string) bddProv
 		calls++
 		body, err := json.Marshal(map[string]any{
 			"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}},
-			"max_tokens": 128, "stream": false, "response_format": map[string]string{"type": "json_object"},
+			"max_tokens": 128, "stream": false,
 		})
 		if err != nil {
 			return "", err
@@ -185,6 +205,24 @@ func runBDDProviderDecision(t *testing.T, call bddProviderCall, evidenceKind str
 }
 
 func TestBDD_ZEN012_ProviderPathBudgetAndFailures(t *testing.T) {
+	t.Run("bound-configuration", func(t *testing.T) {
+		t.Setenv("ZEN_BDD_API_KEY", "test-key")
+		t.Setenv("ZEN_BDD_MODEL", "configured-chat-model")
+		t.Setenv("ZEN_BDD_MAX_CALLS", "2")
+		for _, base := range []string{"https://provider.example", "https://provider.example/v1"} {
+			t.Setenv("ZEN_BDD_BASE_URL", base)
+			endpoint, key, model, err := bddConfiguredProvider()
+			if err != nil || endpoint != "https://provider.example/v1/chat/completions" || key != "test-key" || model != "configured-chat-model" {
+				t.Fatal("configured endpoint/model/credential binding failed")
+			}
+		}
+		for _, base := range []string{"", "http://provider.example", "https://key@provider.example", "https://provider.example?key=secret"} {
+			t.Setenv("ZEN_BDD_BASE_URL", base)
+			if _, _, _, err := bddConfiguredProvider(); err == nil {
+				t.Fatal("unsafe or missing binding accepted")
+			}
+		}
+	})
 	for _, mode := range []string{"scripted-loop", "rate-limit", "truncated", "invalid-envelope", "timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			var requests atomic.Int32
