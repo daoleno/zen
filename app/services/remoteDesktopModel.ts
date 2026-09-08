@@ -1,15 +1,3 @@
-export function desktopURL(resolved: string, pinnedLink: boolean): string {
-  const url = new URL(resolved);
-  if (url.protocol !== "wss:" && !(pinnedLink && url.protocol === "ws:" && url.hostname === "127.0.0.1")) {
-    throw new Error("Remote Desktop requires a secure server connection.");
-  }
-  if (url.username || url.password) throw new Error("Invalid desktop origin.");
-  url.pathname = "/desktop";
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
-
 export function desktopStart(source: unknown, control: boolean) {
   if (source !== "x11" && source !== "wayland") return null;
   return { type: "start" as const, source, control };

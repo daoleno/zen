@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { desktopURL, desktopPoint, desktopKey, desktopText, desktopTextEdits } from "./remoteDesktopModel";
+import { desktopPoint, desktopKey, desktopText, desktopTextEdits } from "./remoteDesktopModel";
 
 describe("Remote desktop transport and input", () => {
   test("cumulative and repeated keyboard values emit each character once", () => {
@@ -23,14 +23,6 @@ describe("Remote desktop transport and input", () => {
     expect(batches.every((events) => events.length <= 64)).toBe(true);
     expect(batches.flat().filter((event) => event.type === "key" && event.code === 65 && event.down)).toHaveLength(65);
     for (const events of batches) expect(events.at(-1)).toMatchObject({ type: "key", down: false });
-  });
-  test("requires TLS or the existing pinned Link loopback", () => {
-    expect(desktopURL("wss://host.test/ws?old=value", false)).toBe("wss://host.test/desktop");
-    expect(desktopURL("ws://127.0.0.1:1234/ws", true)).toBe("ws://127.0.0.1:1234/desktop");
-    for (const url of ["ws://192.0.2.1/ws", "ws://127.0.0.1/ws", "wss://user:secret@host/ws"]) {
-      expect(() => desktopURL(url, false)).toThrow();
-    }
-    expect(() => desktopURL("ws://remote.test/ws", true)).toThrow();
   });
   test("maps the video rectangle and rejects letterboxing", () => {
     expect(desktopPoint(200, 400, 400, 800, 1280, 720)).toEqual({ x: 0.5, y: 0.5 });

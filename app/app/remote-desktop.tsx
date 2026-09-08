@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { Alert, AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -9,14 +9,17 @@ import { prepareDesktopConnection } from "../services/remoteDesktop";
 import { desktopKey, desktopPoint, desktopTextEdits, desktopStart, type DesktopInput } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
+import { desktopLanOrigin, hasDesktopLanConsent } from "../services/desktopTransportPolicy";
+import { setDesktopLanConsent } from "../services/storage";
 
 export default function RemoteDesktopScreen() {
   const { currentServer } = useCurrentServer();
-  return <DesktopSession key={currentServer?.id ?? "none"} />;
+  return <DesktopSession key={currentServer ? JSON.stringify([currentServer.id, currentServer.url, currentServer.daemonId,
+    currentServer.daemonPublicKey, currentServer.transportKind, currentServer.transportPin, currentServer.linkRouteId]) : "none"} />;
 }
 
 function DesktopSession() {
-  const { currentServer } = useCurrentServer();
+  const { currentServer, isCurrentServer, refreshServers } = useCurrentServer();
   const colors = useAppColors();
   const root = useRef<View>(null);
   const [headerHeight, setHeaderHeight] = useState(0);
@@ -33,22 +36,29 @@ function DesktopSession() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [size, setSize] = useState({ width: 1, height: 1 });
   const generation = useRef(0);
+  const pending = useRef<AbortController | null>(null);
+  const [transport, setTransport] = useState("");
   const native = useRef<DesktopCommandTarget>(null);
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
     generation.current++;
+    pending.current?.abort();
     setConnection(""); setPreparing(false); setControl(false); setKeyboard(false);
     setStatus({ state: "disconnected", reason });
   }));
   const inputGeneration = commands.currentGeneration;
   const gestureStart = useRef({ x: 0, y: 0, time: 0, pinch: 0, zoom: 1, offset: { x: 0, y: 0 } });
   const connected = status.state === "connected";
+  const lan = currentServer ? desktopLanOrigin(currentServer) : null;
+  const lanAllowed = currentServer ? hasDesktopLanConsent(currentServer) : false;
   const send = (value: object) => commands.send(value);
   const input = (events: DesktopInput[]) => {
     if (connected && control && events.length) send({ type: "batch", events });
   };
   const stop = useCallback(() => {
     generation.current++;
+    pending.current?.abort(); pending.current = null;
     commands.stop();
+    setTransport("");
     setConnection(""); setPreparing(false); setControl(false);
     setStatus({ state: "disconnected" }); setKeyboard(false);
     textRef.current = ""; setText("");
@@ -57,7 +67,7 @@ function DesktopSession() {
   useFocusEffect(useCallback(() => stop, [stop]));
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => { if (state !== "active") stop(); });
-    return () => { generation.current++; commands.stop(); subscription.remove(); };
+    return () => { generation.current++; pending.current?.abort(); commands.stop(); subscription.remove(); };
   }, [commands, stop]);
   const connect = async () => {
     if (!currentServer) return;
@@ -66,14 +76,38 @@ function DesktopSession() {
     setConnection(""); setControl(false);
     setPreparing(true); setStatus({ state: "disconnected" });
     try {
-      const next = await prepareDesktopConnection(currentServer, inputGeneration);
-      if (epoch === generation.current) setConnection(next);
+      let server = currentServer;
+      if (desktopLanOrigin(server) && !hasDesktopLanConsent(server)) {
+        const allowed = await new Promise<boolean>((resolve) => Alert.alert(
+          "Allow unencrypted desktop?",
+          `Your screen and input can be read or changed by others on this network. Allow unencrypted desktop access to ${desktopLanOrigin(server)} only on a network you trust.`,
+          [{ text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+            { text: "Allow this LAN", style: "destructive", onPress: () => resolve(true) }],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        ));
+        if (!allowed || epoch !== generation.current || !isCurrentServer(server.id)) { commands.stop(); return; }
+        server = await setDesktopLanConsent(server, true, () => epoch === generation.current && isCurrentServer(server.id));
+        if (epoch !== generation.current || !isCurrentServer(server.id)) return;
+        await refreshServers();
+      }
+      if (epoch !== generation.current || !isCurrentServer(server.id)) return;
+      pending.current?.abort(); pending.current = new AbortController();
+      const next = await prepareDesktopConnection(server, inputGeneration, pending.current.signal);
+      if (epoch === generation.current && isCurrentServer(server.id)) {
+        setTransport(JSON.parse(next).transport); setConnection(next);
+      }
     } catch (error) {
       if (epoch === generation.current) {
         commands.stop();
         setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Connection failed." });
       }
     } finally { if (epoch === generation.current) setPreparing(false); }
+  };
+  const revokeLan = async () => {
+    if (!currentServer) return;
+    const server = currentServer; stop();
+    try { await setDesktopLanConsent(server, false, () => isCurrentServer(server.id)); await refreshServers(); }
+    catch (error) { if (isCurrentServer(server.id)) setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Unable to update desktop approval." }); }
   };
   const pointer = (x: number, y: number) => desktopPoint(
     (x - size.width / 2 - offset.x) / zoom + size.width / 2,
@@ -129,7 +163,12 @@ function DesktopSession() {
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight}>
     <View style={styles.header}>
       <Text numberOfLines={1} style={[styles.host, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
-      <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? "Connected" : ""}</Text>
+      <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted LAN)" : "Connected" : ""}</Text>
+      {lan ? <View style={styles.lanRow}>
+        <Text style={{ color: colors.textSecondary, flex: 1 }}>Allow unencrypted LAN desktop</Text>
+        <Switch accessibilityLabel="Allow unencrypted LAN desktop" value={lanAllowed} disabled={preparing}
+          onValueChange={(allowed) => { if (allowed) void connect(); else void revokeLan(); }} />
+      </View> : null}
     </View>
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
@@ -141,14 +180,14 @@ function DesktopSession() {
       </View> : null}
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />
-        <Text style={styles.message}>{status.reason || (status.state === "sources" ? status.source === "wayland" ? "Wayland portal desktop" : "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : "Disconnected")}</Text>
+        <Text style={styles.message}>{status.reason || (status.state === "sources" ? status.source === "wayland" ? "Wayland portal desktop" : "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : lan && !lanAllowed ? "This paired server uses unencrypted LAN transport." : "Disconnected")}</Text>
         {status.state === "sources" ? <>
           <View style={styles.mode}><Text style={styles.message}>Allow control</Text><Switch value={control} onValueChange={setControl} /></View>
           <Pressable accessibilityRole="button" disabled={!desktopStart(status.source, control)} onPress={() => {
             const start = desktopStart(status.source, control);
             if (start) send(start);
           }} style={styles.action}><Text style={styles.actionText}>Share desktop</Text></Pressable>
-        </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <Pressable accessibilityRole="button" disabled={!currentServer} onPress={connect} style={styles.action}><Text style={styles.actionText}>Connect</Text></Pressable> : null}
+        </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <Pressable accessibilityRole="button" disabled={!currentServer} onPress={connect} style={styles.action}><Text style={styles.actionText}>{lan && !lanAllowed ? "Review LAN connection" : "Connect"}</Text></Pressable> : null}
       </View>}
     </View>
     <View style={[styles.toolbar, { borderColor: colors.borderSubtle }]}>
@@ -178,6 +217,7 @@ function DesktopSession() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   header: { paddingHorizontal: 16, paddingVertical: 10, gap: 4 },
+  lanRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   host: { fontSize: 14, fontWeight: "600" },
   viewport: { flex: 1, backgroundColor: "#000000", overflow: "hidden" },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 16 },

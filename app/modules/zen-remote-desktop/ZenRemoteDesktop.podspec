@@ -12,7 +12,8 @@ Pod::Spec.new do |s|
   s.source = { :path => '.' }
   s.static_framework = true
   s.source_files = 'ios/**/*.swift'
-  s.frameworks = 'AVFoundation', 'CoreMedia', 'VideoToolbox'
+  s.resources = 'notices/IPADDR-MIT.txt'
+  s.frameworks = 'AVFoundation', 'CoreMedia', 'VideoToolbox', 'Network'
   s.dependency 'ExpoModulesCore'
   s.dependency 'React-Core'
 end

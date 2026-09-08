@@ -87,17 +87,16 @@ final class DesktopView: ExpoView {
     guard let bytes = value.data(using: .utf8),
       let config = try? JSONSerialization.jsonObject(with: bytes) as? [String: String],
       let rawURL = config["url"], let url = URL(string: rawURL),
-      url.scheme == "wss" || (url.scheme == "ws" && url.host == "127.0.0.1"),
-      url.path == "/desktop", url.query == nil, url.user == nil,
+      DesktopTransportPolicy.allows(config),
       let authorization = config["authorization"],
       let inputGeneration = config["inputGeneration"], !inputGeneration.isEmpty else {
-      state("disconnected", "Desktop requires a secure connection."); return
+      state("disconnected", "Desktop transport approval is missing or invalid."); return
     }
     var request = URLRequest(url: url)
     self.inputGeneration = inputGeneration
     request.setValue(authorization, forHTTPHeaderField: "Authorization")
     request.timeoutInterval = 10
-    let ownedSession = URLSession(configuration: .ephemeral)
+    let ownedSession = URLSession(configuration: .ephemeral, delegate: DesktopNoRedirectDelegate(), delegateQueue: nil)
     session = ownedSession
     let socket = ownedSession.webSocketTask(with: request)
     socket.maximumMessageSize = 4 * 1024 * 1024

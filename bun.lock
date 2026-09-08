@@ -31,6 +31,7 @@
         "expo-secure-store": "~57.0.3",
         "expo-status-bar": "~57.0.1",
         "expo-system-ui": "~57.0.3",
+        "ipaddr.js": "2.3.0",
         "react": "19.2.3",
         "react-dom": "19.2.3",
         "react-native": "0.86.3",
@@ -722,6 +723,8 @@
     "inline-style-prefixer": ["inline-style-prefixer@7.0.1", "https://registry.npmmirror.com/inline-style-prefixer/-/inline-style-prefixer-7.0.1.tgz", { "dependencies": { "css-in-js-utils": "^3.1.0" } }, "sha512-lhYo5qNTQp3EvSSp3sRvXMbVQTLrvGV6DycRMJ5dm2BLMiJ30wpXKdDdgX+GmJZ5uQMucwRKHamXSst3Sj/Giw=="],
 
     "invariant": ["invariant@2.2.4", "https://registry.npmmirror.com/invariant/-/invariant-2.2.4.tgz", { "dependencies": { "loose-envify": "^1.0.0" } }, "sha512-phJfQVBuaJM5raOpJjSfkiD6BpbCE4Ns//LaXl6wGYtUBY83nWS6Rf9tXm2e8VaK60JEjYldbPif/A2B1C2gNA=="],
+
+    "ipaddr.js": ["ipaddr.js@2.3.0", "https://registry.npmmirror.com/ipaddr.js/-/ipaddr.js-2.3.0.tgz", {}, "sha512-Zv/pA+ciVFbCSBBjGfaKUya/CcGmUHzTydLMaTwrUUEM2DIEO3iZvueGxmacvmN50fGpGVKeTXpb2LcYQxeVdg=="],
 
     "is-arrayish": ["is-arrayish@0.3.4", "https://registry.npmmirror.com/is-arrayish/-/is-arrayish-0.3.4.tgz", {}, "sha512-m6UrgzFVUYawGBh1dUsWR5M2Clqic9RVXC/9f8ceNlv2IcO9j9J/z8UoCLPqtsPBFNzEpfR3xftohbfqDx8EQA=="],
 

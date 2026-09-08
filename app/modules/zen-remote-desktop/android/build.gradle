@@ -8,6 +8,7 @@ android {
   namespace 'expo.modules.zenremotedesktop'
   compileSdk rootProject.ext.has('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 35
   defaultConfig { minSdk rootProject.ext.has('minSdkVersion') ? rootProject.ext.minSdkVersion : 24 }
+  sourceSets.main.assets.srcDirs += file('../notices')
 }
 
 dependencies {

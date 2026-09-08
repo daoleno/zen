@@ -41,7 +41,27 @@ WebRTC/Pion remains a candidate when an existing path actually provides
 direct UDP reachability; deploying its network prerequisites is not this
 feature's scope. Successful signaling must never be reported as successful
 video. Native desktop clients accept trusted `wss` or the existing pinned
-Link loopback origin, without weakening certificate validation.
+Link loopback origin, without weakening certificate validation. Manual numeric
+private-network `ws` also works after explicit unencrypted-desktop consent.
+Private addressing is not encryption: screen content and input may be read or
+altered by another party on that network. Public/plain hostname endpoints,
+link-local addresses, unbound loopback and secure-to-plain downgrades remain
+rejected. IPv4 private ranges, RFC6598 overlay addresses and IPv6 ULA are
+parsed, not inferred from DNS or string prefixes.
+
+LAN approval is persisted only for the exact paired daemon identity, public
+key and origin (including port). Pairing imports cannot grant it. Changing
+identity, origin or transport invalidates approval; switching the current
+server clears the native connection. The desktop screen offers cancellation,
+an approval-revocation switch and a connected unencrypted-LAN indicator.
+This network acknowledgement is separate from the host's per-session visible
+view/control consent and never replaces it.
+
+Before native connection, bounded signed health and authenticated device
+checks validate the paired daemon. Each device probe and desktop upgrade uses
+a fresh purpose-specific signed nonce. HTTP checks and native WebSocket
+clients reject redirects. Android and iOS independently enforce the prepared
+transport and source-origin binding; neither installs a universal trust rule.
 
 ## Modules And Data Flow
 
@@ -178,7 +198,10 @@ generation; never project input onto a stale source.
 License inventory: Zen is Apache-2.0; GStreamer and GTK are dynamically linked
 LGPL-2.1+ system libraries; OpenH264 is BSD, with source licensing and H.264
 patent/binary distribution obligations reviewed separately; X11/XTest are
-MIT; OkHttp is Apache-2.0; Expo is MIT. Mobile codecs come from platform SDKs.
+MIT; OkHttp is Apache-2.0; Expo is MIT. The numeric private-address parser is
+ipaddr.js 2.3.0 (MIT), pinned in the app dependency lock. Its complete copyright
+and license text is packaged as `IPADDR-MIT.txt` in Android assets and iOS
+resources. Mobile codecs come from platform SDKs.
 The inspected Linux environment has GStreamer 1.28.2, GTK 3.24.52, X11 1.8.13
 and Xtst 1.2.5; this does not validate all minimum versions. Do not silently
 select GPL x264, GPL/AGPL remote-control stacks or restricted virtual-input
@@ -188,6 +211,27 @@ hardware encoder, not merely installed VAAPI/NVENC/VideoToolbox/MF capability.
 The initial OpenH264 path is software encoding, not a hardware claim.
 
 ## Current Implementation Boundary
+
+### Manual LAN Client Verification
+
+The explicit manual-LAN contract has been exercised by a standalone x86 Android
+APK against an owned server bound to a numeric private LAN interface, without
+ADB port reversal or a pinned loopback proxy. After local X11 consent, the
+native client presented 1280x720 software-encoded video at approximately30fps
+over110seconds. Two screenshots contained14,950 changed pixels inside the
+video region; host counters confirmed a click, six exact keyboard events and
+three scroll events. These are emulator functional results, not physical
+ARM64, hardware encoding or input-to-photon measurements.
+
+The same run checked network-consent cancellation, persisted approval after
+app relaunch, approval revocation and cleared video, separate-server approval,
+and revoked-device rejection during preflight. Host input was released after
+revocation. Native JVM policy regressions and shared policy/storage tests
+cover origin, paired identity, transport downgrade and stale-owner writes.
+An isolated cold deep-link launch produced a React Native Fabric native crash;
+normal relaunch and a serialized cold-route repeat succeeded. The crash remains
+a recorded startup stability risk, not a proven transport-policy failure.
+Native iOS compilation/runtime still require an assigned macOS/Xcode host.
 
 The retained implementation currently provides the X11 helper and shared
 Android/iOS native client source. The Wayland portal protocol is now linked
@@ -220,6 +264,14 @@ unsupported rather than falling back to another desktop or permission model.
 
 ### Linux Host Configuration
 
+Build the helper with `make -C daemon/desktop/native OUT=/absolute/durable/path/zen-desktop-helper`.
+The output directory must already exist. Build prerequisites are a C compiler,
+pkg-config, GTK3, GStreamer app/video and GIO Unix development files, X11 and
+XTest. Runtime requires compatible shared libraries and the GStreamer capture,
+conversion, H.264 encoder/parser and app plugins. Keep the verified executable
+outside temporary Worker directories before configuring a persistent daemon.
+Do not point a user daemon at an instrumented test wrapper or an owned test display.
+
 `ZEN_DESKTOP_HELPER` remains an administrator-configured absolute helper path.
 `ZEN_DESKTOP_BACKEND` defaults to `x11`; `ZEN_DESKTOP_DISPLAY` explicitly selects
 the X display. For Wayland, set `ZEN_DESKTOP_BACKEND=wayland`, select the owned
@@ -229,6 +281,16 @@ Wayland only and uses that bus for its portal and GTK session environment.
 No compositor, session bus or virtual/headless desktop is discovered or
 created automatically. These settings do not authorize operating a personal
 desktop; host consent and an appropriate session are still required.
+
+A terminal-only login or a display-manager greeter is not a selectable user
+desktop. Log into the intended graphical session first, then explicitly
+configure its backend/display and, for Wayland, its session bus. Never select
+the greeter or another user's display as a fallback. A missing helper or
+display is shown as an unsupported host, not as an encrypted-network error.
+Helper environment changes require restarting the existing daemon launch
+owner with its original state directory, pairing identity and network options;
+do not start a second daemon or supervisor. Restart interrupts active client
+connections but does not grant screen access.
 
 The helper first identifies the requesting device in a local GTK view/control
 prompt, then requests exactly one monitor through the portal. View-only uses

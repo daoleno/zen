@@ -44,6 +44,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val admission = DecodeAdmission()
   private val generation = AtomicInteger(0)
   private val client = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS)
+    .followRedirects(false).followSslRedirects(false)
     .connectTimeout(10, TimeUnit.SECONDS).writeTimeout(2, TimeUnit.SECONDS).build()
   private var socket: WebSocket? = null
   private var pendingConnection = ""
@@ -116,9 +117,13 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
       val config = JSONObject(value)
       require(config.getString("inputGeneration") == inputGeneration && inputGeneration.isNotEmpty())
       val url = config.getString("url")
-      val uri = android.net.Uri.parse(url)
-      require(uri.scheme == "wss" || (uri.scheme == "ws" && uri.host == "127.0.0.1"))
-      require(uri.path == "/desktop" && uri.query == null && uri.encodedUserInfo == null)
+      require(DesktopTransportPolicy.allows(url, config.getString("transport"), config.getString("boundOrigin"),
+        config.getString("sourceOrigin"), config.optString("transportPin")) { host ->
+        try {
+          (android.system.Os.inet_pton(android.system.OsConstants.AF_INET, host)
+            ?: android.system.Os.inet_pton(android.system.OsConstants.AF_INET6, host))?.address
+        } catch (_: Exception) { null }
+      })
       val request = Request.Builder().url(url).header("Authorization", config.getString("authorization")).build()
       socket = client.newWebSocket(request, object : WebSocketListener() {
         override fun onOpen(ws: WebSocket, response: Response) {
@@ -193,7 +198,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
           post { if (epoch == generation.get()) { stop(); if (!terminalState) state("disconnected", reason) } }
         }
       })
-    } catch (_: Exception) { state("disconnected", "Desktop requires a secure connection.") }
+    } catch (_: Exception) { state("disconnected", "Desktop transport approval is missing or invalid.") }
   }
 
   private fun decode(data: ByteArray, epoch: Int) {
