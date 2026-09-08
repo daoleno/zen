@@ -1,6 +1,7 @@
 export interface DesktopCommandTarget {
   sendCommand(generation: string, sequence: number, payload: string): Promise<boolean>;
   disconnect(generation: string): Promise<void>;
+  showSensitiveInput?(generation: string): Promise<boolean>;
 }
 
 interface PendingCommand {

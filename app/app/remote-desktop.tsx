@@ -11,6 +11,7 @@ import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desk
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 import { desktopLanOrigin, hasDesktopLanConsent } from "../services/desktopTransportPolicy";
 import { setDesktopLanConsent } from "../services/storage";
+import { DesktopConnectionUnavailable } from "../services/desktopConnectionCheck";
 
 export default function RemoteDesktopScreen() {
   const { currentServer } = useCurrentServer();
@@ -37,11 +38,18 @@ function DesktopSession() {
   const [size, setSize] = useState({ width: 1, height: 1 });
   const generation = useRef(0);
   const pending = useRef<AbortController | null>(null);
+  const reconnect = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttempts = useRef(0);
+  const reconnectAllowed = useRef(false);
   const [transport, setTransport] = useState("");
   const native = useRef<DesktopCommandTarget>(null);
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
     generation.current++;
     pending.current?.abort();
+    reconnectAllowed.current = false;
+    if (reconnect.current) clearTimeout(reconnect.current);
+    reconnect.current = null;
+    textRef.current = ""; setText("");
     setConnection(""); setPreparing(false); setControl(false); setKeyboard(false);
     setStatus({ state: "disconnected", reason });
   }));
@@ -54,7 +62,11 @@ function DesktopSession() {
   const input = (events: DesktopInput[]) => {
     if (connected && control && events.length) send({ type: "batch", events });
   };
-  const stop = useCallback(() => {
+  const stop = useCallback((keepReconnect = false) => {
+    reconnectAllowed.current = keepReconnect;
+    if (!keepReconnect) reconnectAttempts.current = 0;
+    if (reconnect.current) clearTimeout(reconnect.current);
+    reconnect.current = null;
     generation.current++;
     pending.current?.abort(); pending.current = null;
     commands.stop();
@@ -64,13 +76,23 @@ function DesktopSession() {
     textRef.current = ""; setText("");
     setDragMode(false); setPanMode(false); setZoom(1); setOffset({ x: 0, y: 0 });
   }, [commands]);
-  useFocusEffect(useCallback(() => stop, [stop]));
+  useFocusEffect(useCallback(() => () => stop(), [stop]));
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => { if (state !== "active") stop(); });
-    return () => { generation.current++; pending.current?.abort(); commands.stop(); subscription.remove(); };
+    return () => { stop(); subscription.remove(); };
   }, [commands, stop]);
-  const connect = async () => {
+  const scheduleReconnect = () => {
+    if (!reconnectAllowed.current || reconnectAttempts.current >= 6) return;
+    const epoch = generation.current;
+    const delay = Math.min(30000, 1500 * 2 ** reconnectAttempts.current++);
+    reconnect.current = setTimeout(() => {
+      if (reconnectAllowed.current && epoch === generation.current && currentServer && isCurrentServer(currentServer.id)) void connect(true);
+    }, delay);
+  };
+  const connect = async (automatic = false) => {
     if (!currentServer) return;
+    if (!automatic) reconnectAttempts.current = 0;
+    reconnectAllowed.current = true;
     const epoch = ++generation.current;
     const inputGeneration = commands.begin();
     setConnection(""); setControl(false);
@@ -98,8 +120,10 @@ function DesktopSession() {
       }
     } catch (error) {
       if (epoch === generation.current) {
+        reconnectAllowed.current = automatic && error instanceof DesktopConnectionUnavailable;
         commands.stop();
         setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Connection failed." });
+        scheduleReconnect();
       }
     } finally { if (epoch === generation.current) setPreparing(false); }
   };
@@ -174,7 +198,16 @@ function DesktopSession() {
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
         <NativeDesktopView ref={native} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
           if (commands.currentGeneration !== inputGeneration) return;
-          if (["disconnected", "denied", "unsupported"].includes(nativeEvent.state)) stop();
+          if (["disconnected", "denied", "unsupported"].includes(nativeEvent.state)) {
+            const retry = nativeEvent.state === "disconnected" && reconnectAllowed.current && reconnectAttempts.current < 6;
+            stop(retry);
+            if (retry) scheduleReconnect();
+          }
+          if (nativeEvent.state === "connected") reconnectAttempts.current = 0;
+          if (nativeEvent.state === "streaming" || nativeEvent.state === "connected") setControl(nativeEvent.control === true);
+          if (nativeEvent.surface === "greeter" || nativeEvent.surface === "locked") {
+            textRef.current = ""; setText(""); setKeyboard(false);
+          }
           setStatus(nativeEvent);
         }} />
       </View> : null}
@@ -187,15 +220,19 @@ function DesktopSession() {
             const start = desktopStart(status.source, control);
             if (start) send(start);
           }} style={styles.action}><Text style={styles.actionText}>Share desktop</Text></Pressable>
-        </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <Pressable accessibilityRole="button" disabled={!currentServer} onPress={connect} style={styles.action}><Text style={styles.actionText}>{lan && !lanAllowed ? "Review LAN connection" : "Connect"}</Text></Pressable> : null}
+        </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <Pressable accessibilityRole="button" disabled={!currentServer} onPress={() => void connect()} style={styles.action}><Text style={styles.actionText}>{lan && !lanAllowed ? "Review LAN connection" : "Connect"}</Text></Pressable> : null}
       </View>}
     </View>
     <View style={[styles.toolbar, { borderColor: colors.borderSubtle }]}>
-      {tool("stop-circle-outline", "Stop desktop", stop, false, !connection)}
+      {tool("stop-circle-outline", "Stop desktop", () => stop(), false, !connection && !preparing && reconnect.current === null)}
       {tool("hand-left-outline", "Pan desktop", () => { setPanMode(!panMode); setDragMode(false); }, panMode, !connected)}
       {tool("move-outline", "Drag pointer", () => { setDragMode(!dragMode); setPanMode(false); }, dragMode, !connected || !control)}
       {tool("contract-outline", "Reset zoom", () => { setZoom(1); setOffset({ x: 0, y: 0 }); }, false, !connected)}
-      {tool("keypad-outline", "Keyboard", () => { textRef.current = ""; setText(""); setKeyboard(!keyboard); }, keyboard, !connected || !control)}
+      {tool("keypad-outline", "Keyboard", () => { textRef.current = ""; setText(""); setKeyboard(!keyboard); }, keyboard, !connected || !control || status.surface === "greeter" || status.surface === "locked")}
+      {tool("lock-closed-outline", "OS password", () => {
+        textRef.current = ""; setText(""); setKeyboard(false);
+        void native.current?.showSensitiveInput?.(commands.currentGeneration).catch(() => undefined);
+      }, false, !connected || !status.sensitiveInput)}
       {tool("chevron-up-outline", "Scroll up", () => input([{ type: "scroll", delta: -3 }]), false, !connected || !control)}
       {tool("chevron-down-outline", "Scroll down", () => input([{ type: "scroll", delta: 3 }]), false, !connected || !control)}
     </View>

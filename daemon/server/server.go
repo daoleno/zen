@@ -646,26 +646,36 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var raw struct {
-		EnrollmentToken   string `json:"enrollment_token"`
-		ExpectedDaemonID  string `json:"expected_daemon_id"`
-		ExpectedPublicKey string `json:"expected_daemon_public_key"`
-		DeviceID          string `json:"device_id"`
-		DeviceName        string `json:"device_name"`
-		DevicePublicKey   string `json:"device_public_key"`
+		EnrollmentToken       string `json:"enrollment_token"`
+		ExpectedDaemonID      string `json:"expected_daemon_id"`
+		ExpectedPublicKey     string `json:"expected_daemon_public_key"`
+		DeviceID              string `json:"device_id"`
+		DeviceName            string `json:"device_name"`
+		DevicePublicKey       string `json:"device_public_key"`
+		DesktopScopeVersion   int    `json:"desktop_scope_version"`
+		DesktopScopeSignature string `json:"desktop_scope_signature"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	decoder := json.NewDecoder(r.Body)
+	if decoder.Decode(&raw) != nil || decoder.Decode(new(any)) != io.EOF {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
 		return
 	}
 
-	device, err := s.auth.EnrollDevice(
-		raw.EnrollmentToken,
-		raw.ExpectedDaemonID,
-		raw.ExpectedPublicKey,
-		raw.DeviceID,
-		raw.DeviceName,
-		raw.DevicePublicKey,
-	)
+	var device *auth.TrustedDevice
+	var err error
+	if raw.DesktopScopeVersion != 0 || raw.DesktopScopeSignature != "" {
+		device, err = s.auth.EnrollDeviceWithDesktopScope(raw.EnrollmentToken, raw.ExpectedDaemonID, raw.ExpectedPublicKey, raw.DeviceID, raw.DeviceName, raw.DevicePublicKey, raw.DesktopScopeVersion, raw.DesktopScopeSignature)
+	} else {
+		device, err = s.auth.EnrollDevice(
+			raw.EnrollmentToken,
+			raw.ExpectedDaemonID,
+			raw.ExpectedPublicKey,
+			raw.DeviceID,
+			raw.DeviceName,
+			raw.DevicePublicKey,
+		)
+	}
 	if err != nil {
 		status := http.StatusUnauthorized
 		switch err {
@@ -683,11 +693,12 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSONWithAssertion(w, http.StatusOK, "zen-pair", map[string]any{
-		"ok":                true,
-		"daemon_id":         s.auth.DaemonID(),
-		"daemon_public_key": s.auth.PublicKeyHex(),
-		"device_id":         device.ID,
-		"device_name":       device.Name,
+		"ok":                    true,
+		"daemon_id":             s.auth.DaemonID(),
+		"daemon_public_key":     s.auth.PublicKeyHex(),
+		"device_id":             device.ID,
+		"device_name":           device.Name,
+		"desktop_scope_version": device.DesktopScopeVersion,
 	})
 }
 
@@ -697,10 +708,11 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSONWithAssertion(w, http.StatusOK, "zen-probe", map[string]any{
-		"ok":                true,
-		"device_id":         device.ID,
-		"daemon_id":         s.auth.DaemonID(),
-		"daemon_public_key": s.auth.PublicKeyHex(),
+		"ok":                    true,
+		"device_id":             device.ID,
+		"daemon_id":             s.auth.DaemonID(),
+		"daemon_public_key":     s.auth.PublicKeyHex(),
+		"desktop_scope_version": device.DesktopScopeVersion,
 	})
 }
 

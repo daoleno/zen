@@ -47,6 +47,7 @@ import { useZenTheme, type ResolvedZenTheme } from "../theme";
 import { ZEN_DARK_APP_COLORS } from "../theme/primitives";
 import { appVersion } from "../constants/appVersion";
 import { importConnection } from "../services/importConnection";
+import { PairingCancelledError } from "../services/pairingScope";
 import {
   closePairPresentation,
   completePairImport,
@@ -362,6 +363,10 @@ export default function SettingsScreen() {
       }
       return true;
     } catch (error: any) {
+      if (error instanceof PairingCancelledError) {
+        setPairPresentation((current) => returnToPairEditor(current));
+        return false;
+      }
       Alert.alert(
         "Pairing failed",
         error?.message || "Could not pair with that daemon.",

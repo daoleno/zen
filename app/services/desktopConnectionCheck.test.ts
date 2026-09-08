@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { verifyDesktopServer, type DesktopProofDependencies } from "./desktopConnectionCheck";
+import { DesktopConnectionUnavailable, verifyDesktopServer, type DesktopProofDependencies } from "./desktopConnectionCheck";
 
 const server = { daemonId: "a".repeat(64), daemonPublicKey: "b".repeat(64) };
 function setup(change: (body: Record<string, unknown>, index: number) => void = () => {}) {
@@ -45,4 +45,18 @@ test("redirects, oversized proofs, revocation and cancellation fail closed", asy
   const controller = new AbortController(); controller.abort();
   await expect(verifyDesktopServer(server, "wss://host/desktop", f.dependencies, controller.signal)).rejects.toThrow("cancelled");
   expect(f.calls).toHaveLength(0);
+});
+
+test("reboot transport failures are retryable without bypassing identity or revocation", async () => {
+  const f = setup();
+  await expect(verifyDesktopServer(server, "wss://host/desktop", { ...f.dependencies, fetch: async () => { throw new TypeError("offline"); } })).rejects.toBeInstanceOf(DesktopConnectionUnavailable);
+  expect(f.authorizations()).toBe(0);
+  const wrong = setup((body) => { body.daemon_id = "other"; });
+  try {
+    await verifyDesktopServer(server, "wss://host/desktop", wrong.dependencies);
+    throw new Error("wrong identity accepted");
+  } catch (error) {
+    expect(error).not.toBeInstanceOf(DesktopConnectionUnavailable);
+    expect(String(error)).toContain("identity");
+  }
 });

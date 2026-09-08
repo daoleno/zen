@@ -122,6 +122,7 @@ private func validate(
 }
 
 private final class PinnedProxy {
+  private let registryOwner = UUID()
   // File-visible so ZenLinkTransportModule can read start(completion:) payload fields.
   fileprivate struct StartResult {
     let port: Int
@@ -202,8 +203,10 @@ private final class PinnedProxy {
             return
           }
           self.lock.lock()
+          guard !self.stopped else { self.lock.unlock(); return }
           self.localPort = Int(localPort.rawValue)
           self.lastRTTMilliseconds = rttMilliseconds
+          PinnedEndpointRegistry.register(port: self.localPort, pin: self.pin, owner: self.registryOwner)
           self.lock.unlock()
           self.finishStart(
             .success(StartResult(
@@ -214,6 +217,7 @@ private final class PinnedProxy {
           )
         case .failed(let error):
           self.finishStart(.failure(error), completion: completion)
+          self.stop()
         default:
           break
         }
@@ -245,6 +249,7 @@ private final class PinnedProxy {
       return
     }
     stopped = true
+    PinnedEndpointRegistry.remove(port: localPort, owner: registryOwner)
     let currentListener = listener
     let currentConnections = Array(connections.values)
     connections.removeAll()

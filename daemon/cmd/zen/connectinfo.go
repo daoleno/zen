@@ -103,6 +103,8 @@ func printPairingInfo(w io.Writer, offers []connectionOffer) {
 	if len(offers) == 0 {
 		return
 	}
+	fmt.Fprintln(w, "Pairing grants terminal and unattended desktop view/control, including supported lock and OS login screens. OS setup and encrypted login transport are still required.")
+	fmt.Fprintln(w, "Re-pair an existing device once to confirm this expanded access. Revoke with zen devices revoke -id DEVICE_ID.")
 
 	for _, offer := range offers {
 		fmt.Fprintf(w, "  - %s\n", offer.Label)

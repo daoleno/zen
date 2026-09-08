@@ -19,6 +19,13 @@ import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import expo.modules.zenlinktransport.PinnedEndpointRegistry
+import android.app.AlertDialog
+import android.text.InputType
+import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
+import org.json.JSONArray
 
 class ZenRemoteDesktopModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -30,6 +37,7 @@ class ZenRemoteDesktopModule : Module() {
         view.sendCommand(generation, sequence, value)
       }
       AsyncFunction("disconnect") { view: DesktopView, generation: String -> view.disconnect(generation) }
+      AsyncFunction("showSensitiveInput") { view: DesktopView, generation: String -> view.showSensitiveInput(generation) }
       OnViewDestroys { view: DesktopView -> view.destroy() }
     }
   }
@@ -47,15 +55,21 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     .followRedirects(false).followSslRedirects(false)
     .connectTimeout(10, TimeUnit.SECONDS).writeTimeout(2, TimeUnit.SECONDS).build()
   private var socket: WebSocket? = null
-  private var pendingConnection = ""
+  @Volatile private var pendingConnection = ""
   private var inputGeneration = ""
   private var inputSequence = 0
   private var selectedSource = ""
+  @Volatile private var hostControl = false
+  @Volatile private var sensitiveReady = false
+  @Volatile private var tlsConnected = false
+  @Volatile private var hostSurface = ""
+  private var sensitiveDialog: AlertDialog? = null
+  private var sensitiveEditor: EditText? = null
   private var codec: MediaCodec? = null
   private var width = 1280
   private var height = 720
   private var needIDR = true
-  private var presented = 0
+  @Volatile private var presented = 0
   private var dropped = 0
   private var destroyed = false
   @Volatile private var lastFrame = 0L
@@ -91,7 +105,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
       Log.d("ZenDesktop", "state=$value generation=$epoch presented=$presented dropped=$dropped size=${width}x$height reason=$reason")
     }
-    val event = mapOf("state" to value, "reason" to reason, "source" to selectedSource, "width" to width, "height" to height, "presented" to presented, "dropped" to dropped)
+    val event = mapOf("state" to value, "reason" to reason, "source" to selectedSource, "width" to width, "height" to height, "presented" to presented, "dropped" to dropped, "control" to hostControl, "surface" to hostSurface, "sensitiveInput" to (sensitiveReady && encryptedTransport()))
     if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
       if (epoch == generation.get() && !destroyed) onState(event)
     } else post { if (epoch == generation.get() && !destroyed) onState(event) }
@@ -128,7 +142,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
       socket = client.newWebSocket(request, object : WebSocketListener() {
         override fun onOpen(ws: WebSocket, response: Response) {
           if (epoch != generation.get()) { ws.cancel(); return }
-          post { if (epoch == generation.get()) { removeCallbacks(heartbeat); post(heartbeat) } }
+          post { if (epoch == generation.get()) { tlsConnected = response.handshake != null; removeCallbacks(heartbeat); post(heartbeat) } }
         }
         override fun onMessage(ws: WebSocket, text: String) {
           if (epoch != generation.get()) return
@@ -165,6 +179,11 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
                 try {
                   if (epoch != generation.get()) return@publishStatus
                   if (nextSource != null) selectedSource = nextSource
+                  if (value == "streaming") {
+                    hostSurface = status.optString("surface", "desktop")
+                    hostControl = status.optBoolean("control", false)
+                    sensitiveReady = status.optBoolean("sensitiveInput", false) && hostControl
+                  }
                   requestLayout()
                   terminalState = value in listOf("denied", "unsupported", "disconnected")
                   if (terminalState) {
@@ -192,7 +211,11 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
           }) admission.release()
         }
         override fun onFailure(ws: WebSocket, error: Throwable, response: Response?) {
-          post { if (epoch == generation.get()) { stop(); if (!terminalState) state("disconnected", "Desktop connection ended.") } }
+          post { if (epoch == generation.get()) {
+            val denied = response?.code == 401 || response?.code == 403
+            stop()
+            if (!terminalState) state(if (denied) "denied" else "disconnected", if (denied) "Desktop authorization is required." else "Desktop connection ended.")
+          } }
         }
         override fun onClosing(ws: WebSocket, code: Int, reason: String) {
           post { if (epoch == generation.get()) { stop(); if (!terminalState) state("disconnected", reason) } }
@@ -256,6 +279,60 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (owner.isNotEmpty() && owner == inputGeneration) stop()
   }
 
+  private fun encryptedTransport(): Boolean {
+    return try {
+      val config = JSONObject(pendingConnection)
+      when (config.getString("transport")) {
+        "tls" -> tlsConnected
+        "pinned-link" -> PinnedEndpointRegistry.contains(java.net.URI(config.getString("url")).port, config.getString("transportPin"))
+        else -> false
+      }
+    } catch (_: Exception) { false }
+  }
+
+  fun showSensitiveInput(owner: String): Boolean {
+    if (owner.isEmpty() || owner != inputGeneration || presented < 1 || !sensitiveReady || !encryptedTransport() || sensitiveDialog != null) return false
+    val activity = appContext.currentActivity ?: return false
+    val epoch = generation.get()
+    val editor = object : EditText(activity) {
+      override fun onTextContextMenuItem(id: Int): Boolean = false
+    }.apply {
+      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+      imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or EditorInfo.IME_ACTION_DONE
+      isSaveEnabled = false
+      setFreezesText(false)
+      isLongClickable = false
+      if (android.os.Build.VERSION.SDK_INT >= 26) importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+      filters = arrayOf(android.text.InputFilter.LengthFilter(64))
+      setSingleLine(true)
+    }
+    val dialog = AlertDialog.Builder(activity).setTitle("OS password").setView(editor)
+      .setNegativeButton("Cancel", null).setPositiveButton("Submit", null).create()
+    sensitiveEditor = editor
+    sensitiveDialog = dialog
+    dialog.setOnDismissListener {
+      editor.text?.clear()
+      if (sensitiveDialog === dialog) { sensitiveDialog = null; sensitiveEditor = null }
+    }
+    dialog.setOnShowListener {
+      dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        if (epoch != generation.get() || owner != inputGeneration || !sensitiveReady || !encryptedTransport()) { dialog.dismiss(); return@setOnClickListener }
+        val value = editor.text
+        if (value.isNullOrEmpty() || value.any { it.code !in 0x20..0x7e }) { editor.error = "Unsupported character."; return@setOnClickListener }
+        val events = JSONArray()
+        for (char in value) events.put(JSONObject().put("type", "text").put("code", char.code))
+        val payload = JSONObject().put("type", "sensitive").put("events", events).put("submit", true).toString()
+        value.clear()
+        send(payload)
+        dialog.dismiss()
+      }
+      editor.requestFocus()
+    }
+    dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    dialog.show()
+    return true
+  }
+
   private fun send(value: String): Boolean {
     val active = socket ?: return false
     val bytes = value.toByteArray(Charsets.UTF_8).size
@@ -269,6 +346,11 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   private fun stop() {
     generation.incrementAndGet()
+    sensitiveEditor?.text?.clear()
+    sensitiveDialog?.dismiss()
+    sensitiveDialog = null; sensitiveEditor = null
+    sensitiveReady = false; hostControl = false; tlsConnected = false
+    hostSurface = ""
     pendingConnection = ""
     inputGeneration = ""; inputSequence = 0
     selectedSource = ""

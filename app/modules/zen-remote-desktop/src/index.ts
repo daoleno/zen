@@ -10,6 +10,8 @@ export interface DesktopState {
   width?: number;
   height?: number;
   control?: boolean;
+  sensitiveInput?: boolean;
+  surface?: "desktop" | "locked" | "greeter";
   presented?: number;
   dropped?: number;
 }

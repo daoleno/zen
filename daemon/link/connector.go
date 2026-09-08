@@ -785,7 +785,7 @@ func serveSingleConnection(
 		done: make(chan struct{}),
 	}
 	server := &http.Server{
-		Handler:           handler,
+		Handler:           connectionTLSHandler(conn, handler),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       idleTimeout,
 	}
@@ -803,4 +803,18 @@ func serveSingleConnection(
 		return nil
 	}
 	return err
+}
+
+// singleConnListener wraps the connection to observe Close, hiding *tls.Conn
+// from net/http. Preserve actual inner TLS state, never forwarded headers.
+func connectionTLSHandler(conn net.Conn, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inner, ok := conn.(*tls.Conn); ok {
+			state := inner.ConnectionState()
+			if state.HandshakeComplete {
+				r.TLS = &state
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -6,9 +6,19 @@ Operate an explicitly selected desktop on the current Zen server from a phone.
 Host priority is Linux, macOS, then Windows. Android and iOS share the same
 product contract; web is outside scope. The first scope includes viewing,
 mouse, keyboard, scrolling, mobile zoom and pan. Audio, clipboard, file
-transfer, gamepads, multi-monitor composition, login screens, elevation and
-unattended access are excluded. Full-desktop access is not application or
-window isolation.
+transfer, gamepads and multi-monitor composition are outside the current
+delivery. **Unattended own-computer access, an existing user's lock screen,
+and the running OS login screen after reboot are required**, not optional
+future scope. Normal password entry must work without a local person approving
+each connection. Attended assistance remains an explicit mode. Full-desktop
+access is not application or window isolation. Elevation bypass and encrypted
+disk preboot unlock are excluded.
+
+The current distributed artifact is still attended-only. Current source adds a
+separate Linux broker and UID-dropped agent, default scoped/TLS `/desktop`
+admission, SDDM registration, journaled installation and native sensitive input.
+This does not update an installed APK or qualify every OS/display stack. The
+attended GTK helper remains separate; it has no permission-bypass flag.
 
 This plan distinguishes intended behavior from implementation and acceptance.
 A platform is not accepted without a native build and actual capture,
@@ -17,6 +27,236 @@ emulators, Expo exports and static contracts do not replace hardware
 acceptance. Private execution reports, screenshots and raw measurements
 belong in the Brain worklog, not this repository. Existing releases remain
 immutable; implementation does not authorize publishing or deployment.
+
+## Pairing And OS Setup
+
+New pairing has one confirmation granting terminal plus unattended desktop
+view/control, including supported lock/login screens. Subsequent connections
+need neither another enable switch nor host approval. The existing pairing
+token, daemon identity, device key and canonical trusted-device record remain
+the only trust system. `desktop_scope_version: 1` records this acknowledgment;
+it is authority, not evidence of installed OS permissions or capture support.
+
+Old records without that version retain terminal and explicitly requested
+attended access (`X-Zen-Desktop-Mode: attended`). The default endpoint refuses
+legacy scope and plaintext transport; old clients do not silently gain access.
+They never gain unattended privileges through upgrade, loading state, ordinary
+authentication, LAN consent or discovering a display. Migration is one explicit
+re-pair using a fresh owner-issued `zen pair` token and the same device key.
+The phone shows the expanded scope once. Its signed acknowledgment binds the
+scope domain, daemon public key, one-time token, device ID and device key.
+Missing/unknown scope versions or altered proofs cannot grant new authority.
+An old client's token enrollment remains legacy scope, not an automatic upgrade.
+Revoking the device in the existing owner removes terminal and desktop access
+and synchronously retires desktop sessions. No second device list is created.
+
+Consolidate OS installation/permission requests into initial host onboarding:
+explain privileged broker installation and boot service ownership on Linux,
+Screen Recording/Accessibility on macOS, and service installation on Windows.
+Pairing does not grant those OS rights. Show separate runtime states such as
+`Host setup required`, `OS permission required`, `Login screen unsupported`,
+`Locked`, `Switching session` and `Connected`. Do not advertise `Ready` until
+the matching agent has actually obtained capture and input capabilities.
+
+## Linux Unattended Architecture
+
+Use a small privileged broker plus UID-dropped per-session agents, retaining
+Zen's authenticated connection, paired identity, bounded input/frame protocol
+and native phone decoders. Do not run the full Zen daemon or GStreamer/GTK/GPU
+code as root. The canonical unprivileged daemon must become available after
+OS boot with its original identity/state and no duplicate owner. A separately
+approved system service can launch it as the existing owner UID; a desktop
+autostart or terminal-only development watcher cannot provide this guarantee.
+If the owner's home/state is unavailable before login, explicitly plan a
+single-owner state relocation during enrollment rather than copying identities
+or silently promising access. LUKS/FileVault preboot is not handled by Zen.
+
+The broker has local Unix IPC only, fixed root-owned executables/configuration,
+peer-credential checks, bounded messages and an allowlisted command set. It
+never accepts a client executable, environment, DISPLAY, bus address, UID,
+Xauthority path or raw device path. Device proof and scope are rechecked against
+the canonical owner; a peer UID or claimed device name is not sufficient.
+Agents receive only the exact display capability/FD for their generation.
+Per-session codecs, X11/Wayland libraries and UI run without elevated privileges.
+
+The executable is `daemon/cmd/zen-desktop-host`; the agent is
+`daemon/desktop/native/host-agent.c` (built with `host-agent.mk`). The owner socket
+checks both kernel UID and the configured systemd unit's current MainPID. A
+one-use broker challenge binds boot/session/display generation and the request;
+the canonical daemon signs it only after fresh device/scope and TLS admission.
+The broker never loads a second device database. Its bounded byte relay closes
+before agent termination, preventing cleanup latency from forwarding a retired
+generation. Relevant seat/current-session D-Bus changes retire it; unrelated SSH
+session changes do not. The existing desktop owner also closes it on daemon
+shutdown and device revocation.
+
+Only the broker retains `SETUID`, `SETGID`, `CHOWN`, `DAC_READ_SEARCH` and `KILL`
+capabilities. `CAP_SETUID` is explicitly ambient for systemd sandbox startup;
+agents change all UIDs/GIDs, clear supplementary groups and capability sets,
+disable dumps and retain no-new-privileges before capture/codec initialization.
+`CAP_KILL` is used only for the tracked child during bounded retirement. No
+`CAP_SYS_ADMIN`, DRM master, input-device enrollment or whole-daemon root mode
+is introduced.
+
+| Host Surface | Capture And Input Plan | Admission And Evidence Gate |
+| --- | --- | --- |
+| SDDM X11 greeter | Approved SDDM DisplayCommand/DisplayStopCommand registration of display and Xauthority FD; UID-dropped greeter agent uses X11 capture/XTest. Preserve existing hooks. | Independently verify active seat0, greeter class, service/process ownership and display generation. Never probe guessed displays or use `xhost +`. Owned SDDM VM capture/input remains required. |
+| Owner X11 desktop and lock | Owner-session agent uses existing frame/XTest pipeline; capture the standard locker, not underlying unlocked windows. | Observe lock lifecycle and active seat; prove locker rendering/input on the actual desktop stack. Retire old media/input before lock handoff. X11 clients are not mutually isolated. |
+| Owner Wayland desktop | Portal/PipeWire plus compositor-supported input; persistent restore grants may avoid repeated permission prompts after OS enrollment. | Restore can fail or prompt again. Report missing permission, never switch silently to XTest/Xwayland. |
+| Wayland lock or greeter | Separate compositor-supported system remote-login backend, or audited DRM/KMS capture broker and seat-bound uinput adapter. | A user portal/restore token/EIS FD does not establish greeter rights. DRM framebuffer handles may require DRM master or CAP_SYS_ADMIN; do not steal compositor master. Driver/GPU/plane/DPMS and input-seat behavior need owned tests. No generic ready claim. |
+| No monitor | Explicitly enrolled virtual output on the intended compositor/X server, or a separately labeled isolated virtual desktop. | No active CRTC means no KMS image. Xvfb is not the personal console or a boot-greeter substitute. Do not alter personal monitor/EDID/boot settings implicitly. |
+
+Use logind's system D-Bus `Seat.ActiveSession`, `SessionNew/Removed` and
+`PropertiesChanged` with `Class`, `Type`, `User`, `Seat`, `Active`, `State` and
+`LockedHint`. `LockedHint` is advisory, not a security barrier or capture grant;
+combine it with verified locker/compositor lifecycle. `TakeControl/TakeDevice`
+are session-controller APIs with pause/resume rules, not universal screen-copy
+authorization. Never invoke `UnlockSession`, patch PAM, disable locking, set
+autologin, or send credentials to SDDM's authentication socket.
+
+On lock, logout, active VT/UID change, display resize/replacement, agent failure,
+revocation or reboot: close admission, release held input, stop old capture,
+clear phone frames/keyboard state, then retire that generation. Reacquire the
+active display and create fresh SPS/PPS/IDR plus source dimensions before new
+input. Greeter-to-owner handoff binds to the enrolled owner UID; a different
+logged-in UID ends access. No retained key event may become a password character
+in the next session. An approved device reconnects using fresh existing signed
+authentication, without a local approval or replayed input. Network reconnection
+after reboot is continuity of authority, not survival of the old process/socket.
+
+Local Stop/temporary Deny and device revocation remain available at the owner
+boundary. A greeter stop surface may only deny, never grant scope or unlock.
+Display a remote-control indicator without depending on someone clicking it.
+Bound authenticated connection attempts (10/minute host-wide),
+one active desktop, input/frame sizes and queue deadlines. Add per-device and
+unauthenticated gateway limits before boot-host exposure; keep OS login attempt
+limits intact. Neither Zen nor diagnostics should interpret login success by
+watching typed passwords; observe OS session transitions instead.
+
+## Password Transport
+
+Require real authenticated end-to-end TLS for all unattended sessions, including
+lock/login viewing. Prefer the existing SPKI-pinned Zen Link transport or a
+properly verified direct TLS origin. Do not deploy a new relay or trust a public
+TLS terminator as end-to-end confidentiality. No `X-Forwarded-Proto`, numeric
+LAN address, loopback address, device signature or pairing grant proves encryption.
+Zen Link's close-observing listener now preserves actual inner TLS state on
+HTTP requests; actual TLS and forged-header plaintext regressions cover this.
+
+The accepted opt-in plaintext LAN feature remains for ordinary attended desktop
+use. It is unsuitable for OS password entry. The new broker must retire it on
+lock/session transitions; the current attended artifact has not proved that
+barrier and must not be presented as safe for entering any sensitive data.
+Zen cannot detect every password field in an arbitrary application.
+
+Credentials go only as ephemeral input through the existing encrypted auth/media
+channel to the standard OS login UI. Never store OS passwords, capture physical
+keyboard input, log key codes/payloads, copy credentials to clipboard, call PAM
+on behalf of the user, or add a password-validation RPC. Android and iOS source
+now provides native secure editors that send bounded ephemeral character events
+directly on the native socket. JS can request the editor but never receives its
+text. Editors recheck generation and live encrypted transport before submission,
+clear on submission/cancellation/background/server change, and do not persist
+drafts or enable prediction. A live native Link-listener registry validates the
+loopback/pin association; a JS string or an arbitrary localhost port is not
+sufficient. Direct TLS requires a completed TLS connection.
+
+The current sensitive-character contract is at most 64 printable ASCII
+characters, sent to the visible OS field followed by Enter. Unicode, non-US
+keyboard layouts and IME composition are not qualified. The JS history keyboard
+is disabled on broker-reported greeter/lock surfaces; their printable input must
+use the native sensitive path. It is still the OS, not Zen, that authenticates
+the password. Native-device UI evidence remains a separate acceptance gate.
+
+## Linux Installation
+
+Installation requires an existing, reviewed, boot-owned **unprivileged** canonical
+daemon unit. The installer references its exact unit and identity; it does not
+create another daemon or relocate/copy state. A development watcher alone is
+not that boot unit. Review the existing unit's executable, state directory and
+network flags before any personal-host handover.
+
+`zen-desktop-host --install --config <reviewed-config> --broker-source <ELF>
+--agent-source <ELF>` installs fixed root-owned files. `--activate` additionally
+enables/starts only the broker after checking that the canonical unit is active;
+it does not restart SDDM or the owner. A normal subsequent display start uses the
+registered hooks. `--rollback` requires the broker to be stopped, removes its
+enablement, restores unchanged installed files and reloads systemd. It refuses
+to overwrite administrator edits made since installation.
+
+The transaction covers `/usr/libexec/zen/zen-desktop-host`,
+`/usr/libexec/zen/zen-desktop-agent`, `sddm-start` and `sddm-stop` in that directory,
+`/etc/zen/desktop-host.json`, `/usr/lib/systemd/system/zen-desktop-host.service`
+and the two hook keys in `/etc/sddm.conf`. Existing effective Xsetup/Xstop commands
+are read with an INI parser and preserved. `/etc/zen/desktop-install.json` is the
+root-only rollback journal; `desktop-install.lock` serializes installation and
+rollback. No password or independent device-grant file is created. Descriptor
+walks reject symlinks and writable/unowned parent directories.
+
+The broker uses godbus/dbus v5 (BSD-2-Clause); the installer uses ini.v1
+(Apache-2.0). Their notices are in the repository `NOTICE`. The agent links system
+X11/XTest and GStreamer/OpenH264 libraries; test-VM QEMU packages are not product
+dependencies or shipped assets.
+
+## Reuse And Delivery
+
+Primary sources inspected 2026-09-08:
+
+- [SDDM 0.21 Xorg lifecycle](https://github.com/sddm/sddm/blob/v0.21.0/src/daemon/XorgDisplayServer.cpp) supplies DISPLAY/XAUTHORITY to display hooks; greeter and user sessions can use different display servers. [Configuration](https://github.com/sddm/sddm/blob/develop/data/man/sddm.conf.rst.in) defines the execution UID of those hooks.
+- [systemd login1](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html) defines session/seat and controller boundaries. [Portal RemoteDesktop](https://github.com/flatpak/xdg-desktop-portal/blob/main/data/org.freedesktop.portal.RemoteDesktop.xml) documents restore tokens, failure/prompt behavior and EIS, not SDDM login support.
+- [RustDesk Linux service](https://github.com/rustdesk/rustdesk/blob/master/src/platform/linux.rs) demonstrates system/per-session supervision, uinput and optional DRM greeter handling. Its AGPL-3.0 code is research evidence, not code to embed or translate into Apache-2.0 Zen.
+- [Sunshine KMS](https://github.com/LizardByte/Sunshine/blob/master/src/platform/linux/kmsgrab.cpp) shows privileged DRM framebuffer acquisition. Sunshine is GPL-3.0; no silent linking, copied implementation or assumed subprocess license exemption.
+- [GNOME Remote Desktop](https://github.com/GNOME/gnome-remote-desktop/blob/master/README.md) has GDM-specific system remote login and separate headless modes, GPL-2.0+. [KRDP](https://github.com/KDE/krdp/blob/master/README.md) documents lack of SDDM RDP support; its autologin workaround is explicitly rejected here.
+- [xrdp](https://github.com/neutrinolabs/xrdp) and [FreeRDP](https://github.com/FreeRDP/FreeRDP) are Apache-2.0 core-reuse candidates. xrdp normally creates/reconnects a separate Xorg session via sesman, not the current SDDM console; adopting it would change session and credential boundaries. Keep as an explicit alternative, not a hidden backend substitution.
+
+Retain permissive X11/XTest and dynamically linked system multimedia libraries
+for the first SDDM-X11 increment. Review each future adapter's license and driver
+requirements; commercial UX references are not source or capability evidence.
+
+1. Implement signed pairing scope and explicit legacy migration in existing auth;
+   prepare session admission, canonical revocation and TLS provenance tests.
+2. The Linux executable broker, canonical process/proof admission, bounded
+   media/input relay, SDDM registration, UID-dropped X11 agent and journaled
+   installer are implemented in source. Qualify them against the intended OS
+   stack before personal-host installation; source completion is not deployment.
+3. In an owned disposable SDDM VM, prove cold OS greeter capture, normal synthetic
+   fixture-account password entry, owner handoff, lock/unlock, logout, reboot,
+   wrong-device/key/scope denial, revocation during input and no credential logs.
+   Run both phone clients; evidence from policy callbacks is not OS proof.
+4. Native sensitive input and the unattended default are implemented in shared
+   app/native source. Complete Android/iOS native-device UI verification, layout
+   qualification, local-host indicator implementation and encrypted-path evidence.
+   Attended assistance remains explicitly selected, not a silent fallback.
+5. Qualify Wayland system capture/input and no-monitor output independently.
+   macOS needs a signed launch daemon/agent design and user-granted TCC; ordinary
+   ScreenCaptureKit cannot be advertised as prelogin/FileVault support. Windows
+   needs a native service and per-session agent using WTS notifications and
+   permitted desktop handles; Session 0, secure-desktop ACLs and SendInput/UIPI
+   prevent assuming a user agent can operate Winlogon/UAC. No UAC/TCC bypass.
+
+Actual personal-host root service installation, SDDM changes, boot ownership
+migration, device-node enrollment, or personal login/unlock require separately
+explained approval. Installer/source preparation does not authorize applying it.
+
+### Owned-VM Evidence
+
+An owned Ubuntu 24.04 / SDDM 0.20 / X11 / Openbox / xsecurelock fixture has
+demonstrated authenticated H.264 greeter capture, normal OS password login,
+fresh owner-desktop capture/input, normal-password unlock, normal Openbox logout
+to a fresh greeter, and device/daemon-identity persistence through guest reboot.
+Fresh capture was denied while a different UID owned seat0. Active device
+revocation closed the stream, rejected stale input and rejected reauthentication;
+a same-UID process outside the canonical unit MainPID was also denied on IPC.
+The installed unit used the source-defined capability profile, without a
+temporary override. Synthetic passwords were absent from the guest journal.
+
+These are real guest OS and native-host-agent observations with a scripted TLS
+consumer, not Android/iOS native-client login evidence. A forced logind session
+termination crashed the fixture's SDDM helper and is not counted as normal logout
+support; the accepted normal path uses the desktop session's ordinary exit.
+Other SDDM versions, lockers, physical GPUs and mobile runtime behavior require
+their own qualification. No new APK, personal-host installation or release is
+implied by this source milestone.
 
 ## Verified Transport Boundaries
 
@@ -54,8 +294,8 @@ key and origin (including port). Pairing imports cannot grant it. Changing
 identity, origin or transport invalidates approval; switching the current
 server clears the native connection. The desktop screen offers cancellation,
 an approval-revocation switch and a connected unencrypted-LAN indicator.
-This network acknowledgement is separate from the host's per-session visible
-view/control consent and never replaces it.
+This network acknowledgement is separate from pairing scope and OS permissions.
+For the current attended artifact it also does not replace local session consent.
 
 Before native connection, bounded signed health and authenticated device
 checks validate the paired daemon. Each device probe and desktop upgrade uses
@@ -90,6 +330,10 @@ transport and source-origin binding; neither installs a universal trust rule.
    AVSampleBufferDisplayLayer. Neither pixels nor encoded video cross JS.
 
 ## Session And Permission Contract
+
+The following wire/helper contract describes the current attended implementation.
+The unattended transition and pairing rules above supersede its per-connection
+consent requirement for the new default host; they are not yet runtime accepted.
 
 The state progression is `disconnected -> connecting -> sources -> requesting
 -> streaming -> connected -> disconnected`. Unconfigured, missing dependency,
@@ -183,6 +427,10 @@ changes require rebuilding decoder format and invalidating the old coordinate
 generation; never project input onto a stale source.
 
 ## Platforms And Dependencies
+
+This inventory describes the current attended adapters and their dependencies,
+not accepted unattended or prelogin capabilities. The Linux host plan above
+defines the required extensions and their independent OS evidence gates.
 
 | Platform | Capture, Input And Limits | Build And Acceptance Requirements |
 | --- | --- | --- |
@@ -282,11 +530,12 @@ No compositor, session bus or virtual/headless desktop is discovered or
 created automatically. These settings do not authorize operating a personal
 desktop; host consent and an appropriate session are still required.
 
-A terminal-only login or a display-manager greeter is not a selectable user
-desktop. Log into the intended graphical session first, then explicitly
-configure its backend/display and, for Wayland, its session bus. Never select
-the greeter or another user's display as a fallback. A missing helper or
-display is shown as an unsupported host, not as an encrypted-network error.
+A terminal-only login or a display-manager greeter cannot be served by this
+attended helper. This is an implementation gap, not a requirement that someone
+log in locally. Use the approved broker/greeter implementation above once built
+and verified; never point the attended helper at the greeter as a workaround.
+A missing helper or display is shown as an unsupported host, not as an
+encrypted-network error.
 Helper environment changes require restarting the existing daemon launch
 owner with its original state directory, pairing identity and network options;
 do not start a second daemon or supervisor. Restart interrupts active client
@@ -481,7 +730,11 @@ tap, long-press right-click, scrolling, pan and pinch must not accidentally
 trigger each other. Verify keyboard, dragging, rotation and letterbox-aware
 coordinates through actual interactions, not the presence of buttons.
 
-## Implementation Stages And BDD
+## Attended Baseline Tests
+
+These stages and cases describe the existing attended baseline. The paired-default
+unattended rollout and acceptance requirements are specified above; fresh local
+consent on reconnect below applies only to explicitly attended sessions.
 
 1. Audit transport and establish this plan, permission boundaries, lifecycle
    and observable contracts before the Linux/native vertical implementation.

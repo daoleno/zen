@@ -47,6 +47,7 @@ import {
   markOnboarded,
 } from "../services/storage";
 import { importConnection } from "../services/importConnection";
+import { PairingCancelledError } from "../services/pairingScope";
 import {
   clearNativeTerminalCrashBreadcrumb,
   getNativeTerminalCrashBreadcrumb,
@@ -220,6 +221,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         return true;
       } catch (error) {
         handledConnectLinksRef.current.delete(trimmed);
+        if (error instanceof PairingCancelledError) return false;
         console.log("Failed to import connect link:", error);
         return false;
       }

@@ -15,5 +15,6 @@ Pod::Spec.new do |s|
   s.resources = 'notices/IPADDR-MIT.txt'
   s.frameworks = 'AVFoundation', 'CoreMedia', 'VideoToolbox', 'Network'
   s.dependency 'ExpoModulesCore'
+  s.dependency 'ZenLinkTransport'
   s.dependency 'React-Core'
 end

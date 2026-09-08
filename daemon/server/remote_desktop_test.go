@@ -44,7 +44,7 @@ func TestDesktopRequiresIndependentPurposeNonceAndHeader(t *testing.T) {
 		}
 	}
 	t.Setenv("ZEN_DESKTOP_HELPER", "")
-	conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {header}})
+	conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {header}, "X-Zen-Desktop-Mode": {"attended"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestDesktopRevocationAndShutdownCloseSeparateMediaOwner(t *testing.T) {
 			defer host.Close()
 			url := "ws" + strings.TrimPrefix(host.URL, "http") + "/desktop"
 			dial := func() *websocket.Conn {
-				conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {desktopAuthorization(t, key, manager.DaemonID(), device, "zen-desktop")}})
+				conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {desktopAuthorization(t, key, manager.DaemonID(), device, "zen-desktop")}, "X-Zen-Desktop-Mode": {"attended"}})
 				if err != nil {
 					t.Fatal(err)
 				}

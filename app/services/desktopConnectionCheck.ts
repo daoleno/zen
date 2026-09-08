@@ -1,6 +1,10 @@
 import type { DaemonAssertionInput } from "./auth";
 import type { StoredServer } from "./storedServerContract";
 
+export class DesktopConnectionUnavailable extends Error {
+  constructor() { super("The desktop server is temporarily unavailable."); }
+}
+
 export interface DesktopProofDependencies {
   fetch: (url: string, init: Pick<RequestInit, "headers" | "signal" | "redirect">) => Promise<Pick<Response, "ok" | "status" | "url" | "redirected" | "body">>;
   authorization: () => Promise<string>;
@@ -22,8 +26,15 @@ export async function verifyDesktopServer(server: Pick<StoredServer, "daemonId" 
       if (signal?.aborted) throw new Error("Desktop connection cancelled.");
       const headers = purpose === "zen-probe" ? { Authorization: await dependencies.authorization() } : undefined;
       if (signal?.aborted) throw new Error("Desktop connection cancelled.");
-      const response = await dependencies.fetch(endpoint.toString(), { headers, signal: controller.signal, redirect: "error" });
+      let response: Awaited<ReturnType<DesktopProofDependencies["fetch"]>>;
+      try {
+        response = await dependencies.fetch(endpoint.toString(), { headers, signal: controller.signal, redirect: "error" });
+      } catch {
+        if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+        throw new DesktopConnectionUnavailable();
+      }
       if (response.redirected || (response.url && response.url !== endpoint.toString())) throw new Error("Desktop endpoint redirects are not allowed.");
+      if (response.status >= 500) throw new DesktopConnectionUnavailable();
       if (!response.ok) throw new Error(response.status === 401 ? "This device is no longer paired with the computer." : "The desktop server did not pass its connection check.");
       if (!response.body) throw new Error("The desktop server returned no identity proof.");
       const reader = response.body.getReader();

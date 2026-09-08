@@ -6,6 +6,8 @@ import {
   type StoredServer,
 } from "./storage";
 import { enrollWithDaemon } from "./pairing";
+import { confirmPairingScope } from "./confirmPairingScope";
+import { PairingCancelledError } from "./pairingScope";
 import {
   releasePairingLinkTransport,
   resolvePairingLinkURL,
@@ -13,6 +15,7 @@ import {
 
 export interface ImportConnectionOptions {
   onImported?: (server: StoredServer) => void | Promise<void>;
+  confirmScope?: () => Promise<boolean>;
 }
 
 export async function importConnection(
@@ -27,6 +30,8 @@ export async function importConnection(
   if (!payload.daemonPublicKey || !payload.enrollmentToken) {
     return null;
   }
+
+  if (!await (options.confirmScope ?? confirmPairingScope)()) throw new PairingCancelledError();
 
   const pairingURL = payload.link
     ? await resolvePairingLinkURL({

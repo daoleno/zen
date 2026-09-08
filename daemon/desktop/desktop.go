@@ -31,6 +31,7 @@ type Command struct {
 	Code    uint32    `json:"code,omitempty"`
 	Down    bool      `json:"down,omitempty"`
 	Delta   int       `json:"delta,omitempty"`
+	Submit  bool      `json:"submit,omitempty"`
 }
 
 func (c Command) ValidateInput(control bool) error {
@@ -38,6 +39,10 @@ func (c Command) ValidateInput(control bool) error {
 		return errors.New("view_only")
 	}
 	switch c.Type {
+	case "text":
+		if c.Code < 0x20 || c.Code > 0x7e {
+			return errors.New("unsupported_text")
+		}
 	case "pointer":
 		if math.IsNaN(c.X) || math.IsNaN(c.Y) || math.IsInf(c.X, 0) || math.IsInf(c.Y, 0) || c.X < 0 || c.X > 1 || c.Y < 0 || c.Y > 1 {
 			return errors.New("invalid_pointer")
@@ -69,6 +74,7 @@ type Manager struct {
 	input  *inputGate
 	device string
 	closed bool
+	retire func()
 }
 
 func (m *Manager) Revoke(device string) {
@@ -76,6 +82,9 @@ func (m *Manager) Revoke(device string) {
 	defer m.mu.Unlock()
 	if m.conn != nil && m.device == device {
 		m.input.revoke()
+		if m.retire != nil {
+			m.retire()
+		}
 		_ = m.conn.Close()
 	}
 }
@@ -86,8 +95,40 @@ func (m *Manager) Close() {
 	m.closed = true
 	if m.conn != nil {
 		m.input.revoke()
+		if m.retire != nil {
+			m.retire()
+		}
 		_ = m.conn.Close()
 	}
+}
+
+// ServeExternal shares the existing one-connection owner with broker-backed
+// sessions. The bound retirement barrier runs synchronously on revoke/shutdown.
+func (m *Manager) ServeExternal(conn *websocket.Conn, device string, run func(func(func()))) {
+	defer conn.Close()
+	m.mu.Lock()
+	if m.closed || m.conn != nil {
+		m.mu.Unlock()
+		return
+	}
+	retired := false
+	m.conn, m.device, m.input = conn, device, &inputGate{}
+	m.retire = func() { retired = true; _ = conn.Close() }
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.conn, m.device, m.input, m.retire = nil, "", nil, nil
+		m.mu.Unlock()
+	}()
+	run(func(stop func()) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if retired || m.closed {
+			stop()
+			return
+		}
+		m.retire = func() { retired = true; stop(); _ = conn.Close() }
+	})
 }
 
 func ReadPacket(r io.Reader) (byte, []byte, error) {

@@ -131,6 +131,7 @@ internal class PinnedProxy(
         listener.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 64)
         localPort = listener.localPort
         running.set(true)
+        PinnedEndpointRegistry.register(localPort, pin, this)
         worker.execute { acceptLoop() }
     }
 
@@ -139,6 +140,7 @@ internal class PinnedProxy(
             val local = try {
                 listener.accept()
             } catch (_: Throwable) {
+                close()
                 break
             }
             if (!connectionLimit.tryAcquire()) {
@@ -206,6 +208,7 @@ internal class PinnedProxy(
     }
 
     override fun close() {
+        PinnedEndpointRegistry.remove(localPort, this)
         if (!running.getAndSet(false) && !::listener.isInitialized) {
             worker.shutdownNow()
             return

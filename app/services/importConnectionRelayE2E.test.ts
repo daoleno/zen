@@ -21,7 +21,7 @@ if (!enabled) {
   const savedInputs: Array<Record<string, unknown>> = [];
   let nativeStarts = 0;
 
-  mock.module("react-native", () => ({ Platform: { OS: "ios" } }));
+  mock.module("react-native", () => ({ Platform: { OS: "ios" }, Alert: { alert: () => { throw new Error("Unexpected native prompt in injected test"); } } }));
   mock.module("expo-crypto", () => ({
     getRandomBytes: (length: number) => new Uint8Array(length).fill(9),
     randomUUID: () => "00000000-0000-4000-8000-000000000009",
@@ -72,7 +72,7 @@ if (!enabled) {
   });
 
   test("importConnection reaches daemon /pair through native transport and opaque Relay", async () => {
-    const imported = await importConnection(pairingLink);
+    const imported = await importConnection(pairingLink, { confirmScope: async () => true });
 
     expect(nativeStarts).toBe(1);
     expect(imported?.id).toBe("relay-e2e-server");

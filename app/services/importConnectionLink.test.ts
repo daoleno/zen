@@ -11,7 +11,7 @@ if (!integrationEnabled) {
   const events: string[] = [];
   const savedInputs: Array<Record<string, unknown>> = [];
 
-  mock.module("react-native", () => ({ Platform: { OS: "ios" } }));
+  mock.module("react-native", () => ({ Platform: { OS: "ios" }, Alert: { alert: () => { throw new Error("Unexpected native prompt in injected test"); } } }));
   mock.module("expo-crypto", () => ({
     getRandomBytes: (length: number) => new Uint8Array(length).fill(9),
     randomUUID: () => "00000000-0000-4000-8000-000000000009",
@@ -88,6 +88,9 @@ if (!integrationEnabled) {
       expect(request.enrollment_token).toBe(enrollmentToken);
       expect(request.expected_daemon_id).toBe(daemonId);
       expect(request.expected_daemon_public_key).toBe(daemonPublicKey);
+      expect(request.desktop_scope_version).toBe(1);
+      const scopePayload = new TextEncoder().encode(["zen-pair-desktop-scope-v1", daemonPublicKey, enrollmentToken, request.device_id, request.device_public_key].join("\n"));
+      expect(nacl.sign.detached.verify(scopePayload, Buffer.from(String(request.desktop_scope_signature), "hex"), Buffer.from(String(request.device_public_key), "hex"))).toBe(true);
 
       const timestamp = Date.now().toString();
       const nonce = "5".repeat(32);
@@ -97,6 +100,7 @@ if (!integrationEnabled) {
       return new Response(
         JSON.stringify({
           device_id: request.device_id,
+          desktop_scope_version: 1,
           daemon_id: daemonId,
           daemon_public_key: daemonPublicKey,
           assertion_timestamp: timestamp,
@@ -121,12 +125,18 @@ if (!integrationEnabled) {
   });
 
   describe("Pairing V2 import call sequence", () => {
+    test("scope cancellation performs no pairing, native transport or storage writes", async () => {
+      events.length = 0; savedInputs.length = 0;
+      await expect(importConnection(pairingLink(), { confirmScope: async () => false })).rejects.toThrow("Pairing cancelled");
+      expect(events).toEqual([]);
+      expect(savedInputs).toEqual([]);
+    });
     test("one on-demand native stream carries the actual /pair request", async () => {
       events.length = 0;
       savedInputs.length = 0;
       secureValues.clear();
 
-      const imported = await importConnection(pairingLink());
+      const imported = await importConnection(pairingLink(), { confirmScope: async () => true });
 
       expect(events[0]).toBe(
         `native:on-demand:${new URL(admissionURL).hostname}:443:pair:${routeId}:${transportPin}`,

@@ -2,6 +2,7 @@ import ExpoModulesCore
 import AVFoundation
 import CoreMedia
 import UIKit
+import ZenLinkTransport
 
 public final class ZenRemoteDesktopModule: Module {
   public func definition() -> ModuleDefinition {
@@ -13,6 +14,7 @@ public final class ZenRemoteDesktopModule: Module {
         view.sendCommand(generation, sequence, value)
       }
       AsyncFunction("disconnect") { (view: DesktopView, generation: String) in view.disconnect(generation) }
+      AsyncFunction("showSensitiveInput") { (view: DesktopView, generation: String) -> Bool in view.showSensitiveInput(generation) }
       OnViewDestroys { (view: DesktopView) in view.stop() }
     }
   }
@@ -29,6 +31,10 @@ final class DesktopView: ExpoView {
   private var inputGeneration = ""
   private var inputSequence = 0
   private var selectedSource = ""
+  private var hostControl = false
+  private var sensitiveReady = false
+  private var hostSurface = ""
+  private var sensitiveDialog: UIAlertController?
   private var format: CMVideoFormatDescription?
   private var needIDR = true
   private var submitted = 0
@@ -75,7 +81,8 @@ final class DesktopView: ExpoView {
 
   private func state(_ value: String, _ reason: String = "") {
     onState(["state": value, "reason": reason, "source": selectedSource, "width": width, "height": height,
-             "submitted": submitted, "dropped": dropped])
+             "submitted": submitted, "dropped": dropped, "control": hostControl,
+             "sensitiveInput": sensitiveReady && encryptedTransport(), "surface": hostSurface])
   }
 
   func connect(_ value: String) {
@@ -142,7 +149,12 @@ final class DesktopView: ExpoView {
               self.state(state, status["reason"] as? String ?? "")
               return
             }
-            if state == "streaming" { self.lastVideo = ProcessInfo.processInfo.systemUptime }
+            if state == "streaming" {
+              self.hostSurface = status["surface"] as? String ?? "desktop"
+              self.hostControl = status["control"] as? Bool ?? false
+              self.sensitiveReady = (status["sensitiveInput"] as? Bool ?? false) && self.hostControl
+              self.lastVideo = ProcessInfo.processInfo.systemUptime
+            }
             self.state(state, status["reason"] as? String ?? "")
           case .data(let data):
             try self.decode(data)
@@ -152,8 +164,10 @@ final class DesktopView: ExpoView {
           // No unbounded dispatch backlog: request the next AU after this one.
           self.receive(socket, generation)
         } catch {
+          let httpStatus = (socket.response as? HTTPURLResponse)?.statusCode
+          let denied = httpStatus == 401 || httpStatus == 403
           self.stop()
-          if !self.terminalState { self.state("disconnected", "Desktop connection ended.") }
+          if !self.terminalState { self.state(denied ? "denied" : "disconnected", denied ? "Desktop authorization is required." : "Desktop connection ended.") }
         }
       }
     }
@@ -224,6 +238,54 @@ final class DesktopView: ExpoView {
     if !owner.isEmpty && owner == inputGeneration { stop() }
   }
 
+  private func encryptedTransport() -> Bool {
+    guard task != nil, let data = connection.data(using: .utf8),
+      let config = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+      let url = URL(string: config["url"] ?? "") else { return false }
+    if config["transport"] == "tls" { return url.scheme == "wss" && lastVideo != nil }
+    if config["transport"] == "pinned-link", let port = url.port {
+      return PinnedEndpointRegistry.contains(port: port, pin: config["transportPin"] ?? "")
+    }
+    return false
+  }
+
+  func showSensitiveInput(_ owner: String) -> Bool {
+    guard !owner.isEmpty, owner == inputGeneration, submitted > 0, sensitiveReady, encryptedTransport(), sensitiveDialog == nil,
+      let presenter = window?.rootViewController else { return false }
+    let generation = epoch
+    let dialog = UIAlertController(title: "OS password", message: nil, preferredStyle: .alert)
+    dialog.addTextField { field in
+      field.isSecureTextEntry = true
+      field.autocorrectionType = .no
+      field.autocapitalizationType = .none
+      field.spellCheckingType = .no
+      field.textContentType = nil
+      field.smartQuotesType = .no
+      field.smartDashesType = .no
+    }
+    let clear = { [weak self, weak dialog] in
+      dialog?.textFields?.first?.text = nil
+      if self?.sensitiveDialog === dialog { self?.sensitiveDialog = nil }
+    }
+    dialog.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in clear() })
+    dialog.addAction(UIAlertAction(title: "Submit", style: .default) { [weak self, weak dialog] _ in
+      defer { clear() }
+      guard let self, self.epoch == generation, self.inputGeneration == owner, self.sensitiveReady, self.encryptedTransport(),
+        let value = dialog?.textFields?.first?.text, !value.isEmpty, value.unicodeScalars.count <= 64,
+        value.unicodeScalars.allSatisfy({ (0x20...0x7e).contains($0.value) }) else { return }
+      let events = value.unicodeScalars.map { ["type": "text", "code": $0.value] as [String: Any] }
+      guard let data = try? JSONSerialization.data(withJSONObject: ["type": "sensitive", "events": events, "submit": true]),
+        let payload = String(data: data, encoding: .utf8) else { return }
+      dialog?.textFields?.first?.text = nil
+      self.send(payload)
+    })
+    sensitiveDialog = dialog
+    var top = presenter
+    while let next = top.presentedViewController { top = next }
+    top.present(dialog, animated: true)
+    return true
+  }
+
   @discardableResult
   private func send(_ value: String) -> Bool {
     guard !value.isEmpty, value.utf8.count <= 8192, let task else { return false }
@@ -246,6 +308,11 @@ final class DesktopView: ExpoView {
 
   func stop() {
     epoch += 1
+    sensitiveDialog?.textFields?.first?.text = nil
+    sensitiveDialog?.dismiss(animated: false)
+    sensitiveDialog = nil
+    sensitiveReady = false; hostControl = false
+    hostSurface = ""
     heartbeat?.invalidate(); heartbeat = nil
     task?.cancel(with: .normalClosure, reason: nil); task = nil
     session?.invalidateAndCancel(); session = nil
