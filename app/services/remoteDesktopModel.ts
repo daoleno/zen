@@ -48,3 +48,18 @@ export function desktopText(text: string): DesktopInput[] {
   }
   return events;
 }
+
+export function desktopTextEdits(previous: string, next: string): DesktopInput[][] {
+  const before = previous.replace(/[^\x20-\x7e]/g, "");
+  const after = next.replace(/[^\x20-\x7e]/g, "");
+  let prefix = 0;
+  while (prefix < before.length && before[prefix] === after[prefix]) prefix++;
+  const batches: DesktopInput[][] = [];
+  for (let remaining = before.length - prefix; remaining > 0; remaining -= 32) {
+    batches.push(Array.from({ length: Math.min(remaining, 32) }, () => desktopKey(0xff08)).flat());
+  }
+  for (let offset = prefix; offset < after.length; offset += 16) {
+    batches.push(desktopText(after.slice(offset, offset + 16)));
+  }
+  return batches;
+}

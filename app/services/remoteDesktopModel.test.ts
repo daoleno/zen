@@ -1,7 +1,29 @@
 import { describe, expect, test } from "bun:test";
-import { desktopURL, desktopPoint, desktopKey, desktopText } from "./remoteDesktopModel";
+import { desktopURL, desktopPoint, desktopKey, desktopText, desktopTextEdits } from "./remoteDesktopModel";
 
 describe("Remote desktop transport and input", () => {
+  test("cumulative and repeated keyboard values emit each character once", () => {
+    let previous = "";
+    const events = ["a", "ab", "ab", "abc"].flatMap((next) => {
+      const result = desktopTextEdits(previous, next).flat();
+      previous = next;
+      return result;
+    });
+    expect(events).toEqual(desktopText("abc"));
+  });
+  test("keyboard deletion and replacement preserve ordered key pairs", () => {
+    expect(desktopTextEdits("abc", "ab")).toEqual([desktopKey(0xff08)]);
+    expect(desktopTextEdits("abc", "axc").flat()).toEqual([
+      ...desktopKey(0xff08), ...desktopKey(0xff08), ...desktopText("xc"),
+    ]);
+    expect(desktopTextEdits("", "")).toEqual([]);
+  });
+  test("pasted text is not truncated and every batch respects the host bound", () => {
+    const batches = desktopTextEdits("a".repeat(65), "A".repeat(65));
+    expect(batches.every((events) => events.length <= 64)).toBe(true);
+    expect(batches.flat().filter((event) => event.type === "key" && event.code === 65 && event.down)).toHaveLength(65);
+    for (const events of batches) expect(events.at(-1)).toMatchObject({ type: "key", down: false });
+  });
   test("requires TLS or the existing pinned Link loopback", () => {
     expect(desktopURL("wss://host.test/ws?old=value", false)).toBe("wss://host.test/desktop");
     expect(desktopURL("ws://127.0.0.1:1234/ws", true)).toBe("ws://127.0.0.1:1234/desktop");

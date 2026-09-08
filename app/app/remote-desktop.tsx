@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, PanResponder, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
 import { useAppColors } from "../constants/tokens";
 import { prepareDesktopConnection } from "../services/remoteDesktop";
-import { desktopKey, desktopPoint, desktopText, desktopStart, type DesktopInput } from "../services/remoteDesktopModel";
+import { desktopKey, desktopPoint, desktopTextEdits, desktopStart, type DesktopInput } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 
@@ -18,6 +18,8 @@ export default function RemoteDesktopScreen() {
 function DesktopSession() {
   const { currentServer } = useCurrentServer();
   const colors = useAppColors();
+  const root = useRef<View>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
   const [connection, setConnection] = useState("");
   const [status, setStatus] = useState<DesktopState>({ state: "disconnected" });
   const [preparing, setPreparing] = useState(false);
@@ -26,6 +28,7 @@ function DesktopSession() {
   const [dragMode, setDragMode] = useState(false);
   const [keyboard, setKeyboard] = useState(false);
   const [text, setText] = useState("");
+  const textRef = useRef("");
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [size, setSize] = useState({ width: 1, height: 1 });
@@ -48,6 +51,7 @@ function DesktopSession() {
     commands.stop();
     setConnection(""); setPreparing(false); setControl(false);
     setStatus({ state: "disconnected" }); setKeyboard(false);
+    textRef.current = ""; setText("");
     setDragMode(false); setPanMode(false); setZoom(1); setOffset({ x: 0, y: 0 });
   }, [commands]);
   useFocusEffect(useCallback(() => stop, [stop]));
@@ -119,8 +123,10 @@ function DesktopSession() {
       <Ionicons name={icon} size={22} color={colors.textPrimary} />
     </Pressable>
   );
-  return <SafeAreaView edges={["bottom"]} style={[styles.root, { backgroundColor: colors.surfaceSubtle }]}>
+  return <SafeAreaView ref={root} onLayout={() => root.current?.measureInWindow((_x, y) => setHeaderHeight(y))}
+    edges={["bottom"]} style={[styles.root, { backgroundColor: colors.surfaceSubtle }]}>
     <Stack.Screen options={{ title: "Remote Desktop", headerShown: true }} />
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight}>
     <View style={styles.header}>
       <Text numberOfLines={1} style={[styles.host, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
       <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? "Connected" : ""}</Text>
@@ -150,18 +156,22 @@ function DesktopSession() {
       {tool("hand-left-outline", "Pan desktop", () => { setPanMode(!panMode); setDragMode(false); }, panMode, !connected)}
       {tool("move-outline", "Drag pointer", () => { setDragMode(!dragMode); setPanMode(false); }, dragMode, !connected || !control)}
       {tool("contract-outline", "Reset zoom", () => { setZoom(1); setOffset({ x: 0, y: 0 }); }, false, !connected)}
-      {tool("keypad-outline", "Keyboard", () => setKeyboard(!keyboard), keyboard, !connected || !control)}
+      {tool("keypad-outline", "Keyboard", () => { textRef.current = ""; setText(""); setKeyboard(!keyboard); }, keyboard, !connected || !control)}
       {tool("chevron-up-outline", "Scroll up", () => input([{ type: "scroll", delta: -3 }]), false, !connected || !control)}
       {tool("chevron-down-outline", "Scroll down", () => input([{ type: "scroll", delta: 3 }]), false, !connected || !control)}
     </View>
     {keyboard ? <View style={styles.keyboard}>
-      <TextInput autoFocus value={text} onChangeText={(value) => { input(desktopText(value)); setText(""); }}
-        onKeyPress={({ nativeEvent }) => { if (nativeEvent.key === "Backspace") input(desktopKey(0xff08)); }}
+      <TextInput autoFocus value={text} maxLength={1024} onChangeText={(value) => {
+        const batches = desktopTextEdits(textRef.current, value);
+        textRef.current = value; setText(value);
+        for (const events of batches) input(events);
+      }}
         onSubmitEditing={() => input(desktopKey(0xff0d))} autoCorrect={false} autoCapitalize="none" placeholder="Type" accessibilityLabel="Desktop keyboard"
         style={[styles.textInput, { color: colors.textPrimary, borderColor: colors.borderSubtle }]} />
       {tool("return-down-back-outline", "Enter", () => input(desktopKey(0xff0d)))}
       {tool("arrow-back-outline", "Backspace", () => input(desktopKey(0xff08)))}
     </View> : null}
+    </KeyboardAvoidingView>
   </SafeAreaView>;
 }
 

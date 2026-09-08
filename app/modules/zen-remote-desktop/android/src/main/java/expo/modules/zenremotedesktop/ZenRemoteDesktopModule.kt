@@ -5,6 +5,7 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import expo.modules.kotlin.AppContext
@@ -40,7 +41,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val cover = android.view.View(context).apply { setBackgroundColor(android.graphics.Color.BLACK) }
   private val thread = HandlerThread("ZenDesktopDecoder").apply { start() }
   private val decoder = Handler(thread.looper)
-  private val queued = AtomicInteger(0)
+  private val admission = DecodeAdmission()
   private val generation = AtomicInteger(0)
   private val client = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS)
     .connectTimeout(10, TimeUnit.SECONDS).writeTimeout(2, TimeUnit.SECONDS).build()
@@ -86,6 +87,9 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   private fun state(value: String, reason: String = "", epoch: Int = generation.get()) {
+    if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+      Log.d("ZenDesktop", "state=$value generation=$epoch presented=$presented dropped=$dropped size=${width}x$height reason=$reason")
+    }
     val event = mapOf("state" to value, "reason" to reason, "source" to selectedSource, "width" to width, "height" to height, "presented" to presented, "dropped" to dropped)
     if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
       if (epoch == generation.get() && !destroyed) onState(event)
@@ -140,12 +144,13 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
             if (nextWidth != null && nextHeight != null) {
               require(nextWidth in 2..4096 && nextHeight in 2..4096)
             }
-            if (queued.incrementAndGet() > 2) {
-              queued.decrementAndGet(); ws.cancel(); return
+            if (!admission.acquire({ epoch == generation.get() })) {
+              Log.w("ZenDesktop", "Status admission timed out or generation ended")
+              ws.cancel(); return
             }
             if (!decoder.post statusWork@{
               if (epoch != generation.get()) {
-                queued.decrementAndGet(); return@statusWork
+                admission.release(); return@statusWork
               }
               if (nextWidth != null && nextHeight != null) {
                 width = nextWidth; height = nextHeight
@@ -162,24 +167,24 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
                   }
                   if (value == "streaming") lastFrame = android.os.SystemClock.elapsedRealtime()
                   state(value, status.optString("reason"), epoch)
-                } finally { queued.decrementAndGet() }
-              }) queued.decrementAndGet()
-            }) queued.decrementAndGet()
+                } finally { admission.release() }
+              }) admission.release()
+            }) admission.release()
           } catch (_: Exception) { ws.cancel() }
         }
         override fun onMessage(ws: WebSocket, bytes: ByteString) {
           if (epoch != generation.get()) return
           if (bytes.size > 4 * 1024 * 1024) { ws.cancel(); return }
-          if (queued.incrementAndGet() > 2) {
-            queued.decrementAndGet()
-            // End instead of silently dropping H.264 reference frames.
+          // Backpressure the socket reader during codec startup without dropping reference frames.
+          if (!admission.acquire({ epoch == generation.get() })) {
+            Log.w("ZenDesktop", "Decoder admission timed out or generation ended")
             ws.cancel(); return
           }
-          decoder.post {
+          if (!decoder.post {
             try { if (epoch == generation.get()) decode(bytes.toByteArray(), epoch) }
-            catch (_: Exception) { ws.cancel() }
-            finally { queued.decrementAndGet() }
-          }
+            catch (error: Exception) { Log.w("ZenDesktop", "Decoder failed", error); ws.cancel() }
+            finally { admission.release() }
+          }) admission.release()
         }
         override fun onFailure(ws: WebSocket, error: Throwable, response: Response?) {
           post { if (epoch == generation.get()) { stop(); if (!terminalState) state("disconnected", "Desktop connection ended.") } }
@@ -204,6 +209,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
       format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024)
       if (android.os.Build.VERSION.SDK_INT >= 30) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
       val created = MediaCodec.createDecoderByType("video/avc")
+      Log.d("ZenDesktop", "decoder=${created.name} size=${width}x$height")
       codec = created
       created.configure(format, surface.holder.surface, null, 0)
       created.setOnFrameRenderedListener({ _, _, _ ->
@@ -216,9 +222,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
       created.start()
     }
     val active = codec ?: return
-    drain(active)
-    val index = active.dequeueInputBuffer(10000)
-    if (index < 0) throw IllegalStateException("decoder_backpressure")
+    val index = awaitDecoderInput({ epoch == generation.get() }, active::dequeueInputBuffer, { drain(active) })
     val input = active.getInputBuffer(index) ?: throw IllegalStateException("missing_input")
     if (input.capacity() < data.size) throw IllegalStateException("oversized_frame")
     input.clear(); input.put(data)

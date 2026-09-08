@@ -204,12 +204,12 @@ does not meet the 1080p60 acceptance target by construction.
 
 | Platform | Implemented | Built | Runtime Verified | Performance Measured | Released |
 | --- | --- | --- | --- | --- | --- |
-| Linux X11 / explicit virtual X11 | Capture, local consent and input helper; authenticated daemon endpoint | Strict-warning helper compilation and daemon test executable | Not accepted: native phone video/input assertions remain unexecuted | No accepted FPS, latency or hardware-encoder measurements | No |
+| Linux X11 / explicit virtual X11 | Capture, local consent and input helper; authenticated daemon endpoint | Strict-warning helper compilation and isolated real-auth fixture | Owned Xvfb/GTK capture, consent/cancel, view-only and actual mouse/key/scroll effects verified through Android | 1280x720 H.264/OpenH264 software; 5,015 access units over 167.124 seconds, approximately 30 fps | No |
 | GNOME/KDE/wlroots Wayland | Explicit portal/FD/node capture and portal input integrated; unsupported portal capabilities fail closed | Linux helper compiled with strict warnings; private-bus consent/cancel/revoke/source-binding tests pass | No compositor, real PipeWire stream, phone presentation or input acceptance; no universal wlroots claim | No | No |
 | macOS host | No ScreenCaptureKit/VideoToolbox/input adapter | No; requires macOS SDK and host | No; recording and Accessibility grants untested | No | No |
 | Windows host | No native daemon delivery or desktop adapter | No; requires Windows toolchain and host | No | No | No |
-| Android client | Native MediaCodec view, ordered imperative input and configured X11/Wayland source interface | Current module Kotlin compilation and four parser unit tests pass under a guarded offline Java 17 build. Classes JAR only, not an APK/AAR. Earlier interrupted harness APK fails signature verification and is not installable | No native UI/codec/bridge execution or device acceptance | No | No |
-| iOS client | Native client source present | No native build; requires Xcode/iOS SDK | No; requires an owned simulator/device | No | No |
+| Android client | Native MediaCodec view, ordered imperative input and configured X11/Wayland source interface | Corrected standalone x86_64 debug APK verified; 13 JVM tests, 33 shared tests, typecheck and Android export pass. Original ARM64 APK is not corrected | Owned API35 emulator: sustained rendered frames and changing pixels; exact rapid keyboard input; cancel/view-only/stop; held-button release on background, server switch and revocation; revoked reconnect rejected | 5,010 reported rendered callbacks; stable 30.002 fps over 165.991 seconds. 200 click-to-screenshot samples: p50 353 ms, p95 401 ms, p99 439 ms; not physical latency | No |
+| iOS client | Native client and shared keyboard corrections present | JavaScript export passes; no native build without Xcode/iOS SDK | No; requires an owned simulator/device | No | No |
 
 Android's module minimum follows the app's configured minimum (currently API
 24); it does not independently raise supported-device requirements. Native
@@ -255,7 +255,9 @@ Source resize ends the X11 session and requires a fresh connection and local
 grant. Pending local consent expires after 60 seconds. Android bounds pending
 encoded access units/status work to two and outbound input to 32 KiB including
 the next message; iOS admits at most
-four outstanding sends and reads one access unit at a time. Backpressure
+four outstanding sends and reads one access unit at a time. Android waits up
+to two seconds on the socket reader for a decode/status slot, including codec
+startup, without enlarging the two-item work queue. Expired backpressure
 terminates the session instead of discarding reference frames. These are
 bounded fail-closed policies, not adaptive bitrate or seamless recovery.
 Both clients reject host-supplied `connected` state and close on terminal
@@ -263,8 +265,43 @@ status without waiting for a second transport event. Android clears retained
 connection credentials on stop. Android's current native source compiles,
 including the imperative view methods and source-inventory forwarding; four
 Annex-B parser unit tests pass. iOS wiring is still source-reviewed only.
-The shared input queue has dynamic model tests. None of these gates executes
-native UI, verifies codec presentation or proves bridge/device lifecycle.
+The shared input queue has dynamic model tests. Model/parser tests do not
+verify codec presentation or prove bridge/device lifecycle. An actual Android
+emulator run initially disconnected during codec startup; later corrected
+runs established sustained native rendered callbacks, changing screen pixels
+and actual controlled-desktop input effects.
+
+Android's pinned TLS proxy now treats socket-close, handshake and executor
+shutdown failures as connection-local termination rather than allowing an
+uncaught forwarding-thread exception to crash the application. A failing
+pump closes both sockets to wake its peer; clean EOF retains half-close
+semantics. TLS1.3/SPKI verification and loopback ownership remain unchanged.
+iOS already stops its bridge on receive/send errors. JVM regressions cover
+closed-socket handling, byte-preserving EOF and on-demand admission. Android
+desktop logs expose queue/decoder failures and debug-build state/frame counts
+without credentials or pixel payloads. The corrected-proxy APK reproduced a
+three-frame termination: Android's immediate two-item admission rejection
+preceded codec creation, while the real host helper exited successfully with
+empty stderr. Bounded admission now propagates backpressure to the reader;
+tests cover startup waiting, timeout and stale-generation slot release.
+That fix reached a first native frame-render callback, then exposed a second
+startup failure: a single 10 ms input-buffer wait was treated as fatal.
+Android now drains output while retrying input-buffer admission for at most
+two seconds, with generation cancellation. Focused tests cover transient
+buffer unavailability, deadline expiry and stale-buffer rejection.
+The corrected x86 client sustained more than 5,000 native frame callbacks
+against the real GTK target. Screenshot comparison found 6,193 changed pixels
+inside the video region; no placeholder or mocked image was used. Reported
+native dropped counters remained zero, which is not complete pipeline drop
+accounting. The approximately 141 kbit/s steady H.264 payload rate reflects
+this low-complexity test scene and excludes WebSocket/TLS overhead.
+
+Two hundred sequential native taps each advanced the host's binary click
+marker and were observed in real client screenshots. The reported p50/p95/p99
+values use one host monotonic clock from ADB input invocation through PNG
+inspection. They include command, network, decode and screenshot overhead;
+they are observation bounds, not input-to-photon or hardware performance.
+This 720p30 software-codec run does not satisfy the 1080p60 acceptance target.
 
 ### Checkpoint Gaps
 
@@ -272,12 +309,12 @@ This is a local WIP checkpoint, not acceptance or release. Before acceptance:
 
 - The JS queue now has dynamic tests for same-tick down/up, payload snapshots,
   count/byte saturation, timeout, rejection and lifecycle cancellation without
-  reconnect replay. Android imperative method wiring now compiles; iOS still
-  needs native compilation, and both need device verification. Model/parser
-  tests do not prove live bridge calls or native UI.
-- Prove background, focus loss, surface recreation and current-server switch
-  cannot reopen old credentials or deliver stale callbacks. Verify input
-  release at the owned host, not just a disconnected phone label.
+  reconnect replay. Android live bridge calls and held-pointer lifecycle were
+  exercised in the owned guest; physical Android and native iOS verification
+  remain open. Model/parser tests alone do not prove live bridge calls.
+- Broaden the passing Android background/focus/current-server tests to surface
+  recreation, rotation and delayed native callbacks. Held-button release was
+  measured at the owned host, not inferred from a disconnected phone label.
 - The daemon input admission barrier has dynamic in-flight writer tests and
   isolated helper lifecycle tests for revocation/shutdown. Measure the
   remaining pre-retirement pipe/OS input effects and actual held-key release
@@ -286,12 +323,15 @@ This is a local WIP checkpoint, not acceptance or release. Before acceptance:
   saturation and no-first-frame timeout. Android counts presented frames;
   iOS readiness/submission and receive age are not presented-frame metrics.
 
-The local Android module gate has passed using the existing generated project,
-Java 17, Gradle 9.3.1, SDK 36/NDK 27.1, offline mode, one CPU/worker, parallel
-execution disabled and Kotlin in-process. Gradle heap was 768 MiB, metaspace
-256 MiB, direct/code cache 64 MiB each; test heap was 128 MiB with one fork.
-Only module Kotlin compilation and unit tests were requested, plus necessary
-dependency compilation. No APK, app assemble, Expo bundle or native UI ran.
+Local standalone Android builds now pass using the existing generated project,
+Java17, Gradle9.3.1, SDK36/NDK27.1, offline mode, one CPU/worker, parallel
+execution disabled and Kotlin in-process. The proven full-build recipe uses
+Gradle heap2048MiB/metaspace512MiB, Node1536MiB, explicit Ninja-j1 and
+test heap128MiB/one fork. Both the actual package and native JVM tests are
+verified; embedded JS is built from the real app entry without a Metro server.
+Builds and emulator phases must remain serial and use their separately
+authorized aggregate/headroom guards; host availability alone does not waive
+the cache-inclusive scope ceiling.
 The repository already configures `ci.yml:android-native` on ubuntu-latest
 and `ci.yml:ios-native` on macos-26. The latter produces an unsigned arm64
 simulator app; the former assembles the Android app. Neither job is a test
@@ -302,12 +342,13 @@ before a bounded build. Both jobs need explicit worker/native parallel caps;
 the Android generated defaults enable parallel Gradle and multiple ABIs.
 The standalone full-debug packaging graph uses a guarded offline
 `:app:assembleDebug` invocation on this same generated project, with
-`-PreactNativeArchitectures=arm64-v8a`. This is a documented compile target;
+an explicitly selected `reactNativeArchitectures` of `arm64-v8a` or `x86_64`,
+matching verified cached Ghostty libraries and the intended device. This is a compile target;
 choosing it does not require a device or imply an installation. Retain the
 successful module JVM/worker settings and the original aggregate memory and
 host-headroom guard. Explicitly constrain actual Ninja invocations to `-j1`;
 `CMAKE_BUILD_PARALLEL_LEVEL=1` alone was not sufficient in the earlier build.
-Use isolated build/temp output and verified existing arm64 native libraries,
+Use isolated build/temp output and verified existing matching-ABI native libraries,
 not a new Ghostty build or a different resource pool hidden in the gate.
 
 For a self-contained debug APK, a temporary packaging init script must clear
@@ -323,7 +364,7 @@ invocations were not reached. Repeating the same graph or increasing limits
 is not an accepted recovery plan; first establish a bounded, demonstrable
 bundler-memory reduction. A guard stop or offline cache miss likewise remains
 a failure, not permission to download dependencies or change resource policy.
-Any eventual APK must pass integrity, arm64 library inventory, embedded JS
+Any install candidate must pass integrity, matching-ABI library inventory, embedded JS
 and `apksigner verify` checks before installation is considered.
 
 Isolated builds set `EXPO_NO_DOTENV=1`; the app's custom config loader now
@@ -333,10 +374,16 @@ flag is absent. Debug packaging uses only the existing/local debug key, never
 release signing credentials. The generated project's cached version may lag
 tracked `app/app.base.json`; packaging must set and verify the current debug
 identity without silently accepting a stale cached APK.
-Runtime needs an explicitly owned physical
-Android device identified by ADB serial; no device is assigned. The only
-installed API35 emulator enforces a 2 GiB guest minimum, so repeating the
-previous lower-memory boot is not a valid plan. An iOS build needs an assigned
+Runtime needs an explicitly owned Android emulator or device identified by
+ADB serial. The installed API35 emulator enforces a2GiB guest minimum; a
+two-vCPU owned guest has now completed real video/input verification. Earlier
+8 GiB and 12 GiB guarded attempts stopped before acceptance. A subsequently
+authorized runtime-only ceiling of 16 GiB total and 6 GiB anonymous memory,
+with a 12 GiB host floor and 18 GiB host preflight, completed the final run
+without guard, OOM or sustained-PSI stops. Builds remained serial under 8 GiB.
+No guest reduction, swap, pool or live-service policy change was used.
+Physical-device performance still requires an owned physical
+device and is not established by this emulator. An iOS build needs an assigned
 macOS/Xcode executor and an owned device/simulator identified by UDID; neither
 is available in the current environment. Use a newly owned virtual X11 desktop
 and fixture process for video/input verification, never the personal desktop.
@@ -346,10 +393,20 @@ and portal backend for actual integration execution; macOS/Windows hosting and h
 remain separate implementation and OS-specific verification gates.
 
 The current keyboard supports printable ASCII and explicit special-key
-events, not Unicode composition or arbitrary keyboard layouts. A dedicated
-drag mode holds the primary pointer button until gesture end; pinch and
-gesture cancellation release it. Device interaction verification remains
-necessary for zoom, rotation, keyboard focus and background transitions.
+events, not Unicode composition or arbitrary keyboard layouts. Shared keyboard
+input tracks cumulative native text changes instead of clearing and replaying
+each value. Edits are split into bounded batches without splitting key pairs;
+imperative key buttons do not rewrite native text history. The local input
+history is capped at 1,024 characters and resets with keyboard/owner changes.
+Keyboard avoidance measures the route's actual screen offset; Android
+screenshots verify controls remain visible above the IME. A dedicated drag
+mode holds the primary pointer button until gesture end; pinch and gesture
+cancellation release it. Actual held-button state changed from 256 to zero
+after background, current-server switch and revocation, and late pointer-up
+events did not restore input. Model tests separately cover delayed bridge
+acknowledgements; arbitrary delayed native bridge calls were not injected in
+the emulator. Physical-device zoom/rotation and native iOS interaction remain
+unverified.
 
 ## Mobile Interface
 

@@ -3,6 +3,7 @@ package expo.modules.zenlinktransport
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.Closeable
+import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -14,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
@@ -140,18 +142,30 @@ internal class PinnedProxy(
                 break
             }
             if (!connectionLimit.tryAcquire()) {
-                local.close()
+                closeQuietly(local)
                 continue
             }
             openSockets.add(local)
-            worker.execute {
-                try {
-                    bridge(local)
-                } finally {
-                    openSockets.remove(local)
-                    closeQuietly(local)
-                    connectionLimit.release()
+            try {
+                worker.execute {
+                    try {
+                        bridge(local)
+                    } catch (_: IOException) {
+                        // A failed or cancelled connection must not kill the app.
+                    } catch (_: RejectedExecutionException) {
+                        // close() can stop the pool while this owner starts its pumps.
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    } finally {
+                        openSockets.remove(local)
+                        closeQuietly(local)
+                        connectionLimit.release()
+                    }
                 }
+            } catch (_: RejectedExecutionException) {
+                openSockets.remove(local)
+                closeQuietly(local)
+                connectionLimit.release()
             }
         }
     }
@@ -163,22 +177,8 @@ internal class PinnedProxy(
             remote.startHandshake()
             remote.soTimeout = 0
             val done = CountDownLatch(2)
-            worker.execute {
-                try {
-                    local.getInputStream().copyTo(remote.getOutputStream(), 32 * 1024)
-                    runCatching { remote.shutdownOutput() }
-                } finally {
-                    done.countDown()
-                }
-            }
-            worker.execute {
-                try {
-                    remote.getInputStream().copyTo(local.getOutputStream(), 32 * 1024)
-                    runCatching { local.shutdownOutput() }
-                } finally {
-                    done.countDown()
-                }
-            }
+            worker.execute { pumpSocket(local, remote, done) }
+            worker.execute { pumpSocket(remote, local, done) }
             done.await()
         } finally {
             openSockets.remove(remote)
@@ -188,16 +188,21 @@ internal class PinnedProxy(
 
     private fun createRemoteSocket(): SSLSocket {
         val plain = Socket()
-        plain.tcpNoDelay = true
-        plain.keepAlive = true
-        plain.connect(InetSocketAddress(host, port), 5_000)
-        val socket = sslContext.socketFactory.createSocket(plain, host, port, true) as SSLSocket
-        socket.enabledProtocols = arrayOf("TLSv1.3")
-        val parameters = socket.sslParameters
-        parameters.serverNames = listOf(SNIHostName(host))
-        socket.sslParameters = parameters
-        socket.soTimeout = 15_000
-        return socket
+        try {
+            plain.tcpNoDelay = true
+            plain.keepAlive = true
+            plain.connect(InetSocketAddress(host, port), 5_000)
+            val socket = sslContext.socketFactory.createSocket(plain, host, port, true) as SSLSocket
+            socket.enabledProtocols = arrayOf("TLSv1.3")
+            val parameters = socket.sslParameters
+            parameters.serverNames = listOf(SNIHostName(host))
+            socket.sslParameters = parameters
+            socket.soTimeout = 15_000
+            return socket
+        } catch (error: Throwable) {
+            closeQuietly(plain)
+            throw error
+        }
     }
 
     override fun close() {
@@ -211,6 +216,19 @@ internal class PinnedProxy(
         openSockets.forEach(::closeQuietly)
         openSockets.clear()
         worker.shutdownNow()
+    }
+}
+
+internal fun pumpSocket(source: Socket, destination: Socket, done: CountDownLatch) {
+    try {
+        source.getInputStream().copyTo(destination.getOutputStream(), 32 * 1024)
+        runCatching { destination.shutdownOutput() }
+    } catch (_: IOException) {
+        // Wake the other pump as well; a reset cannot leave its owner waiting.
+        closeQuietly(source)
+        closeQuietly(destination)
+    } finally {
+        done.countDown()
     }
 }
 

@@ -3,9 +3,17 @@ import { readFileSync } from "node:fs";
 
 const android = readFileSync(new URL("../modules/zen-remote-desktop/android/src/main/java/expo/modules/zenremotedesktop/ZenRemoteDesktopModule.kt", import.meta.url), "utf8");
 const ios = readFileSync(new URL("../modules/zen-remote-desktop/ios/ZenRemoteDesktopModule.swift", import.meta.url), "utf8");
+const route = readFileSync(new URL("../app/remote-desktop.tsx", import.meta.url), "utf8");
 
 // Source-contract checks only. Native toolchains and owned devices remain required.
 describe("Remote desktop native lifecycle source contracts", () => {
+  test("imperative keyboard keys do not race native text-history updates", () => {
+    expect(route).toContain('"Enter", () => input(desktopKey(0xff0d))');
+    expect(route).toContain('"Backspace", () => input(desktopKey(0xff08))');
+    expect(route).toContain('onSubmitEditing={() => input(desktopKey(0xff0d))}');
+    expect(route).toContain('desktopTextEdits(textRef.current, value)');
+    expect(route).toContain('KeyboardAvoidingView');
+  });
   test("Android validates metadata before asynchronous decoder work", () => {
     const start = android.indexOf("override fun onMessage(ws: WebSocket, text: String)");
     const end = android.indexOf("override fun onMessage(ws: WebSocket, bytes: ByteString)");
@@ -17,8 +25,8 @@ describe("Remote desktop native lifecycle source contracts", () => {
     expect(metadata.indexOf("require(nextWidth in 2..4096 && nextHeight in 2..4096)")).toBeLessThan(dispatch);
     expect(metadata.slice(dispatch)).not.toContain("status.getInt");
     expect(metadata.slice(dispatch)).not.toContain("status.getString");
-    expect(metadata).toContain("queued.incrementAndGet() > 2");
-    expect(metadata).toContain("finally { queued.decrementAndGet() }");
+    expect(metadata).toContain("admission.acquire({ epoch == generation.get() })");
+    expect(metadata).toContain("finally { admission.release() }");
   });
 
   test("Android stop forgets reconnect credentials and covers retained frames", () => {
