@@ -12,6 +12,7 @@ const {
   withAndroidManifest,
   withAppBuildGradle,
   withDangerousMod,
+  withMainApplication,
 } = require('@expo/config-plugins');
 
 const NOTICE_SRC_REL = 'assets/notices/GHOSTTY-MIT.txt';
@@ -22,6 +23,27 @@ const BEGIN_RELEASE_BT = '// @generated begin zen-android-release-buildtype-sign
 const END_RELEASE_BT = '// @generated end zen-android-release-buildtype-signing';
 const BEGIN_DEBUG_BT = '// @generated begin zen-android-debug-identity';
 const END_DEBUG_BT = '// @generated end zen-android-debug-identity';
+
+function injectStandaloneGradle(contents) {
+  if (contents.includes('ZEN_STANDALONE')) return contents;
+  if (!/defaultConfig\s*\{/.test(contents)) {
+    throw new Error('withZenAndroidRelease: defaultConfig block not found');
+  }
+  return contents.replace(/(defaultConfig\s*\{)/, `$1
+        // A bundled debug artifact must not silently load a developer server.
+        buildConfigField "boolean", "ZEN_STANDALONE", (findProperty('zenStandalone') ?: 'false').toString()
+`);
+}
+
+function injectStandaloneMainApplication(contents) {
+  const argument = 'useDevSupport = BuildConfig.DEBUG && !BuildConfig.ZEN_STANDALONE,';
+  if (contents.includes(argument)) return contents;
+  const factory = 'ExpoReactHostFactory.getDefaultReactHost(';
+  if (!contents.includes(factory) || /useDevSupport\s*=/.test(contents)) {
+    throw new Error('withZenAndroidRelease: unsupported ReactHost dev-support configuration');
+  }
+  return contents.replace(factory, `${factory}\n      ${argument}`);
+}
 
 function stripGenerated(contents, begin, end) {
   const re = new RegExp(
@@ -157,6 +179,7 @@ function withZenReleaseSigning(config) {
   return withAppBuildGradle(config, (cfg) => {
     let contents = injectReleaseSigningGradle(cfg.modResults.contents);
     contents = injectDebugIdentityGradle(contents);
+    contents = injectStandaloneGradle(contents);
     cfg.modResults.contents = contents;
     return cfg;
   });
@@ -183,6 +206,10 @@ function withZenAndroidRelease(config) {
   config = withZenNoticeAssets(config);
   config = withZenReleaseSigning(config);
   config = withZenPrivateNetworkHTTP(config);
+  config = withMainApplication(config, (cfg) => {
+    cfg.modResults.contents = injectStandaloneMainApplication(cfg.modResults.contents);
+    return cfg;
+  });
   return config;
 }
 
@@ -195,6 +222,8 @@ module.exports = createRunOncePlugin(
 );
 module.exports.injectReleaseSigningGradle = injectReleaseSigningGradle;
 module.exports.injectDebugIdentityGradle = injectDebugIdentityGradle;
+module.exports.injectStandaloneGradle = injectStandaloneGradle;
+module.exports.injectStandaloneMainApplication = injectStandaloneMainApplication;
 module.exports.enablePrivateNetworkHTTP = enablePrivateNetworkHTTP;
 module.exports.NOTICE_APK_REL = NOTICE_APK_REL;
 module.exports.NOTICE_SRC_REL = NOTICE_SRC_REL;

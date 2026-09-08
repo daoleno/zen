@@ -14,11 +14,13 @@ each connection. Attended assistance remains an explicit mode. Full-desktop
 access is not application or window isolation. Elevation bypass and encrypted
 disk preboot unlock are excluded.
 
-The current distributed artifact is still attended-only. Current source adds a
+The previously distributed bfad184 artifact remains attended-only. Current source adds a
 separate Linux broker and UID-dropped agent, default scoped/TLS `/desktop`
 admission, SDDM registration, journaled installation and native sensitive input.
 This does not update an installed APK or qualify every OS/display stack. The
-attended GTK helper remains separate; it has no permission-bypass flag.
+attended GTK helper remains separate; it has no permission-bypass flag. A current
+standalone phone APK still needs a separately approved system-host installation;
+installing the phone client alone does not enable boot or greeter access.
 
 This plan distinguishes intended behavior from implementation and acceptance.
 A platform is not accepted without a native build and actual capture,
@@ -160,6 +162,14 @@ clear on submission/cancellation/background/server change, and do not persist
 drafts or enable prediction. A live native Link-listener registry validates the
 loopback/pin association; a JS string or an arbitrary localhost port is not
 sufficient. Direct TLS requires a completed TLS connection.
+
+Android configures single-line behavior before the password input type and
+explicitly applies `PasswordTransformationMethod`; otherwise Android can replace
+the masking transformation. The native field disables saved state, autofill,
+suggestions and personalized IME learning. Owned Android emulator verification
+has exercised masked entry, background draft clearing, real TLS SDDM login and
+lock/unlock, legacy scope migration, new-pair scope and active revocation.
+This is not physical-device, native iOS, or every Linux locker acceptance.
 
 The current sensitive-character contract is at most 64 printable ASCII
 characters, sent to the visible OS field followed by Enter. Unicode, non-US
@@ -664,7 +674,12 @@ not a new Ghostty build or a different resource pool hidden in the gate.
 
 For a self-contained debug APK, a temporary packaging init script must clear
 React's debuggable-variant exclusion and set the offline JS bundle worker
-count to one. That is build-time JS bundling, not starting or reusing a Metro
+count to one. Pass `-PzenStandalone=true` as well: the generated
+`BuildConfig.ZEN_STANDALONE` disables React host development support so an
+installed immutable debug APK cannot silently load a developer bundle instead
+of its embedded JS. Normal local development keeps this property false. Verify
+the flag and host factory in DEX, not just the presence of bundled assets.
+That is build-time JS bundling, not starting or reusing a Metro
 server. The module-only task allowlist cannot simply be reused for packaging.
 The first execution of this standalone graph failed during build-time JS
 bundling at the configured 512 MiB Node heap limit, before APK generation or

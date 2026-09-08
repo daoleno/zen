@@ -9,6 +9,8 @@ test("sensitive editors are native, scoped, ephemeral and do not export text to 
   expect(android).toContain("InputType.TYPE_TEXT_VARIATION_PASSWORD");
   expect(android).toContain("IME_FLAG_NO_PERSONALIZED_LEARNING");
   expect(android).toContain("FLAG_SECURE");
+  expect(android).toContain("PasswordTransformationMethod.getInstance()");
+  expect(android.indexOf("setSingleLine(true)")).toBeLessThan(android.indexOf("inputType = InputType.TYPE_CLASS_TEXT"));
   expect(android).toContain("sensitiveEditor?.text?.clear()");
   expect(ios).toContain("field.isSecureTextEntry = true");
   expect(ios).toContain("sensitiveDialog?.textFields?.first?.text = nil");

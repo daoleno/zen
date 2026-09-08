@@ -297,14 +297,15 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     val editor = object : EditText(activity) {
       override fun onTextContextMenuItem(id: Int): Boolean = false
     }.apply {
+      setSingleLine(true)
       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+      transformationMethod = android.text.method.PasswordTransformationMethod.getInstance()
       imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or EditorInfo.IME_ACTION_DONE
       isSaveEnabled = false
       setFreezesText(false)
       isLongClickable = false
       if (android.os.Build.VERSION.SDK_INT >= 26) importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
       filters = arrayOf(android.text.InputFilter.LengthFilter(64))
-      setSingleLine(true)
     }
     val dialog = AlertDialog.Builder(activity).setTitle("OS password").setView(editor)
       .setNegativeButton("Cancel", null).setPositiveButton("Submit", null).create()
