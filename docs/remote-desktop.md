@@ -208,7 +208,7 @@ does not meet the 1080p60 acceptance target by construction.
 | GNOME/KDE/wlroots Wayland | Explicit portal/FD/node capture and portal input integrated; unsupported portal capabilities fail closed | Linux helper compiled with strict warnings; private-bus consent/cancel/revoke/source-binding tests pass | No compositor, real PipeWire stream, phone presentation or input acceptance; no universal wlroots claim | No | No |
 | macOS host | No ScreenCaptureKit/VideoToolbox/input adapter | No; requires macOS SDK and host | No; recording and Accessibility grants untested | No | No |
 | Windows host | No native daemon delivery or desktop adapter | No; requires Windows toolchain and host | No | No | No |
-| Android client | Native MediaCodec view and shared input interface | Earlier module compilation/four parser tests passed; later lifecycle source edits are not natively rebuilt. Interrupted harness APK fails signature verification and is not installable | No: emulator exceeded the configured runtime budget before boot | No | No |
+| Android client | Native MediaCodec view, ordered imperative input and configured X11/Wayland source interface | Current module Kotlin compilation and four parser unit tests pass under a guarded offline Java 17 build. Classes JAR only, not an APK/AAR. Earlier interrupted harness APK fails signature verification and is not installable | No native UI/codec/bridge execution or device acceptance | No | No |
 | iOS client | Native client source present | No native build; requires Xcode/iOS SDK | No; requires an owned simulator/device | No | No |
 
 Android's module minimum follows the app's configured minimum (currently API
@@ -260,9 +260,11 @@ terminates the session instead of discarding reference frames. These are
 bounded fail-closed policies, not adaptive bitrate or seamless recovery.
 Both clients reject host-supplied `connected` state and close on terminal
 status without waiting for a second transport event. Android clears retained
-connection credentials on stop. Native lifecycle wiring has structural
-checks and the shared input queue has dynamic behavior tests; neither is
-fresh native build or device verification.
+connection credentials on stop. Android's current native source compiles,
+including the imperative view methods and source-inventory forwarding; four
+Annex-B parser unit tests pass. iOS wiring is still source-reviewed only.
+The shared input queue has dynamic model tests. None of these gates executes
+native UI, verifies codec presentation or proves bridge/device lifecycle.
 
 ### Checkpoint Gaps
 
@@ -270,8 +272,9 @@ This is a local WIP checkpoint, not acceptance or release. Before acceptance:
 
 - The JS queue now has dynamic tests for same-tick down/up, payload snapshots,
   count/byte saturation, timeout, rejection and lifecycle cancellation without
-  reconnect replay. Native imperative method wiring still needs Android/iOS
-  compilation and device verification; model tests do not prove the bridge.
+  reconnect replay. Android imperative method wiring now compiles; iOS still
+  needs native compilation, and both need device verification. Model/parser
+  tests do not prove live bridge calls or native UI.
 - Prove background, focus loss, surface recreation and current-server switch
   cannot reopen old credentials or deliver stale callbacks. Verify input
   release at the owned host, not just a disconnected phone label.
@@ -283,9 +286,12 @@ This is a local WIP checkpoint, not acceptance or release. Before acceptance:
   saturation and no-first-frame timeout. Android counts presented frames;
   iOS readiness/submission and receive age are not presented-frame metrics.
 
-Next native verification requires an explicitly assigned build executor with
-Java 17, the project's Android SDK/NDK, single-worker Gradle/Kotlin/native
-compilation and enforceable phase memory ownership before signed packaging.
+The local Android module gate has passed using the existing generated project,
+Java 17, Gradle 9.3.1, SDK 36/NDK 27.1, offline mode, one CPU/worker, parallel
+execution disabled and Kotlin in-process. Gradle heap was 768 MiB, metaspace
+256 MiB, direct/code cache 64 MiB each; test heap was 128 MiB with one fork.
+Only module Kotlin compilation and unit tests were requested, plus necessary
+dependency compilation. No APK, app assemble, Expo bundle or native UI ran.
 The repository already configures `ci.yml:android-native` on ubuntu-latest
 and `ci.yml:ios-native` on macos-26. The latter produces an unsigned arm64
 simulator app; the former assembles the Android app. Neither job is a test
@@ -294,12 +300,25 @@ The local SDK has the current RN-required API36/build-tools36/NDK27.1;
 CI currently requests API35 explicitly and needs that mismatch reviewed
 before a bounded build. Both jobs need explicit worker/native parallel caps;
 the Android generated defaults enable parallel Gradle and multiple ABIs.
-An authorized module-only local check can reuse the existing Gradle9.3.1
-project with Java17, offline dependencies, Kotlin in-process, one worker and
-only `:zen-remote-desktop:compileDebugKotlin` / `testDebugUnitTest` tasks.
-That is distinct from app packaging or native runtime acceptance.
-Verify the resulting APK with
-`apksigner verify` before using it. Runtime needs an explicitly owned physical
+The next minimal full-debug packaging gate is a separate guarded offline
+`:app:assembleDebug` invocation on this same generated project, with
+`-PreactNativeArchitectures=arm64-v8a`. This is a documented compile target;
+choosing it does not require a device or imply an installation. Retain the
+successful module JVM/worker settings and the original aggregate memory and
+host-headroom guard. Explicitly constrain actual Ninja invocations to `-j1`;
+`CMAKE_BUILD_PARALLEL_LEVEL=1` alone was not sufficient in the earlier build.
+Use isolated build/temp output and verified existing arm64 native libraries,
+not a new Ghostty build or a different resource pool hidden in the gate.
+
+For a self-contained debug APK, a temporary packaging init script must clear
+React's debuggable-variant exclusion and set the offline JS bundle worker
+count to one. That is build-time JS bundling, not starting or reusing a Metro
+server. The module-only task allowlist cannot simply be reused for packaging.
+This larger graph has not been measured to fit the module budget; a guard
+stop or offline cache miss is a retained failure, not permission to raise
+limits or download dependencies. Verify APK integrity, the arm64 library
+inventory, embedded JS and `apksigner verify` before considering installation.
+Runtime needs an explicitly owned physical
 Android device identified by ADB serial; no device is assigned. The only
 installed API35 emulator enforces a 2 GiB guest minimum, so repeating the
 previous lower-memory boot is not a valid plan. An iOS build needs an assigned
