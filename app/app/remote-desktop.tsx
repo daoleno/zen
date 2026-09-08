@@ -6,7 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
 import { useAppColors } from "../constants/tokens";
 import { prepareDesktopConnection } from "../services/remoteDesktop";
-import { desktopKey, desktopPoint, desktopText, type DesktopInput } from "../services/remoteDesktopModel";
+import { desktopKey, desktopPoint, desktopText, desktopStart, type DesktopInput } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 
@@ -135,10 +135,13 @@ function DesktopSession() {
       </View> : null}
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />
-        <Text style={styles.message}>{status.reason || (status.state === "sources" ? "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : "Disconnected")}</Text>
+        <Text style={styles.message}>{status.reason || (status.state === "sources" ? status.source === "wayland" ? "Wayland portal desktop" : "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : "Disconnected")}</Text>
         {status.state === "sources" ? <>
           <View style={styles.mode}><Text style={styles.message}>Allow control</Text><Switch value={control} onValueChange={setControl} /></View>
-          <Pressable accessibilityRole="button" onPress={() => send({ type: "start", source: "x11", control })} style={styles.action}><Text style={styles.actionText}>Share desktop</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={!desktopStart(status.source, control)} onPress={() => {
+            const start = desktopStart(status.source, control);
+            if (start) send(start);
+          }} style={styles.action}><Text style={styles.actionText}>Share desktop</Text></Pressable>
         </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <Pressable accessibilityRole="button" disabled={!currentServer} onPress={connect} style={styles.action}><Text style={styles.actionText}>Connect</Text></Pressable> : null}
       </View>}
     </View>

@@ -78,8 +78,8 @@ a sample is not proof of presentation: only native display readiness or a
 render callback can advance the visible state to connected.
 
 Each connection receives a versioned source inventory. Sources are assigned
-by the host. The initial X11 adapter offers only the explicitly configured
-display and never accepts a client-supplied display address. `start` selects
+by the host. The Linux helper offers only the explicitly configured X11 or
+Wayland backend and never accepts a client-supplied display or bus address. `start` selects
 the source and view/control mode. Codec and resolution negotiation must be
 explicit before adding modes beyond the initial fixed H.264 profile. A local
 visible prompt identifies the requesting device, source and access scope.
@@ -167,7 +167,7 @@ generation; never project input onto a stale source.
 | Platform | Capture, Input And Limits | Build And Acceptance Requirements |
 | --- | --- | --- |
 | Linux X11 | GStreamer ximagesrc, visible GTK consent and XTest input. Other X11 applications can observe the desktop. | GStreamer 1.22+ core/app/video/ximagesrc/openh264/h264parse, GTK3, X11 and XTest, dynamically linked to system libraries. |
-| GNOME/KDE Wayland | Requires xdg-desktop-portal RemoteDesktop plus ScreenCast, PipeWire and authorized input. ScreenCast alone does not grant control. | Actual compositor and portal-backend selection, cancellation, revocation and portal/libei input evidence. Report unsupported until implemented. |
+| GNOME/KDE Wayland | Opt-in portal ScreenCast viewing or RemoteDesktop control, granted PipeWire FD/node and typed portal input. ScreenCast alone does not grant control. | Integrated source and private-bus checks, but actual compositor selection/cancellation/revocation/video/input remain unvalidated. Missing grants or backend fail closed. |
 | wlroots Wayland | Do not assume its portal supports RemoteDesktop. | Report verified capabilities only; screenshot support does not establish remote control. |
 | Linux headless | Only an explicitly created isolated virtual desktop is usable. | Session-owned X server and test application. Daemon startup does not implicitly create a desktop. |
 | macOS | ScreenCaptureKit picker, realtime VideoToolbox H.264, Accessibility and CGEvent. Recording and input permissions are separate. | macOS SDK, Xcode and an authorized test host. Linux compilation cannot prove TCC behavior. |
@@ -190,10 +190,11 @@ The initial OpenH264 path is software encoding, not a hardware claim.
 ## Current Implementation Boundary
 
 The retained implementation currently provides the X11 helper and shared
-Android/iOS native client source. An unintegrated Wayland portal protocol
-prototype and private-bus tests are retained in `native/portal.*` and
-`native/portal-test.c`; they are not linked into the helper and do not provide
-PipeWire capture or an accepted compositor adapter. macOS hosting, Windows
+Android/iOS native client source. The Wayland portal protocol is now linked
+into the Linux helper with a granted-FD/node `pipewiresrc` binding and typed
+portal input. This is an integrated, compiled adapter increment, not an
+accepted compositor runtime. Private-bus tests inspect source bindings only
+in GStreamer NULL state; no fake video is generated. macOS hosting, Windows
 hosting and hardware encoder selection above are planned adapters, not
 implemented support. Missing host adapters must remain unavailable. The
 initial helper uses system OpenH264 software encoding at up to 720p30; it
@@ -204,7 +205,7 @@ does not meet the 1080p60 acceptance target by construction.
 | Platform | Implemented | Built | Runtime Verified | Performance Measured | Released |
 | --- | --- | --- | --- | --- | --- |
 | Linux X11 / explicit virtual X11 | Capture, local consent and input helper; authenticated daemon endpoint | Strict-warning helper compilation and daemon test executable | Not accepted: native phone video/input assertions remain unexecuted | No accepted FPS, latency or hardware-encoder measurements | No |
-| GNOME/KDE/wlroots Wayland | Unintegrated portal protocol prototype only; no usable capture/input adapter | Historical standalone prototype/private-bus tests only, not a host build | No compositor or PipeWire runtime acceptance | No | No |
+| GNOME/KDE/wlroots Wayland | Explicit portal/FD/node capture and portal input integrated; unsupported portal capabilities fail closed | Linux helper compiled with strict warnings; private-bus consent/cancel/revoke/source-binding tests pass | No compositor, real PipeWire stream, phone presentation or input acceptance; no universal wlroots claim | No | No |
 | macOS host | No ScreenCaptureKit/VideoToolbox/input adapter | No; requires macOS SDK and host | No; recording and Accessibility grants untested | No | No |
 | Windows host | No native daemon delivery or desktop adapter | No; requires Windows toolchain and host | No | No | No |
 | Android client | Native MediaCodec view and shared input interface | Earlier module compilation/four parser tests passed; later lifecycle source edits are not natively rebuilt. Interrupted harness APK fails signature verification and is not installable | No: emulator exceeded the configured runtime budget before boot | No | No |
@@ -216,6 +217,39 @@ build and runtime checks must be resource-bounded and serial. A generated APK,
 an export, a local server-ready message or a before-image does not establish
 native video presentation or input effects. Missing OS adapters remain
 unsupported rather than falling back to another desktop or permission model.
+
+### Linux Host Configuration
+
+`ZEN_DESKTOP_HELPER` remains an administrator-configured absolute helper path.
+`ZEN_DESKTOP_BACKEND` defaults to `x11`; `ZEN_DESKTOP_DISPLAY` explicitly selects
+the X display. For Wayland, set `ZEN_DESKTOP_BACKEND=wayland`, select the owned
+Wayland display/socket in `ZEN_DESKTOP_DISPLAY`, and set the matching session's
+explicit D-Bus address in `ZEN_DESKTOP_BUS_ADDRESS`. The helper sets GTK to
+Wayland only and uses that bus for its portal and GTK session environment.
+No compositor, session bus or virtual/headless desktop is discovered or
+created automatically. These settings do not authorize operating a personal
+desktop; host consent and an appropriate session are still required.
+
+The helper first identifies the requesting device in a local GTK view/control
+prompt, then requests exactly one monitor through the portal. View-only uses
+ScreenCast; control additionally requires both keyboard and pointer through
+RemoteDesktop. No persistent restore token, clipboard, EIS connection or
+XTest fallback is used for Wayland. A portal without the requested interface,
+monitor identity/logical dimensions or full control grant is unavailable for
+that request. The source inventory describes configured requests, not a
+validated compositor capability guarantee.
+
+`pipewiresrc` is bound to the granted FD and node using typed properties. The
+installed PipeWire1.6.4 plugin duplicates the FD for its own connection.
+The original grant stays owned by the portal session until teardown; local
+stop/EOF/cancellation/revocation close the session and its virtual devices.
+No default PipeWire remote, last-frame resend or keepalive frames are used.
+The helper requires the plugin's FD/path, buffer and disconnect policy
+properties, failing closed when unavailable. It uses the same software
+OpenH264 access-unit format and media WebSocket as X11, capped at 720p30.
+Logical/physical aspect mismatch or capture pixel-size change ends the
+Wayland session to prevent stale coordinate mapping. Compositor-scale,
+rotation, frame pacing and real permission behavior remain runtime gates.
 
 Source resize ends the X11 session and requires a fresh connection and local
 grant. Pending local consent expires after 60 seconds. Android bounds pending
@@ -252,7 +286,19 @@ This is a local WIP checkpoint, not acceptance or release. Before acceptance:
 Next native verification requires an explicitly assigned build executor with
 Java 17, the project's Android SDK/NDK, single-worker Gradle/Kotlin/native
 compilation and enforceable phase memory ownership before signed packaging.
-No such safe executor is currently assigned. Verify the resulting APK with
+The repository already configures `ci.yml:android-native` on ubuntu-latest
+and `ci.yml:ios-native` on macos-26. The latter produces an unsigned arm64
+simulator app; the former assembles the Android app. Neither job is a test
+pass for the current local source, and no CI dispatch or push is implied.
+The local SDK has the current RN-required API36/build-tools36/NDK27.1;
+CI currently requests API35 explicitly and needs that mismatch reviewed
+before a bounded build. Both jobs need explicit worker/native parallel caps;
+the Android generated defaults enable parallel Gradle and multiple ABIs.
+An authorized module-only local check can reuse the existing Gradle9.3.1
+project with Java17, offline dependencies, Kotlin in-process, one worker and
+only `:zen-remote-desktop:compileDebugKotlin` / `testDebugUnitTest` tasks.
+That is distinct from app packaging or native runtime acceptance.
+Verify the resulting APK with
 `apksigner verify` before using it. Runtime needs an explicitly owned physical
 Android device identified by ADB serial; no device is assigned. The only
 installed API35 emulator enforces a 2 GiB guest minimum, so repeating the
@@ -261,8 +307,8 @@ macOS/Xcode executor and an owned device/simulator identified by UDID; neither
 is available in the current environment. Use a newly owned virtual X11 desktop
 and fixture process for video/input verification, never the personal desktop.
 Do not create resource pools, change live services or raise limits to bypass
-these missing assignments. Wayland needs an owned GNOME/KDE compositor and
-portal backend after integration; macOS/Windows hosting and hardware encoding
+these missing assignments. Wayland still needs an owned GNOME/KDE compositor
+and portal backend for actual integration execution; macOS/Windows hosting and hardware encoding
 remain separate implementation and OS-specific verification gates.
 
 The current keyboard supports printable ASCII and explicit special-key

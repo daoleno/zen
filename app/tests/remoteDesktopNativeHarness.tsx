@@ -5,26 +5,28 @@ import { AppState, Button, Text, View } from "react-native";
 import { NativeDesktopView } from "../modules/zen-remote-desktop/src";
 import { startPinnedTunnel, stopPinnedTunnel } from "../modules/zen-link-transport/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
+import { desktopStart } from "../services/remoteDesktopModel";
 
 function Harness() {
   const [connection, setConnection] = useState("");
   const [status, setStatus] = useState("Disconnected");
+  const [source, setSource] = useState<string>();
   const native = useRef<DesktopCommandTarget>(null);
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
-    setConnection(""); setStatus(reason);
+    setConnection(""); setSource(undefined); setStatus(reason);
   }));
   const inputGeneration = commands.currentGeneration;
   const send = (value: object) => commands.send(value);
-  const stop = () => { commands.stop(); setConnection(""); };
+  const stop = () => { commands.stop(); setConnection(""); setSource(undefined); };
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") { commands.stop(); setConnection(""); }
+      if (state !== "active") { commands.stop(); setConnection(""); setSource(undefined); }
     });
     return () => { commands.stop(); subscription.remove(); };
   }, [commands]);
   const connect = async () => {
     const inputGeneration = commands.begin();
-    setConnection("");
+    setConnection(""); setSource(undefined);
     try {
       await stopPinnedTunnel("desktop-owned-test").catch(() => undefined);
       const config = await (await fetch("http://127.0.0.1:18089/config")).json();
@@ -43,9 +45,13 @@ function Harness() {
       if (inputGeneration !== commands.currentGeneration) return;
       if (["disconnected", "denied", "unsupported"].includes(nativeEvent.state)) stop();
       setStatus(JSON.stringify(nativeEvent));
+      setSource(nativeEvent.source);
     }} />
     <Button title="Connect" onPress={connect} />
-    <Button title="Request control" onPress={() => send({ type: "start", source: "x11", control: true })} />
+    <Button title="Request control" disabled={!desktopStart(source, true)} onPress={() => {
+      const start = desktopStart(source, true);
+      if (start) send(start);
+    }} />
     <Button title="Mouse key scroll" onPress={() => send({ type: "batch", events: [
       { type: "pointer", x: 0.5, y: 0.6 }, { type: "button", code: 1, down: true }, { type: "button", code: 1, down: false },
       { type: "key", code: 97, down: true }, { type: "key", code: 97, down: false }, { type: "scroll", delta: 3 },

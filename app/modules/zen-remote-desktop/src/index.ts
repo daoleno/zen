@@ -6,6 +6,7 @@ import type { DesktopCommandTarget } from "../../../services/remoteDesktopComman
 export interface DesktopState {
   state: "sources" | "requesting" | "streaming" | "connected" | "disconnected" | "denied" | "unsupported";
   reason?: string;
+  source?: string;
   width?: number;
   height?: number;
   control?: boolean;

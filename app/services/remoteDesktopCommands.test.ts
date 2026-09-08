@@ -1,8 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "./remoteDesktopCommands";
+import { desktopStart } from "./remoteDesktopModel";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("start uses only the server-advertised supported source without X11 fallback", () => {
+  assert.deepEqual(desktopStart("wayland", true), { type: "start", source: "wayland", control: true });
+  assert.deepEqual(desktopStart("x11", false), { type: "start", source: "x11", control: false });
+  for (const source of [undefined, null, "", "headless", "other-server"]) assert.equal(desktopStart(source, true), null);
+});
 
 function fixture(timeoutMs = 2000) {
   const sent: { generation: string; sequence: number; payload: object }[] = [];

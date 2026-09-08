@@ -5,6 +5,7 @@ const ts = require("typescript");
 const root = path.resolve(__dirname, "..");
 const files = new Set([
   path.join(root, "app/services/remoteDesktopCommands.ts"),
+  path.join(root, "app/services/remoteDesktopModel.ts"),
   path.join(root, "app/services/remoteDesktopCommands.test.ts"),
 ]);
 require.extensions[".ts"] = (module, filename) => {

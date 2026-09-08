@@ -141,12 +141,13 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 		status("unsupported", "Desktop helper is unavailable.")
 		return
 	}
-	// The source is the host's explicitly configured display, never client input.
-	if os.Getenv("ZEN_DESKTOP_DISPLAY") == "" {
-		status("unsupported", "No X11 desktop selected on this host.")
+	source, sourceName, sourceArgs, err := configuredSource()
+	if err != nil {
+		status("unsupported", err.Error())
 		return
 	}
-	if err := write(websocket.TextMessage, []byte(`{"version":1,"state":"sources","sources":[{"id":"x11","name":"Selected X11 desktop","control":true}]}`)); err != nil {
+	inventory, _ := json.Marshal(map[string]any{"version": 1, "state": "sources", "sources": []map[string]any{{"id": source, "name": sourceName, "control": true}}})
+	if err := write(websocket.TextMessage, inventory); err != nil {
 		return
 	}
 	conn.SetReadLimit(8192)
@@ -160,11 +161,11 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 			break
 		}
 	}
-	if start.Type != "start" || start.Source != "x11" || !trusted() {
+	if start.Type != "start" || start.Source != source || !trusted() {
 		status("disconnected", "Invalid desktop source or request.")
 		return
 	}
-	args := []string{"--device", name, "--display", os.Getenv("ZEN_DESKTOP_DISPLAY")}
+	args := append([]string{"--device", name}, sourceArgs...)
 	if start.Control {
 		args = append(args, "--control")
 	}

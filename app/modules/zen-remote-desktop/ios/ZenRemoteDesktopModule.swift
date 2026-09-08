@@ -28,6 +28,7 @@ final class DesktopView: ExpoView {
   private var connection = ""
   private var inputGeneration = ""
   private var inputSequence = 0
+  private var selectedSource = ""
   private var format: CMVideoFormatDescription?
   private var needIDR = true
   private var submitted = 0
@@ -73,7 +74,7 @@ final class DesktopView: ExpoView {
   }
 
   private func state(_ value: String, _ reason: String = "") {
-    onState(["state": value, "reason": reason, "width": width, "height": height,
+    onState(["state": value, "reason": reason, "source": selectedSource, "width": width, "height": height,
              "submitted": submitted, "dropped": dropped])
   }
 
@@ -125,6 +126,11 @@ final class DesktopView: ExpoView {
               let state = status["state"] as? String,
               ["sources", "requesting", "streaming", "denied", "unsupported", "disconnected"].contains(state)
               else { throw DesktopError.invalidFrame }
+            if state == "sources" {
+              guard let sources = status["sources"] as? [[String: Any]], sources.count == 1,
+                let source = sources[0]["id"] as? String, ["x11", "wayland"].contains(source) else { throw DesktopError.invalidFrame }
+              self.selectedSource = source
+            }
             guard (status["width"] == nil) == (status["height"] == nil) else { throw DesktopError.invalidFrame }
             if status["width"] != nil {
               guard let width = status["width"] as? Int, let height = status["height"] as? Int else { throw DesktopError.invalidFrame }
@@ -249,6 +255,7 @@ final class DesktopView: ExpoView {
     pendingSends = 0; lastVideo = nil
     connection = ""
     inputGeneration = ""; inputSequence = 0
+    selectedSource = ""
   }
 }
 

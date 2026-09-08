@@ -48,6 +48,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var pendingConnection = ""
   private var inputGeneration = ""
   private var inputSequence = 0
+  private var selectedSource = ""
   private var codec: MediaCodec? = null
   private var width = 1280
   private var height = 720
@@ -85,7 +86,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   private fun state(value: String, reason: String = "", epoch: Int = generation.get()) {
-    val event = mapOf("state" to value, "reason" to reason, "width" to width, "height" to height, "presented" to presented, "dropped" to dropped)
+    val event = mapOf("state" to value, "reason" to reason, "source" to selectedSource, "width" to width, "height" to height, "presented" to presented, "dropped" to dropped)
     if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
       if (epoch == generation.get() && !destroyed) onState(event)
     } else post { if (epoch == generation.get() && !destroyed) onState(event) }
@@ -128,6 +129,11 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
             // Validate on the receiving thread before posting asynchronous work.
             val value = status.getString("state")
             require(value in listOf("sources", "requesting", "streaming", "denied", "unsupported", "disconnected"))
+            val nextSource = if (value == "sources") {
+              val sources = status.getJSONArray("sources")
+              require(sources.length() == 1)
+              sources.getJSONObject(0).getString("id").also { require(it in listOf("x11", "wayland")) }
+            } else null
             require(status.has("width") == status.has("height"))
             val nextWidth = if (status.has("width")) status.getInt("width") else null
             val nextHeight = if (status.has("height")) status.getInt("height") else null
@@ -148,6 +154,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
               if (!post publishStatus@{
                 try {
                   if (epoch != generation.get()) return@publishStatus
+                  if (nextSource != null) selectedSource = nextSource
                   requestLayout()
                   terminalState = value in listOf("denied", "unsupported", "disconnected")
                   if (terminalState) {
@@ -255,6 +262,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     generation.incrementAndGet()
     pendingConnection = ""
     inputGeneration = ""; inputSequence = 0
+    selectedSource = ""
     removeCallbacks(heartbeat)
     socket?.cancel()
     socket = null

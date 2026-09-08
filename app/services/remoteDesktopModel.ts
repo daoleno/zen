@@ -10,6 +10,11 @@ export function desktopURL(resolved: string, pinnedLink: boolean): string {
   return url.toString();
 }
 
+export function desktopStart(source: unknown, control: boolean) {
+  if (source !== "x11" && source !== "wayland") return null;
+  return { type: "start" as const, source, control };
+}
+
 export function desktopPoint(x: number, y: number, viewportWidth: number, viewportHeight: number, frameWidth: number, frameHeight: number) {
   if (![x, y, viewportWidth, viewportHeight, frameWidth, frameHeight].every(Number.isFinite) ||
     Math.min(viewportWidth, viewportHeight, frameWidth, frameHeight) <= 0) return null;
