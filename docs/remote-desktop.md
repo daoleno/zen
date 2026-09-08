@@ -300,7 +300,7 @@ The local SDK has the current RN-required API36/build-tools36/NDK27.1;
 CI currently requests API35 explicitly and needs that mismatch reviewed
 before a bounded build. Both jobs need explicit worker/native parallel caps;
 the Android generated defaults enable parallel Gradle and multiple ABIs.
-The next minimal full-debug packaging gate is a separate guarded offline
+The standalone full-debug packaging graph uses a guarded offline
 `:app:assembleDebug` invocation on this same generated project, with
 `-PreactNativeArchitectures=arm64-v8a`. This is a documented compile target;
 choosing it does not require a device or imply an installation. Retain the
@@ -314,10 +314,25 @@ For a self-contained debug APK, a temporary packaging init script must clear
 React's debuggable-variant exclusion and set the offline JS bundle worker
 count to one. That is build-time JS bundling, not starting or reusing a Metro
 server. The module-only task allowlist cannot simply be reused for packaging.
-This larger graph has not been measured to fit the module budget; a guard
-stop or offline cache miss is a retained failure, not permission to raise
-limits or download dependencies. Verify APK integrity, the arm64 library
-inventory, embedded JS and `apksigner verify` before considering installation.
+The first execution of this standalone graph failed during build-time JS
+bundling at the configured 512 MiB Node heap limit, before APK generation or
+native CMake/Ninja builds. The whole-scope guard did not trip. No APK signature,
+embedded-bundle, DEX registration or packaged ABI check passed from that run.
+The Ninja wrapper's option-clamping check passed, but actual native build
+invocations were not reached. Repeating the same graph or increasing limits
+is not an accepted recovery plan; first establish a bounded, demonstrable
+bundler-memory reduction. A guard stop or offline cache miss likewise remains
+a failure, not permission to download dependencies or change resource policy.
+Any eventual APK must pass integrity, arm64 library inventory, embedded JS
+and `apksigner verify` checks before installation is considered.
+
+Isolated builds set `EXPO_NO_DOTENV=1`; the app's custom config loader now
+honors that flag rather than importing personal `.env.local` values into the
+build environment. Normal local configuration remains unchanged when the
+flag is absent. Debug packaging uses only the existing/local debug key, never
+release signing credentials. The generated project's cached version may lag
+tracked `app/app.base.json`; packaging must set and verify the current debug
+identity without silently accepting a stale cached APK.
 Runtime needs an explicitly owned physical
 Android device identified by ADB serial; no device is assigned. The only
 installed API35 emulator enforces a 2 GiB guest minimum, so repeating the

@@ -7,7 +7,9 @@ const {
   resolveIOSNotificationMode,
 } = require("./iosIdentity");
 
-loadEnvFile(path.join(__dirname, ".env.local"));
+if (process.env.EXPO_NO_DOTENV !== "1") {
+  loadEnvFile(path.join(__dirname, ".env.local"));
+}
 
 const projectId =
   typeof process.env.ZEN_EXPO_PROJECT_ID === "string"
