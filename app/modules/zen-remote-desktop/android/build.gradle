@@ -1,0 +1,18 @@
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+group = 'expo.modules.zenremotedesktop'
+version = '0.1.0'
+
+android {
+  namespace 'expo.modules.zenremotedesktop'
+  compileSdk rootProject.ext.has('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 35
+  defaultConfig { minSdk rootProject.ext.has('minSdkVersion') ? rootProject.ext.minSdkVersion : 24 }
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+  implementation 'com.facebook.react:react-android'
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+  testImplementation 'junit:junit:4.13.2'
+}

@@ -1,0 +1,295 @@
+# Remote Desktop
+
+## Outcome And Boundaries
+
+Operate an explicitly selected desktop on the current Zen server from a phone.
+Host priority is Linux, macOS, then Windows. Android and iOS share the same
+product contract; web is outside scope. The first scope includes viewing,
+mouse, keyboard, scrolling, mobile zoom and pan. Audio, clipboard, file
+transfer, gamepads, multi-monitor composition, login screens, elevation and
+unattended access are excluded. Full-desktop access is not application or
+window isolation.
+
+This plan distinguishes intended behavior from implementation and acceptance.
+A platform is not accepted without a native build and actual capture,
+presentation and input evidence on that platform. Software encoding,
+emulators, Expo exports and static contracts do not replace hardware
+acceptance. Private execution reports, screenshots and raw measurements
+belong in the Brain worklog, not this repository. Existing releases remain
+immutable; implementation does not authorize publishing or deployment.
+
+## Verified Transport Boundaries
+
+| Path | Source And Contract | Media Implication |
+| --- | --- | --- |
+| LAN or self-managed origin | `daemon/server/server.go`: `Handler`, `handleWS`; `app/services/connection.ts` | HTTP/WebSocket reachability does not establish UDP reachability. A plaintext LAN origin is not an encrypted video channel. |
+| Zen Link | TCP dial in `daemon/link/connector.go`; inner TLS in `daemon/link/`; `docs/zen-link-relay.md` | The relay forwards opaque TCP streams. Pairing pins the daemon SPKI. There is no routed UDP or TURN contract. |
+| Mobile Link | `app/services/pinnedTransport.ts`; `app/modules/zen-link-transport/` | The existing native pinned-TLS proxy exposes a loopback WebSocket origin. Reuse it without another server selector or trust root. |
+| Cloudflare or other HTTP tunnels | Existing origin and HTTP/WebSocket integration | Do not assume arbitrary UDP forwarding or attempt to put WebRTC UDP inside WebSocket. |
+
+Use a separate authenticated binary WebSocket session through the existing
+origin or Link. This is continuous H.264 access-unit streaming, not screenshot
+polling. Native code decodes and presents video; JS carries configuration,
+state and input commands only. TCP and TLS remain system implementations. Do
+not introduce custom cryptography, congestion control, NAT services or relays.
+Media has its own socket, write ownership, queue and helper process rather
+than sharing chat scheduling. Physical bandwidth is still shared. TCP
+head-of-line blocking remains a limitation: terminate a stalled session
+instead of accumulating unbounded video.
+
+WebRTC/Pion remains a candidate when an existing path actually provides
+direct UDP reachability; deploying its network prerequisites is not this
+feature's scope. Successful signaling must never be reported as successful
+video. Native desktop clients accept trusted `wss` or the existing pinned
+Link loopback origin, without weakening certificate validation.
+
+## Modules And Data Flow
+
+1. `app/store/currentServer.tsx` owns the only current server. Desktop state is
+   bound to that ID and a connection generation. Switching servers, leaving
+   the route or entering the background closes the old native connection,
+   clears retained frames and releases input. Control does not auto-resume.
+2. `app/services/remoteDesktop.ts` reuses stored transport resolution and
+   device signatures with the dedicated `zen-desktop` purpose. Credentials
+   never enter URLs. There is no second pairing system or persistent media
+   token.
+3. `daemon/server/remote_desktop.go` exposes `/desktop`. Device trust,
+   timestamp and nonce checks occur before upgrade. Desktop connections have
+   separate ownership, connected to existing device revocation and runtime
+   shutdown. They do not subscribe to Brain, Session or chat broadcasts.
+4. `daemon/desktop/` owns a bounded session and local helper. Clients cannot
+   supply executables, DISPLAY addresses, pipelines or shell commands. The
+   host explicitly configures an absolute helper path. Default startup never
+   captures a screen.
+5. `daemon/desktop/native/` contains host capture, encoding and permission
+   adapters. Helper stdout carries length-delimited packets; stdin accepts
+   validated input records. EOF must release held input and terminate the
+   helper. No detached descendants are permitted.
+6. `app/modules/zen-remote-desktop/` owns native views, networking and decoder
+   lifecycle. Android uses MediaCodec and Surface. iOS uses CoreMedia and
+   AVSampleBufferDisplayLayer. Neither pixels nor encoded video cross JS.
+
+## Session And Permission Contract
+
+The state progression is `disconnected -> connecting -> sources -> requesting
+-> streaming -> connected -> disconnected`. Unconfigured, missing dependency,
+unsupported, declined and connection-error states must be truthful. Receiving
+a sample is not proof of presentation: only native display readiness or a
+render callback can advance the visible state to connected.
+
+Each connection receives a versioned source inventory. Sources are assigned
+by the host. The initial X11 adapter offers only the explicitly configured
+display and never accepts a client-supplied display address. `start` selects
+the source and view/control mode. Codec and resolution negotiation must be
+explicit before adding modes beyond the initial fixed H.264 profile. A local
+visible prompt identifies the requesting device, source and access scope.
+Cancellation produces no video. A local stop control remains visible while
+sharing. Consent belongs only to this authenticated connection, source and
+mode; it is not reusable by another device or reconnect. Reject repeated
+start, stale sources and unknown input types.
+
+The initial wire format uses JSON for status, start, stop and input, and one
+complete H.264 Annex-B access unit per binary message, capped at 4 MiB.
+SPS/PPS accompany IDR frames. Helper packets contain a big-endian 32-bit
+length followed by a type byte: 1 for JSON, 2 for video. GStreamer appsink
+sample boundaries establish access units; arbitrary pipe reads do not.
+Disable B frames. Start conservatively with an aspect-preserving maximum of
+1280x720, 30 fps and 4 Mbps. 1080p60 is an acceptance target, not a default
+performance promise.
+
+Input consists of normalized absolute pointer positions, explicit button
+and key down/up events, and bounded discrete scroll steps. Validate finite
+coordinates, ranges, enums and record sizes on the server. View-only sessions
+reject input. The initial shared key subset uses X11 keysym values; other
+hosts must map those values explicitly rather than treating them as scan
+codes. Backgrounding, focus loss, revocation, stop, timeout and process exit
+release only the keys/buttons held by this session. Reconnect requires fresh
+selection and consent.
+
+## Bounded Resources And Feedback
+
+Admit at most one desktop helper per daemon. Limit input messages to 8 KiB
+and access units to 4 MiB. Keep native pending decode work bounded to two
+samples, with one-at-a-time receive processing on iOS. Apply media write
+deadlines and terminate clients that stop receiving. Never discard an H.264
+reference frame and continue displaying dependent P frames: wait for a fresh
+SPS/PPS/IDR sequence or end the session. Limit the host raw-frame queue to two
+frames and discard stale frames only before encoding. Use the encoder's
+standard rate-control and low-latency modes, not a custom adaptive algorithm.
+
+Diagnostics should distinguish received, submitted and presented frames,
+drops, decoder failures and last-frame age. Host diagnostics should include
+access units, bytes, write timeouts and helper exits. Do not claim adaptive
+bitrate until its feedback loop is implemented and measured. Resolution
+changes require rebuilding decoder format and invalidating the old coordinate
+generation; never project input onto a stale source.
+
+## Platforms And Dependencies
+
+| Platform | Capture, Input And Limits | Build And Acceptance Requirements |
+| --- | --- | --- |
+| Linux X11 | GStreamer ximagesrc, visible GTK consent and XTest input. Other X11 applications can observe the desktop. | GStreamer 1.22+ core/app/video/ximagesrc/openh264/h264parse, GTK3, X11 and XTest, dynamically linked to system libraries. |
+| GNOME/KDE Wayland | Requires xdg-desktop-portal RemoteDesktop plus ScreenCast, PipeWire and authorized input. ScreenCast alone does not grant control. | Actual compositor and portal-backend selection, cancellation, revocation and portal/libei input evidence. Report unsupported until implemented. |
+| wlroots Wayland | Do not assume its portal supports RemoteDesktop. | Report verified capabilities only; screenshot support does not establish remote control. |
+| Linux headless | Only an explicitly created isolated virtual desktop is usable. | Session-owned X server and test application. Daemon startup does not implicitly create a desktop. |
+| macOS | ScreenCaptureKit picker, realtime VideoToolbox H.264, Accessibility and CGEvent. Recording and input permissions are separate. | macOS SDK, Xcode and an authorized test host. Linux compilation cannot prove TCC behavior. |
+| Windows | WGC/DXGI, Media Foundation H.264 and SendInput, respecting UIPI, interactive sessions and secure desktop boundaries. | A native Zen daemon delivery path is also needed. Existing Unix PTY/tmux dependencies and WSL do not establish Windows desktop hosting. |
+| Android | System MediaCodec, Surface and OkHttp WebSocket. | Java 17, Android SDK/NDK and Expo 57/RN 0.86 native build; hardware decoding, rotation and background tests on a device. |
+| iOS | URLSessionWebSocketTask, CoreMedia and AVSampleBufferDisplayLayer. | Xcode/iOS SDK, native Pod build and actual device presentation. Expo export is not native proof. |
+
+License inventory: Zen is Apache-2.0; GStreamer and GTK are dynamically linked
+LGPL-2.1+ system libraries; OpenH264 is BSD, with source licensing and H.264
+patent/binary distribution obligations reviewed separately; X11/XTest are
+MIT; OkHttp is Apache-2.0; Expo is MIT. Mobile codecs come from platform SDKs.
+The inspected Linux environment has GStreamer 1.28.2, GTK 3.24.52, X11 1.8.13
+and Xtst 1.2.5; this does not validate all minimum versions. Do not silently
+select GPL x264, GPL/AGPL remote-control stacks or restricted virtual-input
+drivers. Before distribution, generate an artifact-specific SBOM and retain
+actual plugin paths, versions, licenses and SDK versions. Record the selected
+hardware encoder, not merely installed VAAPI/NVENC/VideoToolbox/MF capability.
+The initial OpenH264 path is software encoding, not a hardware claim.
+
+## Current Implementation Boundary
+
+The retained implementation currently provides the X11 helper and shared
+Android/iOS native client source. An unintegrated Wayland portal protocol
+prototype and private-bus tests are retained in `native/portal.*` and
+`native/portal-test.c`; they are not linked into the helper and do not provide
+PipeWire capture or an accepted compositor adapter. macOS hosting, Windows
+hosting and hardware encoder selection above are planned adapters, not
+implemented support. Missing host adapters must remain unavailable. The
+initial helper uses system OpenH264 software encoding at up to 720p30; it
+does not meet the 1080p60 acceptance target by construction.
+
+### Verification Status
+
+| Platform | Implemented | Built | Runtime Verified | Performance Measured | Released |
+| --- | --- | --- | --- | --- | --- |
+| Linux X11 / explicit virtual X11 | Capture, local consent and input helper; authenticated daemon endpoint | Strict-warning helper compilation and daemon test executable | Not accepted: native phone video/input assertions remain unexecuted | No accepted FPS, latency or hardware-encoder measurements | No |
+| GNOME/KDE/wlroots Wayland | Unintegrated portal protocol prototype only; no usable capture/input adapter | Historical standalone prototype/private-bus tests only, not a host build | No compositor or PipeWire runtime acceptance | No | No |
+| macOS host | No ScreenCaptureKit/VideoToolbox/input adapter | No; requires macOS SDK and host | No; recording and Accessibility grants untested | No | No |
+| Windows host | No native daemon delivery or desktop adapter | No; requires Windows toolchain and host | No | No | No |
+| Android client | Native MediaCodec view and shared input interface | Earlier module compilation/four parser tests passed; later lifecycle source edits are not natively rebuilt. Interrupted harness APK fails signature verification and is not installable | No: emulator exceeded the configured runtime budget before boot | No | No |
+| iOS client | Native client source present | No native build; requires Xcode/iOS SDK | No; requires an owned simulator/device | No | No |
+
+Android's module minimum follows the app's configured minimum (currently API
+24); it does not independently raise supported-device requirements. Native
+build and runtime checks must be resource-bounded and serial. A generated APK,
+an export, a local server-ready message or a before-image does not establish
+native video presentation or input effects. Missing OS adapters remain
+unsupported rather than falling back to another desktop or permission model.
+
+Source resize ends the X11 session and requires a fresh connection and local
+grant. Pending local consent expires after 60 seconds. Android bounds pending
+encoded access units/status work to two and outbound input to 32 KiB including
+the next message; iOS admits at most
+four outstanding sends and reads one access unit at a time. Backpressure
+terminates the session instead of discarding reference frames. These are
+bounded fail-closed policies, not adaptive bitrate or seamless recovery.
+Both clients reject host-supplied `connected` state and close on terminal
+status without waiting for a second transport event. Android clears retained
+connection credentials on stop. These latest lifecycle changes have only
+source-contract checks, not fresh native build or device verification.
+
+### Checkpoint Gaps
+
+This is a local WIP checkpoint, not acceptance or release. Before acceptance:
+
+- Replace or prove the JS-to-native command delivery contract. A replaceable
+  React `command` prop can coalesce multiple updates before native delivery;
+  a sequence field is not an acknowledgement. Test same-tick pointer/down/up,
+  drag release, keyboard batches and disconnect with an ordered bounded
+  delivery interface on both platforms. Native transport limits do not solve
+  missing JS events.
+- Prove background, focus loss, surface recreation and current-server switch
+  cannot reopen old credentials or deliver stale callbacks. Verify input
+  release at the owned host, not just a disconnected phone label.
+- Measure revocation while a batch is being forwarded. Current trust checks
+  occur per received command and media packet; closing the socket is not a
+  synchronous barrier for already accepted helper input. Establish the
+  allowed in-flight boundary and prove bounded helper exit/key release.
+- Exercise malformed status, terminal status followed by video, queue
+  saturation and no-first-frame timeout. Android counts presented frames;
+  iOS readiness/submission and receive age are not presented-frame metrics.
+
+Next native verification requires an explicitly assigned build executor with
+Java 17, the project's Android SDK/NDK, single-worker Gradle/Kotlin/native
+compilation and enforceable phase memory ownership before signed packaging.
+No such safe executor is currently assigned. Verify the resulting APK with
+`apksigner verify` before using it. Runtime needs an explicitly owned physical
+Android device identified by ADB serial; no device is assigned. The only
+installed API35 emulator enforces a 2 GiB guest minimum, so repeating the
+previous lower-memory boot is not a valid plan. An iOS build needs an assigned
+macOS/Xcode executor and an owned device/simulator identified by UDID; neither
+is available in the current environment. Use a newly owned virtual X11 desktop
+and fixture process for video/input verification, never the personal desktop.
+Do not create resource pools, change live services or raise limits to bypass
+these missing assignments. Wayland needs an owned GNOME/KDE compositor and
+portal backend after integration; macOS/Windows hosting and hardware encoding
+remain separate implementation and OS-specific verification gates.
+
+The current keyboard supports printable ASCII and explicit special-key
+events, not Unicode composition or arbitrary keyboard layouts. A dedicated
+drag mode holds the primary pointer button until gesture end; pinch and
+gesture cancellation release it. Device interaction verification remains
+necessary for zoom, rotation, keyboard focus and background transitions.
+
+## Mobile Interface
+
+Enter Remote Desktop through existing navigation and show the current host.
+Source and view/control selection must be visible. Never show a connected
+placeholder. The primary surface is an unframed native view with essential
+exit, stop, keyboard, pointer/pan and zoom-reset controls. Use the existing
+icon library and accessibility labels. Single-finger pointer movement and
+tap, long-press right-click, scrolling, pan and pinch must not accidentally
+trigger each other. Verify keyboard, dragging, rotation and letterbox-aware
+coordinates through actual interactions, not the presence of buttons.
+
+## Implementation Stages And BDD
+
+1. Audit transport and establish this plan, permission boundaries, lifecycle
+   and observable contracts before the Linux/native vertical implementation.
+2. Implement X11 consent, stop, continuous encoding and input; shared native
+   mobile views, current-server routing and disconnect cleanup. The owned
+   test desktop displays readable text, motion and visible input counters.
+3. Implement and exercise Wayland portals, macOS capture/permissions and the
+   native Windows daemon/capture path. Missing hardware leaves acceptance
+   open but does not stop independent work on other platforms.
+4. Add and measure hardware encoding, native performance, existing LAN/tunnel
+   behavior, impaired-network recovery and chat isolation. Consider release
+   only after all required native device gates pass.
+
+| Given / When | Then / Evidence |
+| --- | --- |
+| Unpaired device, wrong signature purpose or replayed nonce requests media | HTTP 401 before upgrade, with no helper, input or frames. |
+| Host cancels, grants viewing only, or client selects an absent source | Cancellation does not capture; viewing cannot inject input; invalid sources cannot start a helper. |
+| Phone selects a source and host explicitly approves | A native client presents continuously changing real test-desktop frames. Retain desktop/mobile screenshots and video, not mocks. |
+| Authorized client clicks, drags, types and scrolls | Test-application event counters and content change, correlated with input IDs. |
+| Another device/connection or repeated start attempts reuse | Existing consent cannot be taken over and a second capture process cannot start. |
+| Device revoked, host stops, client backgrounds/switches/leaves/disconnects | Old frames clear, held input releases and helper exits. The old connection cannot regain access. |
+| Slow receiver, malformed frame, oversized input or helper crash | Bounded memory and deterministic closure/error state without chat write-lock contention. |
+| Rotation, zoom, reconnect or source-size change | Correct coordinates, no old-generation state, and fresh consent on reconnect. |
+
+## Verification And Performance
+
+Required gates include affected full Go and race tests, Bun behavior tests,
+TypeScript, native contract tests, route hygiene, both Expo exports, and native
+Android/iOS builds and runtime tests. Do not call real AI, control existing
+daemon/Metro processes, inspect personal screens, alter user networking or
+access signing secrets. Use `$ZEN_BUILD_TMPDIR` for large builds. Test state,
+ports, desktops and processes belong to this Session and are cleaned up.
+
+The initial LAN1080p60 targets are sustained motion presentation of at least
+55 fps and input-to-visible p95 at most 100 ms over at least 200 samples.
+Record resolution, encoder/hardware, bitrate, received/decoded/presented FPS,
+drops, bandwidth, host/client CPU, temperature and duration. A 720p30 software
+run cannot meet or replace that target. Measure tunnel throughput, recovery
+and interaction tails separately, alongside chat/Terminal response latency.
+
+Input-to-visible measurements need a client monotonic clock, unique input ID
+and identifiable test-desktop response at actual presentation, not at send or
+receive. Cross-host capture-to-display measurements require clock calibration
+and stated uncertainty. Without a high-speed camera, input-to-photon remains
+unverified. Mark unsampled metrics unknown; RTT, encoding FPS and averages
+are not substitutes. Report each platform separately as documented,
+implemented, built, runtime verified, performance measured and released.

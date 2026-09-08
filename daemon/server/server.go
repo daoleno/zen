@@ -29,6 +29,7 @@ import (
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/codexctl"
+	"github.com/daoleno/zen/daemon/desktop"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/push"
 	skillmgmt "github.com/daoleno/zen/daemon/skills"
@@ -79,6 +80,7 @@ type notificationPusher interface {
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
+	desktop                      desktop.Manager
 	auth                         *auth.Manager
 	watcher                      *watcher.Watcher
 	terminal                     *terminal.Manager
@@ -374,6 +376,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/desktop", s.handleDesktop)
 	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/devices", s.handleDevices)
@@ -533,6 +536,7 @@ func (s *Server) detachAuthenticatedClient(
 }
 
 func (s *Server) revokeAuthenticatedDevice(deviceID string) {
+	s.desktop.Revoke(deviceID)
 	normalizedID := strings.TrimSpace(deviceID)
 	if normalizedID == "" {
 		return
@@ -553,6 +557,7 @@ func (s *Server) revokeAuthenticatedDevice(deviceID string) {
 }
 
 func (s *Server) shutdownAuthenticatedClients() {
+	s.desktop.Close()
 	var closing []clientDetachWork
 	s.mu.Lock()
 	if s.runtimeClosing {

@@ -1,0 +1,5 @@
+{
+  "platforms": ["android", "apple"],
+  "apple": {"modules": ["ZenRemoteDesktopModule"], "podspecPath": ["ZenRemoteDesktop.podspec"]},
+  "android": {"modules": ["expo.modules.zenremotedesktop.ZenRemoteDesktopModule"]}
+}

@@ -7,6 +7,7 @@ import {
   type View as ViewInstance,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Typography, useAppColors } from "../../constants/tokens";
 import { appVersion } from "../../constants/appVersion";
@@ -29,7 +30,7 @@ interface PrimaryDrawerPanelProps {
   onNavigateAway(): void;
 }
 
-type DrawerRowIcon = "settings" | "skills" | "stats";
+type DrawerRowIcon = "settings" | "skills" | "stats" | "desktop";
 
 interface DrawerRowProps {
   drawerVisible: boolean;
@@ -45,6 +46,9 @@ function DrawerRowIconView({
   color: string;
   icon: DrawerRowIcon;
 }) {
+  if (icon === "desktop") {
+    return <Ionicons name="desktop-outline" color={color} size={19} />;
+  }
   if (icon === "stats") {
     return <NavStatsIcon color={color} size={19} />;
   }
@@ -121,7 +125,7 @@ export function PrimaryDrawerPanel({
         : "Offline");
 
   const openRoute = useCallback(
-    (pathname: "/skills" | "/stats" | "/settings") => {
+    (pathname: "/skills" | "/stats" | "/settings" | "/remote-desktop") => {
       onNavigateAway();
       router.push(pathname);
     },
@@ -220,6 +224,12 @@ export function PrimaryDrawerPanel({
         icon="settings"
         label="Settings"
         onPress={() => openRoute("/settings")}
+      />
+      <DrawerRow
+        drawerVisible={drawerVisible}
+        icon="desktop"
+        label="Remote Desktop"
+        onPress={() => openRoute("/remote-desktop")}
       />
 
       <Text
