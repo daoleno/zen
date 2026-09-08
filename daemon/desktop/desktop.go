@@ -66,6 +66,7 @@ func (c Command) ValidateInput(control bool) error {
 type Manager struct {
 	mu     sync.Mutex
 	conn   *websocket.Conn
+	input  *inputGate
 	device string
 	closed bool
 }
@@ -74,6 +75,7 @@ func (m *Manager) Revoke(device string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.conn != nil && m.device == device {
+		m.input.revoke()
 		_ = m.conn.Close()
 	}
 }
@@ -83,6 +85,7 @@ func (m *Manager) Close() {
 	defer m.mu.Unlock()
 	m.closed = true
 	if m.conn != nil {
+		m.input.revoke()
 		_ = m.conn.Close()
 	}
 }
@@ -113,9 +116,11 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "desktop_busy"), time.Now().Add(time.Second))
 		return
 	}
-	m.conn, m.device = conn, device
+	inputGate := &inputGate{}
+	m.conn, m.device, m.input = conn, device, inputGate
 	m.mu.Unlock()
-	defer func() { m.mu.Lock(); m.conn, m.device = nil, ""; m.mu.Unlock() }()
+	defer func() { m.mu.Lock(); m.conn, m.device, m.input = nil, "", nil; m.mu.Unlock() }()
+	defer inputGate.revoke()
 	if !trusted() {
 		return
 	}
@@ -175,14 +180,14 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 		status("disconnected", "Desktop helper could not start.")
 		return
 	}
-	if err = cmd.Start(); err != nil {
+	if err = inputGate.start(stdin, cmd.Start, trusted); err != nil {
 		_ = stdin.Close()
 		status("disconnected", "Desktop helper could not start.")
 		return
 	}
 	// EOF requests graceful key release; Kill is only a bounded fallback.
 	defer func() {
-		_ = stdin.Close()
+		inputGate.revoke()
 		timer := time.AfterFunc(2*time.Second, func() { _ = cmd.Process.Kill() })
 		_ = cmd.Wait()
 		timer.Stop()
@@ -251,11 +256,8 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 			}
 		}
 		for _, event := range events {
-			// A non-responsive helper cannot indefinitely retain input ownership.
-			if pipe, ok := stdin.(*os.File); ok {
-				_ = pipe.SetWriteDeadline(time.Now().Add(time.Second))
-			}
-			if _, err := fmt.Fprintf(stdin, "%s %.9f %.9f %d %t %d\n", event.Type, event.X, event.Y, event.Code, event.Down, event.Delta); err != nil {
+			record := fmt.Sprintf("%s %.9f %.9f %d %t %d\n", event.Type, event.X, event.Y, event.Code, event.Down, event.Delta)
+			if err := inputGate.write([]byte(record), trusted); err != nil {
 				return
 			}
 		}

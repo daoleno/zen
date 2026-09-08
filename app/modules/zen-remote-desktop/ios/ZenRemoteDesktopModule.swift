@@ -9,7 +9,10 @@ public final class ZenRemoteDesktopModule: Module {
     View(DesktopView.self) {
       Events("onState")
       Prop("connection") { (view: DesktopView, value: String) in view.connect(value) }
-      Prop("command") { (view: DesktopView, value: String) in view.send(value) }
+      AsyncFunction("sendCommand") { (view: DesktopView, generation: String, sequence: Int, value: String) -> Bool in
+        view.sendCommand(generation, sequence, value)
+      }
+      AsyncFunction("disconnect") { (view: DesktopView, generation: String) in view.disconnect(generation) }
       OnViewDestroys { (view: DesktopView) in view.stop() }
     }
   }
@@ -23,6 +26,8 @@ final class DesktopView: ExpoView {
   private var heartbeat: Timer?
   private var epoch = 0
   private var connection = ""
+  private var inputGeneration = ""
+  private var inputSequence = 0
   private var format: CMVideoFormatDescription?
   private var needIDR = true
   private var submitted = 0
@@ -83,10 +88,12 @@ final class DesktopView: ExpoView {
       let rawURL = config["url"], let url = URL(string: rawURL),
       url.scheme == "wss" || (url.scheme == "ws" && url.host == "127.0.0.1"),
       url.path == "/desktop", url.query == nil, url.user == nil,
-      let authorization = config["authorization"] else {
+      let authorization = config["authorization"],
+      let inputGeneration = config["inputGeneration"], !inputGeneration.isEmpty else {
       state("disconnected", "Desktop requires a secure connection."); return
     }
     var request = URLRequest(url: url)
+    self.inputGeneration = inputGeneration
     request.setValue(authorization, forHTTPHeaderField: "Authorization")
     request.timeoutInterval = 10
     let ownedSession = URLSession(configuration: .ephemeral)
@@ -201,10 +208,22 @@ final class DesktopView: ExpoView {
     submitted += 1; needIDR = false
   }
 
-  func send(_ value: String) {
-    guard !value.isEmpty, value.utf8.count <= 8192, let task else { return }
+  func sendCommand(_ owner: String, _ sequence: Int, _ value: String) -> Bool {
+    guard !owner.isEmpty, owner == inputGeneration, sequence == inputSequence + 1 else { return false }
+    guard send(value) else { return false }
+    inputSequence = sequence
+    return true
+  }
+
+  func disconnect(_ owner: String) {
+    if !owner.isEmpty && owner == inputGeneration { stop() }
+  }
+
+  @discardableResult
+  private func send(_ value: String) -> Bool {
+    guard !value.isEmpty, value.utf8.count <= 8192, let task else { return false }
     guard pendingSends < 4 else {
-      stop(); state("disconnected", "Desktop input timed out."); return
+      stop(); state("disconnected", "Desktop input timed out."); return false
     }
     pendingSends += 1
     let generation = epoch
@@ -217,6 +236,7 @@ final class DesktopView: ExpoView {
         }
       }
     }
+    return true
   }
 
   func stop() {
@@ -228,6 +248,7 @@ final class DesktopView: ExpoView {
     format = nil; needIDR = true; submitted = 0; dropped = 0
     pendingSends = 0; lastVideo = nil
     connection = ""
+    inputGeneration = ""; inputSequence = 0
   }
 }
 

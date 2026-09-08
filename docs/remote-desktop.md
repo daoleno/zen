@@ -106,6 +106,44 @@ codes. Backgrounding, focus loss, revocation, stop, timeout and process exit
 release only the keys/buttons held by this session. Reconnect requires fresh
 selection and consent.
 
+### Ordered Input Delivery
+
+The app uses Expo native-view imperative `sendCommand(generation, sequence,
+payload)` and `disconnect(generation)` methods, not a replaceable React
+command prop. A shared JS queue snapshots every payload, including down/up
+batches, before React can batch renders. It admits at most 32 pending commands
+and 32 KiB including the in-flight command, with an 8 KiB per-message bound and
+one native call awaiting acknowledgement. The next sequence is dispatched
+only after native enqueue succeeds. A two-second acknowledgement timeout,
+full queue, missing view or native rejection closes ownership; it never
+silently drops a key-up and continues controlling the host.
+
+Both native implementations run these methods on Expo's main queue, require
+the connection's generation and next sequence, and clear them on stop.
+Background, focus loss, revocation/disconnect status and current-server
+switch discard pending JS work. Old acknowledgements do not advance a new
+queue, delayed native calls cannot enter a different generation, and reconnect
+starts an empty queue with new consent. Native acknowledgement establishes
+enqueue ordering, not network delivery, host execution or video presentation.
+
+### Revocation Ordering
+
+The daemon serializes helper startup and each input record through an input
+admission gate. Revocation/shutdown publishes retirement before waiting for
+the current admitted record, closes helper stdin, then completes media-socket
+closure. Each record rechecks trust; queued records from an already validated
+batch cannot overtake retirement. Once the manager revocation call returns,
+no helper write is active and no further record can be admitted. The write
+deadline bounds an already admitted pipe write to one second.
+
+This is an admission barrier, not retroactive cancellation: records written
+before retirement may already be in the pipe or OS input queue and can still
+take effect. EOF requests release of held input; the helper has a bounded
+two-second kill fallback after cleanup begins. Host-side effect timing and
+actual key release still require owned desktop/device evidence. Authorization
+revocation returns only after its synchronous runtime listeners cross this
+barrier; no claim is made that prior physical input effects can be undone.
+
 ## Bounded Resources And Feedback
 
 Admit at most one desktop helper per daemon. Limit input messages to 8 KiB
@@ -188,26 +226,25 @@ terminates the session instead of discarding reference frames. These are
 bounded fail-closed policies, not adaptive bitrate or seamless recovery.
 Both clients reject host-supplied `connected` state and close on terminal
 status without waiting for a second transport event. Android clears retained
-connection credentials on stop. These latest lifecycle changes have only
-source-contract checks, not fresh native build or device verification.
+connection credentials on stop. Native lifecycle wiring has structural
+checks and the shared input queue has dynamic behavior tests; neither is
+fresh native build or device verification.
 
 ### Checkpoint Gaps
 
 This is a local WIP checkpoint, not acceptance or release. Before acceptance:
 
-- Replace or prove the JS-to-native command delivery contract. A replaceable
-  React `command` prop can coalesce multiple updates before native delivery;
-  a sequence field is not an acknowledgement. Test same-tick pointer/down/up,
-  drag release, keyboard batches and disconnect with an ordered bounded
-  delivery interface on both platforms. Native transport limits do not solve
-  missing JS events.
+- The JS queue now has dynamic tests for same-tick down/up, payload snapshots,
+  count/byte saturation, timeout, rejection and lifecycle cancellation without
+  reconnect replay. Native imperative method wiring still needs Android/iOS
+  compilation and device verification; model tests do not prove the bridge.
 - Prove background, focus loss, surface recreation and current-server switch
   cannot reopen old credentials or deliver stale callbacks. Verify input
   release at the owned host, not just a disconnected phone label.
-- Measure revocation while a batch is being forwarded. Current trust checks
-  occur per received command and media packet; closing the socket is not a
-  synchronous barrier for already accepted helper input. Establish the
-  allowed in-flight boundary and prove bounded helper exit/key release.
+- The daemon input admission barrier has dynamic in-flight writer tests and
+  isolated helper lifecycle tests for revocation/shutdown. Measure the
+  remaining pre-retirement pipe/OS input effects and actual held-key release
+  on an owned desktop; do not infer physical-effect timing from socket close.
 - Exercise malformed status, terminal status followed by video, queue
   saturation and no-first-frame timeout. Android counts presented frames;
   iOS readiness/submission and receive age are not presented-frame metrics.
@@ -278,6 +315,15 @@ Android/iOS builds and runtime tests. Do not call real AI, control existing
 daemon/Metro processes, inspect personal screens, alter user networking or
 access signing secrets. Use `$ZEN_BUILD_TMPDIR` for large builds. Test state,
 ports, desktops and processes belong to this Session and are cleaned up.
+
+The focused input model can also run without JIT or Node's WebAssembly-based
+TypeScript loader: `node --jitless --max-old-space-size=96
+scripts/test-desktop-input.cjs`. It transpiles only the named model and test
+files using the installed TypeScript library and executes the actual tests
+with `node:test` in one process. This is behavior evidence, not a substitute
+for typechecking or native runtime gates. Apply process CPU/data/time caps
+appropriate to the assigned executor; do not treat a runner abort before
+tests as a code assertion failure or increase resource limits to force it.
 
 The initial LAN1080p60 targets are sustained motion presentation of at least
 55 fps and input-to-visible p95 at most 100 ms over at least 200 samples.

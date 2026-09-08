@@ -20,7 +20,7 @@ func TestHelperLifecycle(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("X11 helper process fixture requires a POSIX shell")
 	}
-	for _, scenario := range []string{"stop", "disconnect", "view-input", "repeat-start", "invalid-batch", "before-grant"} {
+	for _, scenario := range []string{"stop", "disconnect", "revoke", "shutdown", "view-input", "repeat-start", "invalid-batch", "before-grant"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			var packet bytes.Buffer
@@ -82,6 +82,10 @@ func TestHelperLifecycle(t *testing.T) {
 				_ = conn.WriteJSON(Command{Type: "stop"})
 			case "disconnect":
 				_ = conn.Close()
+			case "revoke":
+				manager.Revoke("fixture")
+			case "shutdown":
+				manager.Close()
 			case "view-input":
 				_ = conn.WriteJSON(Command{Type: "key", Code: 97, Down: true})
 			case "repeat-start":

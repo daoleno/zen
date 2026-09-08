@@ -8,6 +8,7 @@ import { useAppColors } from "../constants/tokens";
 import { prepareDesktopConnection } from "../services/remoteDesktop";
 import { desktopKey, desktopPoint, desktopText, type DesktopInput } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
+import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 
 export default function RemoteDesktopScreen() {
   const { currentServer } = useCurrentServer();
@@ -18,7 +19,6 @@ function DesktopSession() {
   const { currentServer } = useCurrentServer();
   const colors = useAppColors();
   const [connection, setConnection] = useState("");
-  const [command, setCommand] = useState("");
   const [status, setStatus] = useState<DesktopState>({ state: "disconnected" });
   const [preparing, setPreparing] = useState(false);
   const [control, setControl] = useState(false);
@@ -30,34 +30,45 @@ function DesktopSession() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [size, setSize] = useState({ width: 1, height: 1 });
   const generation = useRef(0);
-  const sequence = useRef(0);
+  const native = useRef<DesktopCommandTarget>(null);
+  const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
+    generation.current++;
+    setConnection(""); setPreparing(false); setControl(false); setKeyboard(false);
+    setStatus({ state: "disconnected", reason });
+  }));
+  const inputGeneration = commands.currentGeneration;
   const gestureStart = useRef({ x: 0, y: 0, time: 0, pinch: 0, zoom: 1, offset: { x: 0, y: 0 } });
   const connected = status.state === "connected";
-  const send = (value: object) => setCommand(JSON.stringify({ ...value, sequence: ++sequence.current }));
+  const send = (value: object) => commands.send(value);
   const input = (events: DesktopInput[]) => {
     if (connected && control && events.length) send({ type: "batch", events });
   };
   const stop = useCallback(() => {
     generation.current++;
-    setConnection(""); setCommand(""); setPreparing(false);
+    commands.stop();
+    setConnection(""); setPreparing(false); setControl(false);
     setStatus({ state: "disconnected" }); setKeyboard(false);
     setDragMode(false); setPanMode(false); setZoom(1); setOffset({ x: 0, y: 0 });
-  }, []);
+  }, [commands]);
   useFocusEffect(useCallback(() => stop, [stop]));
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => { if (state !== "active") stop(); });
-    return () => { generation.current++; subscription.remove(); };
-  }, [stop]);
+    return () => { generation.current++; commands.stop(); subscription.remove(); };
+  }, [commands, stop]);
   const connect = async () => {
     if (!currentServer) return;
     const epoch = ++generation.current;
-    setConnection(""); setCommand("");
+    const inputGeneration = commands.begin();
+    setConnection(""); setControl(false);
     setPreparing(true); setStatus({ state: "disconnected" });
     try {
-      const next = await prepareDesktopConnection(currentServer);
+      const next = await prepareDesktopConnection(currentServer, inputGeneration);
       if (epoch === generation.current) setConnection(next);
     } catch (error) {
-      if (epoch === generation.current) setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Connection failed." });
+      if (epoch === generation.current) {
+        commands.stop();
+        setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Connection failed." });
+      }
     } finally { if (epoch === generation.current) setPreparing(false); }
   };
   const pointer = (x: number, y: number) => desktopPoint(
@@ -116,7 +127,11 @@ function DesktopSession() {
     </View>
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
-        <NativeDesktopView key={connection} style={styles.root} connection={connection} command={command} onState={({ nativeEvent }) => setStatus(nativeEvent)} />
+        <NativeDesktopView ref={native} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
+          if (commands.currentGeneration !== inputGeneration) return;
+          if (["disconnected", "denied", "unsupported"].includes(nativeEvent.state)) stop();
+          setStatus(nativeEvent);
+        }} />
       </View> : null}
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />

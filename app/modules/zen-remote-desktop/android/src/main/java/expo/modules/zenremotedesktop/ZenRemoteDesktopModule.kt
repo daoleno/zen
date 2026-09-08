@@ -25,7 +25,10 @@ class ZenRemoteDesktopModule : Module() {
     View(DesktopView::class) {
       Events("onState")
       Prop("connection") { view: DesktopView, value: String -> view.connect(value) }
-      Prop("command") { view: DesktopView, value: String -> view.send(value) }
+      AsyncFunction("sendCommand") { view: DesktopView, generation: String, sequence: Int, value: String ->
+        view.sendCommand(generation, sequence, value)
+      }
+      AsyncFunction("disconnect") { view: DesktopView, generation: String -> view.disconnect(generation) }
       OnViewDestroys { view: DesktopView -> view.destroy() }
     }
   }
@@ -43,6 +46,8 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     .connectTimeout(10, TimeUnit.SECONDS).writeTimeout(2, TimeUnit.SECONDS).build()
   private var socket: WebSocket? = null
   private var pendingConnection = ""
+  private var inputGeneration = ""
+  private var inputSequence = 0
   private var codec: MediaCodec? = null
   private var width = 1280
   private var height = 720
@@ -90,8 +95,13 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (destroyed || value == pendingConnection) return
     stop()
     terminalState = false
+    if (value.isEmpty()) return
+    try {
+      inputGeneration = JSONObject(value).getString("inputGeneration")
+      require(inputGeneration.isNotEmpty())
+    } catch (_: Exception) { state("disconnected", "Invalid desktop connection."); return }
     pendingConnection = value
-    if (value.isEmpty() || !surface.holder.surface.isValid) return
+    if (!surface.holder.surface.isValid) return
     open(value)
   }
 
@@ -99,6 +109,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     val epoch = generation.get()
     try {
       val config = JSONObject(value)
+      require(config.getString("inputGeneration") == inputGeneration && inputGeneration.isNotEmpty())
       val url = config.getString("url")
       val uri = android.net.Uri.parse(url)
       require(uri.scheme == "wss" || (uri.scheme == "ws" && uri.host == "127.0.0.1"))
@@ -218,18 +229,32 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
   }
 
-  fun send(value: String) {
-    val active = socket ?: return
+  fun sendCommand(owner: String, sequence: Int, value: String): Boolean {
+    if (owner.isEmpty() || owner != inputGeneration || sequence != inputSequence + 1) return false
+    if (!send(value)) return false
+    inputSequence = sequence
+    return true
+  }
+
+  fun disconnect(owner: String) {
+    if (owner.isNotEmpty() && owner == inputGeneration) stop()
+  }
+
+  private fun send(value: String): Boolean {
+    val active = socket ?: return false
     val bytes = value.toByteArray(Charsets.UTF_8).size
-    if (value.isEmpty() || bytes > 8192) return
+    if (value.isEmpty() || bytes > 8192) return false
     if (active.queueSize() + bytes > 32 * 1024 || !active.send(value)) {
       stop(); state("disconnected", "Desktop input timed out.")
+      return false
     }
+    return true
   }
 
   private fun stop() {
     generation.incrementAndGet()
     pendingConnection = ""
+    inputGeneration = ""; inputSequence = 0
     removeCallbacks(heartbeat)
     socket?.cancel()
     socket = null
@@ -252,10 +277,12 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   override fun surfaceCreated(holder: SurfaceHolder) { if (!destroyed && pendingConnection.isNotEmpty() && socket == null) open(pendingConnection) }
   override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-  override fun surfaceDestroyed(holder: SurfaceHolder) { pendingConnection = ""; stop() }
+  override fun surfaceDestroyed(holder: SurfaceHolder) { stop(); state("disconnected") }
   override fun onWindowVisibilityChanged(visibility: Int) {
     super.onWindowVisibilityChanged(visibility)
-    if (visibility != VISIBLE && socket != null) { pendingConnection = ""; stop() }
+    if (visibility != VISIBLE && (socket != null || pendingConnection.isNotEmpty())) {
+      stop(); state("disconnected")
+    }
   }
 }
 

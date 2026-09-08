@@ -1,6 +1,7 @@
 import { requireNativeViewManager } from "expo-modules-core";
-import type { ComponentType } from "react";
+import type { ComponentType, Ref } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
+import type { DesktopCommandTarget } from "../../../services/remoteDesktopCommands";
 
 export interface DesktopState {
   state: "sources" | "requesting" | "streaming" | "connected" | "disconnected" | "denied" | "unsupported";
@@ -15,7 +16,7 @@ export interface DesktopState {
 export interface DesktopViewProps {
   style?: StyleProp<ViewStyle>;
   connection: string;
-  command: string;
+  ref?: Ref<DesktopCommandTarget>;
   onState: (event: { nativeEvent: DesktopState }) => void;
 }
 
