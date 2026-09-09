@@ -15,12 +15,13 @@ access is not application or window isolation. Elevation bypass and encrypted
 disk preboot unlock are excluded.
 
 The previously distributed bfad184 artifact remains attended-only. Current source adds a
-separate Linux broker and UID-dropped agent, default scoped/TLS `/desktop`
-admission, SDDM registration, journaled installation and native sensitive input.
-This does not update an installed APK or qualify every OS/display stack. The
-attended GTK helper remains separate; it has no permission-bypass flag. A current
-standalone phone APK still needs a separately approved system-host installation;
-installing the phone client alone does not enable boot or greeter access.
+Linux broker and UID-dropped agent as **roles of the same `zen` executable**, default
+scoped/TLS `/desktop` admission, SDDM registration, journaled installation and native
+sensitive input. This does not update an installed APK or qualify every OS/display stack.
+The attended GTK helper is a separate process of that same ELF; it has no
+permission-bypass flag. A current standalone phone APK still needs a separately approved
+system-host installation; installing the phone client alone does not enable boot or
+greeter access.
 
 This plan distinguishes intended behavior from implementation and acceptance.
 A platform is not accepted without a native build and actual capture,
@@ -81,8 +82,62 @@ the canonical owner; a peer UID or claimed device name is not sufficient.
 Agents receive only the exact display capability/FD for their generation.
 Per-session codecs, X11/Wayland libraries and UI run without elevated privileges.
 
-The executable is `daemon/cmd/zen-desktop-host`; the agent is
-`daemon/desktop/native/host-agent.c` (built with `host-agent.mk`). The owner socket
+## Single-Binary Roles And Native Integration
+
+One distributed `zen` ELF handles the ordinary daemon and internal desktop roles.
+Users run `zen` and `zen setup` / `zen doctor`; they do not download, build, or
+point at a second helper executable. Internal subcommands are dispatched **before**
+ordinary server startup:
+
+| Role | Command | Process | Privileges |
+| --- | --- | --- | --- |
+| Daemon | `zen` / `zen serve` | Network, pairing, Brain, Terminal | Unprivileged owner UID |
+| Attended helper | `zen desktop-helper …` | GTK consent, capture, encode, input | Same owner UID; no daemon |
+| Unattended broker | `zen desktop-host …` | Local Unix IPC, SDDM registration, install | Root only when installed as the reviewed system copy |
+| Session agent | `zen desktop-agent …` | X11 capture/XTest after UID drop | Dropped session UID; never root |
+| Identity | `zen desktop-identity` | Provenance JSON only | No capture, no daemon |
+
+The daemon and broker launch children with `os.Executable()` (symlink-resolved),
+never `PATH`. Remote clients cannot supply an executable, `DISPLAY`, helper path or
+library search path. `ZEN_DESKTOP_HELPER` is a test-only absolute override; default
+startup must work without it. Relative values are ignored.
+
+Native Linux capture is **cgo-linked** into desktop-capable builds (`-tags zen_desktop`,
+`CGO_ENABLED=1`) from `daemon/desktop/native/` (`linux.c`, portal/encoder sources, and
+`host-agent.c`). This is not a second ELF extracted at runtime, and end-user startup
+does not compile C. Makefile targets remain for standalone encoder/portal checks.
+
+**Dynamic library tradeoff (explicit):** desktop-capable Linux `zen` has `DT_NEEDED`
+entries for system GTK 3, GStreamer app/video, X11 and XTest. GStreamer plugins
+(ximagesrc, openh264, h264parse, pipewiresrc) stay runtime plugin dependencies.
+This is **not** a static single-file artifact. `zen doctor` reports whether this
+binary was compiled with native roles, hashes the executable, and lists missing
+`DT_NEEDED` libraries. `CGO_ENABLED=0` cross-release archives (`scripts/build-daemon-linux.sh`)
+are daemon-only; doctor must say so rather than pretending capture is present.
+Local `bun run daemon:build` and `zen-dev` enable the desktop tag when `pkg-config`
+finds the development files. macOS/Windows host adapters remain unimplemented.
+
+Privilege separation is **process isolation of the same ELF**, not a shared
+crash/security domain: the root broker never initializes GTK/GStreamer; the agent
+drops UID/capabilities before capture; the user daemon does not run as root.
+GTK/GStreamer constructors may still map in a desktop-capable broker process
+because they are `DT_NEEDED`; the broker does not call capture APIs. A sibling
+`.so` was rejected because it would split the distributed artifact.
+
+DEV: `zen-dev` rebuilds this complete binary when Go **or** native C/headers/Makefiles
+change, then restarts its child daemon. Existing daemon shutdown closes the desktop
+manager and retires helper children. The user-writable DEV binary (`daemon/tmp/zen-dev`)
+must never be `ExecStart` for the root broker; the installed copy is
+`/usr/libexec/zen/zen` only after reviewed installation. Root agent launch opens that
+root-owned ELF and refuses when `/proc/self/exe` is not the same inode, or the path
+is under a user-writable prefix (`/home`, `/tmp`, `/var/tmp`, `/dev/shm`, `/run/user`,
+`.zen`, `zen-dev`).
+
+Updater/setup treat one binary identity: `zen update` replaces `zen`; helper, broker
+and agent roles cannot drift because they are the same file. Atomic replace/rollback
+cannot strand mismatched role versions.
+
+The owner socket
 checks both kernel UID and the configured systemd unit's current MainPID. A
 one-use broker challenge binds boot/session/display generation and the request;
 the canonical daemon signs it only after fresh device/scope and TLS admission.
@@ -186,22 +241,27 @@ create another daemon or relocate/copy state. A development watcher alone is
 not that boot unit. Review the existing unit's executable, state directory and
 network flags before any personal-host handover.
 
-`zen-desktop-host --install --config <reviewed-config> --broker-source <ELF>
---agent-source <ELF>` installs fixed root-owned files. `--activate` additionally
-enables/starts only the broker after checking that the canonical unit is active;
-it does not restart SDDM or the owner. A normal subsequent display start uses the
-registered hooks. `--rollback` requires the broker to be stopped, removes its
-enablement, restores unchanged installed files and reloads systemd. It refuses
-to overwrite administrator edits made since installation.
+`zen desktop-host --install --config <reviewed-config> --binary-source <ELF>`
+installs one reviewed desktop-capable `zen` ELF as the root-owned broker/agent
+identity. `--broker-source` and `--agent-source` remain accepted only when they
+name the same bytes as each other (and as `--binary-source` when that flag is
+also set). `--activate` additionally enables/starts only the broker after checking
+that the canonical unit is active; it does not restart SDDM or the owner. A normal
+subsequent display start uses the registered hooks. `--rollback` requires the
+broker to be stopped, removes its enablement, restores unchanged installed files
+and reloads systemd. It refuses to overwrite administrator edits made since
+installation. `zen setup` does not silently convert a user DEV watcher into this
+boot service; OS consent remains a separate, reviewed installation.
 
-The transaction covers `/usr/libexec/zen/zen-desktop-host`,
-`/usr/libexec/zen/zen-desktop-agent`, `sddm-start` and `sddm-stop` in that directory,
-`/etc/zen/desktop-host.json`, `/usr/lib/systemd/system/zen-desktop-host.service`
-and the two hook keys in `/etc/sddm.conf`. Existing effective Xsetup/Xstop commands
-are read with an INI parser and preserved. `/etc/zen/desktop-install.json` is the
-root-only rollback journal; `desktop-install.lock` serializes installation and
-rollback. No password or independent device-grant file is created. Descriptor
-walks reject symlinks and writable/unowned parent directories.
+The transaction covers `/usr/libexec/zen/zen` (the same ELF for broker and agent
+roles), `sddm-start` and `sddm-stop` in that directory, `/etc/zen/desktop-host.json`,
+`/usr/lib/systemd/system/zen-desktop-host.service` (`ExecStart` runs
+`/usr/libexec/zen/zen desktop-host --config …`) and the two hook keys in
+`/etc/sddm.conf`. Existing effective Xsetup/Xstop commands are read with an INI
+parser and preserved. `/etc/zen/desktop-install.json` is the root-only rollback
+journal; `desktop-install.lock` serializes installation and rollback. No password
+or independent device-grant file is created. Descriptor walks reject symlinks and
+writable/unowned parent directories. Personal-host root installation remains gated.
 
 The broker uses godbus/dbus v5 (BSD-2-Clause); the installer uses ini.v1
 (Apache-2.0). Their notices are in the repository `NOTICE`. The agent links system
@@ -328,9 +388,9 @@ transport and source-origin binding; neither installs a universal trust rule.
    separate ownership, connected to existing device revocation and runtime
    shutdown. They do not subscribe to Brain, Session or chat broadcasts.
 4. `daemon/desktop/` owns a bounded session and local helper. Clients cannot
-   supply executables, DISPLAY addresses, pipelines or shell commands. The
-   host explicitly configures an absolute helper path. Default startup never
-   captures a screen.
+   supply executables, DISPLAY addresses, pipelines or shell commands. Default
+   startup launches `desktop-helper` from the running `zen` executable.
+   `ZEN_DESKTOP_HELPER` is test-only. Default startup never captures a screen.
 5. `daemon/desktop/native/` contains host capture, encoding and permission
    adapters. Helper stdout carries length-delimited packets; stdin accepts
    validated input records. EOF must release held input and terminate the
@@ -522,17 +582,19 @@ unsupported rather than falling back to another desktop or permission model.
 
 ### Linux Host Configuration
 
-Build the helper with `make -C daemon/desktop/native OUT=/absolute/durable/path/zen-desktop-helper`.
-The output directory must already exist. Build prerequisites are a C compiler,
-pkg-config, GTK3, GStreamer app/video and GIO Unix development files, X11 and
-XTest. Runtime requires compatible shared libraries and the GStreamer capture,
-conversion, H.264 encoder/parser and app plugins. Keep the verified executable
-outside temporary Worker directories before configuring a persistent daemon.
-Do not point a user daemon at an instrumented test wrapper or an owned test display.
+Build a desktop-capable `zen` with the repository local recipe (`bun run daemon:build`
+or `cd daemon && go run ./cmd/zen-dev`). That enables CGO and `-tags zen_desktop`
+when `pkg-config` finds GTK3, GStreamer app/video, GIO Unix, X11 and XTest.
+`make -C daemon/desktop/native` remains a standalone encoder/portal compile check;
+it is not a user-facing helper to download or configure. Runtime requires those
+shared libraries plus GStreamer capture, conversion, H.264 encoder/parser and app
+plugins. Keep the verified `zen` outside temporary Worker directories before
+configuring a persistent daemon. Do not point a user daemon at an instrumented
+test wrapper or an owned test display. Cross-compiled `CGO_ENABLED=0` release
+archives do not include native roles; `zen doctor` reports that.
 
-`ZEN_DESKTOP_HELPER` remains an administrator-configured absolute helper path.
-`ZEN_DESKTOP_BACKEND` defaults to `x11`; `ZEN_DESKTOP_DISPLAY` explicitly selects
-the X display. For Wayland, set `ZEN_DESKTOP_BACKEND=wayland`, select the owned
+`ZEN_DESKTOP_HELPER` is not required. `ZEN_DESKTOP_BACKEND` defaults to `x11`;
+`ZEN_DESKTOP_DISPLAY` explicitly selects the X display. For Wayland, set `ZEN_DESKTOP_BACKEND=wayland`, select the owned
 Wayland display/socket in `ZEN_DESKTOP_DISPLAY`, and set the matching session's
 explicit D-Bus address in `ZEN_DESKTOP_BUS_ADDRESS`. The helper sets GTK to
 Wayland only and uses that bus for its portal and GTK session environment.

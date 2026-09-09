@@ -116,10 +116,29 @@ If `~/.local/bin` is not on your `PATH`, install into another user-owned directo
 
 Startup prints the listening address, available private-network addresses, and one pairing command. Saved model routes are reclaimed when the selected tmux server confirms their sessions are absent. Live or unobservable sessions retain their routes; a model-settings warning for a retained route does not mean the HTTP server failed to start.
 
-Source builds require the Go toolchain declared in `daemon/go.mod`:
+Source builds require the Go toolchain declared in `daemon/go.mod`. On Linux,
+the local recipe links desktop capture when development libraries are present:
 
 ```bash
 git clone https://github.com/daoleno/zen.git
+cd zen
+bun run daemon:build
+./bin/zen --help
+./bin/zen doctor
+```
+
+`bun run daemon:build` (and `cd daemon && go run ./cmd/zen-dev`) enable CGO and
+`-tags zen_desktop` when `pkg-config` finds GTK3, GStreamer app/video, GIO Unix,
+X11 and XTest. That produces one `zen` ELF whose `desktop-helper`, `desktop-host`
+and `desktop-agent` roles are the same file. It does not extract a second helper
+or compile C at end-user startup. System GTK/GStreamer/X11 remain dynamically
+linked; `zen doctor` reports missing libraries or a daemon-only binary.
+
+A plain `cd zen/daemon && go build -o bin/zen ./cmd/zen/` without the tag is a
+daemon-only artifact (same as `CGO_ENABLED=0` cross-release builds). Desktop
+capture is then unavailable until you rebuild with the local recipe.
+
+```bash
 cd zen/daemon
 go build -o bin/zen ./cmd/zen/
 ./bin/zen --help
@@ -129,7 +148,9 @@ Product version for banners and release staging comes from `app/app.base.json` (
 
 ## Release binaries (Linux and Apple Silicon macOS)
 
-Cross-build without CGO (deterministic flags: `-trimpath`, `-buildvcs=false`, stripped ldflags):
+Cross-build without CGO (deterministic flags: `-trimpath`, `-buildvcs=false`, stripped ldflags).
+These archives are **daemon-only**: they do not contain Linux desktop native roles.
+Use the local CGO recipe above for a desktop-capable `zen` on the build host.
 
 ```bash
 ./scripts/build-daemon-linux.sh

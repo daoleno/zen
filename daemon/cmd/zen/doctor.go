@@ -60,7 +60,7 @@ func runDoctorCommand(args []string, stderr io.Writer) error {
 func printDoctorUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: zen doctor [flags]")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Diagnose whether this machine can run Zen (tmux, state dir, listen port, executors).")
+	fmt.Fprintln(w, "Diagnose whether this machine can run Zen (tmux, state dir, listen port, executors, desktop native).")
 	fmt.Fprintln(w, "Never installs packages or prints credentials. Exit status is nonzero when not ready.")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Examples:")

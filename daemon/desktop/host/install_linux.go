@@ -191,10 +191,10 @@ func sddmConfiguration() (*ini.File, string, string, error) {
 	return main, start, stop, nil
 }
 
-// InstallLinux installs a reviewed broker and agent transaction, but never
+// InstallLinux installs one reviewed zen ELF as the broker/agent identity, but never
 // starts, stops or enables a service. Activation is an explicit installer CLI
 // operation. The existing canonical owner unit/state is referenced, not copied.
-func InstallLinux(config HostConfig, brokerSource, agentSource string) error {
+func InstallLinux(config HostConfig, binarySource string) error {
 	if os.Geteuid() != 0 || config.Validate() != nil || !ownerUnitName.MatchString(config.OwnerUnit) {
 		return errors.New("invalid_install_owner")
 	}
@@ -206,11 +206,7 @@ func InstallLinux(config HostConfig, brokerSource, agentSource string) error {
 	if _, err := os.Lstat(installJournalPath); !os.IsNotExist(err) {
 		return errors.New("installation_already_exists")
 	}
-	brokerData, err := readInstallSource(brokerSource)
-	if err != nil {
-		return err
-	}
-	agentData, err := readInstallSource(agentSource)
+	binaryData, err := readInstallSource(binarySource)
 	if err != nil {
 		return err
 	}
@@ -229,10 +225,9 @@ func InstallLinux(config HostConfig, brokerSource, agentSource string) error {
 		return err
 	}
 	plan.Files = append(plan.Files,
-		PlannedFile{Path: "/usr/libexec/zen/zen-desktop-host", Mode: 0755, Content: string(brokerData)},
-		PlannedFile{Path: AgentExecutable, Mode: 0755, Content: string(agentData)},
-		PlannedFile{Path: "/usr/libexec/zen/sddm-start", Mode: 0755, Content: "#!/bin/sh\n'" + start + "' \"$@\" || exit $?\n/usr/libexec/zen/zen-desktop-host --register start || :\n"},
-		PlannedFile{Path: "/usr/libexec/zen/sddm-stop", Mode: 0755, Content: "#!/bin/sh\n/usr/libexec/zen/zen-desktop-host --register stop || :\nexec '" + stop + "' \"$@\"\n"},
+		PlannedFile{Path: InstalledBinary, Mode: 0755, Content: string(binaryData)},
+		PlannedFile{Path: "/usr/libexec/zen/sddm-start", Mode: 0755, Content: "#!/bin/sh\n'" + start + "' \"$@\" || exit $?\n/usr/libexec/zen/zen desktop-host --register start || :\n"},
+		PlannedFile{Path: "/usr/libexec/zen/sddm-stop", Mode: 0755, Content: "#!/bin/sh\n/usr/libexec/zen/zen desktop-host --register stop || :\nexec '" + stop + "' \"$@\"\n"},
 		PlannedFile{Path: "/etc/sddm.conf", Mode: 0644, Content: sddmData.String()},
 	)
 	journal := installJournal{Version: 1}

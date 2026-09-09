@@ -79,6 +79,7 @@ func Run(opts Options) (Report, error) {
 	report.StateDir = e.checkStateDir()
 	report.Listen = e.checkListen(report.StateDir.Path)
 	report.Executors = e.checkExecutors()
+	report.Desktop = e.checkDesktop()
 
 	report.Checks = []NamedCheck{
 		{ID: "platform", Status: report.Platform.Status, Remediation: report.Platform.Remediation, Summary: report.Platform.Summary},
@@ -86,6 +87,7 @@ func Run(opts Options) (Report, error) {
 		{ID: "state_dir", Status: report.StateDir.Status, Remediation: report.StateDir.Remediation, Summary: report.StateDir.Summary},
 		{ID: "listen", Status: report.Listen.Status, Remediation: report.Listen.Remediation, Summary: report.Listen.Summary},
 		{ID: "executors", Status: report.Executors.Status, Remediation: report.Executors.Remediation, Summary: report.Executors.Summary},
+		{ID: "desktop", Status: report.Desktop.Status, Remediation: report.Desktop.Remediation, Summary: report.Desktop.Summary},
 	}
 	report.Remediations = collectRemediations(report)
 	report.Warnings = collectWarnings(report)
@@ -127,6 +129,9 @@ func collectWarnings(report Report) []string {
 	if report.Executors.Status == StatusWarn {
 		add(report.Executors.Summary)
 	}
+	if report.Desktop.Status == StatusWarn || report.Desktop.Status == StatusFail {
+		add(report.Desktop.Summary)
+	}
 	for _, item := range report.Executors.Items {
 		if item.Status == StatusWarn && item.Summary != "" {
 			add(item.Summary)
@@ -150,6 +155,7 @@ func collectRemediations(report Report) []Remediation {
 	add(report.StateDir.Remediation)
 	add(report.Listen.Remediation)
 	add(report.Executors.Remediation)
+	add(report.Desktop.Remediation)
 	for _, item := range report.Executors.Items {
 		add(item.Remediation)
 	}

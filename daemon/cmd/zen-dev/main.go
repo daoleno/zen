@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -260,15 +261,31 @@ func (t *watchTree) relevantPath(path string) (string, bool) {
 	}
 
 	base := filepath.Base(rel)
-	if base != "go.mod" && base != "go.sum" && filepath.Ext(base) != ".go" {
+	if base == "go.mod" || base == "go.sum" || base == "Makefile" || strings.HasSuffix(base, ".mk") {
+		return filepath.ToSlash(rel), true
+	}
+	switch filepath.Ext(base) {
+	case ".go", ".c", ".h":
+		return filepath.ToSlash(rel), true
+	default:
 		return "", false
 	}
-	return filepath.ToSlash(rel), true
 }
 
 func (r *devRunner) rebuild() error {
-	cmd := exec.Command("go", "build", "-o", r.binary, "./cmd/zen")
+	args := []string{"build", "-o", r.binary}
+	env := os.Environ()
+	if tags, extraEnv, ok := desktopNativeBuild(); ok {
+		args = append(args, tags...)
+		env = append(env, extraEnv...)
+		fmt.Fprintln(r.stderr, "zen-dev: building desktop-capable zen (CGO, zen_desktop)")
+	} else {
+		fmt.Fprintln(r.stderr, "zen-dev: building zen without desktop native (pkg-config libraries missing or not Linux)")
+	}
+	args = append(args, "./cmd/zen")
+	cmd := exec.Command("go", args...)
 	cmd.Dir = r.root
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
 		_, _ = r.stderr.Write(output)
@@ -277,6 +294,17 @@ func (r *devRunner) rebuild() error {
 		return fmt.Errorf("go build failed: %w", err)
 	}
 	return nil
+}
+
+func desktopNativeBuild() (tags []string, env []string, ok bool) {
+	if runtime.GOOS != "linux" {
+		return nil, nil, false
+	}
+	cmd := exec.Command("pkg-config", "--exists", "gtk+-3.0", "gstreamer-app-1.0", "gstreamer-video-1.0", "x11", "xtst", "gio-unix-2.0")
+	if cmd.Run() != nil {
+		return nil, nil, false
+	}
+	return []string{"-tags", "zen_desktop"}, []string{"CGO_ENABLED=1"}, true
 }
 
 func (r *devRunner) restart() error {

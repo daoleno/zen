@@ -12,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "portal_capture.h"
+#include "encoder.h"
 
 static Display *display;
 static GstElement *pipeline;
@@ -25,15 +26,18 @@ static ZenPortal portal = { .fd = -1 };
 static GDBusConnection *portal_bus;
 static const char *bus_address;
 static int captured_width, captured_height;
+static GCancellable *media_cancel;
 
 static void cancel_portal(void) {
   stopping = TRUE;
+  if (media_cancel) g_cancellable_cancel(media_cancel);
   if (portal.cancel) g_cancellable_cancel(portal.cancel);
 }
 
 static void portal_cancelled(GCancellable *cancel, gpointer unused) {
   (void)cancel; (void)unused;
   stopping = TRUE;
+  if (media_cancel) g_cancellable_cancel(media_cancel);
   gtk_main_quit();
 }
 
@@ -48,6 +52,7 @@ static gboolean source_changed(gpointer unused) {
   XWindowAttributes attrs;
   if (!XGetWindowAttributes(display, DefaultRootWindow(display), &attrs) ||
       attrs.width != source_width || attrs.height != source_height) {
+    cancel_portal();
     gtk_main_quit();
     return G_SOURCE_REMOVE;
   }
@@ -105,6 +110,12 @@ static GstFlowReturn sample(GstAppSink *sink, gpointer unused) {
 
 static gboolean bus_message(GstBus *bus, GstMessage *message, gpointer unused) {
   (void)bus; (void)unused;
+  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+    GError *error = NULL;
+    gst_message_parse_error(message, &error, NULL);
+    g_printerr("zen-desktop: media pipeline failed: %s\n", error ? error->message : "unknown");
+    g_clear_error(&error);
+  }
   if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR || GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS)
     stop_idle(NULL);
   return G_SOURCE_CONTINUE;
@@ -203,45 +214,63 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
   if (height > 720) { width = (int)((double)width * 720 / height); height = 720; }
   width &= ~1; height &= ~1;
   GError *error = NULL;
-  // Only constant element names; display selection is a typed GObject property.
-  char *description = g_strdup_printf(
-    "%s ! "
-    "%s ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
-    "videoconvert ! videoscale ! video/x-raw,format=I420,width=%d,height=%d ! "
-    "openh264enc usage-type=screen complexity=low bitrate=4000000 max-bitrate=4000000 "
-    "rate-control=bitrate gop-size=30 multi-thread=2 ! h264parse config-interval=-1 ! "
-    "video/x-h264,stream-format=byte-stream,alignment=au,profile=constrained-baseline ! "
-    "appsink name=output emit-signals=true sync=false max-buffers=2 drop=false",
-    wayland ? "pipewiresrc name=capture" : "ximagesrc name=capture use-damage=false show-pointer=true",
-    wayland ? "video/x-raw ! videorate drop-only=true ! video/x-raw,framerate=30/1" : "video/x-raw,framerate=30/1", width, height);
-  pipeline = gst_parse_launch(description, &error);
-  g_free(description);
-  if (error || !pipeline) {
-    const char *failure = "{\"state\":\"unsupported\",\"reason\":\"Required GStreamer capture or H.264 plugins are unavailable.\"}";
-    packet(1, failure, strlen(failure));
+  ZenEncoderConfig config = { .width = width, .height = height, .fps = 30, .bitrate = 4000000,
+    .render_node = g_getenv("ZEN_DESKTOP_RENDER_NODE"), .cancel = media_cancel };
+  ZenEncoderSelection selected;
+  if (!zen_encoder_select(&config, &selected, &error) || stopping) {
+    if (selected.bin) gst_object_unref(selected.bin);
+    g_printerr("zen-desktop: encoder selection failed: %s\n", error ? error->message : "cancelled");
+    const char *failure = "{\"state\":\"unsupported\",\"reason\":\"No compatible H.264 encoder passed startup verification.\"}";
+    if (!stopping) packet(1, failure, strlen(failure));
     g_clear_error(&error); gtk_main_quit(); return;
   }
-  GstElement *capture = gst_bin_get_by_name(GST_BIN(pipeline), "capture");
+  GstElement *codec = gst_bin_get_by_name(GST_BIN(selected.bin), "codec");
+  GstElementFactory *factory = codec ? gst_element_get_factory(codec) : NULL;
+  g_printerr("zen-desktop: encoder=%s factory=%s reason=%s hardware=%s\n", selected.name,
+    factory ? GST_OBJECT_NAME(factory) : "unknown", selected.reason, selected.hardware ? "true" : "false");
+  if (codec) gst_object_unref(codec);
+  pipeline = gst_pipeline_new(NULL);
+  GstElement *capture = gst_element_factory_make(wayland ? "pipewiresrc" : "ximagesrc", "capture");
+  GstElement *rate = gst_element_factory_make(wayland ? "videorate" : "identity", NULL);
+  GstElement *filter = gst_element_factory_make("capsfilter", NULL);
+  GstElement *queue = gst_element_factory_make("queue", NULL);
+  GstElement *output = gst_element_factory_make("appsink", "output");
+  if (!capture || !rate || !filter || !queue || !output) {
+    GstElement *unowned[] = {capture, rate, filter, queue, output, selected.bin};
+    for (guint i = 0; i < G_N_ELEMENTS(unowned); i++) if (unowned[i]) gst_object_unref(unowned[i]);
+    const char *failure = "{\"state\":\"unsupported\",\"reason\":\"Required GStreamer capture plugins are unavailable.\"}";
+    packet(1, failure, strlen(failure));
+    gtk_main_quit(); return;
+  }
+  gst_bin_add_many(GST_BIN(pipeline), capture, rate, filter, queue, selected.bin, output, NULL);
+  GstCaps *fps = gst_caps_new_simple("video/x-raw", "framerate", GST_TYPE_FRACTION, 30, 1, NULL);
+  g_object_set(filter, "caps", fps, NULL); gst_caps_unref(fps);
+  if (wayland) g_object_set(rate, "drop-only", TRUE, NULL);
+  else g_object_set(capture, "use-damage", FALSE, "show-pointer", TRUE, "display-name", display_name, NULL);
+  g_object_set(queue, "max-size-buffers", 2u, "max-size-bytes", 0u, "max-size-time", (guint64)0, NULL);
+  gst_util_set_object_arg(G_OBJECT(queue), "leaky", "downstream");
+  g_object_set(output, "emit-signals", TRUE, "sync", FALSE, "max-buffers", 2u, "drop", FALSE, NULL);
+  if (!gst_element_link_many(capture, rate, filter, queue, selected.bin, output, NULL)) {
+    g_printerr("zen-desktop: capture pipeline link failed\n"); gtk_main_quit(); return;
+  }
   if (wayland) {
     if (!zen_portal_bind_source(&portal, capture, &error)) {
       const char *failure = "{\"state\":\"unsupported\",\"reason\":\"The portal PipeWire source could not be bound safely.\"}";
       packet(1, failure, strlen(failure));
-      g_clear_error(&error); gst_object_unref(capture); gtk_main_quit(); return;
+      g_clear_error(&error); gtk_main_quit(); return;
     }
     GstPad *pad = gst_element_get_static_pad(capture, "src");
     gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, capture_caps, NULL, NULL);
     gst_object_unref(pad);
-  } else g_object_set(capture, "display-name", display_name, NULL);
-  gst_object_unref(capture);
-  GstElement *output = gst_bin_get_by_name(GST_BIN(pipeline), "output");
+  }
   g_signal_connect(output, "new-sample", G_CALLBACK(sample), NULL);
-  gst_object_unref(output);
   GstBus *bus = gst_element_get_bus(pipeline);
   gst_bus_add_watch(bus, bus_message, NULL);
   gst_object_unref(bus);
-  char metadata[256];
-  snprintf(metadata, sizeof(metadata), "{\"state\":\"streaming\",\"width\":%d,\"height\":%d,\"codec\":\"h264\",\"encoder\":\"openh264-software\",\"control\":%s}", width, height, control ? "true" : "false");
-  packet(1, metadata, strlen(metadata));
+  char metadata[512];
+  snprintf(metadata, sizeof(metadata), "{\"state\":\"streaming\",\"width\":%d,\"height\":%d,\"codec\":\"h264\",\"encoder\":\"%s\",\"encoder_reason\":\"%s\",\"hardware\":%s,\"control\":%s}",
+    width, height, selected.name, selected.reason, selected.hardware ? "true" : "false", control ? "true" : "false");
+  if (!packet(1, metadata, strlen(metadata))) { stop_idle(NULL); return; }
   window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_title(GTK_WINDOW(window), "Zen Desktop Sharing");
   gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
@@ -251,12 +280,16 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
   g_signal_connect(stop, "clicked", G_CALLBACK(stop_clicked), NULL);
   gtk_widget_show_all(window);
   granted = TRUE;
-  if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) gtk_main_quit();
+  if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+    g_printerr("zen-desktop: capture pipeline failed to start\n");
+    stop_idle(NULL);
+  }
 }
 
-int main(int argc, char **argv) {
+int zen_desktop_helper_main(int argc, char **argv) {
   const char *device = NULL;
   for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "desktop-helper")) continue;
     if (!strcmp(argv[i], "--display") && i + 1 < argc) display_name = argv[++i];
     else if (!strcmp(argv[i], "--device") && i + 1 < argc) device = argv[++i];
     else if (!strcmp(argv[i], "--control")) control = TRUE;
@@ -273,6 +306,7 @@ int main(int argc, char **argv) {
   XInitThreads();
   signal(SIGPIPE, SIG_IGN);
   gst_init(NULL, NULL);
+  media_cancel = g_cancellable_new();
   if (!gtk_init_check(NULL, NULL)) return 3;
   if (!wayland) {
     display = XOpenDisplay(display_name);
@@ -303,9 +337,16 @@ int main(int argc, char **argv) {
   gtk_main();
   if (!wayland) release_input();
   if (pipeline) { gst_element_set_state(pipeline, GST_STATE_NULL); gst_object_unref(pipeline); }
+  g_object_unref(media_cancel);
   g_io_channel_unref(input);
   if (wayland) zen_portal_close(&portal);
   if (portal_bus) { g_dbus_connection_close_sync(portal_bus, NULL, NULL); g_object_unref(portal_bus); }
   if (display) XCloseDisplay(display);
   return 0;
 }
+
+#ifndef ZEN_DESKTOP_CGO
+int main(int argc, char **argv) {
+  return zen_desktop_helper_main(argc, argv);
+}
+#endif

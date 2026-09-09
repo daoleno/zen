@@ -44,6 +44,8 @@ func TestDesktopRequiresIndependentPurposeNonceAndHeader(t *testing.T) {
 		}
 	}
 	t.Setenv("ZEN_DESKTOP_HELPER", "")
+	t.Setenv("ZEN_DESKTOP_DISPLAY", "")
+	t.Setenv("ZEN_DESKTOP_BACKEND", "")
 	conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {header}, "X-Zen-Desktop-Mode": {"attended"}})
 	if err != nil {
 		t.Fatal(err)

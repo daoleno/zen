@@ -23,6 +23,9 @@ func TestInstallPlanHasNoDeviceTrustToggleOrCredentialStore(t *testing.T) {
 	if plan.Files[0].Mode != 0600 || !strings.Contains(plan.Files[1].Content, "User=root\n") || !strings.Contains(plan.Files[1].Content, "RestrictAddressFamilies=AF_UNIX\n") {
 		t.Fatal("privilege boundary missing")
 	}
+	if !strings.Contains(plan.Files[1].Content, "ExecStart=/usr/libexec/zen/zen desktop-host --config /etc/zen/desktop-host.json") {
+		t.Fatal("same-binary desktop-host role missing")
+	}
 	if !strings.Contains(plan.Files[1].Content, "AmbientCapabilities=CAP_SETUID\n") || !strings.Contains(plan.Files[1].Content, "CAP_KILL") || !strings.Contains(plan.Files[1].Content, "Before=display-manager.service") {
 		t.Fatal("boot ordering or dropped-agent lifecycle capability missing")
 	}

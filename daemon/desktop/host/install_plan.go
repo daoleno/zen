@@ -37,7 +37,7 @@ Before=display-manager.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/libexec/zen/zen-desktop-host --config /etc/zen/desktop-host.json
+ExecStart=/usr/libexec/zen/zen desktop-host --config /etc/zen/desktop-host.json
 RuntimeDirectory=zen-desktop
 RuntimeDirectoryMode=0711
 UMask=0077
@@ -67,7 +67,7 @@ WantedBy=multi-user.target
 `},
 	}, Requirements: []string{
 		"Build and audit the executable broker and UID-dropped X11 agent; rendered service files alone are not an installation.",
-		"Verify root-owned immutable binaries and all parent directories; no user-writable executable, helper path or library search path.",
+		"Verify root-owned immutable binaries and all parent directories; no user-writable executable, helper path or library search path. The installed zen ELF is the only broker/agent identity.",
 		"Verify peer UID, canonical owner unit MainPID and fresh device/scope proof, including synchronous revocation.",
 		"Create the broker socket mode 0600 owned by the configured owner UID inside the root-owned runtime directory; keep all other runtime state root-only.",
 		"Approve boot service ownership for the existing unprivileged Zen daemon with unchanged identity, state directory and network settings; do not start a duplicate owner.",

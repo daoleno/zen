@@ -30,7 +30,6 @@ import (
 
 const OwnerSocket = "/run/zen-desktop/owner.sock"
 const RegisterSocket = "/run/zen-desktop/register.sock"
-const AgentExecutable = "/usr/libexec/zen/zen-desktop-agent"
 
 type Challenge struct {
 	Nonce      string  `json:"nonce"`
@@ -438,11 +437,14 @@ func (b *broker) isCanonicalOwner(ctx context.Context, peer *net.UnixConn) bool 
 }
 
 func (b *broker) startAgentLocked(control bool) (*os.File, *exec.Cmd, error) {
-	executable, err := OpenRootFile(AgentExecutable, 0755)
+	executable, err := OpenRootFile(InstalledBinary, 0755)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer executable.Close()
+	if err := BrokerMayLaunchAgent(executable); err != nil {
+		return nil, nil, err
+	}
 	account, err := user.LookupId(strconv.FormatUint(uint64(b.session.UID), 10))
 	if err != nil {
 		return nil, nil, errors.New("agent_account_unavailable")
@@ -462,7 +464,7 @@ func (b *broker) startAgentLocked(control bool) (*os.File, *exec.Cmd, error) {
 	if control {
 		mode = "control"
 	}
-	cmd := exec.Command("/proc/self/fd/5", b.display, mode)
+	cmd := exec.Command("/proc/self/fd/5", desktop.RoleAgent, b.display, mode)
 	cmd.Env = []string{"PATH=/usr/bin", "LANG=C.UTF-8", "HOME=/nonexistent", "GST_REGISTRY_UPDATE=no", "GST_REGISTRY=/nonexistent/registry.bin", "GST_REGISTRY_FORK=no"}
 	cmd.ExtraFiles = []*os.File{child, b.authority, executable}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: b.session.UID, Gid: uint32(gid), Groups: []uint32{}}, Pdeathsig: syscall.SIGTERM}

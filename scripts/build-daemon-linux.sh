@@ -45,6 +45,8 @@ fi
 mkdir -p "$OUT_DIR"
 
 # Deterministic-ish Go builds for release staging (no VCS stamp, trim paths).
+# CGO_ENABLED=0 archives are daemon-only: they do not include Linux desktop native
+# roles. Desktop-capable local builds use scripts/build-zen-local.sh.
 export CGO_ENABLED=0
 export GOFLAGS="${GOFLAGS:-} -trimpath"
 # Allow callers to pin timestamps for more reproducible archives.

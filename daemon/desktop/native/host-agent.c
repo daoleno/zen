@@ -168,27 +168,31 @@ static gboolean geometry(gpointer unused) {
   return G_SOURCE_CONTINUE;
 }
 
-int main(int argc, char **argv) {
+int zen_desktop_agent_main(int argc, char **argv) {
   struct ucred peer;
   socklen_t peer_size = sizeof(peer);
   struct stat authority;
-  if (argc != 3 || getuid() == 0 || geteuid() != getuid() ||
+  int argi = 1;
+  if (argi < argc && !strcmp(argv[argi], "desktop-agent")) argi++;
+  if (argc - argi != 2 || getuid() == 0 || geteuid() != getuid() ||
       getsockopt(channel, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) || peer.uid != 0 || peer.pid != getppid() ||
       fstat(4, &authority) || !S_ISREG(authority.st_mode) || authority.st_size < 1 || authority.st_size > 65536)
     return 2;
-  if (argv[1][0] != ':' || strlen(argv[1]) > 16 || strspn(argv[1] + 1, "0123456789.") != strlen(argv[1] + 1)) return 2;
-  if (strcmp(argv[2], "view") && strcmp(argv[2], "control")) return 2;
-  control = !strcmp(argv[2], "control");
+  const char *display_arg = argv[argi];
+  const char *mode_arg = argv[argi + 1];
+  if (display_arg[0] != ':' || strlen(display_arg) > 16 || strspn(display_arg + 1, "0123456789.") != strlen(display_arg + 1)) return 2;
+  if (strcmp(mode_arg, "view") && strcmp(mode_arg, "control")) return 2;
+  control = !strcmp(mode_arg, "control");
   struct __user_cap_header_struct cap_header = { .version = _LINUX_CAPABILITY_VERSION_3 };
   struct __user_cap_data_struct caps[2] = {{0}, {0}};
   if (prctl(PR_SET_DUMPABLE, 0) || prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) || syscall(SYS_capset, &cap_header, caps)) return 2;
   struct timeval timeout = { .tv_sec = 2 };
   setsockopt(channel, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
   signal(SIGPIPE, SIG_IGN);
-  setenv("DISPLAY", argv[1], 1);
+  setenv("DISPLAY", display_arg, 1);
   setenv("XAUTHORITY", "/proc/self/fd/4", 1);
   XInitThreads();
-  display = XOpenDisplay(argv[1]);
+  display = XOpenDisplay(display_arg);
   if (!display) return 3;
   int event, error, major, minor;
   if (!XTestQueryExtension(display, &event, &error, &major, &minor)) return 3;
@@ -223,3 +227,9 @@ int main(int argc, char **argv) {
   XCloseDisplay(display); g_main_loop_unref(loop);
   return 0;
 }
+
+#ifndef ZEN_DESKTOP_CGO
+int main(int argc, char **argv) {
+  return zen_desktop_agent_main(argc, argv);
+}
+#endif

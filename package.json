@@ -13,7 +13,7 @@
     "app:ios": "cd app && bun run ios",
     "app:android": "cd app && env JAVA_HOME=/usr/lib/jvm/java-17-openjdk PATH=/usr/lib/jvm/java-17-openjdk/bin:$PATH bun run android",
     "app:doctor": "cd app && bunx expo-doctor",
-    "daemon:build": "mkdir -p bin && cd daemon && go build -o ../bin/zen ./cmd/zen",
+    "daemon:build": "./scripts/build-zen-local.sh bin/zen",
     "daemon:build:linux": "./scripts/build-daemon-linux.sh",
     "daemon:test": "cd daemon && go test ./...",
     "installer:test": "./scripts/tests/install_test.sh",

@@ -9,9 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -173,13 +170,12 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 		data, _ := json.Marshal(map[string]any{"version": 1, "state": state, "reason": reason})
 		_ = write(websocket.TextMessage, data)
 	}
-	helper := os.Getenv("ZEN_DESKTOP_HELPER")
-	if !filepath.IsAbs(helper) {
-		status("unsupported", "Desktop sharing is not configured on this host.")
-		return
-	}
-	if info, err := os.Stat(helper); err != nil || !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
-		status("unsupported", "Desktop helper is unavailable.")
+	if _, err := HelperCommand(nil); err != nil {
+		if errors.Is(err, ErrHelperUnavailable) {
+			status("unsupported", "Desktop helper is unavailable.")
+		} else {
+			status("unsupported", "Desktop sharing is not configured on this host.")
+		}
 		return
 	}
 	source, sourceName, sourceArgs, err := configuredSource()
@@ -210,7 +206,11 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 	if start.Control {
 		args = append(args, "--control")
 	}
-	cmd := exec.Command(helper, args...)
+	cmd, err := HelperCommand(args)
+	if err != nil {
+		status("disconnected", "Desktop helper could not start.")
+		return
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		status("disconnected", "Desktop helper could not start.")
