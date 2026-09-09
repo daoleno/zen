@@ -146,6 +146,7 @@ export function MermaidFullscreenModal({
                 width={fitted.width}
                 height={fitted.height}
                 background="transparent"
+                priority="fullscreen"
               />
             </Animated.View>
           </View>

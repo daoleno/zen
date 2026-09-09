@@ -292,6 +292,7 @@ function MermaidDemo() {
   );
   return (
     <SafeAreaView
+      accessibilityLabel="Mermaid flowchart fixture"
       style={[styles.mermaidRoot, { backgroundColor: chrome.appBackground }]}
     >
       <ScrollView contentContainerStyle={styles.mermaidContent}>

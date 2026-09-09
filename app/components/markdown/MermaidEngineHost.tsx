@@ -3,88 +3,28 @@ import React, {
   useEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { StyleSheet, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { MERMAID_MAX_RENDER_MS, MERMAID_MESSAGE_VERSION } from "./mermaidLimits";
+import {
+  bindMermaidEngineInject,
+  completeMermaidEngineResult,
+  failMermaidEngine,
+  markMermaidEngineReady,
+} from "./mermaidRenderQueue";
 import {
   isAllowedMermaidEngineUrl,
   parseMermaidHostMessage,
-  serializeMermaidRenderRequest,
 } from "./mermaidMessages";
-import type { MermaidRenderTheme } from "./mermaidTheme";
 import {
   MERMAID_ENGINE_BASE_URL,
   buildMermaidEngineHtml,
 } from "./mermaidWebViewHtml";
 
-export type MermaidEngineResult =
-  | { ok: true; svg: string; width: number; height: number }
-  | { ok: false; error: string };
-
-type PendingRender = {
-  requestId: string;
-  generation: number;
-  source: string;
-  theme: MermaidRenderTheme;
-  timeoutMs: number;
-  onResult: (result: MermaidEngineResult) => void;
-};
-
-const pending = new Map<string, PendingRender>();
-let queue: PendingRender[] = [];
-let engineReady = false;
-let inject: ((script: string) => void) | null = null;
-let nextRequest = 1;
-
-function flushQueue() {
-  if (!engineReady || !inject) {
-    return;
-  }
-  while (queue.length > 0) {
-    const job = queue.shift();
-    if (!job || !pending.has(job.requestId)) {
-      continue;
-    }
-    inject(
-      `window.__zenMermaidRender(${serializeMermaidRenderRequest({
-        v: MERMAID_MESSAGE_VERSION,
-        type: "render",
-        requestId: job.requestId,
-        generation: job.generation,
-        source: job.source,
-        theme: job.theme,
-        timeoutMs: job.timeoutMs,
-      })}); true;`,
-    );
-  }
-}
-
-export function requestMermaidEngineRender(input: {
-  source: string;
-  theme: MermaidRenderTheme;
-  generation: number;
-  timeoutMs?: number;
-  onResult: (result: MermaidEngineResult) => void;
-}) {
-  const requestId = `m${nextRequest}`;
-  nextRequest += 1;
-  const job: PendingRender = {
-    requestId,
-    generation: input.generation,
-    source: input.source,
-    theme: input.theme,
-    timeoutMs: input.timeoutMs ?? MERMAID_MAX_RENDER_MS,
-    onResult: input.onResult,
-  };
-  pending.set(requestId, job);
-  queue.push(job);
-  flushQueue();
-  return () => {
-    pending.delete(requestId);
-  };
-}
+export {
+  requestMermaidEngineRender,
+  type MermaidEngineResult,
+} from "./mermaidRenderQueue";
 
 export function MermaidEngineHost() {
   const webviewRef = useRef<WebView>(null);
@@ -95,36 +35,29 @@ export function MermaidEngineHost() {
       return;
     }
     if (message.type === "ready") {
-      engineReady = true;
-      flushQueue();
+      markMermaidEngineReady();
       return;
     }
-    const job = pending.get(message.requestId);
-    if (!job || job.generation !== message.generation) {
-      return;
-    }
-    pending.delete(message.requestId);
-    if (message.ok) {
-      job.onResult({
-        ok: true,
-        svg: message.svg,
-        width: message.width,
-        height: message.height,
-      });
-      return;
-    }
-    job.onResult({ ok: false, error: message.error });
+    completeMermaidEngineResult(
+      message.requestId,
+      message.generation,
+      message.ok
+        ? {
+            ok: true,
+            svg: message.svg,
+            width: message.width,
+            height: message.height,
+          }
+        : { ok: false, error: message.error },
+    );
   }, []);
 
   useEffect(() => {
-    inject = (script: string) => {
+    bindMermaidEngineInject((script: string) => {
       webviewRef.current?.injectJavaScript(script);
-    };
+    });
     return () => {
-      if (inject) {
-        engineReady = false;
-        inject = null;
-      }
+      bindMermaidEngineInject(null);
     };
   }, []);
 
@@ -142,9 +75,12 @@ export function MermaidEngineHost() {
         source={{ html, baseUrl: MERMAID_ENGINE_BASE_URL }}
         onMessage={handleMessage}
         onLoadEnd={() => {
-          engineReady = true;
-          flushQueue();
+          webviewRef.current?.injectJavaScript(
+            `(function(){if(window.mermaid&&window.__zenMermaidRender&&window.ReactNativeWebView){window.ReactNativeWebView.postMessage(JSON.stringify({v:1,type:"ready"}));}})(); true;`,
+          );
         }}
+        onRenderProcessGone={() => failMermaidEngine("engine")}
+        onContentProcessDidTerminate={() => failMermaidEngine("engine")}
         onShouldStartLoadWithRequest={(request) =>
           isAllowedMermaidEngineUrl(request.url)
         }
@@ -170,7 +106,7 @@ export function MermaidEngineHost() {
         nestedScrollEnabled={false}
         overScrollMode="never"
         allowsLinkPreview={false}
-        dataDetectorTypes="none"
+        dataDetectorTypes={["none"]}
         style={styles.webview}
       />
     </View>
@@ -180,15 +116,18 @@ export function MermaidEngineHost() {
 const styles = StyleSheet.create({
   host: {
     position: "absolute",
-    width: 8,
-    height: 8,
-    opacity: 0.01,
+    left: 0,
+    top: 0,
+    width: 48,
+    height: 48,
+    opacity: 1,
     overflow: "hidden",
+    zIndex: -1,
   },
   webview: {
-    width: 8,
-    height: 8,
+    width: 48,
+    height: 48,
     backgroundColor: "transparent",
-    opacity: 0.01,
+    opacity: 1,
   },
 });

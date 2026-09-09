@@ -152,7 +152,7 @@ export const MERMAID_ENGINE_BOOTSTRAP = String.raw`
 `;
 
 export const MERMAID_ENGINE_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; navigation-to 'none'";
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 export function buildMermaidEngineHtml() {
   return `<!DOCTYPE html>

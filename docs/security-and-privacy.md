@@ -170,7 +170,8 @@ That is a daemon-host trust choice, not authority granted to the relay. See
 Fenced Mermaid flowcharts are untrusted input. Zen strips init/frontmatter
 overrides and `click` statements, disables HTML labels except line breaks,
 locks `securityLevel` to `strict`, and renders in a local WebView that cannot
-navigate, fetch, open windows, or expose host bridge methods. Unsupported
-diagram types and oversize sources fall back to readable code.
+navigate, fetch, open windows, or expose host bridge methods. Render jobs share
+one engine WebView with a bounded queue; preview WebViews are also capped.
+Unsupported diagram types and oversize sources fall back to readable code.
 
 Report vulnerabilities through [SECURITY.md](../SECURITY.md).

@@ -48,9 +48,13 @@ and Skill file Markdown render as flowcharts when the source is a `flowchart`
 or `graph` diagram. Other Mermaid types stay as ordinary readable code.
 Rendering uses bundled mermaid `11.6.0` inside a sandboxed WebView: no CDN,
 no custom callbacks, and `%%{init}%%` / frontmatter cannot loosen security.
-Copy returns the original Mermaid source. Incomplete streaming fences keep a
-stable placeholder until the message settles. Dense diagrams open a
-pinch-and-pan full-screen view; closing it leaves the reading position intact.
+One hidden engine WebView serializes render jobs (at most one in flight, eight
+queued; extra requests fail busy). At most three inline SVG preview WebViews
+are mounted; fullscreen preview is reserved separately. The SVG cache is
+capped at 24 entries. Copy returns the original Mermaid source. Incomplete
+streaming fences keep a stable placeholder until the message settles and do
+not enqueue a render. Dense diagrams open a pinch-and-pan full-screen view;
+closing it leaves the reading position intact.
 
 Limits: 32 KiB source, 80 nodes, 120 edges, 16 subgraphs, 2.5s render. Invalid
 or blocked diagrams fall back to the source with a short status label.
