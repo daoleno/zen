@@ -2,6 +2,8 @@ package host
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 )
 
@@ -79,4 +81,18 @@ WantedBy=multi-user.target
 		plan.Files[1].Content = strings.Replace(plan.Files[1].Content, "Requires=systemd-logind.service", "Requires=systemd-logind.service "+config.OwnerUnit+"\nAfter="+config.OwnerUnit, 1)
 	}
 	return plan, nil
+}
+
+// PrintInstallPlan writes the reviewed manifest. It is not an installation.
+func PrintInstallPlan(w io.Writer, plan InstallPlan) {
+	fmt.Fprintln(w, "Zen desktop-host install plan (not applied)")
+	fmt.Fprintln(w, "This does not write files, start systemd, change SDDM, or capture a display.")
+	fmt.Fprintln(w, "Current-session desktop does not use this plan. Lock/login after reboot does.")
+	for _, file := range plan.Files {
+		fmt.Fprintf(w, "\nFILE %s mode=%04o\n%s", file.Path, file.Mode, file.Content)
+	}
+	fmt.Fprintln(w, "\nREQUIREMENTS")
+	for _, requirement := range plan.Requirements {
+		fmt.Fprintf(w, "- %s\n", requirement)
+	}
 }

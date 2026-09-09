@@ -69,3 +69,13 @@ export function desktopTransportPlan(server: StoredServer, resolved: string) {
   return { url: target.toString(), transport, boundOrigin: target.origin, sourceOrigin: source.origin,
     transportPin: transport === "pinned-link" ? server.transportPin! : "" };
 }
+
+export function desktopPinnedIdentityPlan(localOrigin: string, tlsSourceOrigin: string, pin: string) {
+  if (!/^[0-9a-f]{64}$/i.test(pin)) throw new Error("The desktop identity pin is invalid.");
+  const target = endpoint(`${localOrigin.replace(/\/$/, "")}/desktop`);
+  const source = endpoint(tlsSourceOrigin);
+  if (target.protocol !== "ws:" || target.hostname !== "127.0.0.1" || source.protocol !== "wss:") {
+    throw new Error("Identity-bound desktop TLS must use a local pinned tunnel.");
+  }
+  return { url: target.toString(), transport: "pinned-link" as const, boundOrigin: target.origin, sourceOrigin: source.origin, transportPin: pin.toLowerCase() };
+}

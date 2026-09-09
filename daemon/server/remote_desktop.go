@@ -23,9 +23,20 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid_desktop_mode", http.StatusBadRequest)
 		return
 	}
-	if mode != "attended" && (r.TLS == nil || !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex)) {
-		http.Error(w, "desktop_scope_and_tls_required", http.StatusForbidden)
-		return
+	if mode != "attended" {
+		if !actualRequestTLS(r) {
+			http.Error(w, "desktop_tls_required", http.StatusForbidden)
+			return
+		}
+		if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) {
+			http.Error(w, "desktop_scope_required", http.StatusForbidden)
+			return
+		}
+		readiness := inspectHostReadiness()
+		if !readiness.Broker && !readiness.CurrentSession {
+			http.Error(w, "host_setup_required", http.StatusForbidden)
+			return
+		}
 	}
 	u := websocket.Upgrader{HandshakeTimeout: 5 * time.Second}
 	conn, err := u.Upgrade(w, r, nil)
@@ -35,8 +46,13 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	if mode == "attended" {
 		s.desktop.Serve(conn, device.ID, device.Name, func() bool { return s.auth.IsDeviceTrusted(device.ID) })
 	} else {
-		s.desktop.ServeExternal(conn, device.ID, func(bind func(func())) {
-			host.ServeUnattended(conn, s.auth, device, r.TLS != nil, bind)
-		})
+		readiness := inspectHostReadiness()
+		if readiness.Broker {
+			s.desktop.ServeExternal(conn, device.ID, func(bind func(func())) {
+				host.ServeUnattended(conn, s.auth, device, actualRequestTLS(r), bind)
+			})
+			return
+		}
+		s.desktop.ServePairedSession(conn, device.ID, device.Name, func() bool { return s.auth.IsDeviceTrusted(device.ID) })
 	}
 }

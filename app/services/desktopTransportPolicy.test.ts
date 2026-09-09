@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { desktopLanOrigin, desktopTransportPlan, hasDesktopLanConsent, isPrivateDesktopHost } from "./desktopTransportPolicy";
+import { desktopLanOrigin, desktopPinnedIdentityPlan, desktopTransportPlan, hasDesktopLanConsent, isPrivateDesktopHost } from "./desktopTransportPolicy";
 import { mergeStoredServer, normalizeStoredServers, type StoredServer } from "./storedServerContract";
 
 const server = (url = "ws://192.168.110.223:9876/ws"): StoredServer => ({
@@ -53,4 +53,15 @@ test("credentials, invalid ports and cross-origin resolved paths are rejected", 
   for (const url of ["wss://user:secret@host/ws", "ws://user:secret@192.168.1.2/ws", "ws://192.168.1.2:0/ws", "file:///desktop"]) expect(() => desktopTransportPlan(server(url), url)).toThrow();
   const paired = approve(server());
   expect(() => desktopTransportPlan(paired, "ws://192.168.110.224:9876/ws")).toThrow();
+});
+test("identity-bound LAN desktop uses a pinned TLS tunnel, not trusted-lan", () => {
+  const plan = desktopPinnedIdentityPlan("ws://127.0.0.1:41234", "wss://192.168.110.223:9876", "AB".repeat(32));
+  expect(plan).toMatchObject({
+    url: "ws://127.0.0.1:41234/desktop",
+    transport: "pinned-link",
+    sourceOrigin: "wss://192.168.110.223:9876",
+    transportPin: "ab".repeat(32),
+  });
+  expect(() => desktopPinnedIdentityPlan("ws://192.168.110.223:9876", "wss://192.168.110.223:9876", "ab".repeat(32))).toThrow("local pinned");
+  expect(() => desktopPinnedIdentityPlan("ws://127.0.0.1:41234", "ws://192.168.110.223:9876", "ab".repeat(32))).toThrow("local pinned");
 });

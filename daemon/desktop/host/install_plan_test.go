@@ -26,6 +26,11 @@ func TestInstallPlanHasNoDeviceTrustToggleOrCredentialStore(t *testing.T) {
 	if !strings.Contains(plan.Files[1].Content, "ExecStart=/usr/libexec/zen/zen desktop-host --config /etc/zen/desktop-host.json") {
 		t.Fatal("same-binary desktop-host role missing")
 	}
+	var rendered strings.Builder
+	PrintInstallPlan(&rendered, plan)
+	if !strings.Contains(rendered.String(), "not applied") || !strings.Contains(rendered.String(), "Current-session desktop does not use this plan") {
+		t.Fatal("plan must stay review-only")
+	}
 	if !strings.Contains(plan.Files[1].Content, "AmbientCapabilities=CAP_SETUID\n") || !strings.Contains(plan.Files[1].Content, "CAP_KILL") || !strings.Contains(plan.Files[1].Content, "Before=display-manager.service") {
 		t.Fatal("boot ordering or dropped-agent lifecycle capability missing")
 	}

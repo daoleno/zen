@@ -82,4 +82,11 @@ class PinnedProxyTest {
             }
         }
     }
+
+    @Test
+    fun ipLiteralsUseDesktopIdentityServerName() {
+        assertEquals("zen-desktop.invalid", pinnedServerName("192.168.110.223"))
+        assertEquals("zen-desktop.invalid", pinnedServerName("2001:db8::1"))
+        assertEquals("computer.example", pinnedServerName("computer.example"))
+    }
 }

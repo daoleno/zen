@@ -22,11 +22,36 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 	install := fs.Bool("install", false, "Install reviewed same-binary zen as broker/agent")
 	rollback := fs.Bool("rollback", false, "Roll back unchanged installed files; broker must be stopped")
 	activate := fs.Bool("activate", false, "Enable/start the installed broker; do not restart SDDM or the owner")
+	planOnly := fs.Bool("plan", false, "Print the reviewed install manifest without changing the host")
 	binarySource := fs.String("binary-source", "", "Reviewed desktop-capable zen ELF used for every role")
 	brokerSource := fs.String("broker-source", "", "Legacy alias; must match --binary-source / --agent-source")
 	agentSource := fs.String("agent-source", "", "Legacy alias; must match --binary-source / --broker-source")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *planOnly {
+		if *install || *rollback || *activate || *register != "" {
+			fmt.Fprintln(stderr, "zen desktop-host --plan cannot be combined with install, rollback, activate, or register.")
+			return errors.New("invalid_desktop_host_plan")
+		}
+		file, err := os.Open(*configPath)
+		if err != nil {
+			fmt.Fprintln(stderr, "Zen desktop host operation failed.")
+			return err
+		}
+		config, err := ReadHostConfig(file)
+		file.Close()
+		if err != nil {
+			fmt.Fprintln(stderr, "Zen desktop host operation failed.")
+			return err
+		}
+		plan, err := PrepareLinuxInstall(config)
+		if err != nil {
+			fmt.Fprintln(stderr, "Zen desktop host operation failed.")
+			return err
+		}
+		PrintInstallPlan(stderr, plan)
+		return nil
 	}
 	var err error
 	if *rollback {

@@ -265,6 +265,9 @@ func (t *watchTree) relevantPath(path string) (string, bool) {
 	if base == "go.mod" || base == "go.sum" || base == "Makefile" || strings.HasSuffix(base, ".mk") {
 		return filepath.ToSlash(rel), true
 	}
+	if strings.HasSuffix(base, "_test.go") {
+		return "", false
+	}
 	switch filepath.Ext(base) {
 	case ".go", ".c", ".h":
 		return filepath.ToSlash(rel), true
@@ -276,7 +279,7 @@ func (t *watchTree) relevantPath(path string) (string, bool) {
 func (r *devRunner) rebuild(forceNative bool) error {
 	built := r.binary + ".building"
 	args := []string{"build", "-o", built}
-	env := os.Environ()
+	env := stripEnvKey(os.Environ(), "CGO_ENABLED")
 	if tags, extraEnv, ok := desktopNativeBuild(); ok {
 		args = append(args, tags...)
 		env = append(env, extraEnv...)
@@ -329,6 +332,17 @@ func nativeSourcesChanged(files []string) bool {
 		}
 	}
 	return false
+}
+
+func stripEnvKey(env []string, key string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	for _, item := range env {
+		if !strings.HasPrefix(item, prefix) {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func desktopNativeBuild() (tags []string, env []string, ok bool) {

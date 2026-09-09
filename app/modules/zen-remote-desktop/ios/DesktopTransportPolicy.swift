@@ -1,6 +1,28 @@
 import Foundation
 import Network
 
+enum DesktopFailure {
+  static func map(status: Int?, body: String) -> (state: String, reason: String) {
+    let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    if status == 401 {
+      return ("denied", "This device is no longer paired with the computer.")
+    }
+    if text == "desktop_tls_required" {
+      return ("disconnected", "Unattended desktop needs this computer's identity-bound encrypted transport. The unencrypted LAN switch is only for attended assistance.")
+    }
+    if text == "desktop_scope_required" {
+      return ("denied", "This phone has terminal access only. Run zen pair on the computer and scan once to grant unattended desktop.")
+    }
+    if text == "host_setup_required" {
+      return ("unsupported", "No current desktop session for this zen process. Start zen from the logged-in session, or run one OS-admin zen desktop-host --install for lock and login after reboot.")
+    }
+    if status == 403 {
+      return ("disconnected", text.isEmpty ? "Desktop connection was refused." : text)
+    }
+    return ("disconnected", "Desktop connection ended.")
+  }
+}
+
 enum DesktopTransportPolicy {
   private static func privateAddress(_ bytes: [UInt8]) -> Bool {
     if bytes.count == 16 && bytes.prefix(10).allSatisfy({ $0 == 0 }) && bytes[10] == 255 && bytes[11] == 255 {

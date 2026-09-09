@@ -2,7 +2,7 @@ import nacl from "tweetnacl";
 import { bytesToHex, hexToBytes, normalizeFixedHex } from "./protocolCrypto";
 
 export const DESKTOP_SCOPE_VERSION = 1;
-export const PAIRING_SCOPE_COPY = "Pairing grants this phone terminal access and unattended desktop viewing and control, including supported lock and OS login screens. OS permissions are still required. Password entry requires an encrypted connection. Re-pairing confirms this access for an existing device.";
+export const PAIRING_SCOPE_COPY = "Pairing grants this phone terminal access and unattended desktop viewing and control of the current logged-in session, including supported lock and OS login screens after one host install. OS permissions are still required for lock and login after reboot. Password entry requires an encrypted connection. Re-pairing confirms this access for an existing device.";
 
 export function signPairingScope(input: {
   daemonPublicKey: string;

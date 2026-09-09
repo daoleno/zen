@@ -194,10 +194,10 @@ internal class PinnedProxy(
             plain.tcpNoDelay = true
             plain.keepAlive = true
             plain.connect(InetSocketAddress(host, port), 5_000)
-            val socket = sslContext.socketFactory.createSocket(plain, host, port, true) as SSLSocket
+            val socket = sslContext.socketFactory.createSocket(plain, pinnedServerName(host), port, true) as SSLSocket
             socket.enabledProtocols = arrayOf("TLSv1.3")
             val parameters = socket.sslParameters
-            parameters.serverNames = listOf(SNIHostName(host))
+            parameters.serverNames = listOf(SNIHostName(pinnedServerName(host)))
             socket.sslParameters = parameters
             socket.soTimeout = 15_000
             return socket
@@ -258,6 +258,13 @@ private fun pinnedSSLContext(pinHex: String): SSLContext {
     return SSLContext.getInstance("TLSv1.3").apply {
         init(null, arrayOf(trustManager), SecureRandom())
     }
+}
+
+internal fun pinnedServerName(host: String): String {
+    val literal = host.trim().removePrefix("[").removeSuffix("]")
+    return if (':' in literal || literal.matches(Regex("""^\d{1,3}(?:\.\d{1,3}){3}$"""))) {
+        "zen-desktop.invalid"
+    } else host
 }
 
 private fun closeQuietly(closeable: Closeable) {

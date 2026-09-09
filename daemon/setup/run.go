@@ -439,6 +439,6 @@ func nextSteps(stateDir string) []string {
 		"Same trusted Wi-Fi or direct Tailnet: start Zen with zen --lan, then run a pair command it prints",
 		"HTTPS endpoint: start Zen with zen, expose the full loopback origin, then run " + pairHint,
 		"Optional: re-check with zen doctor",
-		"Remote desktop uses this same zen binary; unattended Linux host setup remains a separately reviewed OS install (zen desktop-host --install), not a DEV watcher",
+		"Remote desktop: start zen from the logged-in session. zen-dev -lan is enough for that current desktop. Lock and login after reboot still need one zen desktop-host --install",
 	}
 }

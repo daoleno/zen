@@ -147,6 +147,17 @@ func ReadPacket(r io.Reader) (byte, []byte, error) {
 }
 
 func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func() bool) {
+	m.serve(conn, device, name, trusted, false)
+}
+
+// ServePairedSession captures this zen process's current session after pairing.
+// It does not wait for a local permission dialog or a phone Share-desktop step.
+// Lock/login after reboot still requires the reviewed host broker.
+func (m *Manager) ServePairedSession(conn *websocket.Conn, device, name string, trusted func() bool) {
+	m.serve(conn, device, name, trusted, true)
+}
+
+func (m *Manager) serve(conn *websocket.Conn, device, name string, trusted func() bool, paired bool) {
 	defer conn.Close()
 	m.mu.Lock()
 	if m.closed || m.conn != nil {
@@ -183,29 +194,36 @@ func (m *Manager) Serve(conn *websocket.Conn, device, name string, trusted func(
 		status("unsupported", err.Error())
 		return
 	}
-	inventory, _ := json.Marshal(map[string]any{"version": 1, "state": "sources", "sources": []map[string]any{{"id": source, "name": sourceName, "control": true}}})
-	if err := write(websocket.TextMessage, inventory); err != nil {
-		return
-	}
-	conn.SetReadLimit(8192)
-	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	var start Command
-	for {
-		if err := conn.ReadJSON(&start); err != nil {
+	var args []string
+	if paired {
+		start.Control = true
+		args = append([]string{"--device", name, "--paired-session", "--control"}, sourceArgs...)
+	} else {
+		inventory, _ := json.Marshal(map[string]any{"version": 1, "state": "sources", "sources": []map[string]any{{"id": source, "name": sourceName, "control": true}}})
+		if err := write(websocket.TextMessage, inventory); err != nil {
 			return
 		}
-		if start.Type != "ping" {
-			break
+		conn.SetReadLimit(8192)
+		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		for {
+			if err := conn.ReadJSON(&start); err != nil {
+				return
+			}
+			if start.Type != "ping" {
+				break
+			}
+		}
+		if start.Type != "start" || start.Source != source || !trusted() {
+			status("disconnected", "Invalid desktop source or request.")
+			return
+		}
+		args = append([]string{"--device", name}, sourceArgs...)
+		if start.Control {
+			args = append(args, "--control")
 		}
 	}
-	if start.Type != "start" || start.Source != source || !trusted() {
-		status("disconnected", "Invalid desktop source or request.")
-		return
-	}
-	args := append([]string{"--device", name}, sourceArgs...)
-	if start.Control {
-		args = append(args, "--control")
-	}
+	conn.SetReadLimit(8192)
 	cmd, err := HelperCommand(args)
 	if err != nil {
 		status("disconnected", "Desktop helper could not start.")

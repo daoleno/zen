@@ -182,7 +182,7 @@ func TestPrintStartupInfoForLANUsesDetectedAddresses(t *testing.T) {
 	rendered := output.String()
 	for _, want := range []string{
 		"Zen ",
-		"trusted private networks only",
+		"identity-bound TLS",
 		"zen pair http://192.168.1.42:9876",
 		"http://100.101.102.103:9876",
 	} {

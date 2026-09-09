@@ -30,6 +30,9 @@ func TestRelevantPathIncludesNativeSources(t *testing.T) {
 	if _, ok := tree.relevantPath("/repo/app/App.tsx"); ok {
 		t.Fatal("app TS must not trigger daemon rebuild")
 	}
+	if _, ok := tree.relevantPath("/repo/server/desktop_identity_session_e2e_linux_test.go"); ok {
+		t.Fatal("Go tests must not rebuild the live daemon")
+	}
 }
 
 func TestDesktopNativeBuildDetectsLinuxPkgConfig(t *testing.T) {

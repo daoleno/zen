@@ -97,6 +97,14 @@ private enum LinkTransportError: Error, LocalizedError {
   }
 }
 
+private func pinnedServerName(_ host: String) -> String {
+  let literal = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+  if literal.contains(":") || literal.range(of: #"^\d{1,3}(?:\.\d{1,3}){3}$"#, options: .regularExpression) != nil {
+    return "zen-desktop.invalid"
+  }
+  return host
+}
+
 private func validate(
   key: String,
   host: String,
@@ -315,7 +323,7 @@ private final class PinnedProxy {
       tls.securityProtocolOptions,
       .TLSv13
     )
-    sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, host)
+    sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, pinnedServerName(host))
     let expectedPin = pin
     sec_protocol_options_set_verify_block(
       tls.securityProtocolOptions,

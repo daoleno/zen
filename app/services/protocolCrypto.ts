@@ -5,21 +5,34 @@ export function verifyLinkPairingSignature(input: {
   bindingPayload: Uint8Array;
   signatureHex: string;
 }): boolean {
-  const daemonPublicKey = normalizeFixedHex(input.daemonPublicKey, 64);
-  const signatureHex = normalizeFixedHex(input.signatureHex, 128);
-  if (!daemonPublicKey || !signatureHex) {
+  return verifyDomainSignature("zen-link-pairing-v2\u0000", input.daemonPublicKey, input.bindingPayload, input.signatureHex);
+}
+
+export function verifyDesktopCapabilitySignature(input: {
+  daemonPublicKey: string;
+  bindingPayload: Uint8Array;
+  signatureHex: string;
+}): boolean {
+  return verifyDomainSignature("zen-desktop-capability-v1\u0000", input.daemonPublicKey, input.bindingPayload, input.signatureHex);
+}
+
+function verifyDomainSignature(
+  domainText: string,
+  daemonPublicKey: string,
+  bindingPayload: Uint8Array,
+  signatureHex: string,
+): boolean {
+  const key = normalizeFixedHex(daemonPublicKey, 64);
+  const signature = normalizeFixedHex(signatureHex, 128);
+  if (!key || !signature) {
     return false;
   }
   try {
-    const domain = new TextEncoder().encode("zen-link-pairing-v2\u0000");
-    const signed = new Uint8Array(domain.length + input.bindingPayload.length);
+    const domain = new TextEncoder().encode(domainText);
+    const signed = new Uint8Array(domain.length + bindingPayload.length);
     signed.set(domain);
-    signed.set(input.bindingPayload, domain.length);
-    return nacl.sign.detached.verify(
-      signed,
-      hexToBytes(signatureHex),
-      hexToBytes(daemonPublicKey),
-    );
+    signed.set(bindingPayload, domain.length);
+    return nacl.sign.detached.verify(signed, hexToBytes(signature), hexToBytes(key));
   } catch {
     return false;
   }

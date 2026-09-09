@@ -153,3 +153,66 @@ func TestHelperLifecycle(t *testing.T) {
 		})
 	}
 }
+
+func TestPairedSessionStartsWithoutShareStep(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("X11 helper process fixture requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	var packet bytes.Buffer
+	payload := []byte(`{"state":"streaming"}`)
+	_ = binary.Write(&packet, binary.BigEndian, uint32(len(payload)+1))
+	packet.WriteByte(1)
+	packet.Write(payload)
+	var escaped strings.Builder
+	for _, b := range packet.Bytes() {
+		fmt.Fprintf(&escaped, "\\%03o", b)
+	}
+	helper := filepath.Join(dir, "helper")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ZEN_DESKTOP_TEST_ARGS\"\nprintf '" + escaped.String() + "'\ncat >/dev/null\n"
+	if err := os.WriteFile(helper, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZEN_DESKTOP_HELPER", helper)
+	t.Setenv("ZEN_DESKTOP_BACKEND", "x11")
+	t.Setenv("ZEN_DESKTOP_DISPLAY", ":owned-test-never-opened")
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("ZEN_DESKTOP_TEST_ARGS", filepath.Join(dir, "args"))
+	var manager Manager
+	finished := make(chan struct{})
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := websocket.Upgrader{}
+		conn, err := u.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer close(finished)
+		manager.ServePairedSession(conn, "fixture", "Fixture", func() bool { return true })
+	}))
+	defer host.Close()
+	defer manager.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(host.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var status map[string]any
+	if err := conn.ReadJSON(&status); err != nil || status["state"] != "streaming" {
+		t.Fatalf("paired session first packet %v %v", status, err)
+	}
+	_ = conn.Close()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("paired helper did not terminate")
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil || !strings.Contains(string(args), "--paired-session") || !strings.Contains(string(args), "--control") {
+		t.Fatalf("paired helper args=%q err=%v", args, err)
+	}
+	if strings.Contains(string(args), "--wayland") {
+		t.Fatal("paired session inherited a Wayland source")
+	}
+}

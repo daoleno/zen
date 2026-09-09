@@ -41,6 +41,15 @@ func TestTransportIdentityPersistsRouteAndPinAcrossCertificateReissue(t *testing
 	if config.MinVersion != tls.VersionTLS13 {
 		t.Fatalf("minimum TLS version=%x, want TLS 1.3", config.MinVersion)
 	}
+	foundIdentityName := false
+	for _, name := range first.Certificate.Leaf.DNSNames {
+		if name == DesktopIdentityServerName {
+			foundIdentityName = true
+		}
+	}
+	if !foundIdentityName {
+		t.Fatal("identity desktop server name missing from transport certificate")
+	}
 }
 
 func TestPinnedClientTLSConfigRejectsWrongPin(t *testing.T) {

@@ -138,8 +138,10 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
             ?: android.system.Os.inet_pton(android.system.OsConstants.AF_INET6, host))?.address
         } catch (_: Exception) { null }
       })
-      val request = Request.Builder().url(url).header("Authorization", config.getString("authorization")).build()
-      socket = client.newWebSocket(request, object : WebSocketListener() {
+      val request = Request.Builder().url(url).header("Authorization", config.getString("authorization"))
+      val mode = config.optString("mode")
+      if (mode == "attended" || mode == "unattended") request.header("X-Zen-Desktop-Mode", mode)
+      socket = client.newWebSocket(request.build(), object : WebSocketListener() {
         override fun onOpen(ws: WebSocket, response: Response) {
           if (epoch != generation.get()) { ws.cancel(); return }
           post { if (epoch == generation.get()) { tlsConnected = response.handshake != null; removeCallbacks(heartbeat); post(heartbeat) } }
@@ -212,9 +214,10 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
         }
         override fun onFailure(ws: WebSocket, error: Throwable, response: Response?) {
           post { if (epoch == generation.get()) {
-            val denied = response?.code == 401 || response?.code == 403
+            val body = try { response?.body?.string()?.trim().orEmpty() } catch (_: Exception) { "" }
+            val mapped = DesktopFailure.map(response?.code, body)
             stop()
-            if (!terminalState) state(if (denied) "denied" else "disconnected", if (denied) "Desktop authorization is required." else "Desktop connection ended.")
+            if (!terminalState) state(mapped.first, mapped.second)
           } }
         }
         override fun onClosing(ws: WebSocket, code: Int, reason: String) {

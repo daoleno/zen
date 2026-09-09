@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -121,6 +122,7 @@ type Server struct {
 	authRevocationUnsubscribe  func()
 	runtimeClosing             bool
 	terminalCleanup            terminalCleanupOwner
+	desktopTransport           DesktopTransport
 
 	workSubID                   int
 	workSub                     <-chan work.Event
@@ -142,6 +144,18 @@ type Server struct {
 	pluginsMutations   map[*websocket.Conn]pluginsMutationRequest
 	pluginRuntime      skillmgmt.PluginRuntime
 	mu                 sync.Mutex
+}
+
+// DesktopTransport is identity-bound TLS for unattended desktop. Pin is the
+// Link/desktop SPKI; TLSConfig is the matching server certificate. HTTP clients
+// keep working on the same port; unattended /desktop requires actual TLS.
+type DesktopTransport struct {
+	TLSConfig *tls.Config
+	Pin       string
+}
+
+func (s *Server) SetDesktopTransport(transport DesktopTransport) {
+	s.desktopTransport = transport
 }
 
 func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Scheduler) {
@@ -377,6 +391,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/desktop", s.handleDesktop)
+	mux.HandleFunc("/desktop/capability", s.handleDesktopCapability)
 	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/devices", s.handleDevices)
@@ -397,11 +412,15 @@ func (s *Server) Handler() http.Handler {
 // listener has been acquired successfully.
 func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) error {
 	defer s.closeEventSubscriptions()
-	listener, err := net.Listen("tcp", addr)
+	tcp, err := net.Listen("tcp", addr)
 	if err != nil {
 		s.shutdownAuthenticatedClients()
 		s.terminalCleanup.Drain()
 		return err
+	}
+	var listener net.Listener = tcp
+	if s.desktopTransport.TLSConfig != nil {
+		listener = &tlsHTTPListener{Listener: tcp, config: s.desktopTransport.TLSConfig.Clone()}
 	}
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

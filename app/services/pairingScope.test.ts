@@ -24,5 +24,5 @@ test("invalid and mismatched identity cannot acknowledge expanded scope", () => 
   }
 });
 test("one-time pairing copy names unattended, OS login and confidentiality limits", () => {
-  for (const term of ["terminal", "unattended", "lock", "OS login", "OS permissions", "encrypted", "existing device"]) expect(PAIRING_SCOPE_COPY).toContain(term);
+  for (const term of ["terminal", "unattended", "lock", "OS login", "OS permissions", "encrypted", "existing device", "logged-in session"]) expect(PAIRING_SCOPE_COPY).toContain(term);
 });

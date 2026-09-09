@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/daoleno/zen/daemon/desktop"
+	"github.com/daoleno/zen/daemon/desktop/host"
 	"github.com/daoleno/zen/daemon/desktop/nativebind"
 )
 
@@ -76,6 +77,24 @@ func (e env) checkDesktop() DesktopCheck {
 	check.Summary = "same-binary desktop roles are cgo-linked; GTK/GStreamer/X11 remain dynamic OS dependencies, not a static single file. Linking is not stream readiness. If those DT_NEEDED libraries are absent, ld.so will refuse to start this ELF before zen doctor can run"
 	if !check.DisplaySet {
 		check.Summary += ". DISPLAY and WAYLAND_DISPLAY are unset in this process"
+	}
+	readiness := host.InspectReadiness()
+	check.HostBroker = readiness.Broker
+	check.CurrentSession = readiness.CurrentSession
+	if state, _, err := e.resolveStateDir(); err == nil && strings.TrimSpace(state) != "" {
+		_, err := os.Stat(filepath.Join(state, "link-identity.json"))
+		check.IdentityTLS = err == nil
+	}
+	check.Summary += ". Unattended desktop uses identity-bound TLS created at zen start"
+	switch {
+	case check.HostBroker:
+		check.Summary += ". Lock and login after reboot are available through the reviewed host install"
+	case check.CurrentSession:
+		check.Summary += ". Current logged-in session desktop is available. Lock and login after reboot still need one zen desktop-host --install"
+	default:
+		check.Status = StatusWarn
+		check.Remediation = RemediationDesktopHostSetup
+		check.Summary += ". No current session display. Lock and login after reboot need one zen desktop-host --install; a development watcher is not that service"
 	}
 	return check
 }

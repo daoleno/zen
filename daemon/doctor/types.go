@@ -49,6 +49,7 @@ const (
 	RemediationDesktopNativeMissing Remediation = "desktop_native_missing"
 	RemediationDesktopLibraries     Remediation = "desktop_libraries_missing"
 	RemediationDesktopCorrupt       Remediation = "desktop_corrupt_binary"
+	RemediationDesktopHostSetup     Remediation = "desktop_host_setup_required"
 )
 
 // InstallHint is an OS-specific non-destructive install suggestion.
@@ -186,17 +187,20 @@ type ExecutorCheck struct {
 // Missing desktop native does not block daemon Ready. StreamReady is never
 // inferred from linking alone.
 type DesktopCheck struct {
-	Executable   string      `json:"executable,omitempty"`
-	SHA256       string      `json:"sha256,omitempty"`
-	NativeLinked bool        `json:"native_linked"`
-	StreamReady  bool        `json:"stream_ready"`
-	DisplaySet   bool        `json:"display_set"`
-	Roles        []string    `json:"roles,omitempty"`
-	Libraries    []string    `json:"libraries,omitempty"`
-	Missing      []string    `json:"missing_libraries,omitempty"`
-	Status       Status      `json:"status"`
-	Remediation  Remediation `json:"remediation,omitempty"`
-	Summary      string      `json:"summary"`
+	Executable     string      `json:"executable,omitempty"`
+	SHA256         string      `json:"sha256,omitempty"`
+	NativeLinked   bool        `json:"native_linked"`
+	StreamReady    bool        `json:"stream_ready"`
+	DisplaySet     bool        `json:"display_set"`
+	Roles          []string    `json:"roles,omitempty"`
+	Libraries      []string    `json:"libraries,omitempty"`
+	Missing        []string    `json:"missing_libraries,omitempty"`
+	HostBroker     bool        `json:"host_broker"`
+	CurrentSession bool        `json:"current_session"`
+	IdentityTLS    bool        `json:"identity_tls"`
+	Status         Status      `json:"status"`
+	Remediation    Remediation `json:"remediation,omitempty"`
+	Summary        string      `json:"summary"`
 }
 
 // TmuxInstallHints returns OS-specific install commands. Doctor never runs them.

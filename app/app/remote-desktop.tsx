@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Stack, useFocusEffect } from "expo-router";
+import { Stack, router, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
 import { useAppColors } from "../constants/tokens";
@@ -11,7 +11,8 @@ import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desk
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 import { desktopLanOrigin, hasDesktopLanConsent } from "../services/desktopTransportPolicy";
 import { setDesktopLanConsent } from "../services/storage";
-import { DesktopConnectionUnavailable } from "../services/desktopConnectionCheck";
+import { DesktopConnectionUnavailable, DesktopPreflightError } from "../services/desktopConnectionCheck";
+import { PAIRING_SCOPE_COPY } from "../services/pairingScope";
 
 export default function RemoteDesktopScreen() {
   const { currentServer } = useCurrentServer();
@@ -98,21 +99,7 @@ function DesktopSession() {
     setConnection(""); setControl(false);
     setPreparing(true); setStatus({ state: "disconnected" });
     try {
-      let server = currentServer;
-      if (desktopLanOrigin(server) && !hasDesktopLanConsent(server)) {
-        const allowed = await new Promise<boolean>((resolve) => Alert.alert(
-          "Allow unencrypted desktop?",
-          `Your screen and input can be read or changed by others on this network. Allow unencrypted desktop access to ${desktopLanOrigin(server)} only on a network you trust.`,
-          [{ text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-            { text: "Allow this LAN", style: "destructive", onPress: () => resolve(true) }],
-          { cancelable: true, onDismiss: () => resolve(false) },
-        ));
-        if (!allowed || epoch !== generation.current || !isCurrentServer(server.id)) { commands.stop(); return; }
-        server = await setDesktopLanConsent(server, true, () => epoch === generation.current && isCurrentServer(server.id));
-        if (epoch !== generation.current || !isCurrentServer(server.id)) return;
-        await refreshServers();
-      }
-      if (epoch !== generation.current || !isCurrentServer(server.id)) return;
+      const server = currentServer;
       pending.current?.abort(); pending.current = new AbortController();
       const next = await prepareDesktopConnection(server, inputGeneration, pending.current.signal);
       if (epoch === generation.current && isCurrentServer(server.id)) {
@@ -122,10 +109,35 @@ function DesktopSession() {
       if (epoch === generation.current) {
         reconnectAllowed.current = automatic && error instanceof DesktopConnectionUnavailable;
         commands.stop();
-        setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Connection failed." });
+        setStatus({
+          state: "disconnected",
+          reason: error instanceof DesktopPreflightError
+            ? (error.recovery || error.message)
+            : error instanceof Error ? error.message : "Connection failed.",
+        });
         scheduleReconnect();
       }
     } finally { if (epoch === generation.current) setPreparing(false); }
+  };
+  const grantDesktop = () => {
+    Alert.alert("Grant unattended desktop", PAIRING_SCOPE_COPY,
+      [{ text: "Cancel", style: "cancel" },
+        { text: "Scan pairing link", onPress: () => router.push({ pathname: "/settings", params: { pairMode: "scanner" } }) }]);
+  };
+  const acknowledgeAttendedLan = async () => {
+    if (!currentServer) return;
+    const origin = desktopLanOrigin(currentServer);
+    if (!origin) return;
+    const allowed = await new Promise<boolean>((resolve) => Alert.alert(
+      "Attended assistance only",
+      `Unencrypted LAN cannot open lock or login screens or carry OS passwords. Allow attended assistance to ${origin} only on a network you trust.`,
+      [{ text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Allow attended LAN", style: "destructive", onPress: () => resolve(true) }],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    ));
+    if (!allowed || !isCurrentServer(currentServer.id)) return;
+    await setDesktopLanConsent(currentServer, true, () => isCurrentServer(currentServer.id));
+    await refreshServers();
   };
   const revokeLan = async () => {
     if (!currentServer) return;
@@ -187,11 +199,11 @@ function DesktopSession() {
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight}>
     <View style={styles.header}>
       <Text numberOfLines={1} style={[styles.host, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
-      <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted LAN)" : "Connected" : ""}</Text>
+      <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
       {lan ? <View style={styles.lanRow}>
-        <Text style={{ color: colors.textSecondary, flex: 1 }}>Allow unencrypted LAN desktop</Text>
-        <Switch accessibilityLabel="Allow unencrypted LAN desktop" value={lanAllowed} disabled={preparing}
-          onValueChange={(allowed) => { if (allowed) void connect(); else void revokeLan(); }} />
+        <Text style={{ color: colors.textSecondary, flex: 1 }}>Attended unencrypted LAN (not lock/login)</Text>
+        <Switch accessibilityLabel="Attended unencrypted LAN desktop" value={lanAllowed} disabled={preparing}
+          onValueChange={(allowed) => { if (allowed) void acknowledgeAttendedLan(); else void revokeLan(); }} />
       </View> : null}
     </View>
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
@@ -213,14 +225,17 @@ function DesktopSession() {
       </View> : null}
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />
-        <Text style={styles.message}>{status.reason || (status.state === "sources" ? status.source === "wayland" ? "Wayland portal desktop" : "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : lan && !lanAllowed ? "This paired server uses unencrypted LAN transport." : "Disconnected")}</Text>
+        <Text style={styles.message}>{status.reason || (status.state === "sources" ? status.source === "wayland" ? "Wayland portal desktop" : "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : "Connect")}</Text>
         {status.state === "sources" ? <>
           <View style={styles.mode}><Text style={styles.message}>Allow control</Text><Switch value={control} onValueChange={setControl} /></View>
           <Pressable accessibilityRole="button" disabled={!desktopStart(status.source, control)} onPress={() => {
             const start = desktopStart(status.source, control);
             if (start) send(start);
           }} style={styles.action}><Text style={styles.actionText}>Share desktop</Text></Pressable>
-        </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <Pressable accessibilityRole="button" disabled={!currentServer} onPress={() => void connect()} style={styles.action}><Text style={styles.actionText}>{lan && !lanAllowed ? "Review LAN connection" : "Connect"}</Text></Pressable> : null}
+        </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <>
+          <Pressable accessibilityRole="button" disabled={!currentServer} onPress={() => void connect()} style={styles.action}><Text style={styles.actionText}>Connect</Text></Pressable>
+          {status.reason?.includes("terminal access only") ? <Pressable accessibilityRole="button" onPress={grantDesktop} style={styles.action}><Text style={styles.actionText}>Grant unattended desktop</Text></Pressable> : null}
+        </> : null}
       </View>}
     </View>
     <View style={[styles.toolbar, { borderColor: colors.borderSubtle }]}>

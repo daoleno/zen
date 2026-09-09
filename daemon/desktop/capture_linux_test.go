@@ -88,6 +88,47 @@ func TestSameELFXvfbStreamInputAndAgent(t *testing.T) {
 	assertSameELF(t, agent.Process.Pid, bin, sum)
 }
 
+func TestSameELFPairedSessionSkipsConsent(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux host capture")
+	}
+	prefix := restoreOwnedXvfb(t)
+	bin, sum := builtDesktopELF(t)
+	assertGTKLinked(t, bin)
+	display := unusedDisplay()
+	stop := startOwnedXvfb(t, prefix, display)
+	t.Cleanup(stop)
+
+	t.Setenv(HelperOverrideEnv, "")
+	helper := exec.Command(bin, RoleHelper, "--device", "PairedFixture", "--display", display, "--paired-session", "--control")
+	helper.Env = helperEnv(t, display)
+	outFile, err := os.Create(filepath.Join(t.TempDir(), "paired.stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper.Stdout = outFile
+	var helperErr strings.Builder
+	helper.Stderr = &helperErr
+	if _, err := helper.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = helper.Process.Kill(); _ = helper.Wait(); _ = outFile.Close() })
+	assertSameELF(t, helper.Process.Pid, bin, sum)
+	first := readMetadataFile(t, outFile.Name())
+	if first["state"] == "requesting" {
+		t.Fatalf("paired session showed a permission dialog: %v stderr=%s", first, helperErr.String())
+	}
+	if first["state"] != "streaming" {
+		streaming := waitStreamingFile(t, outFile.Name())
+		if streaming["state"] != "streaming" {
+			t.Fatalf("paired session first=%v streaming=%v stderr=%s", first, streaming, helperErr.String())
+		}
+	}
+}
+
 func TestSameELFMissingCodecIsNotStreaming(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux host capture")

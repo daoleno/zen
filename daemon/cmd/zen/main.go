@@ -380,6 +380,21 @@ func runDaemon(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var relayDomains []string
+	if linkEnabled {
+		relayDomains = link.RelayDomains(linkConfig)
+	}
+	transportIdentity, identityErr := link.LoadOrCreateTransportIdentity(
+		authManager.StorageDir(),
+		relayDomains,
+	)
+	if identityErr != nil {
+		return fmt.Errorf("initialize desktop transport identity: %w", identityErr)
+	}
+	srv.SetDesktopTransport(server.DesktopTransport{
+		TLSConfig: transportIdentity.ServerTLSConfig(),
+		Pin:       transportIdentity.SPKISHA256,
+	})
 	if linkEnabled {
 		linkConfig.StateObserver = func(state link.ConnectorState) {
 			switch {
@@ -395,16 +410,6 @@ func runDaemon(args []string, stderr io.Writer) error {
 					state.LastError,
 				)
 			}
-		}
-		transportIdentity, identityErr := link.LoadOrCreateTransportIdentity(
-			authManager.StorageDir(),
-			link.RelayDomains(linkConfig),
-		)
-		if identityErr != nil {
-			return fmt.Errorf(
-				"initialize Zen Link transport identity: %w",
-				identityErr,
-			)
 		}
 		connector, connectorErr := link.NewConnector(
 			linkConfig,
@@ -1888,7 +1893,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "  worker     List, spawn, inspect, message, progress, and close Zen Workers")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
 		fmt.Fprintln(stderr, "  devices    List or revoke paired mobile devices")
-		fmt.Fprintln(stderr, "  desktop-host  Linux unattended desktop broker (install/register/serve)")
+		fmt.Fprintln(stderr, "  desktop-host  Linux unattended desktop broker (plan/install/register/serve)")
 		fmt.Fprintln(stderr, "  desktop-identity  Print this zen ELF hash and native role provenance")
 	}
 

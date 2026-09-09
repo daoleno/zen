@@ -53,13 +53,71 @@ An old client's token enrollment remains legacy scope, not an automatic upgrade.
 Revoking the device in the existing owner removes terminal and desktop access
 and synchronously retires desktop sessions. No second device list is created.
 
-Consolidate OS installation/permission requests into initial host onboarding:
-explain privileged broker installation and boot service ownership on Linux,
-Screen Recording/Accessibility on macOS, and service installation on Windows.
-Pairing does not grant those OS rights. Show separate runtime states such as
+Current-session desktop needs no extra configuration: start `zen` or
+`zen-dev -lan` from the logged-in session. Identity-bound TLS is created at
+daemon start. There is no certificate, domain, helper-path, or Connect wizard.
+Lock, login, and reboot persistence still need one OS-admin
+`zen desktop-host --install`. Pairing does not grant those OS rights, and a
+user-mode daemon cannot control pre-login. Show separate runtime states such as
 `Host setup required`, `OS permission required`, `Login screen unsupported`,
-`Locked`, `Switching session` and `Connected`. Do not advertise `Ready` until
-the matching agent has actually obtained capture and input capabilities.
+`Locked`, `Switching session` and `Connected`. Do not advertise lock/login
+`Ready` until the reviewed broker has actually obtained those capabilities.
+
+## One Command Versus Boot Persistence
+
+VNC-style use of an already logged-in session is one command. From that
+session run `zen-dev -lan` or `zen --lan`. Pair once. Connect. The daemon
+detects this process's `DISPLAY` / Wayland, starts identity-bound TLS on the
+same address, and captures that session after pairing without a local Allow
+dialog or a phone Share-desktop step. Do not install a root broker solely to
+use the current desktop. Do not point at helper paths, certificates, or a
+public domain.
+
+That path is **session-only**. Logout, lock, reboot, and the OS login screen
+are a different capability. They need one explicit OS-admin step:
+
+```
+zen desktop-host --plan --config <reviewed-desktop-host.json>
+```
+
+prints the files, modes, and requirements without writing anything. After
+independent review on an owned disposable VM:
+
+```
+zen desktop-host --install --config <reviewed-desktop-host.json> --binary-source <ELF>
+```
+
+`--activate` starts only the broker. `--rollback` reverses unchanged files.
+This repository does not authorize running those install commands on a
+personal host.
+
+Platform limits that remain outside one-command session desktop: macOS and
+Windows host capture adapters; physical iOS; a current phone APK that predates
+IP SNI `zen-desktop.invalid`; greeter/lock without the reviewed broker;
+Wayland portal sessions without `DBUS_SESSION_BUS_ADDRESS` in this process.
+
+## Device Trust, Transport, Host, And Session
+
+These are independent facts. Mixing them produced the generic “Desktop
+authorization is required” failure.
+
+| Fact | Meaning | Ready when | Recovery |
+| --- | --- | --- | --- |
+| Device trust | This phone is a paired owner of the current daemon | Canonical trusted-device record exists | Pair or restore the device. Revocation removes terminal and desktop together. |
+| Unattended scope | The phone acknowledged lock/login control | `desktop_scope_version: 1` | New pairing grants this once. Legacy records need one explicit re-pair. Zen never grants it silently, including from LAN consent. |
+| Secure transport | Unattended media is actually encrypted to this daemon | Identity-bound TLS (SPKI pin, server name `zen-desktop.invalid`) or verified `wss` / pinned Link | Connect; the phone opens a pin tunnel to the same address. No user-owned domain or public certificate. The attended unencrypted LAN switch cannot carry OS passwords. `X-Forwarded-Proto` is ignored. |
+| Current session | This zen process can capture the logged-in display | `DISPLAY` / Wayland on this process (`zen-dev -lan` from that session) | Connect. No local Allow dialog and no Share-desktop step after pairing. |
+| Lock/login after reboot | Greeter and locked session can be captured | One OS-admin `zen desktop-host --install` broker | User-mode zen cannot control pre-login. Not a per-connection approval. |
+| Session state | What the OS is showing now | Agent reports `desktop`, `locked`, `greeter`, or switching | Type the normal OS password on the lock/login UI. Reconnect after logout/reboot uses the same pairing. |
+
+`GET /desktop/capability` returns those fields plus a daemon-signed transport
+pin. `host.current_session` is this process's logged-in display;
+`host.lock_login` is the broker. Connect is available when either is true.
+The phone preflights that proof before the native WebSocket. Distinct
+bodies `desktop_tls_required`, `desktop_scope_required`, and
+`host_setup_required` replace the old combined `desktop_scope_and_tls_required`
+admission error. `host_setup_required` means this zen process has neither a
+current session nor a broker.
 
 ## Linux Unattended Architecture
 
@@ -204,17 +262,24 @@ watching typed passwords; observe OS session transitions instead.
 ## Password Transport
 
 Require real authenticated end-to-end TLS for all unattended sessions, including
-lock/login viewing. Prefer the existing SPKI-pinned Zen Link transport or a
-properly verified direct TLS origin. Do not deploy a new relay or trust a public
-TLS terminator as end-to-end confidentiality. No `X-Forwarded-Proto`, numeric
-LAN address, loopback address, device signature or pairing grant proves encryption.
-Zen Link's close-observing listener now preserves actual inner TLS state on
-HTTP requests; actual TLS and forged-header plaintext regressions cover this.
+lock/login viewing. The daemon always loads the existing pairing transport
+identity (`link-identity.json`) and serves HTTP pairing plus identity TLS on the
+same listen port. Clients authenticate the certificate by SPKI pin, not a public
+CA or a user-managed domain. Prefer that identity pin, the existing SPKI-pinned
+Zen Link transport, or a properly verified direct TLS origin. Do not deploy a
+new relay or trust a public TLS terminator as end-to-end confidentiality. No
+`X-Forwarded-Proto`, numeric LAN address, loopback address, device signature or
+pairing grant proves encryption. Zen Link's close-observing listener and the
+desktop mux preserve actual inner TLS state on HTTP requests; actual TLS and
+forged-header plaintext regressions cover this.
 
 The accepted opt-in plaintext LAN feature remains for ordinary attended desktop
-use. It is unsuitable for OS password entry. The new broker must retire it on
-lock/session transitions; the current attended artifact has not proved that
-barrier and must not be presented as safe for entering any sensitive data.
+use only (`X-Zen-Desktop-Mode: attended`). It is unsuitable for OS password
+entry and is not the unattended own-computer path. The phone labels that switch
+as attended assistance. Unattended Connect always uses identity-bound TLS or
+pinned Link. The new broker must retire plaintext on lock/session transitions;
+the current attended artifact has not proved that barrier and must not be
+presented as safe for entering any sensitive data.
 Zen cannot detect every password field in an arbitrary application.
 
 Credentials go only as ephemeral input through the existing encrypted auth/media
@@ -251,6 +316,9 @@ daemon unit. The installer references its exact unit and identity; it does not
 create another daemon or relocate/copy state. A development watcher alone is
 not that boot unit. Review the existing unit's executable, state directory and
 network flags before any personal-host handover.
+
+`zen desktop-host --plan --config <reviewed-config>` prints the files, modes
+and requirements and writes nothing. After independent review,
 
 `zen desktop-host --install --config <reviewed-config> --binary-source <ELF>`
 installs one reviewed desktop-capable `zen` ELF as the root-owned broker/agent
@@ -361,28 +429,31 @@ instead of accumulating unbounded video.
 WebRTC/Pion remains a candidate when an existing path actually provides
 direct UDP reachability; deploying its network prerequisites is not this
 feature's scope. Successful signaling must never be reported as successful
-video. Native desktop clients accept trusted `wss` or the existing pinned
-Link loopback origin, without weakening certificate validation. Manual numeric
-private-network `ws` also works after explicit unencrypted-desktop consent.
-Private addressing is not encryption: screen content and input may be read or
-altered by another party on that network. Public/plain hostname endpoints,
-link-local addresses, unbound loopback and secure-to-plain downgrades remain
-rejected. IPv4 private ranges, RFC6598 overlay addresses and IPv6 ULA are
+video. Native desktop clients accept trusted `wss`, the existing pinned Link
+loopback origin, or an identity-pinned TLS tunnel to a numeric private-network
+address. Unattended Connect never uses cleartext `trusted-lan`. Manual numeric
+private-network `ws` remains available only after explicit attended-desktop
+consent. Private addressing is not encryption: attended screen content and input
+may be read or altered by another party on that network. Public/plain hostname
+endpoints, link-local addresses, unbound loopback and secure-to-plain downgrades
+remain rejected. IPv4 private ranges, RFC6598 overlay addresses and IPv6 ULA are
 parsed, not inferred from DNS or string prefixes.
 
 LAN approval is persisted only for the exact paired daemon identity, public
 key and origin (including port). Pairing imports cannot grant it. Changing
 identity, origin or transport invalidates approval; switching the current
 server clears the native connection. The desktop screen offers cancellation,
-an approval-revocation switch and a connected unencrypted-LAN indicator.
-This network acknowledgement is separate from pairing scope and OS permissions.
-For the current attended artifact it also does not replace local session consent.
+an attended-LAN revocation switch and a connected unencrypted-attended-LAN
+indicator. This network acknowledgement is separate from pairing scope, identity
+TLS, host installation and OS permissions. It does not replace local attended
+session consent.
 
-Before native connection, bounded signed health and authenticated device
-checks validate the paired daemon. Each device probe and desktop upgrade uses
-a fresh purpose-specific signed nonce. HTTP checks and native WebSocket
-clients reject redirects. Android and iOS independently enforce the prepared
-transport and source-origin binding; neither installs a universal trust rule.
+Before native connection, bounded signed health, an authenticated capability
+preflight and a device probe validate the paired daemon. Each probe, capability
+read and desktop upgrade uses a fresh purpose-specific signed nonce. HTTP checks
+and native WebSocket clients reject redirects. Android and iOS independently
+enforce the prepared transport and source-origin binding; neither installs a
+universal trust rule.
 
 ## Modules And Data Flow
 
@@ -391,13 +462,16 @@ transport and source-origin binding; neither installs a universal trust rule.
    the route or entering the background closes the old native connection,
    clears retained frames and releases input. Control does not auto-resume.
 2. `app/services/remoteDesktop.ts` reuses stored transport resolution and
-   device signatures with the dedicated `zen-desktop` purpose. Credentials
-   never enter URLs. There is no second pairing system or persistent media
-   token.
+   device signatures. It loads `/desktop/capability` with purpose
+   `zen-desktop-capability`, verifies the daemon-signed identity pin, then
+   prepares native credentials with purpose `zen-desktop`. Unattended LAN uses
+   the existing pinned tunnel to identity TLS. Credentials never enter URLs.
 3. `daemon/server/remote_desktop.go` exposes `/desktop`. Device trust,
-   timestamp and nonce checks occur before upgrade. Desktop connections have
-   separate ownership, connected to existing device revocation and runtime
-   shutdown. They do not subscribe to Brain, Session or chat broadcasts.
+   timestamp and nonce checks occur before upgrade. Unattended admission splits
+   TLS, scope and host-setup failures. `/desktop/capability` advertises the
+   signed identity pin. Desktop connections have separate ownership, connected
+   to existing device revocation and runtime shutdown. They do not subscribe to
+   Brain, Session or chat broadcasts.
 4. `daemon/desktop/` owns a bounded session and local helper. Clients cannot
    supply executables, DISPLAY addresses, pipelines or shell commands. Default
    startup launches `desktop-helper` from the running `zen` executable.

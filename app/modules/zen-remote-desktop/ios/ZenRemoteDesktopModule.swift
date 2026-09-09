@@ -102,6 +102,9 @@ final class DesktopView: ExpoView {
     var request = URLRequest(url: url)
     self.inputGeneration = inputGeneration
     request.setValue(authorization, forHTTPHeaderField: "Authorization")
+    if let mode = config["mode"], mode == "attended" || mode == "unattended" {
+      request.setValue(mode, forHTTPHeaderField: "X-Zen-Desktop-Mode")
+    }
     request.timeoutInterval = 10
     let ownedSession = URLSession(configuration: .ephemeral, delegate: DesktopNoRedirectDelegate(), delegateQueue: nil)
     session = ownedSession
@@ -164,10 +167,11 @@ final class DesktopView: ExpoView {
           // No unbounded dispatch backlog: request the next AU after this one.
           self.receive(socket, generation)
         } catch {
-          let httpStatus = (socket.response as? HTTPURLResponse)?.statusCode
-          let denied = httpStatus == 401 || httpStatus == 403
           self.stop()
-          if !self.terminalState { self.state(denied ? "denied" : "disconnected", denied ? "Desktop authorization is required." : "Desktop connection ended.") }
+          if !self.terminalState {
+            let mapped = DesktopFailure.map(status: (socket.response as? HTTPURLResponse)?.statusCode, body: "")
+            self.state(mapped.state, mapped.reason)
+          }
         }
       }
     }

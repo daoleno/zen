@@ -24,7 +24,7 @@ __attribute__((used)) const char zen_native_build_input[] = ZEN_NATIVE_BUILD_INP
 static Display *display;
 static GstElement *pipeline;
 static GtkWidget *window;
-static gboolean control, granted;
+static gboolean control, granted, paired_session;
 static gboolean keys[256], buttons[4];
 static int source_width, source_height;
 static const char *display_name;
@@ -196,7 +196,7 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
     packet(1, denied, strlen(denied));
     gtk_main_quit(); return;
   }
-  gtk_widget_hide(GTK_WIDGET(dialog));
+  if (dialog) gtk_widget_hide(GTK_WIDGET(dialog));
   if (wayland) {
     GError *error = NULL;
     portal_bus = g_dbus_connection_new_for_address_sync(bus_address,
@@ -300,6 +300,7 @@ int zen_desktop_helper_main(int argc, char **argv) {
     if (!strcmp(argv[i], "--display") && i + 1 < argc) display_name = argv[++i];
     else if (!strcmp(argv[i], "--device") && i + 1 < argc) device = argv[++i];
     else if (!strcmp(argv[i], "--control")) control = TRUE;
+    else if (!strcmp(argv[i], "--paired-session")) paired_session = TRUE;
     else if (!strcmp(argv[i], "--wayland")) wayland = TRUE;
     else if (!strcmp(argv[i], "--bus-address") && i + 1 < argc) bus_address = argv[++i];
     else return 2;
@@ -329,18 +330,22 @@ int zen_desktop_helper_main(int argc, char **argv) {
   GIOChannel *input = g_io_channel_unix_new(STDIN_FILENO);
   g_io_channel_set_flags(input, G_IO_FLAG_NONBLOCK, NULL);
   g_io_add_watch(input, G_IO_IN | G_IO_HUP | G_IO_ERR, read_input, NULL);
-  GtkWidget *dialog = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
-    GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, "%s requests %s", device, control ? "desktop control" : "desktop viewing");
-  gtk_window_set_title(GTK_WINDOW(dialog), "Zen Desktop Permission");
-  if (wayland) gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "Choose a desktop in the configured Wayland portal (%s).", display_name);
-  else gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "X11 desktop %s (%d x %d)", display_name, source_width, source_height);
-  gtk_dialog_add_buttons(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL,
-    control ? "Allow control" : "Allow viewing", GTK_RESPONSE_ACCEPT, NULL);
-  gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_CANCEL);
-  g_signal_connect(dialog, "response", G_CALLBACK(approve), NULL);
-  const char *requesting = "{\"state\":\"requesting\"}";
-  packet(1, requesting, strlen(requesting));
-  gtk_widget_show_all(dialog);
+  if (paired_session) {
+    approve(NULL, GTK_RESPONSE_ACCEPT, NULL);
+  } else {
+    GtkWidget *dialog = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+      GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE, "%s requests %s", device, control ? "desktop control" : "desktop viewing");
+    gtk_window_set_title(GTK_WINDOW(dialog), "Zen Desktop Permission");
+    if (wayland) gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "Choose a desktop in the configured Wayland portal (%s).", display_name);
+    else gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "X11 desktop %s (%d x %d)", display_name, source_width, source_height);
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL,
+      control ? "Allow control" : "Allow viewing", GTK_RESPONSE_ACCEPT, NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_CANCEL);
+    g_signal_connect(dialog, "response", G_CALLBACK(approve), NULL);
+    const char *requesting = "{\"state\":\"requesting\"}";
+    packet(1, requesting, strlen(requesting));
+    gtk_widget_show_all(dialog);
+  }
   gtk_main();
   if (!wayland) release_input();
   if (pipeline) { gst_element_set_state(pipeline, GST_STATE_NULL); gst_object_unref(pipeline); }

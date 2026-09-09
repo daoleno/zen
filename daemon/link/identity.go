@@ -19,7 +19,13 @@ import (
 	"time"
 )
 
-const transportIdentityFilename = "link-identity.json"
+const (
+	transportIdentityFilename = "link-identity.json"
+	// DesktopIdentityServerName is a non-resolving TLS server name so LAN IP
+	// clients can present SNI without a user-owned domain. Authentication is
+	// the SPKI pin, not this name or a public CA.
+	DesktopIdentityServerName = "zen-desktop.invalid"
+)
 
 type persistedTransportIdentity struct {
 	RouteID       string `json:"route_id"`
@@ -160,7 +166,7 @@ func issueTransportCertificate(
 }
 
 func transportDNSNames(relayDomains []string) []string {
-	seen := make(map[string]struct{})
+	seen := map[string]struct{}{DesktopIdentityServerName: {}}
 	for _, raw := range relayDomains {
 		domain := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
 		if domain == "" {
