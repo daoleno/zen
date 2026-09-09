@@ -34,6 +34,16 @@ func TestKillSessionResourceReleaseFailureAfterSuccessfulKill(t *testing.T) {
 	tmuxPath := filepath.Join(dir, "tmux")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
+target=
+prev=
+for arg in "$@"; do
+  if [ "$prev" = "-t" ]; then target=$arg; fi
+  prev=$arg
+done
+if [ "$1" = "list-panes" ]; then
+  echo "$target"
+  exit 0
+fi
 if [ "$1" = "show-options" ]; then
   echo 1
 fi
@@ -96,6 +106,16 @@ func TestKillSessionRetryAfterResourceFailureConverges(t *testing.T) {
 	tmuxPath := filepath.Join(dir, "tmux")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
+target=
+prev=
+for arg in "$@"; do
+  if [ "$prev" = "-t" ]; then target=$arg; fi
+  prev=$arg
+done
+if [ "$1" = "list-panes" ]; then
+  echo "$target"
+  exit 0
+fi
 if [ "$1" = "show-options" ]; then
   echo 1
   exit 0
@@ -179,5 +199,11 @@ exit 1`)
 	presence, err = w.ProbeSession("main:@1")
 	if err != nil || presence != SessionPresenceAbsent {
 		t.Fatalf("quiet-missing presence=%v err=%v", presence, err)
+	}
+
+	writeTmux(`exit 0`)
+	presence, err = w.ProbeSession("main:@1")
+	if presence != SessionPresenceUnknown || err == nil || !errors.Is(err, ErrOwnershipProbeUnavailable) {
+		t.Fatalf("empty list-panes presence=%v err=%v", presence, err)
 	}
 }

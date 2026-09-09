@@ -31,6 +31,7 @@ agent. A passing provider exit or a model's assertion of PASS is not an oracle.
 | ZEN016 `RealTmuxCompletedCleanupDistinguishesAbsenceAndUnowned` | Isolated tmux socket with reclaimed owned window and later unowned identity reuse | Official completed cleanup | Absence is idempotent; reused unowned window is not killed |
 | ZEN017 `RealTmuxWrongSocketAndRebootOwnership` | Completed target on a different socket; leftover owned window after a fresh watcher | Official completed cleanup | Wrong-socket ambient is untouched; reboot leftover owned window is reclaimed; retry is idempotent |
 | ZEN018 `StartupReconciliationAbsentCompletedIsIdempotent` | Mixed absent completed Session and genuine unowned present target | `ReconcileSignalSystemStartup` twice | Absent target is reclaimed; unowned/active/Host survive; unowned error remains visible |
+| ZEN019 `PresentOwnedCleanupRequiresProvenIdentity` | Present owned completed target with recorded identity | Resolver unknown, mismatched/reused generation, matching generation, or dead pane with matching pane generation | Unknown/mismatch refuse with no kill or resource release; known match and proven-absent remain idempotent |
 
 ZEN001 also submits duplicate control and bound provider terminals, asserts no
 extra input, and reopens the Store. ZEN002 covers interrupted Host handling.

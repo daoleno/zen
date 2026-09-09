@@ -2466,12 +2466,10 @@ func tmuxTargetPresent(socket, target string) (bool, error) {
 	if commandErr != nil {
 		return false, fmt.Errorf("probe tmux presence for %s: %w: %s", target, commandErr, outText)
 	}
-	if !strings.Contains(target, ":") {
-		return true, nil
-	}
 	if outText == "" {
-		// Scripted tests may prove presence with a zero-exit list-panes and no
-		// formatted identity. Real tmux always prints the window identity.
+		return false, fmt.Errorf("%w: tmux presence for %s returned no window identity", ErrOwnershipProbeUnavailable, target)
+	}
+	if !strings.Contains(target, ":") {
 		return true, nil
 	}
 	for _, line := range strings.Split(outText, "\n") {
@@ -2479,7 +2477,7 @@ func tmuxTargetPresent(socket, target string) (bool, error) {
 			return true, nil
 		}
 	}
-	return false, nil
+	return false, fmt.Errorf("%w: tmux presence for %s listed a different identity", ErrOwnershipProbeUnavailable, target)
 }
 
 // capturePaneContent captures the visible content of a tmux window's active
@@ -4618,20 +4616,43 @@ func (w *Watcher) KillCompletedSession(sessionID, turnID string) error {
 			return fmt.Errorf("Session %s is not an owned delegated Worker", sessionID)
 		}
 		if turn.ProcessIdentity != "" {
-			identity, known, identityErr := w.completedTargetIdentity(sessionID)
-			if identityErr != nil {
-				return identityErr
-			}
-			if known {
-				paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
-				if delegatedTurnIdentity(identity) != turn.ProcessIdentity ||
-					(turn.PaneGeneration != "" && paneGeneration != turn.PaneGeneration) {
-					return fmt.Errorf("completed Session %s generation changed", sessionID)
-				}
+			if err := w.guardCompletedOwnedIdentity(sessionID, turn); err != nil {
+				return err
 			}
 		}
 		return w.KillSession(sessionID)
 	})
+}
+
+// guardCompletedOwnedIdentity refuses to mutate a still-present owned window
+// unless the current pane/process generation is proven. An unknown probe must
+// not skip the check: that window may have been reused. A dead pane may still
+// be the same lifecycle when the recorded pane generation is present and matches.
+func (w *Watcher) guardCompletedOwnedIdentity(sessionID string, turn TurnSnapshot) error {
+	identity, known, identityErr := w.completedTargetIdentity(sessionID)
+	if identityErr != nil {
+		return identityErr
+	}
+	paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
+	if known {
+		if delegatedTurnIdentity(identity) != turn.ProcessIdentity {
+			return fmt.Errorf("completed Session %s generation changed", sessionID)
+		}
+		if turn.PaneGeneration == "" {
+			return nil
+		}
+		if paneGeneration == "" {
+			return fmt.Errorf("%w: completed Session %s pane generation is unproven", ErrOwnershipProbeUnavailable, sessionID)
+		}
+		if paneGeneration != turn.PaneGeneration {
+			return fmt.Errorf("completed Session %s generation changed", sessionID)
+		}
+		return nil
+	}
+	if turn.PaneGeneration != "" && paneGeneration != "" && paneGeneration == turn.PaneGeneration {
+		return nil
+	}
+	return fmt.Errorf("%w: completed Session %s identity is unproven", ErrOwnershipProbeUnavailable, sessionID)
 }
 
 // completedTargetIdentity reads the current pane/process identity for a

@@ -976,6 +976,16 @@ func TestKillDelegatedSessionReleasesExactBoundUnit(t *testing.T) {
 	tmuxPath := filepath.Join(dir, "tmux")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$ZEN_TEST_TMUX_LOG"
+target=
+prev=
+for arg in "$@"; do
+  if [ "$prev" = "-t" ]; then target=$arg; fi
+  prev=$arg
+done
+if [ "$1" = "list-panes" ]; then
+  echo "$target"
+  exit 0
+fi
 if [ "$1" = "show-options" ]; then
   echo 1
 fi

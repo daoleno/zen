@@ -300,6 +300,119 @@ exit 0
 	}
 }
 
+func TestBDD_ZEN019_PresentOwnedCleanupRequiresProvenIdentity(t *testing.T) {
+	identity := targetProcessIdentity{
+		Command: "cursor-agent", ProcessID: 7, ProcessStart: 7,
+		PanePID: 7, PaneStart: 7, ForegroundID: 7, ForegroundStart: 7,
+	}
+	recorded := delegatedTurnIdentity(identity)
+	for _, tc := range []struct {
+		name            string
+		known           bool
+		current         targetProcessIdentity
+		pane            string
+		wantKill        bool
+		wantUnavailable bool
+		wantChanged     bool
+	}{
+		{name: "unknown-process", known: false, pane: "", wantUnavailable: true},
+		{name: "unknown-mismatched-pane", known: false, pane: "other-pane", wantUnavailable: true},
+		{name: "dead-pane-matching-generation", known: false, pane: "pane-1", wantKill: true},
+		{name: "known-mismatch", known: true, current: targetProcessIdentity{Command: "other", ProcessID: 9, ProcessStart: 9}, pane: "pane-1", wantChanged: true},
+		{name: "known-reused-pane", known: true, current: identity, pane: "new-pane", wantChanged: true},
+		{name: "known-match", known: true, current: identity, pane: "pane-1", wantKill: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFakeTmux(t, ownedPresentTmuxScript())
+			logPath := filepath.Join(dir, "tmux.log")
+			t.Setenv("PATH", dir)
+			t.Setenv("ZEN_TEST_TMUX_LOG", logPath)
+			if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			unit := delegatedResourceUnit("abc123", "0123456789abcdef0123456789abcdef")
+			manager := &fakeDelegatedResourceManager{boundTarget: "worker:@1", boundUnit: unit}
+			turn := TurnSnapshot{
+				SessionID: "worker:@1", TurnID: "completed", Status: TurnDone, SignalProtocol: true,
+				ProcessIdentity: recorded, PaneGeneration: "pane-1",
+			}
+			ledger := &fakeTurnLedger{turns: map[string]TurnSnapshot{"worker:@1": turn}}
+			w := New(0)
+			w.resources = manager
+			w.SetTurnLedger(ledger)
+			w.targetProcessResolver = func(string) (targetProcessIdentity, bool) {
+				return tc.current, tc.known
+			}
+			w.SetPollSources(PollSources{PaneGeneration: func(string) string { return tc.pane }})
+			err := w.KillCompletedSession("worker:@1", "completed")
+			after, found, _ := ledger.Turn("worker:@1")
+			if !found || after.TurnID != turn.TurnID || after.ProcessIdentity != turn.ProcessIdentity || after.Status != turn.Status {
+				t.Fatalf("ledger mutated: %+v", after)
+			}
+			raw, readErr := os.ReadFile(logPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			killed := strings.Contains(string(raw), "kill-window")
+			if tc.wantKill {
+				if err != nil {
+					t.Fatalf("expected successful cleanup: %v", err)
+				}
+				if !killed || len(manager.released) != 1 {
+					t.Fatalf("kill/release missing: killed=%v released=%#v log=\n%s", killed, manager.released, raw)
+				}
+				return
+			}
+			if killed || len(manager.released) != 0 {
+				t.Fatalf("present owned window was mutated: killed=%v released=%#v log=\n%s", killed, manager.released, raw)
+			}
+			if tc.wantUnavailable && !errors.Is(err, ErrOwnershipProbeUnavailable) {
+				t.Fatalf("err=%v, want ErrOwnershipProbeUnavailable", err)
+			}
+			if tc.wantChanged && (err == nil || !strings.Contains(err.Error(), "generation changed")) {
+				t.Fatalf("err=%v, want generation changed", err)
+			}
+		})
+	}
+}
+
+func TestCompletedCleanupKnownMatchAndAbsentSucceedRepeatedly(t *testing.T) {
+	identity := targetProcessIdentity{Command: "cursor-agent", ProcessID: 3, ProcessStart: 3}
+	dir := writeFakeTmux(t, ownedPresentTmuxScript())
+	t.Setenv("PATH", dir)
+	w := New(0)
+	w.SetTurnLedger(&fakeTurnLedger{turns: map[string]TurnSnapshot{
+		"worker:@1": {
+			SessionID: "worker:@1", TurnID: "completed", Status: TurnDone, SignalProtocol: true,
+			ProcessIdentity: delegatedTurnIdentity(identity), PaneGeneration: "pane-1",
+		},
+	}})
+	w.targetProcessResolver = func(string) (targetProcessIdentity, bool) { return identity, true }
+	w.SetPollSources(PollSources{PaneGeneration: func(string) string { return "pane-1" }})
+	for range 2 {
+		if err := w.KillCompletedSession("worker:@1", "completed"); err != nil {
+			t.Fatalf("known match: %v", err)
+		}
+	}
+
+	missing := writeFakeTmux(t, `echo "can't find window: missing:@1" >&2
+exit 1
+`)
+	t.Setenv("PATH", missing)
+	absent := New(0)
+	absent.SetTurnLedger(&fakeTurnLedger{turns: map[string]TurnSnapshot{
+		"missing:@1": {
+			SessionID: "missing:@1", TurnID: "completed", Status: TurnDone, SignalProtocol: true,
+			ProcessIdentity: delegatedTurnIdentity(identity), PaneGeneration: "pane-1",
+		},
+	}})
+	for range 2 {
+		if err := absent.KillCompletedSession("missing:@1", "completed"); err != nil {
+			t.Fatalf("absent recorded identity: %v", err)
+		}
+	}
+}
+
 func writeFakeTmux(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -310,7 +423,9 @@ func writeFakeTmux(t *testing.T, body string) string {
 }
 
 func ownedPresentTmuxScript() string {
-	return `target=
+	return `log=${ZEN_TEST_TMUX_LOG:-/dev/null}
+printf '%s\n' "$*" >>"$log"
+target=
 prev=
 for arg in "$@"; do
   if [ "$prev" = "-t" ]; then target=$arg; fi
@@ -326,6 +441,10 @@ if [ "$cmd" = "list-panes" ]; then
 fi
 if [ "$cmd" = "show-options" ]; then
   echo 1
+  exit 0
+fi
+if [ "$cmd" = "kill-window" ]; then
+  echo "kill-window -t $target" >>"$log"
   exit 0
 fi
 exit 0
