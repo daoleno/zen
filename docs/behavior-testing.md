@@ -26,6 +26,11 @@ agent. A passing provider exit or a model's assertion of PASS is not an oracle.
 | ZEN011 `RealProviderDecision` | Fresh arithmetic objective and independent numeric oracle | Two real API calls produce Worker result and Brain judgment | Actual delivered result checked, explicit decision persisted, exact cleanup asserted; opt-in hybrid, not native E2E |
 | ZEN012 `ProviderPathBudgetAndFailures` | Same provider harness using scripted HTTP | Full loop, 429, truncation, invalid envelope or timeout | Correct side effects or classified failure; no retry and no third call |
 | ZEN013 `DecisionSavedWithCleanupPending` | Cleanup failure on current completed Session | Control accepts Work | `brain_work_cleanup_pending` includes persisted Work; recovery completes only cleanup, not the business action |
+| ZEN014 `QuietMissingSessionCleanupIsAbsentNotUnowned` | Completed ledger identity, tmux 3.6a quiet show-options success for a gone session | Production watcher cleanup runs twice | Proven absence succeeds; not classified as `ErrUnownedTmuxTarget` |
+| ZEN015 `UnownedPresentCompletedCleanupIsProtected` | Completed ledger identity, live tmux target without Zen ownership marker | Cleanup reconciled twice | Target is untouched and `ErrUnownedTmuxTarget` stays visible |
+| ZEN016 `RealTmuxCompletedCleanupDistinguishesAbsenceAndUnowned` | Isolated tmux socket with reclaimed owned window and later unowned identity reuse | Official completed cleanup | Absence is idempotent; reused unowned window is not killed |
+| ZEN017 `RealTmuxWrongSocketAndRebootOwnership` | Completed target on a different socket; leftover owned window after a fresh watcher | Official completed cleanup | Wrong-socket ambient is untouched; reboot leftover owned window is reclaimed; retry is idempotent |
+| ZEN018 `StartupReconciliationAbsentCompletedIsIdempotent` | Mixed absent completed Session and genuine unowned present target | `ReconcileSignalSystemStartup` twice | Absent target is reclaimed; unowned/active/Host survive; unowned error remains visible |
 
 ZEN001 also submits duplicate control and bound provider terminals, asserts no
 extra input, and reopens the Store. ZEN002 covers interrupted Host handling.

@@ -282,3 +282,72 @@ func TestBDD_ZEN006_UnrelatedCleanupCannotInvalidateDecision(t *testing.T) {
 		t.Fatal("ownership conflict swallowed")
 	}
 }
+
+func TestBDD_ZEN018_StartupReconciliationAbsentCompletedIsIdempotent(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &startupCleanupWatcher{
+		fakeWatcher: &fakeWatcher{turnStore: store, sessions: map[string]*classifier.Worker{
+			"gone:@1":    {ID: "gone:@1", Delegated: true, State: classifier.StateDone},
+			"ambient:@1": {ID: "ambient:@1", Delegated: true, State: classifier.StateDone},
+			"host:@keep": {ID: "host:@keep", Hidden: true, State: classifier.StateDone},
+			"live:@keep": {ID: "live:@keep", Delegated: true, State: classifier.StateRunning},
+		}},
+		unowned: map[string]bool{"ambient:@1": true},
+	}
+	service := NewService(store, fw, nil)
+	for _, sessionID := range []string{"gone:@1", "ambient:@1"} {
+		item, err := store.CreateWork(Work{Title: sessionID, Objective: "startup cleanup"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.SubmitDelegatedWorkInput(sessionID, "scoped task", item.ID, sessionID+"-turn", "", "", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if result, err := service.ApplyDelegatedTurnProgress(watcher.TurnFact{
+			SessionID: sessionID, TurnID: sessionID + "-turn", Class: watcher.EvidenceControl,
+			Kind: "done", SourceID: "done", At: time.Now(),
+		}); err != nil || !result.Changed {
+			t.Fatalf("report: %+v %v", result, err)
+		}
+		done := WorkDone
+		if _, err := store.UpdateWork(item.ID, WorkUpdate{Status: &done}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	delete(fw.sessions, "gone:@1")
+	live := []*classifier.Worker{
+		fw.sessions["ambient:@1"],
+		fw.sessions["host:@keep"],
+		fw.sessions["live:@keep"],
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		complete, err := service.ReconcileSignalSystemStartup(live, 8)
+		if err == nil || !errors.Is(err, watcher.ErrUnownedTmuxTarget) {
+			t.Fatalf("attempt %d err=%v, want visible unowned", attempt+1, err)
+		}
+		if !complete {
+			t.Fatalf("attempt %d startup admissions incomplete", attempt+1)
+		}
+	}
+	if fw.HasSession("gone:@1") {
+		t.Fatal("absent completed target was not reclaimed")
+	}
+	if !fw.HasSession("ambient:@1") || !fw.HasSession("host:@keep") || !fw.HasSession("live:@keep") {
+		t.Fatal("unowned or active Sessions were removed")
+	}
+}
+
+type startupCleanupWatcher struct {
+	*fakeWatcher
+	unowned map[string]bool
+}
+
+func (w *startupCleanupWatcher) KillCompletedSession(sessionID, turnID string) error {
+	if w.unowned[sessionID] {
+		return watcher.ErrUnownedTmuxTarget
+	}
+	return w.fakeWatcher.KillCompletedSession(sessionID, turnID)
+}

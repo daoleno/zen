@@ -2400,13 +2400,20 @@ func tmuxBoolOption(value string) bool {
 }
 
 // probeTmuxTargetOwnership reads the durable, window-local ownership fact from
-// the selected server. show-options intentionally omits -A: an ambient window
-// must not inherit @zen_worker_created from a global tmux option. Missing targets
-// and missing servers are ordinary absence; any other failure is unknown.
+// the selected server. Presence is proven with list-panes: tmux 3.6a
+// `show-options -q` returns exit 0 with empty output for a missing session, and
+// display-message / quiet show-options can fall back to another window in the
+// same session. show-options intentionally omits -A: an ambient window must not
+// inherit @zen_worker_created from a global tmux option. Missing targets and
+// missing servers are ordinary absence; any other failure is unknown.
 func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return false, false, nil
+	}
+	present, err = tmuxTargetPresent(socket, target)
+	if err != nil || !present {
+		return false, false, err
 	}
 	out, commandErr := tmuxCommand(
 		socket,
@@ -2417,13 +2424,13 @@ func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err e
 		target,
 		"@zen_worker_created",
 	).CombinedOutput()
+	outText := strings.TrimSpace(string(out))
+	if isTmuxTargetMissing(commandErr, outText) ||
+		isNoTmuxServerError(commandErr) ||
+		isNoTmuxServerError(fmt.Errorf("%s", outText)) {
+		return false, false, nil
+	}
 	if commandErr != nil {
-		outText := strings.TrimSpace(string(out))
-		if isTmuxTargetMissing(commandErr, outText) ||
-			isNoTmuxServerError(commandErr) ||
-			isNoTmuxServerError(fmt.Errorf("%s", outText)) {
-			return false, false, nil
-		}
 		return false, false, fmt.Errorf(
 			"probe tmux ownership for %s: %w: %s",
 			target,
@@ -2432,6 +2439,47 @@ func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err e
 		)
 	}
 	return true, tmuxBoolOption(string(out)), nil
+}
+
+// tmuxTargetPresent reports whether the selected server still has the exact
+// window (or session) target. list-panes does not fall back to another window
+// when the requested window_id is gone.
+func tmuxTargetPresent(socket, target string) (bool, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false, nil
+	}
+	out, commandErr := tmuxCommand(
+		socket,
+		"list-panes",
+		"-t",
+		target,
+		"-F",
+		"#{session_name}:#{window_id}",
+	).CombinedOutput()
+	outText := strings.TrimSpace(string(out))
+	if isTmuxTargetMissing(commandErr, outText) ||
+		isNoTmuxServerError(commandErr) ||
+		isNoTmuxServerError(fmt.Errorf("%s", outText)) {
+		return false, nil
+	}
+	if commandErr != nil {
+		return false, fmt.Errorf("probe tmux presence for %s: %w: %s", target, commandErr, outText)
+	}
+	if !strings.Contains(target, ":") {
+		return true, nil
+	}
+	if outText == "" {
+		// Scripted tests may prove presence with a zero-exit list-panes and no
+		// formatted identity. Real tmux always prints the window identity.
+		return true, nil
+	}
+	for _, line := range strings.Split(outText, "\n") {
+		if strings.TrimSpace(line) == target {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // capturePaneContent captures the visible content of a tmux window's active
@@ -4556,26 +4604,61 @@ func (w *Watcher) KillCompletedSession(sessionID, turnID string) error {
 		if len(pending) != 0 {
 			return fmt.Errorf("completed Session %s has pending input", sessionID)
 		}
-		presence, err := w.ProbeSession(sessionID)
+		present, owned, err := probeTmuxTargetOwnership(w.socketPathFor(sessionID), sessionID)
 		if err != nil {
 			return err
 		}
-		if presence == SessionPresenceAbsent {
+		if !present {
 			return w.KillSession(sessionID)
 		}
-		worker := w.GetWorker(sessionID)
-		if worker == nil || worker.Hidden || !worker.Delegated {
+		if !owned {
+			return fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
+		}
+		if worker := w.GetWorker(sessionID); worker != nil && (worker.Hidden || !worker.Delegated) {
 			return fmt.Errorf("Session %s is not an owned delegated Worker", sessionID)
 		}
-		owned, err := w.ResolveOwnedGeneration(sessionID)
-		if err != nil {
-			return err
-		}
-		if owned.ProcessIdentity != turn.ProcessIdentity || owned.PaneGeneration != turn.PaneGeneration {
-			return fmt.Errorf("completed Session %s generation changed", sessionID)
+		if turn.ProcessIdentity != "" {
+			identity, known, identityErr := w.completedTargetIdentity(sessionID)
+			if identityErr != nil {
+				return identityErr
+			}
+			if known {
+				paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
+				if delegatedTurnIdentity(identity) != turn.ProcessIdentity ||
+					(turn.PaneGeneration != "" && paneGeneration != turn.PaneGeneration) {
+					return fmt.Errorf("completed Session %s generation changed", sessionID)
+				}
+			}
 		}
 		return w.KillSession(sessionID)
 	})
+}
+
+// completedTargetIdentity reads the current pane/process identity for a
+// durably owned completed target. It must not use the live worker projection:
+// already-reclaimed Sessions can still have a leftover owned window, and the
+// projection's Unowned gate would mis-classify them.
+func (w *Watcher) completedTargetIdentity(sessionID string) (targetProcessIdentity, bool, error) {
+	if w == nil {
+		return targetProcessIdentity{}, false, ErrOwnershipProbeUnavailable
+	}
+	w.mu.RLock()
+	identityResolver := w.targetProcessResolver
+	resolver := w.targetCommandResolver
+	w.mu.RUnlock()
+	if identityResolver != nil {
+		identity, known := identityResolver(sessionID)
+		if !known {
+			return targetProcessIdentity{}, false, nil
+		}
+		return identity, true, nil
+	}
+	if resolver != nil {
+		identity, known := targetIdentityResolverFromCommandResolver(resolver)(sessionID)
+		return identity, known, nil
+	}
+	identity, known := w.resolveTargetProcessIdentity(sessionID)
+	return identity, known, nil
 }
 
 // KillSession terminates only the owned window and releases its delegated

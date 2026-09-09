@@ -163,4 +163,21 @@ exit 1`)
 	if presence != SessionPresenceUnknown || err == nil {
 		t.Fatalf("transport presence=%v err=%v", presence, err)
 	}
+
+	writeTmux(`cmd=
+for arg in "$@"; do
+  case "$arg" in list-panes|show-options) cmd=$arg ;; esac
+done
+if [ "$cmd" = "list-panes" ]; then
+  echo "can't find session: main:@1" >&2
+  exit 1
+fi
+if [ "$cmd" = "show-options" ]; then
+  exit 0
+fi
+exit 1`)
+	presence, err = w.ProbeSession("main:@1")
+	if err != nil || presence != SessionPresenceAbsent {
+		t.Fatalf("quiet-missing presence=%v err=%v", presence, err)
+	}
 }
