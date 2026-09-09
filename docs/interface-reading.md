@@ -41,6 +41,28 @@ metadata and binary source. Its request lifetime rejects responses after close
 or context replacement. No prewarming or automatic second-open retry is used.
 An unavailable image remains an explicit file error rather than a blank success.
 
+## Mermaid diagrams
+
+Fenced `mermaid` code blocks in Chat, Brain workspace Markdown, Work previews,
+and Skill file Markdown render as flowcharts when the source is a `flowchart`
+or `graph` diagram. Other Mermaid types stay as ordinary readable code.
+Rendering uses bundled mermaid `11.6.0` inside a sandboxed WebView: no CDN,
+no custom callbacks, and `%%{init}%%` / frontmatter cannot loosen security.
+Copy returns the original Mermaid source. Incomplete streaming fences keep a
+stable placeholder until the message settles. Dense diagrams open a
+pinch-and-pan full-screen view; closing it leaves the reading position intact.
+
+Limits: 32 KiB source, 80 nodes, 120 edges, 16 subgraphs, 2.5s render. Invalid
+or blocked diagrams fall back to the source with a short status label.
+
+Development fixture:
+
+```text
+zen://screenshot-demo?demo=1&state=mermaid
+```
+
+Requires `EXPO_PUBLIC_ZEN_SCREENSHOT_DEMO=1` in a development build.
+
 ## Verification
 
 `timelineReadingHooks.test.tsx` runs the actual React hook with controlled native

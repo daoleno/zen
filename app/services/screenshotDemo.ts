@@ -20,6 +20,7 @@ export const SCREENSHOT_DEMO_STATES = [
   "composer",
   "onboarding",
   "empty",
+  "mermaid",
 ] as const;
 
 export type ScreenshotDemoState = (typeof SCREENSHOT_DEMO_STATES)[number];

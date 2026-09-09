@@ -165,4 +165,12 @@ Some host executor configurations can disable sandbox or approval prompts.
 That is a daemon-host trust choice, not authority granted to the relay. See
 [executors.md](executors.md).
 
+## Untrusted Markdown diagrams
+
+Fenced Mermaid flowcharts are untrusted input. Zen strips init/frontmatter
+overrides and `click` statements, disables HTML labels except line breaks,
+locks `securityLevel` to `strict`, and renders in a local WebView that cannot
+navigate, fetch, open windows, or expose host bridge methods. Unsupported
+diagram types and oversize sources fall back to readable code.
+
 Report vulnerabilities through [SECURITY.md](../SECURITY.md).

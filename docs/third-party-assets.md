@@ -44,3 +44,10 @@ Removed from the tree (unknown provenance): former `sky-meadow-ambient.webp` and
 ## npm / Go dependencies
 
 Application and daemon library licenses are those of their respective packages (`bun.lock`, `daemon/go.mod`). This document focuses on **bundled fonts and vendored native binaries**, which are easy to miss in automated SCA.
+
+## Bundled JavaScript: Mermaid
+
+| Artifact | Upstream | License | Notes |
+| --- | --- | --- | --- |
+| `app/components/markdown/mermaidRuntimeSource.js` | [mermaid-js/mermaid](https://github.com/mermaid-js/mermaid) `11.6.0` | MIT | Offline `mermaid.min.js` for fenced Markdown flowcharts. SHA-256 in `mermaidRuntimeMeta.ts`. Runs in a sandboxed WebView; user diagrams cannot override `securityLevel`, load a CDN, or run callbacks. |
+| Notice source | same | MIT | `app/assets/notices/MERMAID-MIT.txt`. |
