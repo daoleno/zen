@@ -32,6 +32,9 @@ func TestDesktopCheckReportsSameBinaryProvenance(t *testing.T) {
 	if !found {
 		t.Fatal("desktop check missing from report.Checks")
 	}
+	if report.Desktop.StreamReady {
+		t.Fatal("doctor must not claim stream readiness from linking")
+	}
 	if runtime.GOOS == "linux" && report.Desktop.NativeLinked && report.Desktop.Status == StatusFail {
 		t.Fatal("linked native binary reported corrupt")
 	}

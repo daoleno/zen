@@ -15,6 +15,7 @@ func runDesktopIdentityCommand(stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	id.NativeBuildInput = nativebind.NativeBuildInput()
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(id); err != nil {

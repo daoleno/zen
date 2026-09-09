@@ -13,3 +13,7 @@ func RunHelper(args []string) error {
 func RunAgent(args []string) error {
 	return impl.RunAgent(args)
 }
+
+func NativeBuildInput() string {
+	return impl.NativeBuildInput()
+}

@@ -456,6 +456,17 @@ if stage:
                 expected = ["LICENSE", "NOTICE", "TRADEMARKS.md", "zen"]
                 if names != expected:
                     errors.append(f"{archive} contents: got {names!r} want {expected!r}")
+                if "libzen-desktop.so" in names:
+                    errors.append(f"{archive} must not include libzen-desktop.so")
+
+        ident = json.loads((stage_p / "release-manifest.json").read_text(encoding="utf-8")) if (stage_p / "release-manifest.json").is_file() else {}
+        desktop_native = ident.get("daemon", {}).get("desktop_native", {})
+        if desktop_native.get("linux/arm64") or desktop_native.get("darwin/arm64"):
+            errors.append("linux/arm64 and darwin/arm64 must not advertise desktop_native")
+        artifacts = {item.get("path"): item for item in ident.get("artifacts", []) if isinstance(item, dict)}
+        linux_amd64 = artifacts.get("zen-linux-amd64.tar.gz", {})
+        if linux_amd64 and bool(linux_amd64.get("desktop_native")) != bool(desktop_native.get("linux/amd64")):
+            errors.append("linux/amd64 desktop_native flag disagrees between artifact and daemon map")
 
 if errors:
     print("FAIL: release identity checks", file=sys.stderr)

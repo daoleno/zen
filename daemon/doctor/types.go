@@ -183,11 +183,14 @@ type ExecutorCheck struct {
 }
 
 // DesktopCheck reports same-binary native role provenance and shared libraries.
-// Missing desktop native does not block daemon Ready.
+// Missing desktop native does not block daemon Ready. StreamReady is never
+// inferred from linking alone.
 type DesktopCheck struct {
 	Executable   string      `json:"executable,omitempty"`
 	SHA256       string      `json:"sha256,omitempty"`
 	NativeLinked bool        `json:"native_linked"`
+	StreamReady  bool        `json:"stream_ready"`
+	DisplaySet   bool        `json:"display_set"`
 	Roles        []string    `json:"roles,omitempty"`
 	Libraries    []string    `json:"libraries,omitempty"`
 	Missing      []string    `json:"missing_libraries,omitempty"`

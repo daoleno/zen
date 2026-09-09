@@ -112,10 +112,14 @@ entries for system GTK 3, GStreamer app/video, X11 and XTest. GStreamer plugins
 (ximagesrc, openh264, h264parse, pipewiresrc) stay runtime plugin dependencies.
 This is **not** a static single-file artifact. `zen doctor` reports whether this
 binary was compiled with native roles, hashes the executable, and lists missing
-`DT_NEEDED` libraries. `CGO_ENABLED=0` cross-release archives (`scripts/build-daemon-linux.sh`)
-are daemon-only; doctor must say so rather than pretending capture is present.
-Local `bun run daemon:build` and `zen-dev` enable the desktop tag when `pkg-config`
-finds the development files. macOS/Windows host adapters remain unimplemented.
+`DT_NEEDED` libraries. On a Linux amd64 host, `scripts/build-daemon-linux.sh`
+produces a desktop-capable `zen-linux-amd64`. linux/arm64, Darwin, and
+linux/amd64 built from another host stay daemon-only; doctor must say so rather
+than pretending capture is present. Local `bun run daemon:build` and `zen-dev`
+enable the desktop tag when `pkg-config` finds the development files.
+macOS/Windows host adapters remain unimplemented. If GTK/GStreamer are not
+installed, `ld.so` will not start a desktop-capable ELF, so doctor cannot run
+until those OS packages exist.
 
 Privilege separation is **process isolation of the same ELF**, not a shared
 crash/security domain: the root broker never initializes GTK/GStreamer; the agent
@@ -125,7 +129,14 @@ because they are `DT_NEEDED`; the broker does not call capture APIs. A sibling
 `.so` was rejected because it would split the distributed artifact.
 
 DEV: `zen-dev` rebuilds this complete binary when Go **or** native C/headers/Makefiles
-change, then restarts its child daemon. Existing daemon shutdown closes the desktop
+change, then restarts its child daemon. External `#include` of `desktop/native/*.c`
+from cgo is not a Go package file, so the watcher passes a content-hash
+`-DZEN_NATIVE_BUILD_INPUT=…` compiler define (preserving caller `CGO_CFLAGS`)
+instead of deleting GOCACHE or touching `.go` files. A comment-only C edit can
+still compile to an identical ELF; linked rebuild proof is a used fixture marker
+plus `desktop-identity` / role `/proc/pid/exe`, not output size/mtime. Builds
+write `tmp/zen-dev.building` and rename onto the last-good ELF so a compile
+failure keeps the previous child binary. Existing daemon shutdown closes the desktop
 manager and retires helper children. The user-writable DEV binary (`daemon/tmp/zen-dev`)
 must never be `ExecStart` for the root broker; the installed copy is
 `/usr/libexec/zen/zen` only after reviewed installation. Root agent launch opens that
@@ -585,13 +596,15 @@ unsupported rather than falling back to another desktop or permission model.
 Build a desktop-capable `zen` with the repository local recipe (`bun run daemon:build`
 or `cd daemon && go run ./cmd/zen-dev`). That enables CGO and `-tags zen_desktop`
 when `pkg-config` finds GTK3, GStreamer app/video, GIO Unix, X11 and XTest.
-`make -C daemon/desktop/native` remains a standalone encoder/portal compile check;
-it is not a user-facing helper to download or configure. Runtime requires those
-shared libraries plus GStreamer capture, conversion, H.264 encoder/parser and app
-plugins. Keep the verified `zen` outside temporary Worker directories before
-configuring a persistent daemon. Do not point a user daemon at an instrumented
-test wrapper or an owned test display. Cross-compiled `CGO_ENABLED=0` release
-archives do not include native roles; `zen doctor` reports that.
+Linux amd64 production builds (`scripts/build-daemon-linux.sh` on a Linux amd64
+host) use the same linked ELF. `make -C daemon/desktop/native` remains a
+standalone encoder/portal compile check; it is not a user-facing helper to
+download or configure. Runtime requires those shared libraries plus GStreamer
+capture, conversion, H.264 encoder/parser and app plugins. Keep the verified
+`zen` outside temporary Worker directories before configuring a persistent
+daemon. Do not point a user daemon at an instrumented test wrapper or an owned
+test display. linux/arm64 and Darwin `CGO_ENABLED=0` archives do not include
+native roles; `zen doctor` reports that.
 
 `ZEN_DESKTOP_HELPER` is not required. `ZEN_DESKTOP_BACKEND` defaults to `x11`;
 `ZEN_DESKTOP_DISPLAY` explicitly selects the X display. For Wayland, set `ZEN_DESKTOP_BACKEND=wayland`, select the owned

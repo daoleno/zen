@@ -14,6 +14,13 @@
 #include "portal_capture.h"
 #include "encoder.h"
 
+#ifndef ZEN_NATIVE_BUILD_INPUT
+#define ZEN_NATIVE_BUILD_INPUT none
+#endif
+#define ZEN_NATIVE_BUILD_INPUT_XSTR(x) #x
+#define ZEN_NATIVE_BUILD_INPUT_STR(x) ZEN_NATIVE_BUILD_INPUT_XSTR(x)
+__attribute__((used)) const char zen_native_build_input[] = ZEN_NATIVE_BUILD_INPUT_STR(ZEN_NATIVE_BUILD_INPUT);
+
 static Display *display;
 static GstElement *pipeline;
 static GtkWidget *window;

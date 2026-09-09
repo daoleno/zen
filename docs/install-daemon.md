@@ -129,14 +129,20 @@ bun run daemon:build
 
 `bun run daemon:build` (and `cd daemon && go run ./cmd/zen-dev`) enable CGO and
 `-tags zen_desktop` when `pkg-config` finds GTK3, GStreamer app/video, GIO Unix,
-X11 and XTest. That produces one `zen` ELF whose `desktop-helper`, `desktop-host`
-and `desktop-agent` roles are the same file. It does not extract a second helper
-or compile C at end-user startup. System GTK/GStreamer/X11 remain dynamically
-linked; `zen doctor` reports missing libraries or a daemon-only binary.
+X11 and XTest. Desktop-capable builds pass a content-hash
+`-DZEN_NATIVE_BUILD_INPUT=…` compiler define so cgo rebuilds when external
+`desktop/native` C/headers change, without deleting GOCACHE. That produces one
+`zen` ELF whose `desktop-helper`, `desktop-host` and `desktop-agent` roles are
+the same file. It does not extract a second helper, emit `libzen-desktop.so`,
+or compile C at end-user startup. System GTK/GStreamer/X11
+remain dynamically linked (`DT_NEEDED`). If those OS libraries are absent, the
+dynamic loader refuses to start the ELF before `zen doctor` can run; install them
+first. `zen doctor` on a running desktop-capable ELF reports `native_linked`
+and lists `DT_NEEDED` names. Linking is not stream readiness.
 
 A plain `cd zen/daemon && go build -o bin/zen ./cmd/zen/` without the tag is a
-daemon-only artifact (same as `CGO_ENABLED=0` cross-release builds). Desktop
-capture is then unavailable until you rebuild with the local recipe.
+daemon-only artifact. Desktop capture is then unavailable until you rebuild with
+the local or Linux amd64 production recipe.
 
 ```bash
 cd zen/daemon
@@ -148,15 +154,18 @@ Product version for banners and release staging comes from `app/app.base.json` (
 
 ## Release binaries (Linux and Apple Silicon macOS)
 
-Cross-build without CGO (deterministic flags: `-trimpath`, `-buildvcs=false`, stripped ldflags).
-These archives are **daemon-only**: they do not contain Linux desktop native roles.
-Use the local CGO recipe above for a desktop-capable `zen` on the build host.
+On a Linux amd64 host, `scripts/build-daemon-linux.sh` builds **desktop-capable**
+`zen-linux-amd64` (`CGO_ENABLED=1 -tags zen_desktop`). linux/arm64 and Darwin
+archives stay `CGO_ENABLED=0` daemon-only (no matching GTK sysroot). Staging
+from macOS likewise produces a daemon-only linux/amd64 archive; that is not a
+universal desktop binary. Deterministic flags: `-trimpath`, `-buildvcs=false`,
+stripped ldflags.
 
 ```bash
 ./scripts/build-daemon-linux.sh
-# → dist-download/staging/bin/zen-linux-amd64
-# → dist-download/staging/bin/zen-linux-arm64
-# → dist-download/staging/bin/zen-darwin-arm64
+# → dist-download/staging/bin/zen-linux-amd64   (desktop-capable on Linux amd64 hosts)
+# → dist-download/staging/bin/zen-linux-arm64   (daemon-only)
+# → dist-download/staging/bin/zen-darwin-arm64  (daemon-only)
 ```
 
 Full local stage (clean directory each run; **no** GitHub Release):

@@ -68,10 +68,11 @@ func FileSHA256(path string) (string, error) {
 }
 
 type Identity struct {
-	Executable string   `json:"executable"`
-	SHA256     string   `json:"sha256"`
-	Native     bool     `json:"native"`
-	Roles      []string `json:"roles"`
+	Executable       string   `json:"executable"`
+	SHA256           string   `json:"sha256"`
+	Native           bool     `json:"native"`
+	NativeBuildInput string   `json:"native_build_input,omitempty"`
+	Roles            []string `json:"roles"`
 }
 
 func NewIdentity(native bool) (Identity, error) {

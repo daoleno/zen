@@ -25,6 +25,8 @@ var linuxDesktopLibraries = []string{
 func (e env) checkDesktop() DesktopCheck {
 	check := DesktopCheck{
 		NativeLinked: nativebind.NativeLinked,
+		StreamReady:  false,
+		DisplaySet:   os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "",
 		Roles:        []string{desktop.RoleHelper, desktop.RoleHost, desktop.RoleAgent},
 	}
 	exe, err := desktop.CurrentExecutable()
@@ -59,19 +61,22 @@ func (e env) checkDesktop() DesktopCheck {
 	if !nativebind.NativeLinked {
 		check.Status = StatusWarn
 		check.Remediation = RemediationDesktopNativeMissing
-		check.Summary = "this zen binary was built without desktop native roles; rebuild with CGO and -tags zen_desktop"
+		check.Summary = "this zen binary was built without desktop native roles; rebuild with CGO and -tags zen_desktop. A CGO-disabled archive is daemon-only"
 		return check
 	}
-	missing := missingLibraries(needed, linuxDesktopLibraries)
+	missing := missingDTNeeded(needed, linuxDesktopLibraries)
 	check.Missing = missing
 	if len(missing) > 0 {
 		check.Status = StatusWarn
 		check.Remediation = RemediationDesktopLibraries
-		check.Summary = "desktop native is linked but required shared libraries are missing: " + strings.Join(missing, ", ")
+		check.Summary = "desktop native tag is set but this ELF does not DT_NEED: " + strings.Join(missing, ", ")
 		return check
 	}
 	check.Status = StatusOK
-	check.Summary = "same-binary desktop roles are linked; GTK/GStreamer/X11 remain dynamic dependencies"
+	check.Summary = "same-binary desktop roles are cgo-linked; GTK/GStreamer/X11 remain dynamic OS dependencies, not a static single file. Linking is not stream readiness. If those DT_NEEDED libraries are absent, ld.so will refuse to start this ELF before zen doctor can run"
+	if !check.DisplaySet {
+		check.Summary += ". DISPLAY and WAYLAND_DISPLAY are unset in this process"
+	}
 	return check
 }
 
@@ -88,7 +93,7 @@ func elfNeeded(path string) ([]string, bool) {
 	return needed, false
 }
 
-func missingLibraries(needed, want []string) []string {
+func missingDTNeeded(needed, want []string) []string {
 	have := map[string]bool{}
 	for _, lib := range needed {
 		have[lib] = true
@@ -96,23 +101,9 @@ func missingLibraries(needed, want []string) []string {
 	}
 	var missing []string
 	for _, lib := range want {
-		if have[lib] {
-			continue
+		if !have[lib] {
+			missing = append(missing, lib)
 		}
-		if libraryFileExists(lib) {
-			continue
-		}
-		missing = append(missing, lib)
 	}
 	return missing
-}
-
-func libraryFileExists(name string) bool {
-	dirs := []string{"/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu"}
-	for _, dir := range dirs {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return true
-		}
-	}
-	return false
 }

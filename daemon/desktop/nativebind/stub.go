@@ -14,3 +14,7 @@ func RunAgent(args []string) error {
 
 // NativeLinked is false when this ELF was built without Linux desktop CGO.
 const NativeLinked = false
+
+func NativeBuildInput() string {
+	return ""
+}
