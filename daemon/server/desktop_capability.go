@@ -69,6 +69,8 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool) 
 	}
 	return map[string]any{
 		"ok":                    true,
+		"daemon_id":             s.auth.DaemonID(),
+		"daemon_public_key":     s.auth.PublicKeyHex(),
 		"device_id":             device.ID,
 		"device_trust":          trust,
 		"desktop_scope_version": device.DesktopScopeVersion,

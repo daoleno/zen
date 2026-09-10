@@ -1,7 +1,10 @@
 package link
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/tls"
+	"crypto/x509"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,6 +52,27 @@ func TestTransportIdentityPersistsRouteAndPinAcrossCertificateReissue(t *testing
 	}
 	if !foundIdentityName {
 		t.Fatal("identity desktop server name missing from transport certificate")
+	}
+}
+
+// Android's TLS stack offers ECDSA/RSA signature schemes but not Ed25519, so a
+// self-signed Ed25519 transport certificate fails the pinned handshake with
+// "peer doesn't support any of the certificate's signature algorithms".
+func TestTransportCertificateUsesClientNegotiableECDSAKey(t *testing.T) {
+	stateDir := t.TempDir()
+	identity, err := LoadOrCreateTransportIdentity(stateDir, []string{"relay.link.test"})
+	if err != nil {
+		t.Fatalf("LoadOrCreateTransportIdentity: %v", err)
+	}
+	publicKey, ok := identity.Certificate.Leaf.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("transport certificate key is %T, want ECDSA P-256", identity.Certificate.Leaf.PublicKey)
+	}
+	if publicKey.Curve != elliptic.P256() {
+		t.Fatalf("transport certificate curve is %q, want P-256", publicKey.Curve.Params().Name)
+	}
+	if identity.Certificate.Leaf.SignatureAlgorithm != x509.ECDSAWithSHA256 {
+		t.Fatalf("transport certificate signature=%v, want ECDSAWithSHA256", identity.Certificate.Leaf.SignatureAlgorithm)
 	}
 }
 

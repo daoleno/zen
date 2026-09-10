@@ -149,6 +149,9 @@ func TestBDD_DesktopConnectionContract(t *testing.T) {
 		if payload["device_trust"] != "paired_unattended" {
 			t.Fatalf("trust=%v", payload["device_trust"])
 		}
+		if payload["daemon_id"] != manager.DaemonID() || payload["daemon_public_key"] != manager.PublicKeyHex() {
+			t.Fatalf("capability must echo the daemon identity, got id=%v key=%v", payload["daemon_id"], payload["daemon_public_key"])
+		}
 		transport, _ := payload["transport"].(map[string]any)
 		if transport["request_encrypted"] != false || transport["forwarded_headers_trusted"] != false {
 			t.Fatalf("transport=%v", transport)
