@@ -308,6 +308,85 @@ func TestOpenCodeFollowUpSignalOwnsNewTurnAndOldResultCannotCompleteIt(t *testin
 	}
 }
 
+// TestOpenCodeFollowUpAfterLostSignalTurnWithAdvancedActivity verifies that a
+// signal-protocol Turn whose end signal was lost (Unknown), with a provider
+// activity that later advanced, can still receive a safe follow-up. The
+// unrelated provider-tool-message activity never masquerades as canonical
+// ownership, the fresh candidate never adopts it, and the predecessor's later
+// result cannot complete the new Turn.
+func TestOpenCodeFollowUpAfterLostSignalTurnWithAdvancedActivity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	now := time.Now().UTC()
+	probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{
+		// Baseline for the follow-up: a running activity unrelated to the
+		// canonical turn identity (a newer OpenCode tool-message activity).
+		{
+			ID:         "ses_f73e32bb9ffeFBCKb6HAvJseC6:activity:msg_08c54451a001UZyXa9K6z1OMcZ",
+			Status:     "running",
+			StartedAt:  now.Add(time.Second),
+			Structured: true,
+		},
+	}}
+	w := lifecycleTestWatcher(io, ledger, probe)
+	sessionID := "opencode-lost:@9"
+	w.workers[sessionID] = &classifier.Worker{
+		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
+		PaneAlive: true, Delegated: true, State: classifier.StateUnknown,
+	}
+	oldTurn := sessionID + ":turn:1"
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: oldTurn, Status: TurnUnknown,
+		AcceptedAt:     now.Add(-time.Minute),
+		SignalProtocol: true,
+		Admission:      TurnAdmission{SHA256: "0e45e4ffffa2b16fa0e5d06211fc278dbb1b9c73797b6338a45d4d4552ca51ea"},
+		PaneGeneration: "generation-1",
+	})
+
+	followTurn := sessionID + ":turn:2"
+	followAt := now.Add(time.Minute)
+	result, err := w.SubmitDelegatedInput(sessionID, "follow-up after lost signal", followTurn, followAt)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != followTurn || result.ProviderConfirmed {
+		t.Fatalf("follow-up after lost turn = (%+v, %v), want transport-submitted", result, err)
+	}
+	if len(io.queues) != 1 || len(io.submissions) != 1 {
+		t.Fatalf("follow-up mutation count queues=%d submissions=%d", len(io.queues), len(io.submissions))
+	}
+	// The predecessor stays exactly Unknown: the unrelated activity is never
+	// adopted into it.
+	if turn, _, _ := ledger.Turn(sessionID); turn.TurnID != oldTurn || turn.Status != TurnUnknown {
+		t.Fatalf("predecessor mutated by unrelated activity: %+v", turn)
+	}
+	pendingList, _ := ledger.PendingInputAdmissions(sessionID)
+	if len(pendingList) != 1 || pendingList[0].ProposedTurnID != followTurn || pendingList[0].Mode != InputAdmissionFresh {
+		t.Fatalf("follow-up pending submission = %+v", pendingList)
+	}
+
+	// The old Turn's late signal settles only the old Turn; it never consumes
+	// the fresh candidate.
+	if _, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: sessionID, TurnID: oldTurn, Class: EvidenceControl, Kind: "done",
+		SourceID: "control\x00" + oldTurn, At: followAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pendingList, _ := ledger.PendingInputAdmissions(sessionID); len(pendingList) != 1 || pendingList[0].ProposedTurnID != followTurn {
+		t.Fatalf("old signal consumed the fresh candidate: %+v", pendingList)
+	}
+
+	// Only the fresh Turn's own signal owns the new lifecycle.
+	if _, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: sessionID, TurnID: followTurn, Class: EvidenceControl, Kind: "running",
+		SourceID: "control\x00" + followTurn, At: followAt.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turn, hasTurn, _ := ledger.Turn(sessionID)
+	if !hasTurn || turn.TurnID != followTurn || turn.Status != TurnAccepted {
+		t.Fatalf("fresh signal did not own the lifecycle: %+v hasTurn=%v", turn, hasTurn)
+	}
+}
+
 // TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending verifies that
 // an ambiguous admission with no provider evidence is never terminalized by a
 // timeout or by absence of activity: no phantom Turn is created and the
@@ -344,6 +423,58 @@ func TestOpenCodeAmbiguousAdmissionNoProviderEvidenceStaysPending(t *testing.T) 
 	}
 	if worker := w.GetWorker(sessionID); worker == nil || worker.State != classifier.StateRunning {
 		t.Fatalf("pending projection = %+v, want running", worker)
+	}
+}
+
+// TestOpenCodeFollowUpWhileSignalTurnRunningWithAdvancedActivity verifies the
+// coordination-send case: a delegated signal-protocol Turn may still be running
+// while the provider advances to a newer tool-message activity. That advance is
+// not canonical ownership, so the follow-up steers the existing active Attempt
+// (ConditionalSteer) through the generic signal contract instead of requesting
+// a Fresh admission that the lifecycle owner would reject, and the running
+// predecessor is left untouched.
+func TestOpenCodeFollowUpWhileSignalTurnRunningWithAdvancedActivity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	now := time.Now().UTC()
+	probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{
+		{
+			// A newer provider activity for the same owned OpenCode session,
+			// unrelated to the canonical turn's recorded activity.
+			ID: "ses_1:activity:msg_new", Status: "running",
+			StartedAt: now.Add(time.Second), Structured: true,
+		},
+	}}
+	w := lifecycleTestWatcher(io, ledger, probe)
+	sessionID := "opencode-running:@11"
+	w.workers[sessionID] = &classifier.Worker{
+		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
+		PaneAlive: true, Delegated: true, State: classifier.StateRunning,
+	}
+	oldTurn := sessionID + ":turn:1"
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: oldTurn, Status: TurnRunning,
+		AcceptedAt: now.Add(-time.Minute), SignalProtocol: true,
+		ActivityID: "ses_1:activity:msg_old", PaneGeneration: "generation-1",
+	})
+
+	followTurn := sessionID + ":turn:2"
+	result, err := w.SubmitDelegatedInput(sessionID, "coordination follow-up", followTurn, now)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != followTurn || result.ProviderConfirmed {
+		t.Fatalf("running-turn follow-up = (%+v, %v), want transport-submitted", result, err)
+	}
+	if len(io.queues) != 1 || len(io.submissions) != 1 {
+		t.Fatalf("follow-up mutation count queues=%d submissions=%d", len(io.queues), len(io.submissions))
+	}
+	if turn, _, _ := ledger.Turn(sessionID); turn.TurnID != oldTurn || turn.Status != TurnRunning || turn.ActivityID != "ses_1:activity:msg_old" {
+		t.Fatalf("predecessor mutated by advanced activity: %+v", turn)
+	}
+	pendingList, _ := ledger.PendingInputAdmissions(sessionID)
+	if len(pendingList) != 1 || pendingList[0].ProposedTurnID != followTurn ||
+		pendingList[0].Mode != InputAdmissionConditionalSteer ||
+		pendingList[0].ExistingTurnID != oldTurn ||
+		pendingList[0].BaselineActivityID != "ses_1:activity:msg_old" {
+		t.Fatalf("follow-up pending submission = %+v", pendingList)
 	}
 }
 

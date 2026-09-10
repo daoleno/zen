@@ -1112,10 +1112,17 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 	historicalTerminal := strings.TrimSpace(boundProvider.ID) != "" &&
 		strings.TrimSpace(boundProvider.ID) != strings.TrimSpace(currentProvider.ID)
 	if historicalTerminal && !providerActivityTerminal(currentProvider.Status) {
-		return decision, fmt.Errorf(
-			"%w: current provider activity is live while canonical turn %s belongs to a historical terminal",
-			errDelegatedProviderOwnershipMismatch, turn.TurnID,
-		)
+		// A delegated signal-protocol Turn is completed by its prompt-carried
+		// identity, not by provider activity. A newer live provider activity
+		// (a distinct tool-message activity) is a separate observation; the
+		// signal branches below decide whether to steer the active Attempt or
+		// start an isolated fresh Turn. Non-signal turns keep failing closed.
+		if !turn.SignalProtocol {
+			return decision, fmt.Errorf(
+				"%w: current provider activity is live while canonical turn %s belongs to a historical terminal",
+				errDelegatedProviderOwnershipMismatch, turn.TurnID,
+			)
+		}
 	}
 	if !providerObservationCanBindTurn(turn, boundProvider) {
 		// A globally final canonical result and a different exact terminal
@@ -1125,6 +1132,35 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 		// post-mutation admission digest may own the new candidate.
 		if TurnImmutable(turn.Status) && providerActivityTerminal(currentProvider.Status) &&
 			strings.TrimSpace(currentProvider.ID) != "" {
+			return decision, nil
+		}
+		if turn.SignalProtocol {
+			if TurnTerminal(turn.Status) {
+				// Unknown/Done/Failed predecessors have no active Attempt to
+				// steer; a fresh candidate is safe and remains isolated by its
+				// own prompt-carried turn identity.
+				return decision, nil
+			}
+			// A non-terminal signal Turn still owns its active Attempt, so a
+			// Fresh admission would be rejected by the lifecycle owner ("Work
+			// already has an active Attempt"). Steer that exact Attempt
+			// instead; the prompt-carried signal, not provider activity,
+			// resolves the new Turn. The baseline is the recorded turn
+			// activity when present, else the real observed activity — never an
+			// invented identity.
+			baseline := strings.TrimSpace(turn.ActivityID)
+			if baseline == "" {
+				baseline = strings.TrimSpace(currentProvider.ID)
+			}
+			if baseline == "" {
+				return decision, fmt.Errorf(
+					"%w: live canonical turn %s has no steerable provider activity",
+					errDelegatedProviderOwnershipMismatch, turn.TurnID,
+				)
+			}
+			decision.Mode = delegatedReuseConditionalSteer
+			decision.ExistingTurn = turn
+			decision.BaselineActivity = baseline
 			return decision, nil
 		}
 		return decision, fmt.Errorf(
@@ -1138,6 +1174,11 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 		return decision, fmt.Errorf("current provider activity has no authoritative lifecycle status")
 	}
 	if strings.TrimSpace(boundProvider.Status) == "running" && TurnTerminal(turn.Status) {
+		if turn.SignalProtocol {
+			// A terminal/unknown signal Turn cannot be reopened by a later
+			// running activity; allow the fresh candidate instead.
+			return decision, nil
+		}
 		return decision, fmt.Errorf(
 			"%w: terminal canonical turn %s cannot be reused from a running provider baseline",
 			errDelegatedProviderOwnershipMismatch, turn.TurnID,

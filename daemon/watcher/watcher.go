@@ -1158,6 +1158,54 @@ func (w *Watcher) ProbeSession(target string) (SessionPresence, error) {
 	return SessionPresenceAbsent, nil
 }
 
+// ResolveDelegatedAbsence proves that a previously-owned delegated target is
+// definitively gone on the selected server: the target is absent, or present
+// but no longer Zen-owned (a foreign replacement). It is the restart/reconcile
+// decision boundary, so it is based on one authoritative exact inventory that
+// itself distinguishes transport-unavailable from proven missing. An
+// unreachable or unreadable server returns ErrOwnershipProbeUnavailable;
+// callers must treat that as Unknown and retain the canonical Turn. ProbeSession
+// keeps its long-standing absent-on-no-server semantics for cleanup callers.
+func (w *Watcher) ResolveDelegatedAbsence(target string) (bool, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false, fmt.Errorf("missing session id")
+	}
+	socket := w.socketPathFor(target)
+	// One authoritative exact inventory. A transport failure is never combined
+	// with a later reachability claim: either this single read succeeds and is
+	// authoritative for presence + ownership of the exact window, or it fails
+	// closed as Unknown.
+	out, err := tmuxCommand(
+		socket,
+		"list-windows", "-a",
+		"-F", "#{session_name}:#{window_id}\t#{@zen_worker_created}",
+	).CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(out))
+		if isNoTmuxServerError(err) || isNoTmuxServerError(fmt.Errorf("%s", text)) {
+			return false, fmt.Errorf("%w: selected tmux server is unavailable for %s", ErrOwnershipProbeUnavailable, target)
+		}
+		return false, errors.Join(ErrOwnershipProbeUnavailable, fmt.Errorf("tmux window inventory: %w: %s", err, text))
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if strings.TrimSpace(parts[0]) != target {
+			continue
+		}
+		owned := len(parts) > 1 && tmuxBoolOption(parts[1])
+		// Present: owned means the live Worker still owns it; unowned is a
+		// foreign replacement and therefore end-of-identity for our Turn.
+		return !owned, nil
+	}
+	// The exact target is absent from a successful, reachable inventory.
+	return true, nil
+}
+
 // ProbeProviderEvidence returns the current provider-native observation for a
 // session. The brain service uses it for the Host foreground gate and the
 // delegated provider admission window.

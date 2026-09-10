@@ -50,6 +50,14 @@ func (w *brainServiceTestWatcher) ProbeSession(target string) (watcher.SessionPr
 	return watcher.SessionPresenceAbsent, nil
 }
 
+func (w *brainServiceTestWatcher) ResolveDelegatedAbsence(target string) (bool, error) {
+	presence, err := w.ProbeSession(target)
+	if err != nil {
+		return false, err
+	}
+	return presence == watcher.SessionPresenceAbsent, nil
+}
+
 func (w *brainServiceTestWatcher) CreateSession(string, watcher.CreateSessionOptions) (string, error) {
 	return "", nil
 }

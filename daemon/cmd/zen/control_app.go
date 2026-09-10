@@ -28,6 +28,7 @@ type controlWatcher interface {
 	GetWorker(id string) *classifier.Worker
 	HasSession(target string) bool
 	ProbeSession(target string) (watcher.SessionPresence, error)
+	ResolveDelegatedAbsence(target string) (bool, error)
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	UpdateWorkerProgress(id string, progress classifier.WorkerProgress) (*classifier.Worker, error)
 	RebindDelegatedTurnProjection(id string) (*classifier.Worker, error)
