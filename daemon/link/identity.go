@@ -108,6 +108,20 @@ func loadTransportIdentity(path string) (persistedTransportIdentity, error) {
 	if persisted.RouteID == "" {
 		return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid route id")
 	}
+	identityKey, err := hex.DecodeString(strings.TrimSpace(persisted.PrivateKeyHex))
+	if err != nil || len(identityKey) != ed25519.PrivateKeySize {
+		return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid identity key")
+	}
+	if rawTLS := strings.TrimSpace(persisted.TLSPrivateKeyHex); rawTLS != "" {
+		der, err := hex.DecodeString(rawTLS)
+		if err != nil {
+			return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid TLS key")
+		}
+		key, err := x509.ParseECPrivateKey(der)
+		if err != nil || key.Curve != elliptic.P256() {
+			return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid TLS key")
+		}
+	}
 	return persisted, nil
 }
 
