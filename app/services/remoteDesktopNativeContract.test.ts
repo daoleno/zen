@@ -49,7 +49,8 @@ describe("Remote desktop native lifecycle source contracts", () => {
     expect(ios).toContain(`${allowed}.contains(state)`);
     expect(android).toContain('require(value in listOf("sources", "requesting", "streaming", "denied", "unsupported", "disconnected"))');
     expect(android).toContain("setOnFrameRenderedListener");
-    expect(ios).toContain("layer.isReadyForDisplay");
+    expect(ios).toContain("#available(iOS 17.4");
+    expect(ios).toContain("video.isReadyForDisplay");
   });
 
   test("Android counts UTF-8 bytes and includes new input in the queue limit", () => {
