@@ -72,6 +72,10 @@ type registration struct {
 
 var xDisplay = regexp.MustCompile(`^:[0-9]{1,5}(\.[0-9]{1,2})?$`)
 
+// ownerRetirementWait bounds how long a new admission waits for the previous
+// owner to retire. The client's end-to-end admission deadline must exceed it.
+const ownerRetirementWait = 3 * time.Second
+
 type broker struct {
 	mu           sync.Mutex
 	config       HostConfig
@@ -129,6 +133,39 @@ func (b *broker) retireLocked() {
 		_ = owner.Close()
 	}
 	b.generation++
+}
+
+// chargeAdmission records exactly one host admission attempt and reports
+// whether the per-minute limit still allows it. Callers must hold b.mu.
+func (b *broker) chargeAdmission(now time.Time) bool {
+	if now.Sub(b.window) >= time.Minute {
+		b.window, b.attempts = now, 0
+	}
+	b.attempts++
+	return b.attempts <= 10
+}
+
+// waitOwnerClear blocks while another owner is active until it retires, the
+// deadline passes, or ctx is cancelled. On entry and return, b.mu is held.
+// Cancellation aborts promptly without spinning or proceeding to admit.
+func (b *broker) waitOwnerClear(ctx context.Context, deadline time.Time) bool {
+	for b.owner != nil && time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return false
+		}
+		wait := b.ownerDone
+		if wait == nil {
+			break
+		}
+		b.mu.Unlock()
+		select {
+		case <-wait:
+		case <-time.After(time.Until(deadline)):
+		case <-ctx.Done():
+		}
+		b.mu.Lock()
+	}
+	return b.owner == nil && ctx.Err() == nil
 }
 
 func (b *broker) observeLocked(ctx context.Context) error {
@@ -247,11 +284,7 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 		return
 	}
 	b.mu.Lock()
-	if time.Since(b.window) >= time.Minute {
-		b.window, b.attempts = time.Now(), 0
-	}
-	b.attempts++
-	if b.attempts > 10 {
+	if !b.chargeAdmission(time.Now()) {
 		log.Print("desktop admission rejected: session_or_busy")
 		b.mu.Unlock()
 		return
@@ -259,21 +292,12 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 	// A reconnect can arrive while the previous owner is still retiring. Wait
 	// once, bounded and signalled by retirement, instead of multiplying
 	// attempts (which would consume the host rate limit).
-	deadline := time.Now().Add(3 * time.Second)
-	for b.owner != nil && time.Now().Before(deadline) {
-		wait := b.ownerDone
-		if wait == nil {
-			break
-		}
+	if !b.waitOwnerClear(ctx, time.Now().Add(ownerRetirementWait)) {
+		log.Print("desktop admission rejected: session_or_busy")
 		b.mu.Unlock()
-		select {
-		case <-wait:
-		case <-time.After(time.Until(deadline)):
-		case <-ctx.Done():
-		}
-		b.mu.Lock()
+		return
 	}
-	if b.owner != nil || b.observeLocked(ctx) != nil {
+	if b.observeLocked(ctx) != nil {
 		log.Print("desktop admission rejected: session_or_busy")
 		b.mu.Unlock()
 		return

@@ -96,9 +96,16 @@ const maxCapabilityMessage = 4096
 // truncated ancillary messages. Call AuthenticateLocalPeer before any traffic.
 // Payloads must contain metadata only, never credentials or Xauthority bytes.
 func ReceiveCapability(conn *net.UnixConn, uid uint32, requireFD bool) ([]byte, *os.File, error) {
+	return ReceiveCapabilityWithin(conn, uid, requireFD, 2*time.Second)
+}
+
+// ReceiveCapabilityWithin is ReceiveCapability with an explicit read deadline.
+// The owner admission may legitimately wait longer than the default while the
+// broker proves the canonical owner over the system bus.
+func ReceiveCapabilityWithin(conn *net.UnixConn, uid uint32, requireFD bool, timeout time.Duration) ([]byte, *os.File, error) {
 	data := make([]byte, maxCapabilityMessage)
 	oob := make([]byte, unix.CmsgSpace(4*8)+unix.CmsgSpace(unix.SizeofUcred))
-	if conn.SetReadDeadline(time.Now().Add(2*time.Second)) != nil {
+	if conn.SetReadDeadline(time.Now().Add(timeout)) != nil {
 		return nil, nil, errors.New("broker_read_failed")
 	}
 	n, oobn, flags, _, err := conn.ReadMsgUnix(data, oob)

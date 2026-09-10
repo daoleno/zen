@@ -97,7 +97,9 @@ func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (
 	if SendCapability(conn, []byte("hello"), nil) != nil {
 		return nil, Request{}, errors.New("broker_unavailable")
 	}
-	data, _, err := ReceiveCapability(conn, 0, false)
+	// The broker may spend up to ownerRetirementWait retiring a previous owner
+	// before it can send the challenge; the reading deadline must exceed it.
+	data, _, err := ReceiveCapabilityWithin(conn, 0, false, ownerRetirementWait+5*time.Second)
 	var challenge Challenge
 	if err != nil || decodeMessage(data, &challenge) != nil || len(challenge.Nonce) != 64 || challenge.Generation == 0 {
 		return nil, Request{}, errors.New("session_unavailable")
