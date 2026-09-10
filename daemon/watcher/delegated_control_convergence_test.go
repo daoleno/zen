@@ -43,15 +43,26 @@ func TestSubmitDelegatedInputReusesCompletedSessionWithDifferentIdleActivity(t *
 
 	turnID := sessionID + ":turn:2"
 	result, err := w.SubmitDelegatedInput(sessionID, payload, turnID, now)
-	if err != nil || result.Outcome != InputAccepted || result.TurnID != turnID {
-		t.Fatalf("production follow-up = (%+v, %v), want accepted", result, err)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != turnID || result.ProviderConfirmed {
+		t.Fatalf("production follow-up transport = (%+v, %v), want submitted", result, err)
 	}
 	if len(io.queues) != 1 {
 		t.Fatalf("provider mutation count=%d, want one", len(io.queues))
 	}
+	// The follow-up is transport-submitted; the prompt signal owns the canonical
+	// Turn. No provider idle activity is adopted into either turn.
+	pending, found, _ := ledger.InputAdmission(sessionID, turnID)
+	if !found || pending.State != InputAdmissionPending {
+		t.Fatalf("follow-up admission = %+v found=%v", pending, found)
+	}
+	if _, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: EvidenceControl, Kind: "running",
+		SourceID: "control\x00" + turnID, At: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	current := ledger.snapshot(sessionID)
-	if current.TurnID != turnID || current.Status != TurnAccepted ||
-		current.ActivityID != "activity-new-follow-up" {
+	if current.TurnID != turnID || current.Status != TurnAccepted {
 		t.Fatalf("canonical follow-up = %+v", current)
 	}
 	for _, fact := range ledger.applied {

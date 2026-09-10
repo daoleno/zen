@@ -1155,27 +1155,33 @@ func TestSessionInputMatchingSignalCompletesWhenProviderEvidenceIsUnavailable(t 
 			}}, nil
 		},
 		confirm: func(delegatedAdmissionEvidence, time.Time, string) (delegatedInputConfirmation, error) {
-			result, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
-				SessionID: "agent:@1", TurnID: turn.ID, Class: EvidenceControl, Kind: "done",
-				SourceID: "control\x00provider-unavailable", At: time.Now().UTC(),
-				Summary: "REVIEW_READY without provider evidence",
-			})
-			if err != nil || !result.Owned || !result.Matched || result.Turn.Status != TurnDone {
-				return delegatedInputConfirmation{}, fmt.Errorf("matching signal did not settle: result=%+v err=%v", result, err)
-			}
-			return delegatedInputConfirmation{Outcome: InputAmbiguous}, errors.New("provider evidence intentionally unavailable")
+			return delegatedInputConfirmation{}, errors.New("provider evidence intentionally unavailable")
 		},
 	}
 	result, err := owner.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
 		payload, turn, confirmer,
 	)
-	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID || len(io.queues) != 1 {
-		t.Fatalf("control-only admission = (%+v, %v), queues=%d", result, err, len(io.queues))
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID ||
+		result.ProviderConfirmed || len(io.queues) != 1 {
+		t.Fatalf("control-only transport = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
 	submission, found, err := ledger.InputAdmission("agent:@1", turn.ID)
-	if err != nil || !found || submission.State != InputAdmissionResolved ||
-		submission.ResolvedTurnID != turn.ID || !submission.ResolvedAdmission.Empty() {
+	if err != nil || !found || submission.State != InputAdmissionPending {
+		t.Fatalf("transport submission must await its signal: (%+v, %v, %v)", submission, found, err)
+	}
+	// The prompt-carried signal alone completes the current turn; provider
+	// evidence was never available.
+	progress, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: "agent:@1", TurnID: turn.ID, Class: EvidenceControl, Kind: "done",
+		SourceID: "control\x00provider-unavailable", At: time.Now().UTC(),
+		Summary: "REVIEW_READY without provider evidence",
+	})
+	if err != nil || !progress.Owned || !progress.Matched || progress.Turn.Status != TurnDone {
+		t.Fatalf("matching signal did not settle: result=%+v err=%v", progress, err)
+	}
+	submission, found, err = ledger.InputAdmission("agent:@1", turn.ID)
+	if err != nil || !found || submission.State != InputAdmissionResolved || submission.ResolvedTurnID != turn.ID {
 		t.Fatalf("control-only submission = (%+v, %v, %v)", submission, found, err)
 	}
 	if current, found, err := ledger.Turn("agent:@1"); err != nil || !found || current.Status != TurnDone {
@@ -1499,21 +1505,30 @@ func TestSessionInputCompletedTurnReusesDifferentIdleProviderActivity(t *testing
 		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
 		"follow-up", next, confirm,
 	)
-	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID {
-		t.Fatalf("completed-turn idle reuse = (%+v, %v), want accepted", result, err)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID || result.ProviderConfirmed {
+		t.Fatalf("completed-turn idle reuse transport = (%+v, %v), want submitted", result, err)
 	}
 	if len(io.queues) != 1 {
 		t.Fatalf("completed-turn idle reuse queues=%d, want one", len(io.queues))
 	}
-	current := ledger.snapshot("agent:@1")
-	if current.TurnID != next.ID || current.Status != TurnAccepted ||
-		current.ActivityID != "activity-follow-up" {
-		t.Fatalf("fresh follow-up did not become canonical: %+v", current)
+	if current := ledger.snapshot("agent:@1"); current.TurnID != "canonical-completed" {
+		t.Fatalf("transport submit replaced the canonical turn before its signal: %+v", current)
 	}
 	for _, fact := range ledger.applied {
 		if fact.TurnID == "canonical-completed" && fact.ActivityID == "activity-current-idle" {
 			t.Fatalf("different idle activity was ambiently adopted by prior turn: %+v", fact)
 		}
+	}
+	// The fresh follow-up is owned by its own prompt signal.
+	if _, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: "agent:@1", TurnID: next.ID, Class: EvidenceControl, Kind: "running",
+		SourceID: "control\x00" + next.ID, At: acceptedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := ledger.snapshot("agent:@1")
+	if current.TurnID != next.ID || current.Status != TurnAccepted {
+		t.Fatalf("fresh follow-up did not become canonical: %+v", current)
 	}
 }
 

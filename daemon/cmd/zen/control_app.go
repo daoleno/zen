@@ -926,6 +926,16 @@ func brainWorkControlError(err error) control.Response {
 	return control.ErrorResponse(code, err.Error())
 }
 
+// inputConfirmation labels an accepted input as "submitted" unless the
+// submission was correlated with an exact provider-native admission. Delegated
+// transport success never claims provider confirmation it did not observe.
+func inputConfirmation(result watcher.InputResult) string {
+	if result.Outcome == watcher.InputAccepted && !result.ProviderConfirmed {
+		return "submitted"
+	}
+	return string(result.Outcome)
+}
+
 func (a *controlApp) handleWorkerSend(req control.Request) control.Response {
 	if a == nil || a.watcher == nil {
 		return control.ErrorResponse("watcher_unavailable", "Worker watcher is not running.")
@@ -957,7 +967,7 @@ func (a *controlApp) handleWorkerSend(req control.Request) control.Response {
 		if err != nil {
 			return control.ErrorResponse("send_failed", err.Error())
 		}
-		return control.Response{OK: result.Outcome == watcher.InputAccepted, TurnID: turnID, Confirmation: string(result.Outcome)}
+		return control.Response{OK: result.Outcome == watcher.InputAccepted, TurnID: turnID, Confirmation: inputConfirmation(result)}
 	}
 	var sendErr error
 	if req.Submit && worker != nil && payload != "" {
