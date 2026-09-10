@@ -3,12 +3,20 @@ package watcher
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
 )
+
+// openCodeLargePastePayload mirrors the delegated prompt shape: multi-line and
+// well over 150 UTF-16 units, ending without whitespace like
+// delegatedLifecyclePayload's turn contract.
+func openCodeLargePastePayload(label string) string {
+	return label + "\n\n" + strings.Repeat("context detail line\n", 12) + "run --turn-id turn:" + label + " --lease 300"
+}
 
 // scriptedProviderActivityProbe replays a fixed observation sequence. The
 // first observations are consumed by the admission confirmer; later steps are
@@ -600,5 +608,84 @@ func TestTurnFactIDIsDeterministicAcrossReplay(t *testing.T) {
 	}
 	if fmt.Sprintf("%x", [32]byte{}) == first {
 		t.Fatalf("FactID looks like an empty hash")
+	}
+}
+
+// TestOpenCodeLargePayloadInitialAdmissionIsExact reproduces the reported false
+// mismatch with corrected provider evidence: work's OpenCode reader reverses the
+// composer's large-paste artifact before hashing, so a delegated turn that is
+// multi-line and greater than 150 UTF-16 units is admitted on its exact
+// submitted digest instead of being reported as a byte mismatch.
+func TestOpenCodeLargePayloadInitialAdmissionIsExact(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	now := time.Now().UTC()
+	payload := openCodeLargePastePayload("initial")
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{
+		{Structured: true, FallbackAllowed: true},
+		{
+			ID: "act-large", Status: "running", StartedAt: now.Add(time.Second),
+			AdmissionStream: "opencode_db\x00ses_large\x00/db", AdmissionID: "msg_large",
+			AdmissionCursor: 1, AdmissionAt: now.Add(time.Second), InputSHA256: digest,
+			Structured: true,
+		},
+	}}
+	w := lifecycleTestWatcher(io, ledger, probe)
+	sessionID := "opencode-large:@9"
+	w.workers[sessionID] = &classifier.Worker{
+		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
+		PaneAlive: true, Delegated: true, State: classifier.StateUnknown,
+	}
+	turnID := sessionID + ":turn:1"
+	result, err := w.SubmitDelegatedInput(sessionID, payload, turnID, now)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != turnID {
+		t.Fatalf("large-payload admission = (%+v, %v), want accepted exact", result, err)
+	}
+	if len(io.queues) != 1 || len(io.submissions) != 1 {
+		t.Fatalf("large-payload admission mutated input queues=%d submissions=%d", len(io.queues), len(io.submissions))
+	}
+	submission, found, err := ledger.InputAdmission(sessionID, turnID)
+	if err != nil || !found || submission.State != InputAdmissionResolved ||
+		submission.PayloadSHA256 != digest || submission.ResolvedAdmission.SHA256 != digest {
+		t.Fatalf("resolved large-payload submission = %+v found=%v err=%v", submission, found, err)
+	}
+}
+
+// TestOpenCodeRawPasteArtifactDigestIsNotAcceptedWithoutReaderReversal locks the
+// identity boundary: the watcher never trims or normalizes provider bytes, so a
+// digest that still carries the composer's extra trailing space cannot claim the
+// submitted payload. Only work's evidenced reversal may canonicalize it.
+func TestOpenCodeRawPasteArtifactDigestIsNotAcceptedWithoutReaderReversal(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	now := time.Now().UTC()
+	payload := openCodeLargePastePayload("initial")
+	artifactDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload+" ")))
+	probe := &scriptedProviderActivityProbe{steps: []ProviderActivityObservation{
+		{Structured: true, FallbackAllowed: true},
+		{
+			ID: "act-artifact", Status: "running", StartedAt: now.Add(time.Second),
+			AdmissionStream: "opencode_db\x00ses_artifact\x00/db", AdmissionID: "msg_artifact",
+			AdmissionCursor: 1, AdmissionAt: now.Add(time.Second), InputSHA256: artifactDigest,
+			Structured: true,
+		},
+	}}
+	w := lifecycleTestWatcher(io, ledger, probe)
+	sessionID := "opencode-artifact:@10"
+	w.workers[sessionID] = &classifier.Worker{
+		ID: sessionID, Command: "opencode", Cwd: "/repo/zen",
+		PaneAlive: true, Delegated: true, State: classifier.StateUnknown,
+	}
+	turnID := sessionID + ":turn:1"
+	result, err := w.SubmitDelegatedInput(sessionID, payload, turnID, now)
+	if err == nil || result.Outcome != InputAmbiguous {
+		t.Fatalf("raw artifact digest admission = (%+v, %v), want ambiguous", result, err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("ambiguous artifact admission replayed: queues=%d", len(io.queues))
+	}
+	if turn, hasTurn, _ := ledger.Turn(sessionID); hasTurn {
+		t.Fatalf("ambiguous artifact admission created a phantom Turn: %+v", turn)
 	}
 }

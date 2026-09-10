@@ -1640,5 +1640,54 @@ func openCodeUserText(parts []openCodePartRow, partPayloads map[string]openCodeP
 			texts = append(texts, text)
 		}
 	}
-	return strings.Join(texts, "")
+	return openCodeAdmittedUserText(strings.Join(texts, ""))
+}
+
+// openCodeAdmittedUserText reverses the one deterministic composer rewrite that
+// changes the bytes of a submitted OpenCode prompt. In v1.18.30 the TUI prompt
+// composer normalizes CRLF/CR to LF, trims the bracketed paste, and, when the
+// paste is large, replaces it with a "[Pasted ~N lines]" placeholder followed by
+// a single space (packages/tui/src/component/prompt/index.tsx:
+// onPaste->pasteInputText->pasteText, and submitInner's expandTrackedPastedText).
+// Submit expands the placeholder back to the trimmed paste, so the provider
+// persists trim(pasted) + " " and the submitted bytes differ by exactly that
+// trailing space. The persisted text is the only evidence Zen has, and this
+// reversal is exact: it removes the artifact only when a single trailing space
+// and the summary shape together prove the placeholder path, and leaves short
+// or non-summary text byte-identical. Provider admission digests are computed
+// over this admitted text, so a real task is no longer falsely reported as a
+// byte mismatch while a genuinely different prompt still hashes differently.
+func openCodeAdmittedUserText(persisted string) string {
+	if !strings.HasSuffix(persisted, " ") {
+		return persisted
+	}
+	trimmed := strings.TrimSpace(persisted)
+	if !openCodePasteSummaryShape(trimmed) {
+		return persisted
+	}
+	return trimmed
+}
+
+// openCodePasteSummaryShape mirrors the composer's collapse condition
+// lineCount >= 3 || pastedContent.length > 150, where the trimmed paste drives
+// both the line count and the UTF-16 code-unit length (JavaScript .length).
+func openCodePasteSummaryShape(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	if strings.Count(trimmed, "\n")+1 >= 3 {
+		return true
+	}
+	return openCodeUTF16Length(trimmed) > 150
+}
+
+func openCodeUTF16Length(value string) int {
+	length := 0
+	for _, r := range value {
+		length++
+		if r > 0xFFFF {
+			length++
+		}
+	}
+	return length
 }
