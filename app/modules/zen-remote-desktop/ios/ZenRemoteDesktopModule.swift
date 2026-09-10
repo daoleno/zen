@@ -15,7 +15,6 @@ public final class ZenRemoteDesktopModule: Module {
       }
       AsyncFunction("disconnect") { (view: DesktopView, generation: String) in view.disconnect(generation) }
       AsyncFunction("showSensitiveInput") { (view: DesktopView, generation: String) -> Bool in view.showSensitiveInput(generation) }
-      OnViewDestroys { (view: DesktopView) in view.stop() }
     }
   }
 }
@@ -46,6 +45,7 @@ final class DesktopView: ExpoView {
   private var height = 720
   private var observer: NSObjectProtocol?
   private var displayObserver: NSKeyValueObservation?
+  private var readinessReported = false
 
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
@@ -56,19 +56,53 @@ final class DesktopView: ExpoView {
       self?.stop()
       self?.state("disconnected")
     }
-    displayObserver = video.observe(\.isReadyForDisplay, options: [.new]) { [weak self] layer, _ in
-      DispatchQueue.main.async {
-        guard let self, self.task != nil, layer.isReadyForDisplay else { return }
-        self.state("connected")
-      }
+    // AVSampleBufferDisplayLayer.isReadyForDisplay requires iOS 17.4 while this
+    // module supports iOS 16.4: observe the renderer status (available since iOS 8)
+    // and evaluate genuine rendering state in updateReadiness().
+    displayObserver = video.observe(\.status, options: [.new]) { [weak self] _, _ in
+      DispatchQueue.main.async { [weak self] in self?.updateReadiness() }
+    }
+  }
+
+  // Pinned ExpoModulesCore exposes no view-destroy hook (only OnViewDidUpdateProps),
+  // so removal cleanup uses the UIKit view lifecycle. stop() is idempotent: epoch
+  // isolation retires in-flight receive/send callbacks and clears input generations,
+  // so an offscreen view stops remote control/video and old callbacks cannot revive it.
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window == nil {
+      stop()
     }
   }
 
   deinit {
     if let observer { NotificationCenter.default.removeObserver(observer) }
-    heartbeat?.invalidate()
-    task?.cancel(with: .goingAway, reason: nil)
-    session?.invalidateAndCancel()
+    if Thread.isMainThread {
+      stop()
+    } else {
+      heartbeat?.invalidate(); heartbeat = nil
+      task?.cancel(with: .goingAway, reason: nil); task = nil
+      session?.invalidateAndCancel(); session = nil
+    }
+  }
+
+  // Reports "connected" only from genuine renderer state, never from enqueue alone:
+  // on iOS 17.4+ the layer's first-frame readiness, below that the renderer's
+  // .rendering status. A failed renderer stops the session instead of lingering.
+  private func updateReadiness() {
+    guard task != nil, !readinessReported else { return }
+    if video.status == .failed {
+      stop()
+      state("disconnected", "Desktop video renderer failed.")
+      return
+    }
+    if #available(iOS 17.4, *) {
+      guard video.isReadyForDisplay else { return }
+    } else if video.status != .rendering {
+      return
+    }
+    readinessReported = true
+    state("connected")
   }
 
   override func layoutSubviews() {
@@ -119,6 +153,7 @@ final class DesktopView: ExpoView {
       if let last = self.lastVideo, ProcessInfo.processInfo.systemUptime - last > 10 {
         self.stop(); self.state("disconnected", "Desktop video timed out."); return
       }
+      self.updateReadiness()
       self.send("{\"type\":\"ping\"}")
     }
   }
@@ -229,6 +264,7 @@ final class DesktopView: ExpoView {
     video.enqueue(sample)
     guard video.status != .failed else { throw DesktopError.invalidFrame }
     submitted += 1; needIDR = false
+    updateReadiness()
   }
 
   func sendCommand(_ owner: String, _ sequence: Int, _ value: String) -> Bool {
@@ -326,6 +362,7 @@ final class DesktopView: ExpoView {
     connection = ""
     inputGeneration = ""; inputSequence = 0
     selectedSource = ""
+    readinessReported = false
   }
 }
 
