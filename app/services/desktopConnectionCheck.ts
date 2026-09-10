@@ -48,10 +48,11 @@ export async function verifyDesktopServer(server: Pick<StoredServer, "daemonId" 
   dependencies: DesktopProofDependencies, signal?: AbortSignal): Promise<void> {
   const endpoint = httpEndpoint(desktop);
   for (const purpose of ["zen-health", "zen-probe"] as const) {
-    endpoint.pathname = purpose === "zen-health" ? "/health" : "/auth-check";
-    const payload = await fetchSignedJSON(endpoint.toString(), purpose === "zen-probe" ? "zen-probe" : undefined, server, dependencies, signal);
+    const stage = purpose === "zen-health" ? "health" : "auth-check";
+    endpoint.pathname = stage === "health" ? "/health" : "/auth-check";
+    const payload = await fetchSignedJSON(endpoint.toString(), stage, purpose === "zen-probe" ? "zen-probe" : undefined, server, dependencies, signal);
     if (purpose === "zen-probe" && payload.ok !== true) {
-      throw new Error("The endpoint did not prove the identity of this paired computer (ok).");
+      throw new Error("The endpoint did not prove the identity of this paired computer (auth-check:ok).");
     }
   }
 }
@@ -60,7 +61,7 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
   dependencies: DesktopProofDependencies, signal?: AbortSignal): Promise<DesktopCapability> {
   const endpoint = httpEndpoint(desktop);
   endpoint.pathname = "/desktop/capability";
-  const payload = await fetchSignedJSON(endpoint.toString(), "zen-desktop-capability", server, dependencies, signal);
+  const payload = await fetchSignedJSON(endpoint.toString(), "desktop-capability", "zen-desktop-capability", server, dependencies, signal);
   const transport = asRecord(payload.transport);
   const host = asRecord(payload.host);
   const connect = asRecord(payload.connect);
@@ -121,7 +122,8 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-async function fetchSignedJSON(url: string, authorizationPurpose: "zen-probe" | "zen-desktop-capability" | undefined,
+async function fetchSignedJSON(url: string, stage: "health" | "auth-check" | "desktop-capability",
+  authorizationPurpose: "zen-probe" | "zen-desktop-capability" | undefined,
   server: Pick<StoredServer, "daemonId" | "daemonPublicKey">, dependencies: DesktopProofDependencies, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -156,12 +158,12 @@ async function fetchSignedJSON(url: string, authorizationPurpose: "zen-probe" | 
     const expectedPublicKey = normalizeFixedHex(server.daemonPublicKey, 64);
     const signatureValid = dependencies.verify({ purpose, daemonId: server.daemonId, daemonPublicKey: server.daemonPublicKey,
       timestamp: payload.assertion_timestamp, nonceHex: payload.assertion_nonce, signatureHex: payload.assertion_signature });
-    const failure = servedDaemonId !== expectedDaemonId ? "daemon_id" :
-      servedPublicKey !== expectedPublicKey ? "daemon_public_key" :
+    const failure = !expectedDaemonId || expectedDaemonId !== servedDaemonId ? "daemon_id" :
+      !expectedPublicKey || expectedPublicKey !== servedPublicKey ? "daemon_public_key" :
       !Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 300000 ? "assertion_timestamp" :
       !signatureValid ? "assertion_signature" : "";
     if (failure) {
-      throw new Error(`The endpoint did not prove the identity of this paired computer (${failure}).`);
+      throw new Error(`The endpoint did not prove the identity of this paired computer (${stage}:${failure}).`);
     }
     return payload as Record<string, unknown>;
   } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }

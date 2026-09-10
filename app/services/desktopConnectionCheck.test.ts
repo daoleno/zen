@@ -74,13 +74,23 @@ test("accepts a case-variant stored identity after normalization", async () => {
   await verifyDesktopServer(mixed, "ws://192.168.1.2:9876/desktop", f.dependencies);
   expect(f.calls.map((call) => call.url)).toEqual(["http://192.168.1.2:9876/health", "http://192.168.1.2:9876/auth-check"]);
 });
-test("names the failing identity field so the exact contract is observable", async () => {
+test("names the endpoint stage and failing identity field", async () => {
   for (const field of ["daemon_id", "daemon_public_key", "assertion_timestamp", "assertion_signature"]) {
-    const f = setup((body) => { body[field] = "invalid"; });
-    await expect(verifyDesktopServer(server, "wss://host/desktop", f.dependencies)).rejects.toThrow(field);
+    const health = setup((body, index) => { if (index === 0) body[field] = "invalid"; });
+    await expect(verifyDesktopServer(server, "wss://host/desktop", health.dependencies)).rejects.toThrow(`health:${field}`);
+    const probe = setup((body, index) => { if (index === 1) body[field] = "invalid"; });
+    await expect(verifyDesktopServer(server, "wss://host/desktop", probe.dependencies)).rejects.toThrow(`auth-check:${field}`);
   }
   const f = setup((body, index) => { if (index === 1) body.ok = false; });
-  await expect(verifyDesktopServer(server, "wss://host/desktop", f.dependencies)).rejects.toThrow("ok");
+  await expect(verifyDesktopServer(server, "wss://host/desktop", f.dependencies)).rejects.toThrow("auth-check:ok");
+});
+test("rejects invalid normalized identifiers instead of comparing empty strings", async () => {
+  const missingStored = setup();
+  await expect(verifyDesktopServer({ daemonId: "", daemonPublicKey: server.daemonPublicKey }, "wss://host/desktop", missingStored.dependencies)).rejects.toThrow("health:daemon_id");
+  const missingServed = setup((body) => { body.daemon_id = ""; body.daemon_public_key = ""; });
+  await expect(verifyDesktopServer(server, "wss://host/desktop", missingServed.dependencies)).rejects.toThrow("health:daemon_id");
+  const bothMissing = setup((body) => { body.daemon_id = ""; body.daemon_public_key = ""; });
+  await expect(verifyDesktopServer({ daemonId: "", daemonPublicKey: "" }, "wss://host/desktop", bothMissing.dependencies)).rejects.toThrow("health:daemon_id");
 });
 test("redirects, oversized proofs, revocation and cancellation fail closed", async () => {
   const f = setup();
