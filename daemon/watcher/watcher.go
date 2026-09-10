@@ -81,7 +81,7 @@ var piChromeRe = regexp.MustCompile(`(?im)(escape interrupt|/ commands|! bash)`)
 //
 // Model overlays are not ready. Do not treat arbitrary pane semver (tool
 // output, deps) as OpenCode's version footer.
-var openCodeComposerPlaceholderRe = regexp.MustCompile(`(?im)Ask anything\.\.\.`)
+var openCodeComposerPlaceholderRe = regexp.MustCompile(`(?im)Ask anything(?:\.\.\.|\x{2026})`)
 var openCodeAgentLineRe = regexp.MustCompile(`(?im)\b(Build|Plan|Ask)\b[^\n]*[·•]`)
 var openCodeFooterPathPrefix = `(?:~|/|\.{1,2}/|[A-Za-z]:\\)`
 var openCodeVersionFooterRe = regexp.MustCompile(`(?m)^\s*` + openCodeFooterPathPrefix + `\S*(?:\s+\S+)*?\s{2,}\d+\.\d+\.\d+\s*$`)
@@ -3648,7 +3648,7 @@ func isOpenCodeInputReady(content string) bool {
 
 func looksLikeOpenCodePane(content string) bool {
 	lower := strings.ToLower(content)
-	return strings.Contains(lower, "ask anything...") ||
+	return openCodeComposerPlaceholderRe.MatchString(content) ||
 		(strings.Contains(lower, "tab agents") && strings.Contains(lower, "ctrl+p commands"))
 }
 
