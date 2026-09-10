@@ -8,6 +8,7 @@ describe("Git diff back stack", () => {
         view: "changes",
         hasSelectedFile: false,
         hasBrowserFile: false,
+        fileOrigin: "files",
       }),
     ).toBe("close");
   });
@@ -17,17 +18,29 @@ describe("Git diff back stack", () => {
         view: "changes",
         hasSelectedFile: true,
         hasBrowserFile: false,
+        fileOrigin: "files",
       }),
     ).toBe("deselect-file");
   });
-  test("a working file returns to the browser it was opened from", () => {
+  test("a working file opened from the reader returns to the reader", () => {
+    expect(
+      resolveGitDiffBack({
+        view: "files",
+        hasSelectedFile: true,
+        hasBrowserFile: true,
+        fileOrigin: "changes",
+      }),
+    ).toBe("close-browser-file-to-reader");
+  });
+  test("a working file opened from the browser returns to the browser", () => {
     expect(
       resolveGitDiffBack({
         view: "files",
         hasSelectedFile: false,
         hasBrowserFile: true,
+        fileOrigin: "files",
       }),
-    ).toBe("close-browser-file");
+    ).toBe("close-browser-file-to-browser");
   });
   test("an empty browser returns to the changes list", () => {
     expect(
@@ -35,6 +48,7 @@ describe("Git diff back stack", () => {
         view: "files",
         hasSelectedFile: false,
         hasBrowserFile: false,
+        fileOrigin: "files",
       }),
     ).toBe("browser-to-changes");
   });

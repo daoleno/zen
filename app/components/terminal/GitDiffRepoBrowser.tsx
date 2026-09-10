@@ -37,7 +37,6 @@ interface GitDiffRepoBrowserProps {
   bottomInset: number;
   onOpenRepoPath(path: string): void;
   onOpenRepoFile(path: string): void;
-  onCloseRepoFile(): void;
   onBackRepoPath(): void;
 }
 
@@ -57,7 +56,6 @@ export function GitDiffRepoBrowser({
   bottomInset,
   onOpenRepoPath,
   onOpenRepoFile,
-  onCloseRepoFile,
   onBackRepoPath,
 }: GitDiffRepoBrowserProps) {
   const renderRepoEntry = React.useCallback(
@@ -83,16 +81,13 @@ export function GitDiffRepoBrowser({
     return (
       <GitDiffRepoFileView
         key={`repo-file:${repoFilePath}`}
-        repoTitle={repoTitle}
         path={repoFilePath}
         payload={repoFileContent}
         loading={repoFileLoading}
         error={repoFileError}
-        changed={changedPathSet.has(repoFilePath)}
         theme={theme}
         chrome={chrome}
         bottomInset={bottomInset}
-        onBack={onCloseRepoFile}
       />
     );
   }

@@ -154,6 +154,7 @@ export function GitDiffSheet({
       view,
       hasSelectedFile: Boolean(selectedFile),
       hasBrowserFile: Boolean(repoFilePath),
+      fileOrigin,
     });
     switch (action) {
       case "close":
@@ -164,9 +165,12 @@ export function GitDiffSheet({
         setDiffSearchOpen(false);
         setDiffOptionsOpen(false);
         break;
-      case "close-browser-file":
+      case "close-browser-file-to-reader":
         onCloseRepoFile();
-        if (fileOrigin === "changes") setView("changes");
+        setView("changes");
+        break;
+      case "close-browser-file-to-browser":
+        onCloseRepoFile();
         break;
       case "browser-to-changes":
         setView("changes");
@@ -210,9 +214,13 @@ export function GitDiffSheet({
       ? repoFilePath
         ? "file"
         : "files"
-      : selectedFile
-        ? "reader"
-        : "overview";
+      : // Wide mode keeps the repo/list header anchored to the master pane; the
+        // detail pane owns its own file header.
+        wide
+        ? "overview"
+        : selectedFile
+          ? "reader"
+          : "overview";
 
   return (
     <Modal
@@ -247,6 +255,7 @@ export function GitDiffSheet({
             file={selectedFile}
             repoTitle={repoTitle}
             browserFilePath={repoFilePath}
+            workingFileOrigin={fileOrigin}
             fileFilterOpen={fileFilterOpen}
             diffSearchOpen={diffSearchOpen}
             diffOptionsOpen={diffOptionsOpen}
@@ -308,6 +317,7 @@ export function GitDiffSheet({
                 importantForAccessibility={
                   view === "changes" ? "auto" : "no-hide-descendants"
                 }
+                accessibilityElementsHidden={view !== "changes"}
               >
                 <GitDiffSheetDiffContent
                   key={ownerKey}
@@ -323,6 +333,7 @@ export function GitDiffSheet({
                   fileFilterOpen={fileFilterOpen}
                   diffSearchOpen={diffSearchOpen}
                   diffOptionsOpen={diffOptionsOpen}
+                  loading={loading}
                   theme={theme}
                   chrome={chrome}
                   onSelectFile={(path) => {
@@ -335,6 +346,16 @@ export function GitDiffSheet({
                     setScope(next);
                     setSelectedPath(null);
                   }}
+                  onClearSelection={() => {
+                    setSelectedPath(null);
+                    setDiffSearchOpen(false);
+                    setDiffOptionsOpen(false);
+                  }}
+                  onToggleDiffSearch={() => setDiffSearchOpen((value) => !value)}
+                  onToggleDiffOptions={() =>
+                    setDiffOptionsOpen((value) => !value)
+                  }
+                  onRefresh={handleRefresh}
                 />
               </View>
               {view === "files" ? (
@@ -360,7 +381,6 @@ export function GitDiffSheet({
                     bottomInset={bottomInset}
                     onOpenRepoPath={onOpenRepoPath}
                     onOpenRepoFile={handleOpenBrowserFile}
-                    onCloseRepoFile={onCloseRepoFile}
                     onBackRepoPath={onBackRepoPath}
                   />
                 </View>

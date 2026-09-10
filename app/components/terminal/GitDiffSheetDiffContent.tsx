@@ -30,6 +30,7 @@ import {
 } from "../../services/gitDiff";
 import { GitDiffReader, type GitDiffPosition } from "./GitDiffReader";
 import { DiffIconButton } from "./GitDiffReviewControls";
+import { GitDiffDetailHeader } from "./GitDiffSheetTopChrome";
 import {
   describeGitDiffFile,
   type GitDiffStatusTone,
@@ -51,9 +52,14 @@ interface GitDiffSheetDiffContentProps {
   fileFilterOpen: boolean;
   diffSearchOpen: boolean;
   diffOptionsOpen: boolean;
+  loading: boolean;
   onSelectFile(path: string): void;
   onOpenFile(path: string): void;
   onScopeChange(scope: GitDiffScope): void;
+  onClearSelection(): void;
+  onToggleDiffSearch(): void;
+  onToggleDiffOptions(): void;
+  onRefresh(): void;
 }
 
 export function GitDiffSheetDiffContent({
@@ -71,9 +77,14 @@ export function GitDiffSheetDiffContent({
   fileFilterOpen,
   diffSearchOpen,
   diffOptionsOpen,
+  loading,
   onSelectFile,
   onOpenFile,
   onScopeChange,
+  onClearSelection,
+  onToggleDiffSearch,
+  onToggleDiffOptions,
+  onRefresh,
 }: GitDiffSheetDiffContentProps) {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -96,8 +107,9 @@ export function GitDiffSheetDiffContent({
   }, [scope, deferredQuery]);
 
   const listBottomPadding = bottomInset + 12;
+  const scopeTotal = scopeCounts[scope];
   const metaLabel = deferredQuery
-    ? `${filtered.length} / ${files.length} files`
+    ? `${filtered.length} / ${scopeTotal} files`
     : `${filtered.length} ${filtered.length === 1 ? "file" : "files"}`;
 
   const renderFile = useCallback(
@@ -113,6 +125,20 @@ export function GitDiffSheetDiffContent({
     ),
     [chrome, onSelectFile, scope, selectedFile?.path, theme],
   );
+
+  const detailHeader = selectedFile ? (
+    <GitDiffDetailHeader
+      chrome={chrome}
+      file={selectedFile}
+      loading={loading}
+      diffSearchOpen={diffSearchOpen}
+      diffOptionsOpen={diffOptionsOpen}
+      onClear={onClearSelection}
+      onRefresh={onRefresh}
+      onToggleSearch={onToggleDiffSearch}
+      onToggleOptions={onToggleDiffOptions}
+    />
+  ) : null;
 
   const reader = selectedFile ? (
     <>
@@ -243,13 +269,14 @@ export function GitDiffSheetDiffContent({
           {reader}
         </View>
       ) : null}
-      {selectedFile && wide ? (
+      {wide ? (
         <View
           style={[
             styles.detailPane,
             { borderColor: chrome.border, backgroundColor: chrome.surface },
           ]}
         >
+          {detailHeader}
           {reader}
         </View>
       ) : null}

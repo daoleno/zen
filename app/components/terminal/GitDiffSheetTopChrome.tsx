@@ -7,6 +7,7 @@ import type {
   GitDiffFileInfo,
   GitDiffStatusSnapshot,
 } from "../../services/gitDiff";
+import type { GitDiffViewMode } from "./gitDiffNavigation";
 import { describeGitDiffFile } from "./gitDiffPresentation";
 import { DiffIconButton } from "./GitDiffReviewControls";
 
@@ -20,6 +21,7 @@ interface GitDiffSheetTopChromeProps {
   file: GitDiffFileInfo | null;
   repoTitle: string;
   browserFilePath: string | null;
+  workingFileOrigin: GitDiffViewMode;
   fileFilterOpen: boolean;
   diffSearchOpen: boolean;
   diffOptionsOpen: boolean;
@@ -40,6 +42,7 @@ export function GitDiffSheetTopChrome({
   file,
   repoTitle,
   browserFilePath,
+  workingFileOrigin,
   fileFilterOpen,
   diffSearchOpen,
   diffOptionsOpen,
@@ -61,7 +64,9 @@ export function GitDiffSheetTopChrome({
       : view === "files"
         ? "Changes"
         : view === "file"
-          ? "Files"
+          ? workingFileOrigin === "changes"
+            ? "Changed files"
+            : "Files"
           : "Close Git diff";
 
   const title =
@@ -114,7 +119,7 @@ export function GitDiffSheetTopChrome({
         <Text
           style={[styles.subtitle, { color: chrome.textMuted }]}
           numberOfLines={1}
-          ellipsizeMode="head"
+          ellipsizeMode={view === "file" ? "head" : "tail"}
         >
           {subtitle}
         </Text>
@@ -167,6 +172,91 @@ export function GitDiffSheetTopChrome({
           onPress={onRefresh}
         />
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * Detail-pane header used only on the wide master-detail layout. The list side
+ * keeps its own repo header, so selecting a file never hides list filtering.
+ */
+export function GitDiffDetailHeader({
+  chrome,
+  file,
+  loading,
+  diffSearchOpen,
+  diffOptionsOpen,
+  onClear,
+  onRefresh,
+  onToggleSearch,
+  onToggleOptions,
+}: {
+  chrome: ReturnType<typeof buildTerminalChrome>;
+  file: GitDiffFileInfo;
+  loading: boolean;
+  diffSearchOpen: boolean;
+  diffOptionsOpen: boolean;
+  onClear(): void;
+  onRefresh(): void;
+  onToggleSearch(): void;
+  onToggleOptions(): void;
+}) {
+  const presentation = describeGitDiffFile(file, "all");
+  return (
+    <View style={[styles.header, { borderBottomColor: chrome.border }]}>
+      <DiffIconButton
+        icon="arrow-back"
+        label="Clear selection"
+        chrome={chrome}
+        onPress={onClear}
+      />
+      <View style={styles.headerCopy}>
+        <View style={styles.titleRow}>
+          <Ionicons
+            name="git-branch-outline"
+            size={14}
+            color={chrome.textSubtle}
+          />
+          <Text
+            style={[styles.title, { color: chrome.text }]}
+            numberOfLines={1}
+          >
+            {presentation.name}
+          </Text>
+          <StatusPill file={file} chrome={chrome} />
+        </View>
+        <Text
+          style={[styles.subtitle, { color: chrome.textMuted }]}
+          numberOfLines={1}
+          ellipsizeMode="head"
+        >
+          {[presentation.statusLabel, presentation.directory || null]
+            .filter(Boolean)
+            .join("  ·  ")}
+        </Text>
+      </View>
+      <DiffIconButton
+        icon="search"
+        label="Find in diff"
+        chrome={chrome}
+        selected={diffSearchOpen}
+        onPress={onToggleSearch}
+      />
+      <DiffIconButton
+        icon="options-outline"
+        label="Diff options"
+        chrome={chrome}
+        selected={diffOptionsOpen}
+        onPress={onToggleOptions}
+      />
+      <DiffIconButton
+        icon="refresh"
+        label="Refresh Git diff"
+        chrome={chrome}
+        disabled={loading}
+        busy={loading}
+        onPress={onRefresh}
+      />
     </View>
   );
 }

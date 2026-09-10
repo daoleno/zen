@@ -139,6 +139,23 @@ describe("continuous Git diff", () => {
     expect(reader).not.toContain("contentOffset={{ x: horizontalOffset.current");
     expect(reader).toContain("initialHorizontalOffset");
   });
+  test("working-file Back has one origin-aware owner and no second title bar", () => {
+    const sheet = readFileSync(new URL("./GitDiffSheet.tsx", import.meta.url), "utf8");
+    const browser = readFileSync(new URL("./GitDiffRepoBrowser.tsx", import.meta.url), "utf8");
+    const fileView = readFileSync(new URL("./GitDiffRepoFileView.tsx", import.meta.url), "utf8");
+    const content = readFileSync(new URL("./GitDiffSheetDiffContent.tsx", import.meta.url), "utf8");
+    expect(fileView).not.toContain("onBack");
+    expect(fileView).not.toContain("repoFileHeader");
+    expect(browser).not.toContain("onCloseRepoFile");
+    expect(sheet).toContain("resolveGitDiffBack({");
+    expect(sheet).not.toContain("onCloseRepoFile={");
+    // Wide master-detail keeps the list header and renders an independent
+    // detail-pane header, including the deliberate unselected empty state.
+    expect(content).toContain("GitDiffDetailHeader");
+    expect(content).toContain("{detailHeader}");
+    expect(content).toContain("scopeTotal");
+    expect(sheet).toContain("accessibilityElementsHidden");
+  });
   test("large and split long-line streams retain every byte without flattening chunks", async () => {
     const text = "long-line-".repeat(50);
     const stream = new GitDiffStream(async r => ({ ...page(r, 50000), rows: page(r, 50000).rows.map((row, i) => ({ ...row, text, continuation: i > 0 })) }), "large", "all");

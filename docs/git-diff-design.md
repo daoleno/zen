@@ -72,13 +72,16 @@ The sheet has one of four mutually exclusive states:
 | `overview` | Changed-file list | Close | `Changes` + repo·branch |
 | `reader` | Unified diff for one file | Back to list | filename + status |
 | `browser` | Working-tree directory list | Back to changes | `Files` + repo·branch |
-| `file` | Working-tree file snapshot | Back to browser | filename + directory |
+| `file` | Working-tree file snapshot | Back to origin | filename + directory |
 
 Transitions: `overview -> reader` (tap file), `reader -> overview` (Back),
 `overview -> browser` (browse icon), `browser -> file` (tap file),
 `file -> browser` (Back), `browser -> overview` (Back).
-`reader -> file` is reachable from the diff options ("Open working file") and
-returns to `reader`.
+`reader -> file` is reachable from the diff options ("Open working file"); its
+Back returns to `reader`. A working file opened from the browser returns to the
+browser instead. The header Back, Android hardware back and any content Back all
+resolve through one origin-aware back stack, so the same file never lands in two
+different places depending on which control is used.
 
 ## 4. Phone: List -> Detail
 
@@ -89,9 +92,11 @@ returns to `reader`.
   accessibility label `Changed files`, the filename, and the status line. It
   keeps the search and options icon controls in fixed 44dp lanes.
 - **Android hardware back** and iOS back unwind the state stack in order:
-  `file -> browser`, `browser -> overview`, `reader -> overview`,
+  `file -> origin` (`reader` when opened from the diff options, `browser` when
+  opened from the browser), `browser -> overview`, `reader -> overview`,
   `overview -> close sheet`. Back must never close the feature from `reader`,
-  `browser` or `file`.
+  `browser` or `file`. Only one control owns file Back; the file view renders no
+  second title bar.
 - Closing the sheet clears transient review state; reopening starts at
   `overview`.
 
@@ -100,12 +105,17 @@ returns to `reader`.
 At a window width of at least **720dp**, the changes review becomes a
 two-pane master-detail:
 
-- Left pane: fixed 320dp overview (scope + list), always visible.
-- Right pane: reader for the selected file, or an empty invitation state.
-- Selecting a file fills the right pane. Back in the right pane clears the
-  selection without leaving the feature.
-- The header and scope control span the left pane only, so repository context
-  stays anchored to the list.
+- Left pane: fixed 320dp master with the repo/list header (title, repo·branch,
+  filter, browse, refresh), the scope control and the list. It stays visible and
+  interactive while a file is selected, so list filtering never requires leaving
+  the reader.
+- Right pane: an independent detail pane with its own file header (name, status,
+  search, options, refresh) above the reader. When nothing is selected it shows a
+  deliberate empty invitation state; it is not an absent pane.
+- Clearing the selection in the detail header returns to the empty detail state
+  without leaving the feature.
+- Phones keep the single contextual header; the split detail header is a
+  wide-layout affordance, so no stacked bars appear on narrow screens.
 
 Below 720dp the phone swap behavior in section 4 applies. The `browser` and
 `file` states remain full-width on wide layouts until a wide browser is
@@ -113,13 +123,15 @@ designed; this is an explicit, documented limitation, not a silent fallback.
 
 ## 6. Stable Repository Context
 
-- The subtitle is always `repo_name · branch` when both exist, `repo_name`
-  otherwise, `Repository` before the first snapshot.
+- The subtitle is `repo_name · branch` when both exist. With no branch it is the
+  repository name, falling back to the repo-root basename, then `Repository`; the
+  pre-snapshot placeholder is `Diff and files`.
 - The value comes from the current server's `GitDiffStatusSnapshot`. It never
   aggregates multiple servers and never shows a stale owner after a server,
   session or cwd switch (`ownerKey` invalidates the previous snapshot).
-- The subtitle is single-line and truncates at the tail; it never reflows the
-  header.
+- The overview subtitle is single-line and tail-truncates. The working-file path
+  is single-line and head-truncates so the nearest directory stays visible.
+  Neither reflows the header.
 
 ## 7. Scope, Filter, Counts
 
@@ -127,9 +139,10 @@ designed; this is an explicit, documented limitation, not a silent fallback.
   - `All` = staged + working + untracked.
   - `Working` = index vs working tree, including untracked as additions.
   - `Staged` = HEAD vs index, including an unborn index.
-- Counts are the number of files that match the selected scope **after** the
-  filter is applied, shown as `matching / total files` when a filter is active
-  and `N files` otherwise.
+- The scope tab counts are the number of files in each comparison and do not
+  change with the path filter. The list meta line shows `N files`, where `N` is
+  the selected comparison's count, or `M / N files` while a filter is active
+  (`M` matches within that comparison out of `N`).
 - Per-file stats use the selected scope's own numbers (`gitDiffCounts`), never a
   sum of index and working changes.
 - The filter matches destination path and rename source, case-insensitively.
@@ -164,9 +177,11 @@ designed; this is an explicit, documented limitation, not a silent fallback.
 
 - Scope change, filter change, sheet reopen and owner change reset the overview
   to the top.
-- Refresh keeps the overview offset. The reader is a snapshot; refresh reloads
-  it and re-anchors to the same source row when the content version is
-  unchanged, or surfaces the explicit changed state when it is not.
+- Refresh keeps the overview offset and reloads the reader at the top of the
+  selected file (the reader remounts on every `refreshKey`). Paging with an older
+  content version surfaces the explicit changed state instead of mixing old and
+  new rows. Within an unchanged reader, leaving to a detail and returning
+  restores the saved source-row position.
 
 ### Safe area
 
@@ -219,7 +234,8 @@ accessibility label of the form
   and hunks with previous/next controls; the complete comparison is searched,
   not just the loaded page.
 - Inline options (no nested modal): wrap lines, text size (10-20), patch
-  headers. Options apply immediately and re-anchor to the visible source row.
+  headers. Wrap and text-size changes re-anchor to the visible source row;
+  patch-header changes re-render the header rows immediately.
 - Git headers (`diff --git`, `index`, `---`, `+++`) are hidden by default and
   revealed by the patch-header option or while searching.
 - Binary, mode-only and rename metadata are shown as metadata rows, never as
@@ -271,19 +287,21 @@ accessibility label of the form
 | A3 | Slow drag to bottom | Last row fully visible; press target works |
 | A4 | Tap last row | Correct file diff opens |
 | A5 | Back from reader | Overview returns at the exact prior offset |
-| A6 | Refresh at bottom | Overview offset retained; reader re-anchors or shows changed state |
+| A6 | Refresh at bottom | Overview offset retained; reader reloads at the file top or shows changed state |
 | A7 | Change scope / type filter | List resets to top once; counts update per scope |
 | A8 | Zero files | Clean/empty state, no list chrome |
 | A9 | One file | Single row, reachable, tappable |
 | A10 | Renamed / deleted / untracked / binary rows | Correct glyph, wording, stats; binary has no fake +a/-d |
 | A11 | Large paginated diff | Edge loading works; search/hunk nav works; no full retention |
-| A12 | Working file open and Back | Returns to reader, position retained |
-| A13 | Android hardware back from reader/browser/file | Unwinds one level; never closes from a child state |
+| A12 | Working file open and Back | Returns to reader when opened from reader, to browser when opened from browser; reader position retained |
+| A13 | Android hardware back from reader/browser/file | Unwinds one level; never closes from a child state; matches the header Back for the same state |
 | A14 | 360x800 and larger phone, light and dark | Header height stable; >=44dp targets; readable contrast |
-| A15 | Wide viewport >=720dp | Two-pane master-detail, list offset retained |
+| A15 | Wide viewport >=720dp | Two-pane master-detail; list header/filter/browse stay usable while a file is selected |
 | A16 | Large system font / fontScale | Gutter and rows do not clip or overlap |
-| A17 | Keyboard open / dismiss | Input visible; list offset stable; taps work |
+| A17 | Keyboard open / dismiss | Input visible; list offset stable; taps work; focus returns to a visible control |
 | A18 | Orientation / viewport resize | Layout remains valid; anchored reader re-anchors to source row |
+| A19 | Wide, no selection | Deliberate empty detail pane; selecting then clearing returns to it |
+| A20 | Wide, filter while a file is open | List filters in place; detail stays selected/open |
 
 ## 15. Verification Notes
 
