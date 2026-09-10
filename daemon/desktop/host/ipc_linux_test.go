@@ -33,6 +33,25 @@ func localPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	return connections[0], connections[1]
 }
 
+func TestBrokerReadyHandshakePrecedesCapability(t *testing.T) {
+	a, b := localPair(t)
+	done := make(chan error, 1)
+	go func() { done <- SendBrokerReady(a) }()
+	if err := ReceiveBrokerReady(b); err != nil {
+		t.Fatalf("ready handshake failed: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("ready send failed: %v", err)
+	}
+	if err := SendCapability(a, []byte("hello"), nil); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := ReceiveCapability(b, uint32(os.Getuid()), false)
+	if err != nil || string(data) != "hello" {
+		t.Fatalf("post-ready capability failed: %v", err)
+	}
+}
+
 func TestLocalCapabilityTransfer(t *testing.T) {
 	a, b := localPair(t)
 	f, err := os.CreateTemp(t.TempDir(), "capability")

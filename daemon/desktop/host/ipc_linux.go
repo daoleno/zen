@@ -144,6 +144,33 @@ func ReceiveCapability(conn *net.UnixConn, uid uint32, requireFD bool) ([]byte, 
 	return data[:n], file, nil
 }
 
+// brokerReadyMarker is sent by the broker after it has enabled SO_PASSCRED on
+// the accepted connection. A client that sends "hello" before this marker can
+// race the option and have its message queued without SCM_CREDENTIALS.
+const brokerReadyMarker = "zen-broker-ready"
+
+func SendBrokerReady(conn *net.UnixConn) error {
+	if conn.SetWriteDeadline(time.Now().Add(2*time.Second)) != nil {
+		return errors.New("broker_write_failed")
+	}
+	if _, err := conn.Write([]byte(brokerReadyMarker)); err != nil {
+		return errors.New("broker_write_failed")
+	}
+	return nil
+}
+
+func ReceiveBrokerReady(conn *net.UnixConn) error {
+	if conn.SetReadDeadline(time.Now().Add(5*time.Second)) != nil {
+		return errors.New("broker_read_failed")
+	}
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil || string(buf[:n]) != brokerReadyMarker {
+		return errors.New("broker_read_failed")
+	}
+	return nil
+}
+
 func SendCapability(conn *net.UnixConn, data []byte, file *os.File) error {
 	if len(data) == 0 || len(data) > maxCapabilityMessage {
 		return errors.New("invalid_broker_message")

@@ -94,6 +94,9 @@ func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (
 	if AuthenticateLocalPeer(conn, 0) != nil {
 		return nil, Request{}, errors.New("invalid_broker_peer")
 	}
+	if ReceiveBrokerReady(conn) != nil {
+		return nil, Request{}, errors.New("broker_unavailable")
+	}
 	if SendCapability(conn, []byte("hello"), nil) != nil {
 		return nil, Request{}, errors.New("broker_unavailable")
 	}
