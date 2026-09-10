@@ -80,7 +80,27 @@ func (a *brokerAgent) heartbeat() {
 	}
 }
 
+// openBroker retries the owner admission while the previously admitted agent
+// retires. A same-account reconnect can otherwise race that retirement and be
+// rejected as busy even though the new session is ready.
 func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (*brokerAgent, Request, error) {
+	var last error
+	for attempt := 0; attempt < 25; attempt++ {
+		agent, request, err := openBrokerOnce(manager, device, gate)
+		if err == nil {
+			return agent, request, nil
+		}
+		last = err
+		message := err.Error()
+		if message != "session_unavailable" && message != "broker_unavailable" {
+			return nil, Request{}, err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil, Request{}, last
+}
+
+func openBrokerOnce(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (*brokerAgent, Request, error) {
 	conn, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: OwnerSocket, Net: "unixpacket"})
 	if err != nil {
 		return nil, Request{}, errors.New("broker_unavailable")
