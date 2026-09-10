@@ -1323,7 +1323,12 @@ func (s *Service) recoverAmbiguousReviewLocked(claimed WorkReviewAction) (bool, 
 	if err != nil {
 		return false, true, err
 	}
-	if AdmissionDigest(payload) != submission.PayloadSHA256 {
+	hostCommand := ""
+	if host := s.watcher.GetWorker(hostID); host != nil {
+		hostCommand = host.Command
+	}
+	payloadDigest, digestErr := watcher.ProviderAdmissionPayloadDigest(hostCommand, payload)
+	if digestErr != nil || payloadDigest != submission.PayloadSHA256 {
 		return false, true, fmt.Errorf("ambiguous Work review %s payload no longer matches its pending submission", claimed.WorkID)
 	}
 	if claimed.ClaimedAt == nil {

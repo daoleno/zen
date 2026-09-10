@@ -191,6 +191,76 @@ func sessionInputProviderForCommand(command string) sessionInputProvider {
 	}
 }
 
+// ProviderAdmissionPayloadDigest returns the SHA-256 of the exact bytes the
+// target provider persists for one Zen bracketed-paste admission. Every provider
+// but OpenCode persists the submitted bytes verbatim. OpenCode's owned TUI
+// composer rewrites only large bracketed pastes (>=3 lines or >150 UTF-16 code
+// units): it persists the edge-trimmed paste plus exactly one appended space
+// (packages/tui/src/component/prompt/index.tsx pasteText plus submitInner's
+// expandTrackedPastedText). On the LF-only, edge-trimmed domain every generated
+// Worker/Brain prompt occupies, that mapping is injective, so the digest still
+// identifies the exact logical input and a genuinely different prompt hashes
+// differently. A payload outside the domain would be rewritten non-injectively
+// by the composer, so the admission is refused before mutation instead of
+// risking a false match.
+func ProviderAdmissionPayloadDigest(command, payload string) (string, error) {
+	transport := payload
+	if isOpenCodeCommand(command) {
+		reconciled, ok := openCodeTransportPayload(payload)
+		if !ok {
+			return "", fmt.Errorf("opencode composer cannot preserve the exact submitted bytes")
+		}
+		transport = reconciled
+	}
+	sum := sha256.Sum256([]byte(transport))
+	return fmt.Sprintf("%x", sum), nil
+}
+
+// openCodeTransportPayload is the exact byte sequence OpenCode's TUI persists for
+// one Zen bracketed paste, and whether the payload is inside the injective
+// domain. The composer only rewrites large pastes: pastes below the threshold
+// are inserted verbatim, while a large paste collapses to a summary placeholder
+// that submit expands back to the trimmed paste, leaving the single space the
+// composer inserted after it. The domain (LF-only, already edge-trimmed) makes
+// the transform a pure append, so it is injective; anything else would be
+// trimmed or CRLF-normalized and cannot be represented exactly.
+func openCodeTransportPayload(payload string) (string, bool) {
+	if strings.ContainsRune(payload, '\r') {
+		return "", false
+	}
+	if payload != strings.TrimSpace(payload) {
+		return "", false
+	}
+	if openCodePasteSummaryCollapse(payload) {
+		return payload + " ", true
+	}
+	return payload, true
+}
+
+// openCodePasteSummaryCollapse mirrors the composer condition
+// lineCount >= 3 || pastedContent.length > 150, where the trimmed paste drives
+// both the line count and the UTF-16 code-unit length (JavaScript .length).
+func openCodePasteSummaryCollapse(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	if strings.Count(trimmed, "\n")+1 >= 3 {
+		return true
+	}
+	return openCodeUTF16Length(trimmed) > 150
+}
+
+func openCodeUTF16Length(value string) int {
+	length := 0
+	for _, r := range value {
+		length++
+		if r > 0xFFFF {
+			length++
+		}
+	}
+	return length
+}
+
 type sessionInputPane struct {
 	alive      bool
 	paneID     string
@@ -561,6 +631,18 @@ func (owner *sessionInputOwner) submitWithTurn(
 			return definitelyNotSubmitted(result.Receipt, fmt.Errorf("input is empty"))
 		}
 		payloadDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+		if turn != nil {
+			// Admission correlation is bound to the exact provider transport
+			// representation, not merely the submitted bytes: a provider whose
+			// composer rewrites the paste (OpenCode) must be modelled from the
+			// known payload before mutation. Plain transport receipt input
+			// (turn == nil) keeps the raw digest; it carries no provider turn.
+			transportDigest, transportErr := ProviderAdmissionPayloadDigest(command, payload)
+			if transportErr != nil {
+				return definitelyNotSubmitted(result.Receipt, transportErr)
+			}
+			payloadDigest = transportDigest
+		}
 		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
