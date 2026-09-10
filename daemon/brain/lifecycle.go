@@ -689,6 +689,33 @@ func workTurnHasRelinquishmentEvidence(database presentationDatabase, workID str
 			return true
 		}
 	}
+	// A canonically resolved loss review for this exact Turn is durable
+	// lifecycle evidence that the Turn no longer owns execution, even when the
+	// provider session stayed alive and no terminal turn fact was ever
+	// observed (for example sweep lease-expiry escalation). The handled review
+	// already replaced execution authority; without this excuse the projection
+	// that closed the review cannot persist, so canonical state advances while
+	// the presentation keeps a ghost open review. Open loss reviews are Ready
+	// attention and never reach this excuse.
+	turnID := strings.TrimSpace(turn.TurnID)
+	if turnID == "" {
+		return false
+	}
+	for _, event := range database.BrainWorkEvents {
+		if event.WorkID != workID || event.HandledAt == nil {
+			continue
+		}
+		switch strings.TrimSpace(event.Kind) {
+		case "turn_lost", "lease_expired":
+		default:
+			continue
+		}
+		payloadRef := strings.TrimSpace(event.PayloadRef)
+		if payloadRef == turnID || strings.Contains(payloadRef, turnID) ||
+			strings.Contains(strings.TrimSpace(event.DedupeKey), turnID) {
+			return true
+		}
+	}
 	return false
 }
 
