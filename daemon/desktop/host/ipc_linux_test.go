@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -33,22 +34,83 @@ func localPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	return connections[0], connections[1]
 }
 
-func TestBrokerReadyHandshakePrecedesCapability(t *testing.T) {
-	a, b := localPair(t)
-	done := make(chan error, 1)
-	go func() { done <- SendBrokerReady(a) }()
-	if err := ReceiveBrokerReady(b); err != nil {
-		t.Fatalf("ready handshake failed: %v", err)
-	}
-	if err := <-done; err != nil {
-		t.Fatalf("ready send failed: %v", err)
-	}
-	if err := SendCapability(a, []byte("hello"), nil); err != nil {
+// TestListenerCredentialRace proves the original credential-loss failure is
+// already prevented by the listener's SO_PASSCRED: a message queued on a
+// pending connection before the server calls accept()/AuthenticateLocalPeer
+// still carries SCM_CREDENTIALS. No extra handshake protocol is required.
+func TestListenerCredentialRace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owner.sock")
+	listener, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: path, Net: "unixpacket"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	data, _, err := ReceiveCapability(b, uint32(os.Getuid()), false)
+	defer listener.Close()
+	raw, err := listener.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Control(func(fd uintptr) {
+		if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
+			t.Fatal(err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clientDone := make(chan error, 1)
+	go func() {
+		conn, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: path, Net: "unixpacket"})
+		if err != nil {
+			clientDone <- err
+			return
+		}
+		defer conn.Close()
+		// Send before the server accepts, racing per-connection credential setup.
+		clientDone <- SendCapability(conn, []byte("hello"), nil)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	conn, err := listener.AcceptUnix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	data, _, err := ReceiveCapability(conn, uint32(os.Getuid()), false)
 	if err != nil || string(data) != "hello" {
-		t.Fatalf("post-ready capability failed: %v", err)
+		t.Fatalf("listener SO_PASSCRED did not preserve credentials: data=%q err=%v", data, err)
+	}
+	if err := <-clientDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A connection where neither the listener nor the accepted socket enabled
+// SO_PASSCRED must fail closed, preserving the FD/credential boundary.
+func TestMissingPassCredsFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owner.sock")
+	listener, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: path, Net: "unixpacket"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	clientDone := make(chan error, 1)
+	go func() {
+		conn, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: path, Net: "unixpacket"})
+		if err != nil {
+			clientDone <- err
+			return
+		}
+		defer conn.Close()
+		clientDone <- SendCapability(conn, []byte("hello"), nil)
+	}()
+	conn, err := listener.AcceptUnix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, _, err := ReceiveCapability(conn, uint32(os.Getuid()), false); err == nil {
+		t.Fatal("message without SCM_CREDENTIALS was accepted")
+	}
+	if err := <-clientDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

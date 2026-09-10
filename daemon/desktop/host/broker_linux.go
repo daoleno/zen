@@ -236,10 +236,6 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 		log.Print("desktop admission rejected: canonical_peer")
 		return
 	}
-	if err := SendBrokerReady(conn); err != nil {
-		log.Print("desktop admission rejected: ready_write")
-		return
-	}
 	hello, _, err := ReceiveCapability(conn, b.config.OwnerUID, false)
 	if err != nil || string(hello) != "hello" {
 		log.Print("desktop admission rejected: hello")
