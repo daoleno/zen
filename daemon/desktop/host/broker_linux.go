@@ -81,6 +81,7 @@ type broker struct {
 	sessionPath  string
 	generation   uint64
 	owner        *net.UnixConn
+	ownerDone    chan struct{}
 	process      *exec.Cmd
 	media        net.Conn
 	agent        net.Conn
@@ -94,6 +95,10 @@ type broker struct {
 // retireLocked must finish the old agent before a new generation is published.
 func (b *broker) retireLocked() {
 	owner := b.owner
+	if b.ownerDone != nil {
+		close(b.ownerDone)
+		b.ownerDone = nil
+	}
 	b.owner = nil
 	if b.media != nil {
 		_ = b.media.Close()
@@ -246,7 +251,29 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 		b.window, b.attempts = time.Now(), 0
 	}
 	b.attempts++
-	if b.attempts > 10 || b.owner != nil || b.observeLocked(ctx) != nil {
+	if b.attempts > 10 {
+		log.Print("desktop admission rejected: session_or_busy")
+		b.mu.Unlock()
+		return
+	}
+	// A reconnect can arrive while the previous owner is still retiring. Wait
+	// once, bounded and signalled by retirement, instead of multiplying
+	// attempts (which would consume the host rate limit).
+	deadline := time.Now().Add(3 * time.Second)
+	for b.owner != nil && time.Now().Before(deadline) {
+		wait := b.ownerDone
+		if wait == nil {
+			break
+		}
+		b.mu.Unlock()
+		select {
+		case <-wait:
+		case <-time.After(time.Until(deadline)):
+		case <-ctx.Done():
+		}
+		b.mu.Lock()
+	}
+	if b.owner != nil || b.observeLocked(ctx) != nil {
 		log.Print("desktop admission rejected: session_or_busy")
 		b.mu.Unlock()
 		return
@@ -291,6 +318,7 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 		return
 	}
 	b.owner, b.process = conn, cmd
+	b.ownerDone = make(chan struct{})
 	proxy, err := b.proxyLocked(conn, file)
 	_ = file.Close()
 	if err == nil {
