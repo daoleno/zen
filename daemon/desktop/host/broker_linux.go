@@ -258,6 +258,7 @@ func (b *broker) register(conn *net.UnixConn) {
 	defer b.mu.Unlock()
 	if request.Action == "stop" && request.Display != b.display {
 		_ = sendJSON(conn, map[string]bool{"ok": true}, nil)
+		log.Printf("desktop display registration ignored: action=stop display=%s current=%s", request.Display, b.display)
 		return
 	}
 	b.retireLocked()
@@ -270,6 +271,7 @@ func (b *broker) register(conn *net.UnixConn) {
 		file = nil
 	}
 	_ = sendJSON(conn, map[string]bool{"ok": true}, nil)
+	log.Printf("desktop display registration applied: action=%s display=%s", request.Action, request.Display)
 }
 
 func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
@@ -285,7 +287,7 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 	}
 	b.mu.Lock()
 	if !b.chargeAdmission(time.Now()) {
-		log.Print("desktop admission rejected: session_or_busy")
+		log.Print("desktop admission rejected: session_rate_limited")
 		b.mu.Unlock()
 		return
 	}
@@ -293,12 +295,12 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 	// once, bounded and signalled by retirement, instead of multiplying
 	// attempts (which would consume the host rate limit).
 	if !b.waitOwnerClear(ctx, time.Now().Add(ownerRetirementWait)) {
-		log.Print("desktop admission rejected: session_or_busy")
+		log.Print("desktop admission rejected: session_owner_busy")
 		b.mu.Unlock()
 		return
 	}
 	if b.observeLocked(ctx) != nil {
-		log.Print("desktop admission rejected: session_or_busy")
+		log.Print("desktop admission rejected: session_observation")
 		b.mu.Unlock()
 		return
 	}
@@ -453,7 +455,10 @@ func (b *broker) proxyLocked(owner *net.UnixConn, agentFile *os.File) (*os.File,
 }
 
 // UID alone is insufficient: a terminal-only process under the same account
-// must not impersonate the one boot-owned canonical daemon.
+// must not impersonate the one boot-owned canonical daemon. The peer must
+// carry the enrolled UID and live in the enrolled system unit's ControlGroup
+// (members include the watcher-spawned daemon child and its rebuilds); the
+// unit's MainPID only proves the unit is active. See owner_linux.go.
 func (b *broker) isCanonicalOwner(ctx context.Context, peer *net.UnixConn) bool {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -464,28 +469,55 @@ func (b *broker) isCanonicalOwner(ctx context.Context, peer *net.UnixConn) bool 
 	defer conn.Close()
 	var unit dbus.ObjectPath
 	if conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").CallWithContext(ctx, "org.freedesktop.systemd1.Manager.GetUnit", 0, b.config.OwnerUnit).Store(&unit) != nil {
+		log.Print("desktop admission rejected: canonical_unit")
 		return false
 	}
 	var value dbus.Variant
 	if conn.Object("org.freedesktop.systemd1", unit).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, "org.freedesktop.systemd1.Service", "MainPID").Store(&value) != nil {
+		log.Print("desktop admission rejected: canonical_mainpid")
 		return false
 	}
 	pid, ok := value.Value().(uint32)
-	if !ok || pid == 0 {
+	if !ok {
+		log.Print("desktop admission rejected: canonical_mainpid")
+		return false
+	}
+	// ControlGroup is a Service-interface property (the Unit interface has
+	// no such property; verified against a live owned-VM system bus).
+	// OwnerUnit is validated as *.service, so this interface always applies.
+	var group dbus.Variant
+	if conn.Object("org.freedesktop.systemd1", unit).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, "org.freedesktop.systemd1.Service", "ControlGroup").Store(&group) != nil {
+		log.Print("desktop admission rejected: canonical_cgroup")
+		return false
+	}
+	cgroup, ok := group.Value().(string)
+	if !ok {
+		log.Print("desktop admission rejected: canonical_cgroup")
 		return false
 	}
 	raw, err := peer.SyscallConn()
 	if err != nil {
+		log.Print("desktop admission rejected: canonical_peer")
 		return false
 	}
-	matched := false
-	if raw.Control(func(fd uintptr) {
+	var peerPid int32
+	var peerUid uint32
+	controlErr := raw.Control(func(fd uintptr) {
 		credentials, e := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-		matched = e == nil && credentials.Pid > 0 && uint32(credentials.Pid) == pid && credentials.Uid == b.config.OwnerUID
-	}) != nil {
+		if e != nil {
+			return
+		}
+		peerPid, peerUid = credentials.Pid, credentials.Uid
+	})
+	if controlErr != nil || peerPid <= 0 {
+		log.Print("desktop admission rejected: canonical_peer")
 		return false
 	}
-	return matched
+	if !verifyCanonicalOwner(peerPid, peerUid, pid, b.config.OwnerUID, cgroup, ownerCgroupMember("/proc", uint32(peerPid), cgroup)) {
+		log.Print("desktop admission rejected: canonical_owner")
+		return false
+	}
+	return true
 }
 
 func (b *broker) startAgentLocked(control bool) (*os.File, *exec.Cmd, error) {

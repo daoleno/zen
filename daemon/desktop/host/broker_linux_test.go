@@ -16,6 +16,9 @@ func brokerTestConn(t *testing.T) *net.UnixConn {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The peer end is never used by these tests; close it via cleanup instead
+	// of leaking fds[0] of every socketpair.
+	t.Cleanup(func() { _ = unix.Close(fds[0]) })
 	f := os.NewFile(uintptr(fds[1]), "broker-test-peer")
 	conn, err := net.FileConn(f)
 	_ = f.Close()

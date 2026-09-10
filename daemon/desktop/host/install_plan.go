@@ -70,7 +70,7 @@ WantedBy=multi-user.target
 	}, Requirements: []string{
 		"Build and audit the executable broker and UID-dropped X11 agent; rendered service files alone are not an installation.",
 		"Verify root-owned immutable binaries and all parent directories; no user-writable executable, helper path or library search path. The installed zen ELF is the only broker/agent identity.",
-		"Verify peer UID, canonical owner unit MainPID and fresh device/scope proof, including synchronous revocation.",
+		"Verify kernel peer UID and enrolled system-unit ControlGroup cgroup membership (watcher-spawned daemon children included) with fresh device/scope proof, including synchronous revocation.",
 		"Create the broker socket mode 0600 owned by the configured owner UID inside the root-owned runtime directory; keep all other runtime state root-only.",
 		"Approve boot service ownership for the existing unprivileged Zen daemon with unchanged identity, state directory and network settings; do not start a duplicate owner.",
 		"Use the journaled installer to preserve existing SDDM X11 display hooks and register verified display metadata with an Xauthority FD, never cookies in logs or user config.",
@@ -78,7 +78,13 @@ WantedBy=multi-user.target
 		"X11-only privilege profile: Wayland DRM capture or uinput requires a separately reviewed device/capability profile, not a silent CAP_SYS_ADMIN addition.",
 	}}
 	if config.OwnerUnit != "" {
-		plan.Files[1].Content = strings.Replace(plan.Files[1].Content, "Requires=systemd-logind.service", "Requires=systemd-logind.service "+config.OwnerUnit+"\nAfter="+config.OwnerUnit, 1)
+		// Wants (not Requires): the broker starts after the owner and pulls
+		// it in at boot, but an owner restart/rebuild must NOT stop the
+		// broker — stopping would discard the in-memory X registration and
+		// blind the broker until the next X start. Verified live: with
+		// Requires, `systemctl restart <owner>` stopped the broker and all
+		// later admissions failed session_observation.
+		plan.Files[1].Content = strings.Replace(plan.Files[1].Content, "Requires=systemd-logind.service", "Requires=systemd-logind.service\nWants="+config.OwnerUnit+"\nAfter="+config.OwnerUnit, 1)
 	}
 	return plan, nil
 }

@@ -38,3 +38,20 @@ func TestInstallPlanHasNoDeviceTrustToggleOrCredentialStore(t *testing.T) {
 		t.Fatal("root owner allowed")
 	}
 }
+
+// The broker must order after the enrolled owner without being killed by its
+// restarts: Requires= propagates a stop (losing in-memory X registration),
+// Wants= only pulls the owner in at boot.
+func TestInstallPlanOwnerDependencyIsWeak(t *testing.T) {
+	plan, err := PrepareLinuxInstall(HostConfig{Version: 1, HostID: "fixture", OwnerUID: 1000, Seat: "seat0", OwnerUnit: "zen-fixture-owner.service"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := plan.Files[1].Content
+	if !strings.Contains(content, "Wants=zen-fixture-owner.service\n") || !strings.Contains(content, "After=zen-fixture-owner.service") {
+		t.Fatal("owner boot ordering missing")
+	}
+	if strings.Contains(content, "Requires=zen-fixture-owner.service") || strings.Contains(content, "BindsTo=zen-fixture-owner.service") {
+		t.Fatal("strong owner dependency stops the broker on owner rebuild")
+	}
+}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -73,11 +74,28 @@ func TestDesktopHostVMFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal("fixture port unavailable")
 	}
-	host.StartTLS()
+	// Owned-VM native route: serve a test-CA-chained certificate (files
+	// injected by the owned harness) so the debuggable product client can
+	// complete system TLS trust. Daemon authentication stays key-bound
+	// (signed /pair and capability assertions); the CA is test-only and
+	// never a production trust anchor.
+	var rawCert []byte
+	if certFile, keyFile := os.Getenv("ZEN_FIXTURE_TLS_CERT"), os.Getenv("ZEN_FIXTURE_TLS_KEY"); certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil || len(cert.Certificate) == 0 {
+			t.Fatal("fixture test certificate unavailable")
+		}
+		host.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+		host.StartTLS()
+		rawCert = cert.Certificate[0]
+	} else {
+		host.StartTLS()
+		rawCert = host.Certificate().Raw
+	}
 	defer host.Close()
 	ready, _ := json.Marshal(map[string]any{
 		"hostId": m.DaemonID(), "publicKey": m.PublicKeyHex(), "ownerUid": os.Getuid(),
-		"certificate": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: host.Certificate().Raw})),
+		"certificate": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rawCert})),
 	})
 	if os.WriteFile(filepath.Join(state, "ready.json"), ready, 0644) != nil {
 		t.Fatal("fixture readiness unavailable")
