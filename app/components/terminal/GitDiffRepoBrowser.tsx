@@ -34,6 +34,7 @@ interface GitDiffRepoBrowserProps {
   changedPathSet: Set<string>;
   theme: TerminalThemePalette;
   chrome: ReturnType<typeof buildTerminalChrome>;
+  bottomInset: number;
   onOpenRepoPath(path: string): void;
   onOpenRepoFile(path: string): void;
   onCloseRepoFile(): void;
@@ -53,6 +54,7 @@ export function GitDiffRepoBrowser({
   changedPathSet,
   theme,
   chrome,
+  bottomInset,
   onOpenRepoPath,
   onOpenRepoFile,
   onCloseRepoFile,
@@ -89,6 +91,7 @@ export function GitDiffRepoBrowser({
         changed={changedPathSet.has(repoFilePath)}
         theme={theme}
         chrome={chrome}
+        bottomInset={bottomInset}
         onBack={onCloseRepoFile}
       />
     );
@@ -103,6 +106,7 @@ export function GitDiffRepoBrowser({
       style={styles.fullList}
       contentContainerStyle={[
         styles.browserContent,
+        { paddingBottom: bottomInset + 20 },
         repoBrowserEntries.length === 0 ? styles.fullListEmpty : null,
       ]}
       ListHeaderComponent={

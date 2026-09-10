@@ -20,6 +20,7 @@ interface GitDiffRepoFileViewProps {
   changed: boolean;
   theme: TerminalThemePalette;
   chrome: ReturnType<typeof buildTerminalChrome>;
+  bottomInset: number;
   onBack(): void;
 }
 
@@ -32,6 +33,7 @@ export function GitDiffRepoFileView({
   changed,
   theme,
   chrome,
+  bottomInset,
   onBack,
 }: GitDiffRepoFileViewProps) {
   return (
@@ -81,7 +83,7 @@ export function GitDiffRepoFileView({
       </View>
 
       {loading ? (
-        <View style={styles.contentPad}>
+        <View style={[styles.contentPad, { paddingBottom: bottomInset + 14 }]}>
           <GitDiffStateCard
             icon="sync-outline"
             title="Loading file"
@@ -92,7 +94,7 @@ export function GitDiffRepoFileView({
           />
         </View>
       ) : error ? (
-        <View style={styles.contentPad}>
+        <View style={[styles.contentPad, { paddingBottom: bottomInset + 14 }]}>
           <GitDiffStateCard
             icon="warning-outline"
             title="Could not load file"
@@ -108,6 +110,7 @@ export function GitDiffRepoFileView({
           snapshot={payload?.snapshot ?? null}
           chrome={chrome}
           theme={theme}
+          bottomInset={bottomInset}
         />
       )}
     </View>

@@ -5,6 +5,10 @@ working directory. Android and iOS share the same overview, comparisons, reader,
 search, and navigation. Reviewing does not stage, discard, or otherwise modify
 the repository.
 
+Interaction layout, navigation, scrolling, safe-area and acceptance criteria are
+specified in `docs/git-diff-design.md`. The notes below cover data and freshness
+semantics.
+
 ## Comparisons
 
 - **All** lists staged, working-tree, and untracked changes. A file changed in both
@@ -24,14 +28,21 @@ One file is open at a time. The unified reader shows old and new source line
 numbers, change colors, hunk headers, binary/mode/rename metadata, and missing
 final-newline markers. Near-end native scrolling automatically loads more rows;
 there is no page toolbar. The back arrow opens the changed-file list for direct
-selection. Return positions are retained by source row per file and comparison,
-including a visit to the Files tab. Rows before a restored or searched position
-load automatically during upward scrolling.
+selection, and Android hardware back unwinds one level at a time
+(`file -> browser -> changes -> close`) rather than closing the feature from a
+child state. Return positions are retained by source row per file and comparison,
+including a visit to the Files browser. Rows before a restored or searched
+position load automatically during upward scrolling. The changed-file list is
+never scrolled through a controlled `contentOffset` and stays mounted while a
+detail is open, so scope changes reset it once and Back restores the exact
+offset. Its bottom content padding includes the safe-area inset so the last row
+is reachable and tappable after any fling.
 
 The search control submits a case-insensitive search of the complete selected
 comparison, not just the current page. Its arrows navigate matching lines.
-The overflow contains wrap, text size, patch headers and working-file access.
-Git headers are also revealed while searching. Wrap and text-size controls retain
+Diff options (wrap, text size, patch headers and working-file access) expand
+inline below the header; there is no nested modal. Git headers are also revealed
+while searching. Wrap and text-size controls retain
 the source-row anchor without refetching the patch. Long lines are split into
 explicitly marked continuations, not truncated. The unwrapped reader uses native
 horizontal panning; no file-swipe gesture competes with it. Search navigation and
@@ -41,8 +52,9 @@ include at most one preceding transport chunk; the native list measures that
 bounded prefix before positioning the target. This also keeps a last-line search
 scrollable without moving the match off-screen after the jump.
 
-The Files tab remains a working-tree browser, not a historical comparison. Its
-existing file-preview byte limit is separate from the complete diff reader.
+The Files browser (reached from the changes header, not a stacked mode tab)
+remains a working-tree browser, not a historical comparison. Its existing
+file-preview byte limit is separate from the complete diff reader.
 
 ## Data And Freshness
 

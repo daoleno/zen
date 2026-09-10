@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Pressable, StyleSheet } from "react-native";
+import { ActivityIndicator, Alert, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 
@@ -10,6 +10,8 @@ export function DiffIconButton({
   chrome,
   disabled = false,
   selected = false,
+  busy = false,
+  accentColor,
 }: {
   icon: React.ComponentProps<typeof Ionicons>["name"];
   label: string;
@@ -17,28 +19,37 @@ export function DiffIconButton({
   chrome: TerminalThemeChrome;
   disabled?: boolean;
   selected?: boolean;
+  busy?: boolean;
+  accentColor?: string;
 }) {
+  const accent = accentColor ?? chrome.accent;
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
-      accessibilityState={{ disabled, selected }}
+      accessibilityHint={label}
+      accessibilityState={{ disabled, selected, busy }}
       disabled={disabled}
       onPress={onPress}
       onLongPress={() => Alert.alert(label)}
       style={({ pressed }) => [
         styles.button,
         {
-          opacity: disabled ? 0.3 : pressed ? 0.6 : 1,
+          opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
           backgroundColor: selected ? chrome.surfaceMuted : "transparent",
+          borderColor: selected ? chrome.border : "transparent",
         },
       ]}
     >
-      <Ionicons
-        name={icon}
-        size={20}
-        color={selected ? chrome.accent : chrome.text}
-      />
+      {busy ? (
+        <ActivityIndicator size="small" color={accent} />
+      ) : (
+        <Ionicons
+          name={icon}
+          size={20}
+          color={selected ? accent : chrome.text}
+        />
+      )}
     </Pressable>
   );
 }
@@ -49,6 +60,7 @@ const styles = StyleSheet.create({
     height: 44,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 4,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
   },
 });

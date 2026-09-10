@@ -19,6 +19,7 @@ interface CodeSnapshotPanelProps {
   snapshot: GitDiffContentSnapshot | null;
   chrome: ReturnType<typeof buildTerminalChrome>;
   theme: TerminalThemePalette;
+  bottomInset?: number;
 }
 
 export function GitDiffCodeSnapshotPanel({
@@ -26,10 +27,11 @@ export function GitDiffCodeSnapshotPanel({
   snapshot,
   chrome,
   theme,
+  bottomInset = 0,
 }: CodeSnapshotPanelProps) {
   if (!snapshot?.exists || !snapshot.content) {
     return (
-      <View style={styles.contentPad}>
+      <View style={[styles.contentPad, { paddingBottom: bottomInset + 14 }]}>
         <GitDiffStateCard
           icon="document-text-outline"
           title="File snapshot unavailable"
@@ -47,7 +49,7 @@ export function GitDiffCodeSnapshotPanel({
 
   if (snapshot.binary) {
     return (
-      <View style={styles.contentPad}>
+      <View style={[styles.contentPad, { paddingBottom: bottomInset + 14 }]}>
         <GitDiffStateCard
           icon="cube-outline"
           title="Binary file"
@@ -63,7 +65,10 @@ export function GitDiffCodeSnapshotPanel({
   return (
     <ScrollView
       style={styles.codeScroll}
-      contentContainerStyle={styles.codeScrollContent}
+      contentContainerStyle={[
+        styles.codeScrollContent,
+        { paddingBottom: bottomInset + 20 },
+      ]}
       showsVerticalScrollIndicator={false}
       nestedScrollEnabled={false}
     >

@@ -119,12 +119,25 @@ describe("continuous Git diff", () => {
   });
   test("native chrome exposes no manual paging or permanent desktop toolbar", () => {
     const reader = readFileSync(new URL("./GitDiffReader.tsx", import.meta.url), "utf8");
-    const chrome = readFileSync(new URL("./GitDiffSheetDiffContent.tsx", import.meta.url), "utf8");
+    const chrome = readFileSync(new URL("./GitDiffSheetTopChrome.tsx", import.meta.url), "utf8");
     for (const copy of ["Previous page", "Next page", "styles.footer", "data={page.rows}"]) expect(reader).not.toContain(copy);
     expect(reader).toContain("onEndReached"); expect(reader).toContain("onStartReached");
     expect(reader).toContain("maintainVisibleContentPosition");
     for (const copy of ["Previous file", "Next file", "Staged + working tree", "HEAD → index"]) expect(chrome).not.toContain(copy);
-    expect(chrome).toContain('label="Changed files"'); expect(chrome).toContain('label="Diff options"');
+    expect(chrome).toContain('"Changed files"'); expect(chrome).toContain('label="Diff options"');
+    expect(chrome).not.toContain("modeBar");
+    expect(chrome).not.toContain("compact");
+  });
+  test("overview list never controls contentOffset and resets imperatively", () => {
+    const content = readFileSync(new URL("./GitDiffSheetDiffContent.tsx", import.meta.url), "utf8");
+    expect(content).not.toContain("contentOffset={");
+    expect(content).toContain("scrollToOffset");
+    expect(content).toContain("ref={listRef}");
+    expect(content).toContain("removeClippedSubviews={false}");
+    expect(content).not.toContain("BottomSheetFrame");
+    const reader = readFileSync(new URL("./GitDiffReader.tsx", import.meta.url), "utf8");
+    expect(reader).not.toContain("contentOffset={{ x: horizontalOffset.current");
+    expect(reader).toContain("initialHorizontalOffset");
   });
   test("large and split long-line streams retain every byte without flattening chunks", async () => {
     const text = "long-line-".repeat(50);
