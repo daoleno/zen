@@ -3053,3 +3053,100 @@ func TestSessionInputWorkWakeAndForegroundChatIsolateReceiptIdentities(t *testin
 		t.Fatalf("wake canonical submission is missing: found=%v err=%v", found, err)
 	}
 }
+
+// TestDelegatedReceiptReplayRequiresConfirmedTransportAcceptance guards the
+// pending-receipt branch: the pre-mutation transport marker is persisted before
+// the queue runs, so an Ambiguous receipt (a crash before the queue, or a
+// started queue failure) proves only that the attempt began. It must never be
+// re-reported as submitted and must never be replayed. Only a confirmed
+// InputAccepted receipt re-reports the known delegated submission.
+func TestDelegatedReceiptReplayRequiresConfirmedTransportAcceptance(t *testing.T) {
+	identity := testSessionInputIdentity("codex")
+	payload := "replayed delegated payload"
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	baseTurn := testTurnDraft("turn:replay-guard", time.Now().UTC(), identity)
+	baseTurn.SignalProtocol = true
+	baselineOnly := delegatedInputConfirmer{
+		baseline: func() (delegatedInputBaseline, error) { return delegatedInputBaseline{}, nil },
+	}
+
+	t.Run("pre-mutation ambiguous receipt is not submitted", func(t *testing.T) {
+		io := newFakeSessionInputIO()
+		ledger := newFakeTurnLedger()
+		owner := newLedgerSessionInputOwner(io, ledger)
+		if _, created, err := ledger.PrepareInputAdmission(InputAdmission{
+			WorkID: "work-replay", SessionID: "agent:@replay", ProposedTurnID: baseTurn.ID,
+			Receipt: baseTurn.ID, PayloadSHA256: digest, ProcessIdentity: delegatedTurnIdentity(identity),
+			PaneGeneration: io.paneValue.generation, AcceptedAt: baseTurn.AcceptedAt,
+			Mode: InputAdmissionFresh, SignalProtocol: true,
+		}); err != nil || !created {
+			t.Fatalf("seed pending created=%v err=%v", created, err)
+		}
+		io.ledger = sessionInputReceiptLedger{
+			SchemaVersion: sessionInputReceiptLedgerSchema,
+			Entries:       []sessionInputReceiptEntry{{Receipt: baseTurn.ID, PayloadSHA256: digest, Outcome: InputAmbiguous}},
+		}
+		result, err := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, baseTurn, baselineOnly,
+		)
+		if err == nil || result.Outcome != InputAmbiguous || !result.Duplicate {
+			t.Fatalf("ambiguous receipt replay = (%+v, %v), want unknown duplicate", result, err)
+		}
+		if len(io.queues) != 0 {
+			t.Fatalf("ambiguous receipt replay resent input: queues=%d", len(io.queues))
+		}
+	})
+
+	t.Run("started queue failure retry stays unknown without replay", func(t *testing.T) {
+		io := newFakeSessionInputIO()
+		io.runStarted = true
+		io.runErr = errors.New("tmux queue failed after start")
+		ledger := newFakeTurnLedger()
+		owner := newLedgerSessionInputOwner(io, ledger)
+		first, err := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, baseTurn, baselineOnly,
+		)
+		if err == nil || first.Outcome != InputAmbiguous || len(io.queues) != 1 {
+			t.Fatalf("started queue failure = (%+v, %v) queues=%d", first, err, len(io.queues))
+		}
+		io.runStarted = false
+		io.runErr = nil
+		retry, retryErr := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, baseTurn, baselineOnly,
+		)
+		if retryErr == nil || retry.Outcome != InputAmbiguous || !retry.Duplicate {
+			t.Fatalf("failed-transport retry = (%+v, %v), want unknown duplicate", retry, retryErr)
+		}
+		if len(io.queues) != 1 {
+			t.Fatalf("failed-transport retry replayed: queues=%d", len(io.queues))
+		}
+	})
+
+	t.Run("confirmed acceptance receipt retry is accepted", func(t *testing.T) {
+		io := newFakeSessionInputIO()
+		ledger := newFakeTurnLedger()
+		owner := newLedgerSessionInputOwner(io, ledger)
+		turn := baseTurn
+		turn.ID = "turn:replay-accepted"
+		first, err := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, turn, baselineOnly,
+		)
+		if err != nil || first.Outcome != InputAccepted || first.ProviderConfirmed || len(io.queues) != 1 {
+			t.Fatalf("initial transport = (%+v, %v) queues=%d", first, err, len(io.queues))
+		}
+		retry, retryErr := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, turn, baselineOnly,
+		)
+		if retryErr != nil || retry.Outcome != InputAccepted || !retry.Duplicate {
+			t.Fatalf("confirmed receipt retry = (%+v, %v), want accepted duplicate", retry, retryErr)
+		}
+		if len(io.queues) != 1 {
+			t.Fatalf("confirmed receipt retry replayed: queues=%d", len(io.queues))
+		}
+	})
+}

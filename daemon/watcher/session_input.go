@@ -629,15 +629,23 @@ func (owner *sessionInputOwner) submitWithTurn(
 						submission.PaneGeneration != baseline.generation {
 						return ambiguousSubmission(result.Receipt, fmt.Errorf("pending submission target identity no longer matches; input will not be replayed"))
 					}
-					if _, transportFound := ledger.entry(result.Receipt); transportFound {
+					if entry, transportFound := ledger.entry(result.Receipt); transportFound {
+						// The pre-mutation transport marker is persisted before
+						// mutation, so an Ambiguous entry only proves the attempt
+						// started, not that the queue succeeded. Re-report a known
+						// delegated submission only from a confirmed acceptance
+						// receipt; an unconfirmed marker stays ambiguous and is
+						// never resent.
 						if turn.SignalProtocol {
-							// The exact transport for this receipt already ran and
-							// the admission is still awaiting its lifecycle signal.
-							// Re-report the known submission; never resend it, never
-							// reclassify it as failed.
-							result.Outcome = InputAccepted
-							result.TurnID = turn.ID
-							return nil
+							if entry.PayloadSHA256 == payloadDigest && entry.Outcome == InputAccepted {
+								// The exact transport ran and its acceptance was
+								// confirmed. Report the known submission; never
+								// resend it, never reclassify it as failed.
+								result.Outcome = InputAccepted
+								result.TurnID = turn.ID
+								return nil
+							}
+							return ambiguousSubmission(result.Receipt, fmt.Errorf("delegated transport acceptance was not confirmed; input will not be replayed"))
 						}
 						resolved, resolveErr := owner.resolvePendingFromBaseline(submission, confirm)
 						if resolveErr == nil {
