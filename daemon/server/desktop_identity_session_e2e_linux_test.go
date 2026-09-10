@@ -521,22 +521,7 @@ func startE2EXvfb(t *testing.T, display string) func() {
 	t.Helper()
 	prefix := strings.TrimSpace(os.Getenv("ZEN_REMOTE_DESKTOP_TEST_PREFIX"))
 	if prefix == "" || func() bool { _, err := os.Stat(filepath.Join(prefix, "usr/bin/Xvfb")); return err != nil }() {
-		_, thisFile, _, ok := runtime.Caller(0)
-		if !ok {
-			t.Fatal("caller")
-		}
-		script := filepath.Join(filepath.Dir(thisFile), "../..", "scripts/restore-remote-desktop-test-deps.sh")
-		cmd := exec.Command(script)
-		cmd.Env = os.Environ()
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("owned Xvfb restore: %v\n%s", err, output)
-		}
-		for _, line := range strings.Split(string(output), "\n") {
-			if strings.HasPrefix(line, "PREFIX=") {
-				prefix = strings.TrimPrefix(line, "PREFIX=")
-			}
-		}
+		prefix = restoreE2EXvfbPrefix(t)
 	}
 	var xvfb *exec.Cmd
 	if prefix != "" {
@@ -576,4 +561,30 @@ int main(void){Display *d=XOpenDisplay(NULL); if(!d) return 1; XCloseDisplay(d);
 	_ = xvfb.Process.Kill()
 	t.Fatalf("display %s did not become ready", display)
 	return func() {}
+}
+
+// Mirrors daemon/desktop restoreOwnedXvfb: a missing developer archive must not
+// fail CI. The daemon CI prerequisites install system Xvfb, which is used when
+// the retained archive is unavailable. Isolated display and temp paths are
+// unchanged; only the archive requirement is relaxed.
+func restoreE2EXvfbPrefix(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "../..", "scripts/restore-remote-desktop-test-deps.sh")
+	cmd := exec.Command(script)
+	cmd.Env = os.Environ()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("owned Xvfb restore unavailable, falling back to system Xvfb: %v\n%s", err, output)
+		return ""
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "PREFIX=") {
+			return strings.TrimPrefix(line, "PREFIX=")
+		}
+	}
+	return ""
 }
