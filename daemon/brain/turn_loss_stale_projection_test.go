@@ -169,3 +169,93 @@ func TestResolveContinue_ConvergesLostCoordinationWithLiveProvider(t *testing.T)
 		t.Fatalf("live execution not projected: %+v", projected)
 	}
 }
+
+// The resolved-loss excuse confers authority by exact canonical payload
+// identity only. Substrings (prefix/suffix/sibling tokens), other Works,
+// unhandled loss, and unrelated kinds must never excuse a stale turn, and a
+// foreign live Session beside an owner must remain rejected.
+func TestWorkTurnRelinquishmentEvidence_ExactLossIdentity(t *testing.T) {
+	const workID = "work-1"
+	const sessionID = "session-a"
+	const turnID = "turn:aaaa-1111"
+	handledAt := time.Now().UTC()
+	staleTurn := TurnRecord{SessionID: sessionID, TurnID: turnID, WorkID: workID, Status: watcher.TurnRunning}
+	lossEvent := func(work, kind, payload string, handled bool) WorkEvent {
+		event := WorkEvent{
+			ID:     "event-" + kind + "-" + strings.ReplaceAll(payload, ":", "-"),
+			WorkID: work, Kind: kind, DedupeKey: "lifecycle:" + kind,
+			PayloadRef: payload, Actionable: !handled,
+		}
+		if handled {
+			at := handledAt
+			event.HandledAt = &at
+		}
+		return event
+	}
+	cases := []struct {
+		name   string
+		events []WorkEvent
+		turn   TurnRecord
+		want   bool
+	}{
+		{name: "exact handled turn_lost", events: []WorkEvent{lossEvent(workID, "turn_lost", turnID, true)}, turn: staleTurn, want: true},
+		{name: "exact handled lease_expired", events: []WorkEvent{lossEvent(workID, "lease_expired", turnID, true)}, turn: staleTurn, want: true},
+		{name: "payload is prefix of turn", events: []WorkEvent{lossEvent(workID, "turn_lost", "turn:aaaa", true)}, turn: staleTurn, want: false},
+		{name: "turn is prefix of payload", events: []WorkEvent{lossEvent(workID, "turn_lost", turnID+"-extra", true)}, turn: staleTurn, want: false},
+		{name: "sibling turn token", events: []WorkEvent{lossEvent(workID, "turn_lost", "turn:bbbb-2222", true)}, turn: staleTurn, want: false},
+		{name: "exact loss on unrelated work", events: []WorkEvent{lossEvent("work-2", "turn_lost", turnID, true)}, turn: staleTurn, want: false},
+		{name: "unhandled open loss", events: []WorkEvent{lossEvent(workID, "turn_lost", turnID, false)}, turn: staleTurn, want: false},
+		{name: "handled unrelated kind", events: []WorkEvent{lossEvent(workID, "turn_done", turnID, true)}, turn: staleTurn, want: false},
+		{name: "empty turn identity", events: []WorkEvent{lossEvent(workID, "turn_lost", turnID, true)}, turn: TurnRecord{SessionID: sessionID, WorkID: workID, Status: watcher.TurnRunning}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database := presentationDatabase{
+				BrainWork:       []Work{{ID: workID, Status: WorkNeedsInput}},
+				BrainWorkEvents: tc.events,
+				BrainTurns:      []TurnRecord{tc.turn},
+			}
+			if got := workTurnHasRelinquishmentEvidence(database, workID, tc.turn); got != tc.want {
+				t.Fatalf("relinquished=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateActiveAttempts_ForeignSessionStillRejected(t *testing.T) {
+	const workID = "work-1"
+	const rogueSession = "session-rogue"
+	const rogueTurn = "turn:rogue-1"
+	handledAt := time.Now().UTC()
+	database := func(events []WorkEvent, attempt string) presentationDatabase {
+		return presentationDatabase{
+			BrainWork:       []Work{{ID: workID, Status: WorkNeedsInput, AttemptSessionID: attempt}},
+			BrainWorkEvents: events,
+			BrainTurns: []TurnRecord{{
+				SessionID: rogueSession, TurnID: rogueTurn, WorkID: workID, Status: watcher.TurnRunning,
+			}},
+		}
+	}
+	handledLoss := WorkEvent{
+		ID: "loss-1", WorkID: workID, Kind: "turn_lost", DedupeKey: "lifecycle:loss-1",
+		PayloadRef: rogueTurn, HandledAt: &handledAt,
+	}
+	siblingLoss := handledLoss
+	siblingLoss.ID = "loss-2"
+	siblingLoss.PayloadRef = "turn:sibling-9"
+
+	// A foreign live Session beside an owner is still a conflict.
+	if err := validateActiveAttempts(database(nil, "session-owner")); err == nil ||
+		!strings.Contains(err.Error(), "is not the active Attempt") {
+		t.Fatalf("foreign session accepted: %v", err)
+	}
+	// A sibling token in the handled loss does not excuse the rogue turn.
+	if err := validateActiveAttempts(database([]WorkEvent{siblingLoss}, "")); err == nil ||
+		!strings.Contains(err.Error(), "is not the active Attempt") {
+		t.Fatalf("sibling loss excused rogue turn: %v", err)
+	}
+	// The exact handled loss converges the post-resolve projection.
+	if err := validateActiveAttempts(database([]WorkEvent{handledLoss}, "")); err != nil {
+		t.Fatalf("exact handled loss rejected: %v", err)
+	}
+}

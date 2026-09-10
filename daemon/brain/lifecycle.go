@@ -696,7 +696,11 @@ func workTurnHasRelinquishmentEvidence(database presentationDatabase, workID str
 	// already replaced execution authority; without this excuse the projection
 	// that closed the review cannot persist, so canonical state advances while
 	// the presentation keeps a ghost open review. Open loss reviews are Ready
-	// attention and never reach this excuse.
+	// attention and never reach this excuse. Identity is the exact canonical
+	// payload: the loss projection carries the full Turn token as its
+	// PayloadRef when no provider evidence exists, and provider evidence is
+	// already covered by the result-event rule above. Substrings never confer
+	// authority.
 	turnID := strings.TrimSpace(turn.TurnID)
 	if turnID == "" {
 		return false
@@ -710,9 +714,7 @@ func workTurnHasRelinquishmentEvidence(database presentationDatabase, workID str
 		default:
 			continue
 		}
-		payloadRef := strings.TrimSpace(event.PayloadRef)
-		if payloadRef == turnID || strings.Contains(payloadRef, turnID) ||
-			strings.Contains(strings.TrimSpace(event.DedupeKey), turnID) {
+		if strings.TrimSpace(event.PayloadRef) == turnID {
 			return true
 		}
 	}
