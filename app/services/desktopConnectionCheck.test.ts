@@ -68,6 +68,20 @@ test("wrong identity, stale assertions and forged signatures fail before desktop
   const f = setup((body, index) => { if (index === 1) body.ok = false; });
   await expect(verifyDesktopServer(server, "wss://host/desktop", f.dependencies)).rejects.toThrow("identity");
 });
+test("accepts a case-variant stored identity after normalization", async () => {
+  const mixed = { daemonId: server.daemonId.toUpperCase(), daemonPublicKey: server.daemonPublicKey.toUpperCase() };
+  const f = setup();
+  await verifyDesktopServer(mixed, "ws://192.168.1.2:9876/desktop", f.dependencies);
+  expect(f.calls.map((call) => call.url)).toEqual(["http://192.168.1.2:9876/health", "http://192.168.1.2:9876/auth-check"]);
+});
+test("names the failing identity field so the exact contract is observable", async () => {
+  for (const field of ["daemon_id", "daemon_public_key", "assertion_timestamp", "assertion_signature"]) {
+    const f = setup((body) => { body[field] = "invalid"; });
+    await expect(verifyDesktopServer(server, "wss://host/desktop", f.dependencies)).rejects.toThrow(field);
+  }
+  const f = setup((body, index) => { if (index === 1) body.ok = false; });
+  await expect(verifyDesktopServer(server, "wss://host/desktop", f.dependencies)).rejects.toThrow("ok");
+});
 test("redirects, oversized proofs, revocation and cancellation fail closed", async () => {
   const f = setup();
   for (const response of [

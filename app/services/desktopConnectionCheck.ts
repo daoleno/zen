@@ -1,5 +1,5 @@
 import type { DaemonAssertionInput } from "./auth";
-import { verifyDesktopCapabilitySignature } from "./protocolCrypto";
+import { normalizeFixedHex, verifyDesktopCapabilitySignature } from "./protocolCrypto";
 import type { StoredServer } from "./storedServerContract";
 
 export class DesktopConnectionUnavailable extends Error {
@@ -51,7 +51,7 @@ export async function verifyDesktopServer(server: Pick<StoredServer, "daemonId" 
     endpoint.pathname = purpose === "zen-health" ? "/health" : "/auth-check";
     const payload = await fetchSignedJSON(endpoint.toString(), purpose === "zen-probe" ? "zen-probe" : undefined, server, dependencies, signal);
     if (purpose === "zen-probe" && payload.ok !== true) {
-      throw new Error("The endpoint did not prove the identity of this paired computer.");
+      throw new Error("The endpoint did not prove the identity of this paired computer (ok).");
     }
   }
 }
@@ -150,11 +150,18 @@ async function fetchSignedJSON(url: string, authorizationPurpose: "zen-probe" | 
     if (!payload || typeof payload !== "object") throw new Error("The desktop server returned an invalid identity proof.");
     const timestamp = Date.parse(payload.assertion_timestamp);
     const purpose = authorizationPurpose ?? "zen-health";
-    if (payload.daemon_id !== server.daemonId || payload.daemon_public_key !== server.daemonPublicKey ||
-        !Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 300000 ||
-        !dependencies.verify({ purpose, daemonId: server.daemonId, daemonPublicKey: server.daemonPublicKey,
-          timestamp: payload.assertion_timestamp, nonceHex: payload.assertion_nonce, signatureHex: payload.assertion_signature })) {
-      throw new Error("The endpoint did not prove the identity of this paired computer.");
+    const servedDaemonId = normalizeFixedHex(typeof payload.daemon_id === "string" ? payload.daemon_id : "", 64);
+    const servedPublicKey = normalizeFixedHex(typeof payload.daemon_public_key === "string" ? payload.daemon_public_key : "", 64);
+    const expectedDaemonId = normalizeFixedHex(server.daemonId, 64);
+    const expectedPublicKey = normalizeFixedHex(server.daemonPublicKey, 64);
+    const signatureValid = dependencies.verify({ purpose, daemonId: server.daemonId, daemonPublicKey: server.daemonPublicKey,
+      timestamp: payload.assertion_timestamp, nonceHex: payload.assertion_nonce, signatureHex: payload.assertion_signature });
+    const failure = servedDaemonId !== expectedDaemonId ? "daemon_id" :
+      servedPublicKey !== expectedPublicKey ? "daemon_public_key" :
+      !Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 300000 ? "assertion_timestamp" :
+      !signatureValid ? "assertion_signature" : "";
+    if (failure) {
+      throw new Error(`The endpoint did not prove the identity of this paired computer (${failure}).`);
     }
     return payload as Record<string, unknown>;
   } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
