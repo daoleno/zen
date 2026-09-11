@@ -276,19 +276,53 @@ WantedBy=default.target
 ```
 
 For an optional boot installation, one command renders and enables a standard
-systemd user unit for the same binary and state:
+systemd user unit for the same binary, state, address and working directory:
 
 ```bash
 zen boot install                 # this executable, default state/address
+zen boot install -binary ./tmp/zen-dev -work-dir "$PWD"   # DEV runner
 zen boot status
 zen boot uninstall
 ```
 
-Lingering starts the unit before an interactive login
-(`zen boot install` reports `sudo loginctl enable-linger <user>` when it cannot
-enable it itself). `zen boot` never manages tmux, never starts a second owner
-and never touches the state directory; `uninstall` removes only its own managed
-unit. The unit is an ordinary deployment choice shared by normal and DEV use.
+The unit carries the explicit runtime contract: an absolute `ExecStart` with
+`-state-dir` and `-addr` (or `-lan`), `WorkingDirectory`, and the non-secret
+`HOME`/`PATH` environment. Relative paths and `~` are resolved at install time
+against the invoking directory, so a relative `-state-dir` never becomes a
+second state, identity or loopback bind. Pointing `-binary` at `zen-dev`
+requires `-work-dir` (by default the current directory) to be the source
+module root because the DEV runner rebuilds there.
+
+Install validates the contract before writing anything: it refuses to run as
+root, refuses a binary or working directory this user cannot execute, refuses a
+foreign `zen.service`, and refuses when another process already owns the state
+directory (lifecycle lock) or the listen address. It never kills those
+processes; stop them first. After `enable --now` (or `restart` for a changed
+command) it verifies that the unit is active, its main process is the installed
+binary, the state lifecycle lock is held, and `/health` on the installed
+address serves the installed state's `daemon_id`. Only then does it report
+success. Re-running `install` with the same contract leaves a healthy daemon
+running; changing the state, address, working directory or binary updates the
+unit and restarts it explicitly. Environment-only edits are written for the
+next start and do not restart a healthy daemon.
+
+The unit is enabled into `default.target` without `After=default.target`: a
+target already orders itself after the units it wants, so that line would form
+an ordering cycle at boot and drop the implicit ordering. `KillMode=process` is
+intentional: the daemon reuses the user's ordinary tmux server, a shared
+per-user resource, so stopping or restarting `zen.service` terminates and
+restarts only the daemon and never tears down tmux or Worker sessions. tmux,
+Worker sessions and the pairing/state files are outside the unit's lifecycle.
+
+Lingering starts the unit before an interactive login (`zen boot install`
+reports `sudo loginctl enable-linger <user>` when it cannot enable it itself).
+`zen boot status` always reads the installed unit configuration rather than the
+invocation defaults, shows the installed binary hash, and attributes `/health`
+to the installed state identity. `zen boot uninstall` stops, confirms the unit
+is no longer active, then disables and removes only its own unit and metadata;
+on any stop or disable failure it retains the unit and configuration for a
+retry and never deletes a running owner. Daemon state and pairing are never
+touched.
 
 Remote desktop lock/login before an interactive login additionally needs the
 administrator-installed desktop broker and SDDM hooks described in
