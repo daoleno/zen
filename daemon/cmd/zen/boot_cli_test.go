@@ -1512,6 +1512,47 @@ func TestBootFDLockRecordParsing(t *testing.T) {
 	}
 }
 
+func TestBootProcessOwnerUnknownIsNotForeign(t *testing.T) {
+	root := t.TempDir()
+	previous := bootProcRoot
+	bootProcRoot = root
+	defer func() { bootProcRoot = previous }()
+
+	if got := bootProcessOwnerForPath(filepath.Join(root, "4242")); got != bootProcessOwnerUnknown {
+		t.Fatalf("missing process path classified as %d, want unknown", got)
+	}
+	if got := bootProcessOwnerForPath(root); got != bootProcessOwnerSameUID {
+		t.Fatalf("test-owned path classified as %d, want same UID", got)
+	}
+	if bootSkipInspectionError(4242, os.ErrPermission, false) {
+		t.Fatal("permission error with unknown owner was skipped as foreign")
+	}
+	if bootSkipInspectionError(4242, os.ErrPermission, true) {
+		t.Fatal("strict permission error was skipped")
+	}
+	if !bootSkipInspectionError(4242, os.ErrNotExist, false) {
+		t.Fatal("exited process was not skipped")
+	}
+}
+
+func TestBootPIDInCgroupUnknownOwnerFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "4242"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := bootProcRoot
+	bootProcRoot = root
+	defer func() { bootProcRoot = previous }()
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+
+	if _, err := bootPIDInCgroup(4242, "/user.slice/test.service"); err == nil {
+		t.Fatal("permission error with an unknown process owner was treated as foreign")
+	}
+}
+
 func TestBootLingerFailureReportsExactOperatorCommand(t *testing.T) {
 	config, runner := bootFreshInstallEnvironment(t)
 	name := currentUserName()

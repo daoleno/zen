@@ -789,9 +789,10 @@ func bootFDLockRecord(path string) (bool, error) {
 }
 
 // bootSkipInspectionError tolerates PIDs that exited during the scan and
-// processes of other users that the kernel hides from this one. A foreign UID
-// cannot be inside this user's unit cgroup; a permission error for a process
-// that could be (strict, or same UID) stays unresolved instead.
+// processes positively known to belong to another UID. Only that proven
+// foreign case is skippable: an unknown owner (missing stat data, unsupported
+// process info) stays unresolved, and a process that is or could be this user
+// cannot be assumed foreign.
 func bootSkipInspectionError(pid int, err error, strict bool) bool {
 	if os.IsNotExist(err) {
 		return true
@@ -799,22 +800,37 @@ func bootSkipInspectionError(pid int, err error, strict bool) bool {
 	if !os.IsPermission(err) {
 		return false
 	}
-	if strict || bootProcessIsSameUID(pid) {
+	if strict {
 		return false
 	}
-	return true
+	return bootProcessOwnerKind(pid) == bootProcessOwnerForeignUID
 }
 
-func bootProcessIsSameUID(pid int) bool {
-	info, err := os.Lstat(filepath.Join(bootProcRoot, strconv.Itoa(pid)))
+type bootProcessOwner uint8
+
+const (
+	bootProcessOwnerUnknown bootProcessOwner = iota
+	bootProcessOwnerSameUID
+	bootProcessOwnerForeignUID
+)
+
+func bootProcessOwnerKind(pid int) bootProcessOwner {
+	return bootProcessOwnerForPath(filepath.Join(bootProcRoot, strconv.Itoa(pid)))
+}
+
+func bootProcessOwnerForPath(path string) bootProcessOwner {
+	info, err := os.Lstat(path)
 	if err != nil {
-		return false
+		return bootProcessOwnerUnknown
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return false
+		return bootProcessOwnerUnknown
 	}
-	return int(stat.Uid) == os.Getuid()
+	if int(stat.Uid) == os.Getuid() {
+		return bootProcessOwnerSameUID
+	}
+	return bootProcessOwnerForeignUID
 }
 
 func bootProbeAddr(addr string) string {
