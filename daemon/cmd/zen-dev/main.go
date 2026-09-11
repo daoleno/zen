@@ -369,6 +369,9 @@ func (r *devRunner) start() error {
 	cmd.Stdout = r.stdout
 	cmd.Stderr = r.stderr
 	cmd.Stdin = os.Stdin
+	// Bind the daemon child to this watcher so an abrupt watcher death cannot
+	// leave an orphan holding the single-owner state lock (see pdeathsig_*.go).
+	cmd.SysProcAttr = parentDeathSignal()
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
