@@ -295,24 +295,34 @@ module root because the DEV runner rebuilds there.
 
 Install validates the contract before writing anything: it refuses to run as
 root, refuses a binary or working directory this user cannot execute, refuses a
-foreign `zen.service`, and refuses when another process already owns the state
-directory (lifecycle lock) or the listen address. It never kills those
-processes; stop them first. After `enable --now` (or `restart` for a changed
-command) it verifies that the unit is active, its main process is the installed
-binary, the state lifecycle lock is held, and `/health` on the installed
-address serves the installed state's `daemon_id`. Only then does it report
-success. Re-running `install` with the same contract leaves a healthy daemon
-running; changing the state, address, working directory or binary updates the
-unit and restarts it explicitly. Environment-only edits are written for the
-next start and do not restart a healthy daemon.
+foreign `zen.service`, and refuses when the state directory is already locked
+by a process outside the installed unit's own systemd cgroup, or when the
+listen address is unavailable. It never kills those processes; stop them
+first. After `enable --now` (or `restart` for a changed contract) it verifies
+that the unit is active, its main process is the installed binary, a process
+inside the unit's own cgroup holds the installed state's lifecycle lock, and
+`/health` on the installed address serves the installed state's `daemon_id`.
+Only then does it report success. Re-running `install` with the same contract
+leaves a healthy daemon running; any changed runtime context (binary, state,
+address, working directory, `HOME`/`PATH`) updates the unit and restarts it
+explicitly.
 
 The unit is enabled into `default.target` without `After=default.target`: a
 target already orders itself after the units it wants, so that line would form
-an ordering cycle at boot and drop the implicit ordering. `KillMode=process` is
-intentional: the daemon reuses the user's ordinary tmux server, a shared
-per-user resource, so stopping or restarting `zen.service` terminates and
-restarts only the daemon and never tears down tmux or Worker sessions. tmux,
+an ordering cycle at boot and drop the implicit ordering. Ownership is bound
+to the unit, not to a same-binary guess: an active unit that owns a different
+state does not satisfy the cgroup-lock and identity checks above.
+`KillMode=process` is intentional: the daemon reuses the user's ordinary tmux
+server, a shared per-user resource, so stopping or restarting `zen.service`
+terminates only the daemon and never tears down tmux or Worker sessions; tmux,
 Worker sessions and the pairing/state files are outside the unit's lifecycle.
+
+Known dependency: the DEV runner (`zen-dev`) currently starts its daemon child
+without a parent-death binding, so a crashed or killed watcher can leave that
+child holding the state. `zen boot install` and `uninstall` detect that
+leftover as a process inside the unit cgroup and refuse or retain the
+configuration instead of deleting it; the child-lifetime fix is tracked by the
+runtime worker.
 
 Lingering starts the unit before an interactive login (`zen boot install`
 reports `sudo loginctl enable-linger <user>` when it cannot enable it itself).
@@ -320,9 +330,10 @@ reports `sudo loginctl enable-linger <user>` when it cannot enable it itself).
 invocation defaults, shows the installed binary hash, and attributes `/health`
 to the installed state identity. `zen boot uninstall` stops, confirms the unit
 is no longer active, then disables and removes only its own unit and metadata;
-on any stop or disable failure it retains the unit and configuration for a
-retry and never deletes a running owner. Daemon state and pairing are never
-touched.
+on any stop or disable failure, or when a state owner remains after stop and
+cannot be proven to be outside the unit, it retains the unit and configuration
+for a retry and never deletes a running owner. Daemon state and pairing are
+never touched.
 
 Remote desktop lock/login before an interactive login additionally needs the
 administrator-installed desktop broker and SDDM hooks described in

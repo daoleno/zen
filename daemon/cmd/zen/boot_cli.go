@@ -29,12 +29,20 @@ import (
 // the reviewed binary and does not introduce a second identity, state
 // directory or supervisor.
 //
-// Ownership: the unit owns exactly the daemon process. tmux and Worker
-// sessions are user-level resources shared with foreground use (the daemon
-// reuses the ordinary default tmux server), so the unit pins
-// KillMode=process and never lets systemd tear that tree down. The lifecycle
-// lock in the state directory remains the only runtime ownership authority;
-// `zen boot` preflights it and never kills a process it did not start.
+// Ownership: the state lifecycle lock and the unit's systemd cgroup identify
+// the owner. `zen boot` requires a process inside zen.service's cgroup to hold
+// the installed state's lifecycle lock and /health to serve that state's
+// identity; a manual daemon using another state cannot satisfy that even when
+// it runs the same binary. The boot CLI never kills a process it did not
+// start.
+//
+// KillMode=process is required because the daemon reuses the user's ordinary
+// tmux server, a shared per-user resource that must survive unit stop and
+// restart. Known dependency: the DEV runner's daemon child has no
+// parent-death binding yet, so a killed watcher can leave an own daemon
+// holding the state; install/uninstall detect and refuse that leftover as an
+// own process instead of deleting its configuration. The zen-dev child
+// lifetime fix is owned by a separate worker.
 
 const (
 	bootManagedMarker  = "# Managed by zen boot install"
@@ -43,6 +51,9 @@ const (
 	bootLANAddr        = "0.0.0.0:9876"
 	bootMetadataSuffix = ".meta.json"
 	bootMetadataSchema = 1
+	// bootLifecycleLockName mirrors control.lifecycleLockName. The lock file is
+	// persistent by design; this command only ever looks for an existing holder.
+	bootLifecycleLockName = "daemon.lock"
 )
 
 var (
@@ -419,9 +430,8 @@ func bootMetadataFor(config bootConfig) bootMetadata {
 	}
 }
 
-// sameCommand compares the fields that define the runtime owner. Environment
-// only changes (HOME, PATH) update the unit file but must not restart a
-// healthy daemon.
+// sameCommand compares the runtime-context fields. Any difference is a
+// contract change the installer applies with an explicit managed restart.
 func (metadata bootMetadata) sameCommand(config bootConfig) bool {
 	return metadata.Binary == config.Binary &&
 		metadata.StateDir == config.StateDir &&
@@ -586,15 +596,17 @@ func bootUnitEnabled(runner bootRunner) string {
 }
 
 // bootCheckFragmentPath confirms the user manager loaded the unit file this
-// command wrote (HOME/XDG_CONFIG_HOME can differ from the login session).
+// command wrote (HOME/XDG_CONFIG_HOME can differ from the login session). An
+// unknown fragment path is a failed installation step, never a success
+// default.
 func bootCheckFragmentPath(runner bootRunner, path string) error {
 	output, err := runner.run("systemctl", "--user", "show", bootServiceName, "-p", "FragmentPath", "--value")
 	if err != nil {
-		return nil
+		return fmt.Errorf("systemctl --user show %s -p FragmentPath: %v: %s", bootServiceName, err, strings.TrimSpace(string(output)))
 	}
 	actual := strings.TrimSpace(string(output))
 	if actual == "" {
-		return nil
+		return fmt.Errorf("systemd reports no FragmentPath for %s; refusing to claim it loaded the unit written to %s", bootServiceName, path)
 	}
 	if !bootSameFilePath(actual, path) {
 		return fmt.Errorf("systemd loaded %s from %s, not %s; check HOME/XDG_CONFIG_HOME for the user manager", bootServiceName, actual, path)
@@ -627,6 +639,86 @@ func bootProcessMatchesBinary(pid int, binary string) error {
 		return fmt.Errorf("zen.service main process %d runs %s, not the installed binary %s", pid, parts[0], binary)
 	}
 	return nil
+}
+
+func bootUnitControlGroup(runner bootRunner) (string, error) {
+	output, err := runner.run("systemctl", "--user", "show", bootServiceName, "-p", "ControlGroup", "--value")
+	if err != nil {
+		return "", fmt.Errorf("systemctl --user show %s -p ControlGroup: %v: %s", bootServiceName, err, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func bootLifecycleLockPath(stateDir string) (string, error) {
+	socketPath, err := control.DefaultSocketPath(stateDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(socketPath), bootLifecycleLockName), nil
+}
+
+// bootStateLockPID returns the PID holding the state's lifecycle lock, or 0
+// when no live process holds it. A non-empty controlGroup restricts the search
+// to that systemd cgroup, which is how the installed unit is bound to the
+// state it actually owns.
+func bootStateLockPID(stateDir, controlGroup string) int {
+	lockPath, err := bootLifecycleLockPath(stateDir)
+	if err != nil {
+		return 0
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if controlGroup != "" && !bootPIDInCgroup(pid, controlGroup) {
+			continue
+		}
+		if bootPIDHasOpenFile(pid, lockPath) {
+			return pid
+		}
+	}
+	return 0
+}
+
+func bootPIDInCgroup(pid int, controlGroup string) bool {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cgroup")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) != 3 {
+			continue
+		}
+		path := strings.TrimSpace(fields[2])
+		if path == controlGroup || strings.HasPrefix(path, controlGroup+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func bootPIDHasOpenFile(pid int, path string) bool {
+	directory := "/proc/" + strconv.Itoa(pid) + "/fd"
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			continue
+		}
+		if bootSameFilePath(target, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func bootProbeAddr(addr string) string {
@@ -705,63 +797,164 @@ func bootFileHash(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// bootObserveOwner attributes the running runtime to the installed unit and
-// state: the unit is active, its main process is the installed binary, the
-// state lifecycle lock is held, and /health at the installed address serves
-// the identity of that exact state directory.
-func bootObserveOwner(config bootConfig, runner bootRunner) error {
+// bootOwnerSnapshot is the single ownership observation used by install
+// verification and status. Unknown values stay zero/unset; success is only
+// claimed by verified().
+type bootOwnerSnapshot struct {
+	InspectErr   error
+	UnitState    string
+	Active       bool
+	MainPID      int
+	MainMatches  bool
+	ControlGroup string
+	LockHeld     bool
+	LockPID      int
+	LockErr      error
+	ServedID     string
+	ExpectedID   string
+	HealthErr    error
+	StateIDErr   error
+}
+
+// bootInspectOwnership binds the installed unit to the state it actually
+// owns without probing the daemon endpoint. Preflight uses it before any
+// systemd change.
+func bootInspectOwnership(config bootConfig, runner bootRunner) bootOwnerSnapshot {
+	var snapshot bootOwnerSnapshot
 	state, active, err := bootUnitActive(runner)
+	snapshot.UnitState, snapshot.Active = state, active
 	if err != nil {
-		return fmt.Errorf("inspect %s: %w", bootServiceName, err)
+		snapshot.InspectErr = fmt.Errorf("inspect %s: %w", bootServiceName, err)
 	}
-	if !active {
-		return fmt.Errorf("%s is %s, not active", bootServiceName, state)
+	if active {
+		if pid, err := bootUnitMainPID(runner); err == nil {
+			snapshot.MainPID = pid
+		}
+		if snapshot.MainPID > 0 {
+			snapshot.MainMatches = bootProcessMatchesBinary(snapshot.MainPID, config.Binary) == nil
+		}
+		if group, err := bootUnitControlGroup(runner); err == nil {
+			snapshot.ControlGroup = group
+		}
 	}
-	pid, err := bootUnitMainPID(runner)
-	if err != nil {
-		return fmt.Errorf("inspect %s MainPID: %w", bootServiceName, err)
+	if held, err := bootStateLockHeld(config.StateDir); err != nil {
+		snapshot.LockErr = err
+	} else {
+		snapshot.LockHeld = held
 	}
-	if pid <= 0 {
-		return fmt.Errorf("%s has no main process yet", bootServiceName)
+	if snapshot.ControlGroup != "" {
+		snapshot.LockPID = bootStateLockPID(config.StateDir, snapshot.ControlGroup)
 	}
-	if err := bootProcessMatchesBinary(pid, config.Binary); err != nil {
-		return err
+	return snapshot
+}
+
+// bootInspectOwner adds health identity to the ownership observation used by
+// install verification and status.
+func bootInspectOwner(config bootConfig, runner bootRunner) bootOwnerSnapshot {
+	snapshot := bootInspectOwnership(config, runner)
+	if served, err := bootProbeHealth(config.Addr); err == nil {
+		snapshot.ServedID = served
+	} else {
+		snapshot.HealthErr = err
 	}
-	held, err := bootStateLockHeld(config.StateDir)
-	if err != nil {
-		return fmt.Errorf("inspect state ownership: %w", err)
+	if expected, err := bootStateDaemonID(config.StateDir); err == nil {
+		snapshot.ExpectedID = expected
+	} else {
+		snapshot.StateIDErr = err
 	}
-	if !held {
-		return fmt.Errorf("no daemon owns state directory %s yet", config.StateDir)
+	return snapshot
+}
+
+func (snapshot bootOwnerSnapshot) verified(config bootConfig) error {
+	if snapshot.InspectErr != nil {
+		return snapshot.InspectErr
 	}
-	served, err := bootProbeHealth(config.Addr)
-	if err != nil {
-		return fmt.Errorf("health %s: %w", bootProbeAddr(config.Addr), err)
+	if !snapshot.Active {
+		return fmt.Errorf("%s is %s, not active", bootServiceName, snapshot.UnitState)
 	}
-	expected, err := bootStateDaemonID(config.StateDir)
-	if err != nil {
-		return fmt.Errorf("read state identity: %w", err)
+	if snapshot.MainPID <= 0 {
+		return fmt.Errorf("%s has no readable main process", bootServiceName)
 	}
-	if served != expected {
-		return fmt.Errorf("health endpoint %s serves daemon %s, installed state is %s", bootProbeAddr(config.Addr), served, expected)
+	if !snapshot.MainMatches {
+		return fmt.Errorf("%s main process %d does not match the installed binary %s", bootServiceName, snapshot.MainPID, config.Binary)
+	}
+	if snapshot.ControlGroup == "" {
+		return fmt.Errorf("cannot read %s ControlGroup; refusing to claim state ownership", bootServiceName)
+	}
+	if snapshot.LockErr != nil {
+		return fmt.Errorf("inspect state ownership: %w", snapshot.LockErr)
+	}
+	if !snapshot.LockHeld {
+		return fmt.Errorf("no daemon owns state directory %s", config.StateDir)
+	}
+	if snapshot.LockPID <= 0 {
+		return fmt.Errorf("state directory %s is owned by a process outside %s", config.StateDir, bootServiceName)
+	}
+	if snapshot.HealthErr != nil {
+		return fmt.Errorf("health %s: %w", bootProbeAddr(config.Addr), snapshot.HealthErr)
+	}
+	if snapshot.StateIDErr != nil {
+		return fmt.Errorf("read state identity: %w", snapshot.StateIDErr)
+	}
+	if snapshot.ServedID != snapshot.ExpectedID {
+		return fmt.Errorf("health endpoint %s serves daemon %s, installed state is %s", bootProbeAddr(config.Addr), snapshot.ServedID, snapshot.ExpectedID)
 	}
 	return nil
 }
 
+// describe renders the ownership state for `zen boot status` without
+// claiming ownership when any fact is unknown.
+func (snapshot bootOwnerSnapshot) describe() string {
+	switch {
+	case snapshot.InspectErr != nil:
+		return "unknown (" + snapshot.InspectErr.Error() + ")"
+	case snapshot.LockErr != nil:
+		return "unknown (" + snapshot.LockErr.Error() + ")"
+	case snapshot.LockPID > 0 && snapshot.Active:
+		if snapshot.MainPID <= 0 || !snapshot.MainMatches {
+			return fmt.Sprintf("state directory is owned by zen.service (PID %d); unit main process does not match the installed binary", snapshot.LockPID)
+		}
+		return fmt.Sprintf("state directory is owned by zen.service (PID %d)", snapshot.LockPID)
+	case snapshot.LockPID > 0:
+		return fmt.Sprintf("state directory is owned by zen.service cgroup process PID %d while the unit is %s", snapshot.LockPID, snapshot.UnitState)
+	case snapshot.LockHeld:
+		return "state lifecycle lock is held by a process outside zen.service; zen boot never kills it"
+	case snapshot.Active && (snapshot.MainPID <= 0 || !snapshot.MainMatches):
+		return "unit is active but its main process is not the installed binary"
+	default:
+		return "no running daemon owns the state directory"
+	}
+}
+
+func (snapshot bootOwnerSnapshot) healthSummary(config bootConfig) string {
+	if snapshot.HealthErr != nil {
+		return fmt.Sprintf("unreachable (%s: %v)", bootProbeAddr(config.Addr), snapshot.HealthErr)
+	}
+	if snapshot.StateIDErr != nil {
+		return fmt.Sprintf("endpoint responded daemon_id=%s; state identity unavailable (%v)", snapshot.ServedID, snapshot.StateIDErr)
+	}
+	if snapshot.ServedID != snapshot.ExpectedID {
+		return fmt.Sprintf("mismatch: endpoint serves daemon_id=%s, installed state identity=%s", snapshot.ServedID, snapshot.ExpectedID)
+	}
+	return "ok daemon_id=" + snapshot.ServedID
+}
+
 func bootVerifyOwner(config bootConfig, runner bootRunner) error {
 	deadline := time.Now().Add(bootVerifyTimeout)
+	var last error
 	for {
-		err := bootObserveOwner(config, runner)
-		if err == nil {
+		snapshot := bootInspectOwner(config, runner)
+		last = snapshot.verified(config)
+		if last == nil {
 			return nil
 		}
 		// A unit systemd reports as inactive or failed cannot become the owner
 		// without external action; report the precise cause instead of waiting.
-		if _, active, stateErr := bootUnitActive(runner); stateErr == nil && !active {
-			return err
+		if snapshot.InspectErr == nil && !snapshot.Active {
+			return last
 		}
 		if time.Now().After(deadline) {
-			return err
+			return last
 		}
 		time.Sleep(bootVerifyInterval)
 	}
@@ -798,33 +991,33 @@ func bootInstall(config bootConfig, runner bootRunner, out io.Writer) error {
 		return nil
 	}
 
-	// Preflight ownership before writing anything: a live manual owner keeps
-	// the state lock or the port, and this command never kills or displaces it.
-	activeState, active, err := bootUnitActive(runner)
-	if err != nil {
-		return fmt.Errorf("inspect %s: %w", bootServiceName, err)
+	// Preflight ownership before writing anything: the state must either be
+	// free or owned by a process inside the active unit's own cgroup. A manual
+	// daemon using another state (or the same state outside the unit) is
+	// refused, never killed.
+	preflight := bootInspectOwnership(config, runner)
+	if preflight.InspectErr != nil {
+		return preflight.InspectErr
 	}
-	stateOwned, err := bootStateLockHeld(config.StateDir)
-	if err != nil {
-		return fmt.Errorf("check state ownership: %w", err)
-	}
-	if stateOwned && !active {
+	switch {
+	case preflight.LockErr != nil:
+		return fmt.Errorf("inspect state ownership: %w", preflight.LockErr)
+	case preflight.LockPID > 0:
+		// The active unit's own cgroup holds the state lock: update in place.
+	case preflight.LockHeld && preflight.Active && preflight.ControlGroup == "":
+		return fmt.Errorf("state directory %s is locked, but %s ControlGroup is unreadable; refusing to claim ownership", config.StateDir, bootServiceName)
+	case preflight.LockHeld:
 		return fmt.Errorf("state directory %s is owned by a running process outside %s; stop that process first (zen boot never kills it)", config.StateDir, bootServiceName)
 	}
+	active, activeState := preflight.Active, preflight.UnitState
 
 	previous, previousErr := readBootMetadata(metadataPath)
 	writeUnit := readErr != nil || string(existingUnit) != unit
 	writeMetadata := writeUnit || previousErr != nil || !previous.same(config)
-	// Restart only when the runtime command changed. Environment-only unit
-	// edits stay on disk for the next start; a first install or a unit whose
-	// previous command cannot be attributed is restarted to apply it.
-	commandChanged := false
-	switch {
-	case previousErr == nil:
-		commandChanged = !previous.sameCommand(config)
-	case writeUnit:
-		commandChanged = true
-	}
+	// Any runtime-context change restarts explicitly; a first install or a unit
+	// whose previous contract cannot be attributed also restarts. Only an
+	// unchanged, verified contract is left running.
+	commandChanged := previousErr != nil || !previous.same(config)
 	// Inactive units must find the address free. An active unit already holds
 	// its address, so only a changed address needs a new availability check.
 	if !active || (previousErr == nil && previous.Addr != config.Addr) {
@@ -894,7 +1087,7 @@ func bootInstall(config bootConfig, runner bootRunner, out io.Writer) error {
 	if active && !commandChanged && !writeUnit {
 		fmt.Fprintln(out, "Unit unchanged; the live daemon was not restarted.")
 	} else if active && !commandChanged {
-		fmt.Fprintln(out, "Unit file updated; the live daemon was not restarted because the runtime command is unchanged.")
+		fmt.Fprintln(out, "Unit file updated; the live daemon was not restarted because the runtime contract is unchanged.")
 	}
 	fmt.Fprintln(out, "tmux and Worker sessions are not owned by this unit and are never stopped here.")
 
@@ -948,7 +1141,7 @@ func bootStatus(runner bootRunner, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "unit: %s\n", path)
 	fmt.Fprintf(out, "enabled: %s\n", bootUnitEnabled(runner))
-	state, active, activeErr := bootUnitActive(runner)
+	state, _, activeErr := bootUnitActive(runner)
 	if activeErr != nil {
 		fmt.Fprintf(out, "service: unknown (%v)\n", activeErr)
 	} else {
@@ -969,11 +1162,13 @@ func bootStatus(runner bootRunner, out io.Writer) error {
 		fmt.Fprintf(out, "address: %s\n", metadata.Addr)
 		fmt.Fprintf(out, "working directory: %s\n", metadata.WorkDir)
 		fmt.Fprintf(out, "PATH: %s\n", metadata.PathEnv)
-		if pid, err := bootUnitMainPID(runner); err == nil && pid > 0 && active {
-			fmt.Fprintf(out, "main pid: %d\n", pid)
+		probeConfig := bootConfig{Binary: metadata.Binary, StateDir: metadata.StateDir, Addr: metadata.Addr}
+		snapshot := bootInspectOwner(probeConfig, runner)
+		if snapshot.MainPID > 0 {
+			fmt.Fprintf(out, "main pid: %d\n", snapshot.MainPID)
 		}
-		fmt.Fprintf(out, "ownership: %s\n", bootOwnershipReport(metadata, runner, active))
-		fmt.Fprintf(out, "health: %s\n", bootHealthReport(metadata))
+		fmt.Fprintf(out, "ownership: %s\n", snapshot.describe())
+		fmt.Fprintf(out, "health: %s\n", snapshot.healthSummary(probeConfig))
 	}
 
 	if linger, err := bootLingerState(runner); err == nil {
@@ -982,40 +1177,6 @@ func bootStatus(runner bootRunner, out io.Writer) error {
 		fmt.Fprintf(out, "linger: unknown (%v)\n", err)
 	}
 	return nil
-}
-
-func bootOwnershipReport(metadata bootMetadata, runner bootRunner, active bool) string {
-	held, err := bootStateLockHeld(metadata.StateDir)
-	if err != nil {
-		return "unknown (" + err.Error() + ")"
-	}
-	if !held {
-		return "no running daemon owns the state directory"
-	}
-	if !active {
-		return "state directory is owned by a process outside zen.service; zen boot never kills it"
-	}
-	if pid, err := bootUnitMainPID(runner); err == nil && pid > 0 {
-		if err := bootProcessMatchesBinary(pid, metadata.Binary); err != nil {
-			return "unit is active but its main process does not match the installed binary"
-		}
-	}
-	return "state directory is owned by zen.service"
-}
-
-func bootHealthReport(metadata bootMetadata) string {
-	served, err := bootProbeHealth(metadata.Addr)
-	if err != nil {
-		return fmt.Sprintf("unreachable (%s: %v)", bootProbeAddr(metadata.Addr), err)
-	}
-	expected, err := bootStateDaemonID(metadata.StateDir)
-	if err != nil {
-		return fmt.Sprintf("endpoint responded daemon_id=%s; state identity unavailable (%v)", served, err)
-	}
-	if served != expected {
-		return fmt.Sprintf("mismatch: endpoint serves daemon_id=%s, installed state identity=%s", served, expected)
-	}
-	return "ok daemon_id=" + served
 }
 
 func bootUninstall(runner bootRunner, out io.Writer) error {
@@ -1035,7 +1196,14 @@ func bootUninstall(runner bootRunner, out io.Writer) error {
 		return fmt.Errorf("refusing to remove a unit not managed by zen boot: %s", path)
 	}
 	metadataPath := bootMetadataPath(path)
-	metadata, metadataErr := readBootMetadata(metadataPath)
+	metadata, metadataErr := readBootMetadata(bootMetadataPath(path))
+
+	// Capture the unit's cgroup before stopping so a DEV leftover daemon can
+	// still be attributed to this unit after systemd reports it inactive.
+	controlGroup := ""
+	if group, err := bootUnitControlGroup(runner); err == nil {
+		controlGroup = group
+	}
 
 	// Stop first and keep the unit and metadata on any failure so the
 	// configuration stays recoverable; never remove a still-running owner.
@@ -1047,6 +1215,28 @@ func bootUninstall(runner bootRunner, out io.Writer) error {
 	} else if active {
 		return fmt.Errorf("%s is still %s after stop (unit and configuration retained)", bootServiceName, state)
 	}
+
+	// An own daemon can outlive the unit when KillMode=process leaves a child
+	// behind (the DEV watcher/daemon pair). Detect it by lock holder inside the
+	// captured unit cgroup and retain everything instead of deleting metadata.
+	outsideOwner := false
+	if metadataErr == nil {
+		ownerPID := 0
+		if controlGroup != "" {
+			ownerPID = bootStateLockPID(metadata.StateDir, controlGroup)
+		}
+		switch {
+		case ownerPID > 0:
+			return fmt.Errorf("zen.service cgroup process %d still owns state directory %s after stop; configuration retained; stop that process explicitly before removing the unit", ownerPID, metadata.StateDir)
+		case controlGroup == "":
+			if bootStateLockPID(metadata.StateDir, "") > 0 {
+				return fmt.Errorf("state directory %s is still owned after stop, but zen.service ControlGroup is unknown; configuration retained; stop the owning process explicitly", metadata.StateDir)
+			}
+		default:
+			outsideOwner = bootStateLockPID(metadata.StateDir, "") > 0
+		}
+	}
+
 	if output, err := runner.run("systemctl", "--user", "disable", bootServiceName); err != nil {
 		return fmt.Errorf("systemctl --user disable %s: %v: %s (unit and configuration retained)", bootServiceName, err, strings.TrimSpace(string(output)))
 	}
@@ -1060,10 +1250,8 @@ func bootUninstall(runner bootRunner, out io.Writer) error {
 		return fmt.Errorf("systemctl --user daemon-reload: %v: %s (unit removed but systemd cache not reloaded)", err, strings.TrimSpace(string(output)))
 	}
 	fmt.Fprintf(out, "Removed %s; daemon state and pairing are untouched\n", path)
-	if metadataErr == nil {
-		if held, err := bootStateLockHeld(metadata.StateDir); err == nil && held {
-			fmt.Fprintf(out, "Note: state directory %s is owned by another running process; it was not stopped or modified\n", metadata.StateDir)
-		}
+	if outsideOwner {
+		fmt.Fprintf(out, "Note: state directory %s is owned by a process outside zen.service; it was not stopped or modified\n", metadata.StateDir)
 	}
 	return nil
 }

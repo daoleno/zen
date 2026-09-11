@@ -24,16 +24,17 @@ import (
 )
 
 const (
-	bootIsActive  = "systemctl --user is-active zen.service"
-	bootIsEnabled = "systemctl --user is-enabled zen.service"
-	bootMainPID   = "systemctl --user show zen.service -p MainPID --value"
-	bootFragment  = "systemctl --user show zen.service -p FragmentPath --value"
-	bootReload    = "systemctl --user daemon-reload"
-	bootEnable    = "systemctl --user enable zen.service"
-	bootEnableNow = "systemctl --user enable --now zen.service"
-	bootRestart   = "systemctl --user restart zen.service"
-	bootStop      = "systemctl --user stop zen.service"
-	bootDisable   = "systemctl --user disable zen.service"
+	bootIsActive     = "systemctl --user is-active zen.service"
+	bootIsEnabled    = "systemctl --user is-enabled zen.service"
+	bootMainPID      = "systemctl --user show zen.service -p MainPID --value"
+	bootFragment     = "systemctl --user show zen.service -p FragmentPath --value"
+	bootControlGroup = "systemctl --user show zen.service -p ControlGroup --value"
+	bootReload       = "systemctl --user daemon-reload"
+	bootEnable       = "systemctl --user enable zen.service"
+	bootEnableNow    = "systemctl --user enable --now zen.service"
+	bootRestart      = "systemctl --user restart zen.service"
+	bootStop         = "systemctl --user stop zen.service"
+	bootDisable      = "systemctl --user disable zen.service"
 )
 
 type fakeBootRunner struct {
@@ -223,6 +224,22 @@ func bootFreeLoopbackAddr(t *testing.T) string {
 	return addr
 }
 
+func bootCurrentCgroup(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) == 3 && strings.TrimSpace(fields[2]) != "" {
+			return strings.TrimSpace(fields[2])
+		}
+	}
+	t.Fatal("no cgroup path for the test process")
+	return ""
+}
+
 func bootWriteInstalledUnit(t *testing.T, config bootConfig) (string, string) {
 	t.Helper()
 	unit, err := renderBootUnit(config)
@@ -269,6 +286,7 @@ func bootInstallEnvironment(t *testing.T) (bootConfig, *fakeBootRunner) {
 		t.Fatal(err)
 	}
 	runner.set(bootFragment, path)
+	runner.set(bootControlGroup, bootCurrentCgroup(t))
 	runner.set("loginctl show-user "+currentUserName()+" -p Linger --value", "yes")
 	return config, runner
 }
@@ -293,6 +311,7 @@ func bootFreshInstallEnvironment(t *testing.T) (bootConfig, *fakeBootRunner) {
 	runner.set(bootMainPID, strconv.Itoa(os.Getpid()))
 	runner.set(bootIsEnabled, "enabled")
 	runner.set(bootFragment, mustBootUnitPath(t))
+	runner.set(bootControlGroup, bootCurrentCgroup(t))
 	runner.set("loginctl show-user "+currentUserName()+" -p Linger --value", "yes")
 	var lock *control.LifecycleLock
 	runner.on(bootEnableNow, func() {
@@ -711,7 +730,7 @@ func TestBootInstallChangedCommandRestarts(t *testing.T) {
 	}
 }
 
-func TestBootInstallEnvironmentOnlyChangeDoesNotRestart(t *testing.T) {
+func TestBootInstallEnvironmentChangeRestarts(t *testing.T) {
 	config, runner := bootFreshInstallEnvironment(t)
 	if err := bootInstall(config, runner, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
@@ -725,14 +744,18 @@ func TestBootInstallEnvironmentOnlyChangeDoesNotRestart(t *testing.T) {
 	if err := bootInstall(config, runner, &out); err != nil {
 		t.Fatal(err)
 	}
-	if runner.called(bootRestart) {
-		t.Fatal("PATH-only unit update restarted a healthy daemon")
+	if !runner.called(bootRestart) {
+		t.Fatal("PATH change did not restart the live daemon")
 	}
-	if !runner.called(bootReload) {
-		t.Fatal("PATH-only unit update did not reload systemd")
+	if !strings.Contains(out.String(), "Updated and restarted") {
+		t.Fatalf("unexpected output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "not restarted") {
-		t.Fatalf("output does not explain the unchanged command: %s", out.String())
+	metadata, err := readBootMetadata(bootMetadataPath(mustBootUnitPath(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.PathEnv != config.PathEnv {
+		t.Fatalf("metadata kept the old PATH: %+v", metadata)
 	}
 }
 
@@ -824,6 +847,7 @@ func TestBootInstallVerificationFailureStopsOwnUnit(t *testing.T) {
 	runner.set(bootMainPID, strconv.Itoa(os.Getpid()))
 	runner.set(bootIsEnabled, "enabled")
 	runner.set(bootFragment, mustBootUnitPath(t))
+	runner.set(bootControlGroup, bootCurrentCgroup(t))
 	runner.set("loginctl show-user "+currentUserName()+" -p Linger --value", "yes")
 	previousTimeout, previousInterval := bootVerifyTimeout, bootVerifyInterval
 	bootVerifyTimeout, bootVerifyInterval = 400*time.Millisecond, 50*time.Millisecond
@@ -917,6 +941,54 @@ func TestBootInstallFailsFastWhenUnitDoesNotStart(t *testing.T) {
 	}
 }
 
+func TestBootInstallRefusesActiveUnitWithManualOwner(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	bootHoldStateLock(t, config.StateDir)
+	runner := bootTestRunner()
+	runner.set(bootIsActive, "active")
+	runner.set(bootMainPID, strconv.Itoa(os.Getpid()))
+	// The active unit runs in another cgroup, so the manual lock holder in
+	// this test process must not be attributed to it.
+	runner.set(bootControlGroup, "/user.slice/user-1000.slice/user@1000.service/app.slice/manual-owner.service")
+	err := bootInstall(config, runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "outside zen.service") {
+		t.Fatalf("active unit with manual state owner not refused: %v", err)
+	}
+	if runner.called(bootEnableNow) || runner.called(bootRestart) || runner.called(bootStop) {
+		t.Fatalf("refused install touched units: %v", runner.calls)
+	}
+	if _, statErr := os.Stat(mustBootUnitPath(t)); !os.IsNotExist(statErr) {
+		t.Fatal("refused install wrote a unit")
+	}
+}
+
+func TestBootInstallFailsWhenFragmentPathUnknown(t *testing.T) {
+	config, runner := bootFreshInstallEnvironment(t)
+	runner.set(bootFragment, "")
+	err := bootInstall(config, runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "no FragmentPath") {
+		t.Fatalf("unknown FragmentPath not treated as failure: %v", err)
+	}
+	if runner.called(bootEnableNow) || runner.called(bootStop) {
+		t.Fatalf("unknown FragmentPath started or stopped the unit: %v", runner.calls)
+	}
+}
+
+func TestBootInstallRefusesUnknownMainPID(t *testing.T) {
+	config, runner := bootFreshInstallEnvironment(t)
+	runner.set(bootMainPID, "0")
+	previousTimeout, previousInterval := bootVerifyTimeout, bootVerifyInterval
+	bootVerifyTimeout, bootVerifyInterval = 400*time.Millisecond, 50*time.Millisecond
+	defer func() { bootVerifyTimeout, bootVerifyInterval = previousTimeout, previousInterval }()
+	err := bootInstall(config, runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "did not become the verified owner") || !strings.Contains(err.Error(), "no readable main process") {
+		t.Fatalf("unknown MainPID not reported: %v", err)
+	}
+	if !runner.called(bootStop) {
+		t.Fatal("failed verification left the unit running")
+	}
+}
+
 func TestBootInstallDryRunWritesNothing(t *testing.T) {
 	config, _ := newBootTestEnvironment(t)
 	config.DryRun = true
@@ -956,6 +1028,7 @@ func TestBootStatusUsesInstalledConfigurationAndOwner(t *testing.T) {
 	runner.set(bootIsEnabled, "enabled")
 	runner.set(bootIsActive, "active")
 	runner.set(bootMainPID, strconv.Itoa(os.Getpid()))
+	runner.set(bootControlGroup, bootCurrentCgroup(t))
 	runner.set("loginctl show-user "+currentUserName()+" -p Linger --value", "yes")
 
 	var out bytes.Buffer
@@ -969,7 +1042,7 @@ func TestBootStatusUsesInstalledConfigurationAndOwner(t *testing.T) {
 		"binary sha256: ",
 		"service: active",
 		"main pid: " + strconv.Itoa(os.Getpid()),
-		"ownership: state directory is owned by zen.service",
+		"ownership: state directory is owned by zen.service (PID " + strconv.Itoa(os.Getpid()) + ")",
 		"health: ok daemon_id=" + daemonID,
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -1123,6 +1196,68 @@ func TestBootUninstallDisableFailureRetainsConfiguration(t *testing.T) {
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Fatal("disable failure removed the unit")
+	}
+}
+
+func TestBootUninstallRetainsOwnLeftoverDaemon(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	path, metadataPath := bootWriteInstalledUnit(t, config)
+	bootHoldStateLock(t, config.StateDir)
+	runner := bootTestRunner()
+	runner.set(bootIsActive, "inactive")
+	runner.set(bootControlGroup, bootCurrentCgroup(t))
+	err := bootUninstall(runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "still owns state directory") || !strings.Contains(err.Error(), "configuration retained") {
+		t.Fatalf("own leftover daemon not reported: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatal("own leftover daemon removed the unit")
+	}
+	if _, statErr := os.Stat(metadataPath); statErr != nil {
+		t.Fatal("own leftover daemon removed the metadata")
+	}
+	if runner.called(bootDisable) {
+		t.Fatal("own leftover daemon still disabled the unit")
+	}
+}
+
+func TestBootUninstallRetainsUnknownOwner(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	path, metadataPath := bootWriteInstalledUnit(t, config)
+	bootHoldStateLock(t, config.StateDir)
+	runner := bootTestRunner()
+	runner.set(bootIsActive, "inactive")
+	err := bootUninstall(runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "ControlGroup is unknown") {
+		t.Fatalf("unattributable state owner not retained: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatal("unattributable owner removed the unit")
+	}
+	if _, statErr := os.Stat(metadataPath); statErr != nil {
+		t.Fatal("unattributable owner removed the metadata")
+	}
+}
+
+func TestBootUninstallOutsideOwnerRemovesWithNote(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	path, metadataPath := bootWriteInstalledUnit(t, config)
+	bootHoldStateLock(t, config.StateDir)
+	runner := bootTestRunner()
+	runner.set(bootIsActive, "inactive")
+	runner.set(bootControlGroup, "/user.slice/user-1000.slice/user@1000.service/app.slice/manual-owner.service")
+	var out bytes.Buffer
+	if err := bootUninstall(runner, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("unit was not removed")
+	}
+	if _, err := os.Stat(metadataPath); !os.IsNotExist(err) {
+		t.Fatal("metadata was not removed")
+	}
+	if !strings.Contains(out.String(), "owned by a process outside zen.service") {
+		t.Fatalf("outside owner note missing: %s", out.String())
 	}
 }
 
