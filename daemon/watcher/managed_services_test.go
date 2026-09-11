@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -25,7 +26,7 @@ func testManagedWatcher(t *testing.T, registry string) *Watcher {
 	t.Helper()
 	w := New(500 * time.Millisecond)
 	w.SetManagedServicesPath(registry)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return systemdUnitStatus{}, os.ErrNotExist
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) { return nil, nil }
@@ -58,7 +59,7 @@ func TestRegisterManagedServiceRoundTrip(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 4242), nil
 	}
 	got, err := w.RegisterManagedService(ManagedServiceDescriptor{
@@ -104,7 +105,7 @@ func TestConcurrentRegisterUnregisterLosesNothing(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 1), nil
 	}
 	const units = 8
@@ -174,7 +175,7 @@ func TestDiscoverPersistentActiveViaCgroup(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 1610722), nil
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) {
@@ -212,7 +213,7 @@ func TestDiscoverPersistentRejectsForeignCgroupLookalike(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 111), nil
 	}
 	// Same port and even the stale MainPID, but the listener lives under a
@@ -247,7 +248,7 @@ func TestDiscoverPersistentRejectsStaleMainPIDReuse(t *testing.T) {
 	w := testManagedWatcher(t, path)
 	// systemctl reports MainPID 111, but PID 111 was reused by an unrelated
 	// process outside the unit cgroup. The bare PID match must not attribute.
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 111), nil
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) {
@@ -272,7 +273,7 @@ func TestDiscoverPersistentRejectsForeignUID(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 111), nil
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) {
@@ -295,7 +296,7 @@ func TestDiscoverPersistentVanishedPIDIsSkipped(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 111), nil
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) { return nil, errProcessGone }
@@ -315,7 +316,7 @@ func TestDiscoverPersistentProcFailureIsErrorNotInactive(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 111), nil
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) { return nil, fmt.Errorf("cgroup unavailable") }
@@ -335,7 +336,7 @@ func TestDiscoverPersistentAcceptsCgroupChildPID(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		// Restarted unit: new MainPID, old PID gone.
 		return activeUnitStatus(unit, 555), nil
 	}
@@ -363,7 +364,7 @@ func TestDiscoverPersistentOmitsClaimedTmuxSocket(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return systemdUnitStatus{Unit: unit, LoadState: "loaded", ActiveState: "active", SubState: "running", MainPID: 77, ControlGroup: "/user.slice/app.slice/web.service"}, nil
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) {
@@ -394,7 +395,7 @@ func TestMergedSnapshotKeepsSingleTmuxRow(t *testing.T) {
 	w.snapshotProcesses = func() map[int]processInfo {
 		return map[int]processInfo{100: {pid: 100, ppid: 1}, 200: {pid: 200, ppid: 100, comm: "bun", args: "bun dev"}}
 	}
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return systemdUnitStatus{Unit: unit, LoadState: "loaded", ActiveState: "active", SubState: "running", MainPID: 200, ControlGroup: "/user.slice/app.slice/web.service"}, nil
 	}
 	w.procCgroupFn = func(pid int) ([]string, error) {
@@ -423,7 +424,7 @@ func TestDiscoverPersistentStoppedUnitIsInactive(t *testing.T) {
 	requireLinuxManagedServices(t)
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return systemdUnitStatus{Unit: unit, LoadState: "loaded", ActiveState: "inactive", SubState: "dead"}, nil
 	}
 	if _, err := w.RegisterManagedService(ManagedServiceDescriptor{Unit: "dsh-web.service", Name: "DeepSeek Harness", Port: 3080}); err != nil {
@@ -443,7 +444,7 @@ func TestDiscoverPersistentBrokenQueryIsErrorNotSuccess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "managed-services.json")
 	w := testManagedWatcher(t, path)
 	// Registration succeeds against a live unit...
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 1), nil
 	}
 	if _, err := w.RegisterManagedService(ManagedServiceDescriptor{Unit: "dsh-web.service", Name: "DeepSeek Harness", Port: 3080}); err != nil {
@@ -451,7 +452,7 @@ func TestDiscoverPersistentBrokenQueryIsErrorNotSuccess(t *testing.T) {
 	}
 	// ...then the bus breaks. Discovery must surface error state, not a
 	// silent active/inactive guess.
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return systemdUnitStatus{}, os.ErrPermission
 	}
 	rows := w.discoverPersistentServices(map[string]bool{}, nil)
@@ -468,7 +469,7 @@ func TestDiscoverPersistentSurvivesDaemonRestart(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "managed-services.json")
 	first := testManagedWatcher(t, path)
-	first.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	first.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 9), nil
 	}
 	if _, err := first.RegisterManagedService(ManagedServiceDescriptor{Unit: "dsh-web.service", Name: "DeepSeek Harness", Port: 3080}); err != nil {
@@ -555,7 +556,7 @@ func TestRegistryFailureBlocksOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := testManagedWatcher(t, path)
-	w.systemctlShowFn = func(unit string) (systemdUnitStatus, error) {
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
 		return activeUnitStatus(unit, 1), nil
 	}
 	if _, err := w.RegisterManagedService(ManagedServiceDescriptor{Unit: "dsh-web.service", Name: "X"}); err == nil {
@@ -581,12 +582,14 @@ func writePathShim(t *testing.T, name, body string) {
 // A hung user bus must fail the unit quickly instead of blocking discovery.
 // Uses a PATH shim (no real bus sabotage) with a shrunk timeout.
 func TestQuerySystemdUnitHungBusTimesOut(t *testing.T) {
-	writePathShim(t, "systemctl", "#!/bin/sh\nsleep 30\n")
-	old := systemdShowTimeout
-	systemdShowTimeout = 100 * time.Millisecond
-	defer func() { systemdShowTimeout = old }()
+	writePathShim(t, "systemctl", "#!/bin/sh\nexec sleep 30\n")
+	oldUnit, oldBudget, oldDrain := systemdUnitTimeout, managedDiscoveryBudget, serviceProcWaitDelay
+	systemdUnitTimeout, managedDiscoveryBudget, serviceProcWaitDelay = 100*time.Millisecond, 200*time.Millisecond, 50*time.Millisecond
+	defer func() {
+		systemdUnitTimeout, managedDiscoveryBudget, serviceProcWaitDelay = oldUnit, oldBudget, oldDrain
+	}()
 	start := time.Now()
-	_, err := querySystemdUnit("dsh-web.service")
+	_, err := querySystemdUnit(context.Background(), "dsh-web.service")
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("hung bus err = %v, want timeout", err)
 	}
@@ -597,14 +600,14 @@ func TestQuerySystemdUnitHungBusTimesOut(t *testing.T) {
 
 func TestQuerySystemdUnitErrorExit(t *testing.T) {
 	writePathShim(t, "systemctl", "#!/bin/sh\necho 'bus broken' >&2\nexit 1\n")
-	if _, err := querySystemdUnit("dsh-web.service"); err == nil || !strings.Contains(err.Error(), "bus broken") {
+	if _, err := querySystemdUnit(context.Background(), "dsh-web.service"); err == nil || !strings.Contains(err.Error(), "bus broken") {
 		t.Fatalf("error-exit err = %v, want bus output", err)
 	}
 }
 
 func TestQuerySystemdUnitParsesProperties(t *testing.T) {
 	writePathShim(t, "systemctl", "#!/bin/sh\nprintf 'LoadState=loaded\\nActiveState=active\\nSubState=running\\nMainPID=42\\nFragmentPath=/x.service\\nInvocationID=abc\\nControlGroup=/user.slice/app.slice/x.service\\n'\n")
-	status, err := querySystemdUnit("x.service")
+	status, err := querySystemdUnit(context.Background(), "x.service")
 	if err != nil {
 		t.Fatalf("query err = %v", err)
 	}
@@ -635,4 +638,73 @@ func TestPidCgroupPathsParsesHierarchy(t *testing.T) {
 	if uid, err := pidOwnerUID(os.Getpid()); err != nil || uid != os.Geteuid() {
 		t.Fatalf("self uid = %d err = %v, want %d", uid, err, os.Geteuid())
 	}
+}
+
+// Aggregate budget: TWO hung units plus one healthy unit must still resolve
+// comfortably before the 10s frontend deadline. The shared deadline (not
+// per-unit timeouts) prevents multiplication; healthy rows are preserved and
+// hung units degrade to explicit error rows.
+func TestDiscoverPersistentSharedBudgetAcrossHungUnits(t *testing.T) {
+	requireLinuxManagedServices(t)
+	oldUnit, oldBudget := systemdUnitTimeout, managedDiscoveryBudget
+	systemdUnitTimeout, managedDiscoveryBudget = 100*time.Millisecond, 400*time.Millisecond
+	defer func() { systemdUnitTimeout, managedDiscoveryBudget = oldUnit, oldBudget }()
+
+	path := filepath.Join(t.TempDir(), "managed-services.json")
+	w := testManagedWatcher(t, path)
+	w.systemctlShowFn = func(ctx context.Context, unit string) (systemdUnitStatus, error) {
+		if strings.HasPrefix(unit, "hung-") {
+			<-ctx.Done()
+			return systemdUnitStatus{}, ctx.Err()
+		}
+		return activeUnitStatus(unit, 1610722), nil
+	}
+	w.procCgroupFn = func(pid int) ([]string, error) {
+		if pid == 1610722 {
+			return []string{testUnitCgroup}, nil
+		}
+		return nil, errProcessGone
+	}
+	w.listSocketsFn = func() ([]listeningSocket, error) {
+		return []listeningSocket{{pid: 1610722, port: 3080, bind: "127.0.0.1"}}, nil
+	}
+	for _, unit := range []string{"hung-a.service", "dsh-web.service", "hung-b.service"} {
+		if err := storeManagedServices(path, append(mustLoadForTest(t, path), ManagedServiceDescriptor{Unit: unit, Name: unit})); err != nil {
+			t.Fatalf("store: %v", err)
+		}
+	}
+
+	start := time.Now()
+	rows := w.discoverPersistentServices(map[string]bool{}, nil)
+	elapsed := time.Since(start)
+	// Comfortably below the 10s frontend rejection: budget 400ms + drain.
+	if elapsed > 5*time.Second {
+		t.Fatalf("shared-budget discovery took %v, want well under frontend deadline", elapsed)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v, want healthy + 2 hung-error rows", rows)
+	}
+	byUnit := map[string]SessionService{}
+	for _, row := range rows {
+		byUnit[row.Unit] = row
+	}
+	healthy, ok := byUnit["dsh-web.service"]
+	if !ok || healthy.State != ServiceStateActive || healthy.Port != 3080 {
+		t.Fatalf("healthy row = %+v, want active :3080", healthy)
+	}
+	for _, unit := range []string{"hung-a.service", "hung-b.service"} {
+		row, ok := byUnit[unit]
+		if !ok || row.State != ServiceStateError || strings.TrimSpace(row.StatusDetail) == "" {
+			t.Fatalf("hung row %q = %+v, want explicit error", unit, row)
+		}
+	}
+}
+
+func mustLoadForTest(t *testing.T, path string) []ManagedServiceDescriptor {
+	t.Helper()
+	services, err := loadManagedServices(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	return services
 }

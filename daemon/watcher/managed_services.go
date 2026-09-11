@@ -50,11 +50,20 @@ const (
 	managedServicesFileVersion = 1
 )
 
-// systemdShowTimeout bounds one read-only unit query. A stuck user bus must
-// not block the whole Services request: expiry becomes a per-row error while
-// tmux rows stay intact. A var (not const) so tests can shrink it against a
-// PATH shim without touching the real bus.
-var systemdShowTimeout = 10 * time.Second
+// Budget knobs for managed discovery. The mobile sheet rejects after 10s,
+// so the aggregate stays comfortably below it: one shared deadline covers all
+// units (N hung units cannot multiply beyond it) with a shorter per-unit cap
+// and a bounded pipe drain. Vars (not consts) so tests can shrink them.
+// No App timeout change, no scheduler, no framework.
+var (
+	// managedDiscoveryBudget is the shared deadline for resolving every
+	// registered unit in one snapshot.
+	managedDiscoveryBudget = 6 * time.Second
+	// systemdUnitTimeout caps one unit query (discovery per-unit, register).
+	systemdUnitTimeout = 4 * time.Second
+	// serviceProcWaitDelay bounds the pipe drain after killing a stuck query.
+	serviceProcWaitDelay = 1 * time.Second
+)
 
 // ManagedServiceDescriptor is one explicitly registered persistent service.
 // It is identity + provenance only; liveness always comes from live systemd
@@ -156,8 +165,11 @@ func (w *Watcher) RegisterManagedService(desc ManagedServiceDescriptor) (Managed
 	if strings.TrimSpace(path) == "" {
 		return ManagedServiceDescriptor{}, fmt.Errorf("managed services registry is not configured")
 	}
-	// Slow read-only verification stays outside the registry lock.
-	if _, err := w.systemctlShow(desc.Unit); err != nil {
+	// Slow read-only verification stays outside the registry lock, bounded
+	// like discovery queries so a stuck bus fails registration fast.
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), systemdUnitTimeout)
+	defer verifyCancel()
+	if _, err := w.systemctlShow(verifyCtx, desc.Unit); err != nil {
 		return ManagedServiceDescriptor{}, fmt.Errorf("verify unit %q: %w", desc.Unit, err)
 	}
 	if desc.RegisteredAt.IsZero() {
@@ -320,9 +332,9 @@ type systemdUnitStatus struct {
 }
 
 // systemctlShowFunc queries structured unit properties. Production shells out
-// to the caller's user systemd instance (read-only show, bounded by
-// systemdShowTimeout); tests inject fakes.
-type systemctlShowFunc func(unit string) (systemdUnitStatus, error)
+// to the caller's user systemd instance (read-only show, bounded by the
+// passed context); tests inject fakes.
+type systemctlShowFunc func(ctx context.Context, unit string) (systemdUnitStatus, error)
 
 // procCgroupFunc reports the cgroup-hierarchy paths of one process from
 // /proc/<pid>/cgroup. Production parses the live file; tests inject fakes.
@@ -337,7 +349,7 @@ type procUIDFunc func(pid int) (int, error)
 // skipped instead of producing an error row.
 var errProcessGone = errors.New("process gone")
 
-func (w *Watcher) systemctlShow(unit string) (systemdUnitStatus, error) {
+func (w *Watcher) systemctlShow(ctx context.Context, unit string) (systemdUnitStatus, error) {
 	if w == nil {
 		return systemdUnitStatus{}, fmt.Errorf("watcher unavailable")
 	}
@@ -345,9 +357,9 @@ func (w *Watcher) systemctlShow(unit string) (systemdUnitStatus, error) {
 	fn := w.systemctlShowFn
 	w.mu.RUnlock()
 	if fn != nil {
-		return fn(unit)
+		return fn(ctx, unit)
 	}
-	return querySystemdUnit(unit)
+	return querySystemdUnit(ctx, unit)
 }
 
 func (w *Watcher) procCgroupPaths(pid int) ([]string, error) {
@@ -390,25 +402,31 @@ func (w *Watcher) listeningSocketsForServices() ([]listeningSocket, error) {
 }
 
 // querySystemdUnit reads structured properties for one user unit. It never
-// starts, stops or modifies the unit. The query is bounded: a stuck user bus
-// fails this unit instead of blocking the whole Services request. Non-zero
-// exit (unknown unit, broken bus) is a hard error so callers surface it
-// instead of guessing.
-func querySystemdUnit(unit string) (systemdUnitStatus, error) {
+// starts, stops or modifies the unit. The passed context bounds the query
+// (shared discovery deadline or per-call cap): expiry fails this unit while
+// tmux rows stay intact. Non-zero exit (unknown unit, broken bus) is a hard
+// error so callers surface it instead of guessing.
+func querySystemdUnit(ctx context.Context, unit string) (systemdUnitStatus, error) {
 	if err := ValidateManagedServiceUnit(unit); err != nil {
 		return systemdUnitStatus{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), systemdShowTimeout)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, systemdUnitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "systemctl", "--user", "show", unit,
+	cmd := exec.CommandContext(queryCtx, "systemctl", "--user", "show", unit,
 		"--property=LoadState,ActiveState,SubState,MainPID,FragmentPath,InvocationID,ControlGroup")
 	// A killed query can leave grandchildren holding the output pipe; stop
-	// waiting for them on the same bound instead of hanging on I/O.
-	cmd.WaitDelay = systemdShowTimeout
+	// waiting for them on a short bound instead of hanging on I/O.
+	cmd.WaitDelay = serviceProcWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return systemdUnitStatus{}, fmt.Errorf("systemctl show %s: timed out after %s", unit, systemdShowTimeout)
+		if queryCtx.Err() == context.DeadlineExceeded {
+			if ctx.Err() == context.DeadlineExceeded {
+				return systemdUnitStatus{}, fmt.Errorf("systemctl show %s: managed discovery budget exceeded", unit)
+			}
+			return systemdUnitStatus{}, fmt.Errorf("systemctl show %s: timed out after %s", unit, systemdUnitTimeout)
 		}
 		return systemdUnitStatus{}, fmt.Errorf("systemctl show %s: %w: %s", unit, err, strings.TrimSpace(string(out)))
 	}
@@ -568,6 +586,11 @@ func (w *Watcher) discoverPersistentServices(claimed map[string]bool, interfaces
 	if len(descriptors) == 0 {
 		return nil
 	}
+	// One shared deadline for every unit: N hung queries cannot multiply
+	// beyond the aggregate budget, and expiry degrades to per-row errors
+	// while tmux rows stay intact.
+	budgetCtx, budgetCancel := context.WithTimeout(context.Background(), managedDiscoveryBudget)
+	defer budgetCancel()
 	sockets, socketsErr := w.listeningSocketsForServices()
 	// One shared process snapshot per discovery, not one per unit.
 	processes := map[int]processInfo{}
@@ -581,7 +604,7 @@ func (w *Watcher) discoverPersistentServices(claimed map[string]bool, interfaces
 	}
 	services := make([]SessionService, 0, len(descriptors))
 	for _, desc := range descriptors {
-		rows, rowErr := w.resolveManagedService(desc, sockets, socketsErr, processes, claimed, interfaces)
+		rows, rowErr := w.resolveManagedService(budgetCtx, desc, sockets, socketsErr, processes, claimed, interfaces)
 		if rowErr != nil {
 			services = append(services, SessionService{
 				ID:           "persistent:" + desc.Unit + ":error",
@@ -617,8 +640,8 @@ func (w *Watcher) discoverPersistentServices(claimed map[string]bool, interfaces
 	return services
 }
 
-func (w *Watcher) resolveManagedService(desc ManagedServiceDescriptor, sockets []listeningSocket, socketsErr error, processes map[int]processInfo, claimed map[string]bool, interfaces []SessionServiceInterface) ([]SessionService, error) {
-	status, err := w.systemctlShow(desc.Unit)
+func (w *Watcher) resolveManagedService(ctx context.Context, desc ManagedServiceDescriptor, sockets []listeningSocket, socketsErr error, processes map[int]processInfo, claimed map[string]bool, interfaces []SessionServiceInterface) ([]SessionService, error) {
+	status, err := w.systemctlShow(ctx, desc.Unit)
 	if err != nil {
 		return nil, err
 	}
