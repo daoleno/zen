@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/daoleno/zen/daemon/control"
@@ -663,7 +664,8 @@ func bootLifecycleLockPath(stateDir string) (string, error) {
 // flock, or 0 when no live process holds it. A non-empty controlGroup
 // restricts the search to that systemd cgroup, which is how the installed
 // unit is bound to the state it owns. Inspection failures are returned, never
-// silently folded into "no owner".
+// silently folded into "no owner"; a permission error for a process already
+// matched to the requested cgroup is unresolved ownership.
 func bootStateLockPID(stateDir, controlGroup string) (int, error) {
 	lockPath, err := bootLifecycleLockPath(stateDir)
 	if err != nil {
@@ -673,12 +675,13 @@ func bootStateLockPID(stateDir, controlGroup string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("scan /proc for the state lock holder: %w", err)
 	}
+	strict := controlGroup != ""
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
-		if controlGroup != "" {
+		if strict {
 			inGroup, err := bootPIDInCgroup(pid, controlGroup)
 			if err != nil {
 				return 0, err
@@ -687,7 +690,7 @@ func bootStateLockPID(stateDir, controlGroup string) (int, error) {
 				continue
 			}
 		}
-		held, err := bootPIDHoldsFileLock(pid, lockPath)
+		held, err := bootPIDHoldsFileLock(pid, lockPath, strict)
 		if err != nil {
 			return 0, err
 		}
@@ -701,7 +704,7 @@ func bootStateLockPID(stateDir, controlGroup string) (int, error) {
 func bootPIDInCgroup(pid int, controlGroup string) (bool, error) {
 	data, err := os.ReadFile(filepath.Join(bootProcRoot, strconv.Itoa(pid), "cgroup"))
 	if err != nil {
-		if bootProcessGoneOrForeign(err) {
+		if bootSkipInspectionError(pid, err, false) {
 			return false, nil
 		}
 		return false, fmt.Errorf("read process %d cgroup: %w", pid, err)
@@ -720,14 +723,16 @@ func bootPIDInCgroup(pid int, controlGroup string) (bool, error) {
 }
 
 // bootPIDHoldsFileLock reports whether pid has an open file description for
-// path that actually holds an flock record. The kernel exposes that record in
+// path that actually holds the flock record. The kernel exposes that record in
 // /proc/<pid>/fdinfo: a process that merely opened the file has no `lock:`
-// line, so it can never be reported as the state owner.
-func bootPIDHoldsFileLock(pid int, path string) (bool, error) {
+// line, and a blocked waiter is not recorded either, so neither can be
+// reported as the state owner. In strict mode (strict=true, a process already
+// matched to the unit cgroup) a permission error leaves ownership unknown.
+func bootPIDHoldsFileLock(pid int, path string, strict bool) (bool, error) {
 	directory := filepath.Join(bootProcRoot, strconv.Itoa(pid), "fd")
 	entries, err := os.ReadDir(directory)
 	if err != nil {
-		if bootProcessGoneOrForeign(err) {
+		if bootSkipInspectionError(pid, err, strict) {
 			return false, nil
 		}
 		return false, fmt.Errorf("scan process %d file descriptors: %w", pid, err)
@@ -735,7 +740,7 @@ func bootPIDHoldsFileLock(pid int, path string) (bool, error) {
 	for _, entry := range entries {
 		target, err := os.Readlink(filepath.Join(directory, entry.Name()))
 		if err != nil {
-			if bootProcessGoneOrForeign(err) {
+			if bootSkipInspectionError(pid, err, strict) {
 				continue
 			}
 			return false, fmt.Errorf("read process %d descriptor: %w", pid, err)
@@ -746,7 +751,7 @@ func bootPIDHoldsFileLock(pid int, path string) (bool, error) {
 		fdInfo := filepath.Join(bootProcRoot, strconv.Itoa(pid), "fdinfo", entry.Name())
 		held, err := bootFDLockRecord(fdInfo)
 		if err != nil {
-			if bootProcessGoneOrForeign(err) {
+			if bootSkipInspectionError(pid, err, strict) {
 				continue
 			}
 			return false, fmt.Errorf("read process %d descriptor lock state: %w", pid, err)
@@ -759,7 +764,9 @@ func bootPIDHoldsFileLock(pid int, path string) (bool, error) {
 }
 
 // bootFDLockRecord reads one fdinfo file and reports whether it carries an
-// flock record. POSIX record locks use a different type and are ignored.
+// acquired exclusive whole-file flock record. The kernel format is
+// `lock: 1: FLOCK ADVISORY WRITE <pid> <dev>:<inode> 0 EOF`; blocked waiters
+// have no record, and POSIX record locks or shared/range locks are ignored.
 func bootFDLockRecord(path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -767,18 +774,47 @@ func bootFDLockRecord(path string) (bool, error) {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[0] == "lock:" && fields[2] == "FLOCK" {
-			return true, nil
+		if len(fields) < 9 || fields[0] != "lock:" {
+			continue
 		}
+		if fields[2] != "FLOCK" || fields[4] != "WRITE" {
+			continue
+		}
+		if fields[len(fields)-2] != "0" || fields[len(fields)-1] != "EOF" {
+			continue
+		}
+		return true, nil
 	}
 	return false, nil
 }
 
-// bootProcessGoneOrForeign tolerates PIDs that exited during the scan and
-// processes of other users that the kernel hides from this one. Neither can
-// hold this user's 0600 state lock.
-func bootProcessGoneOrForeign(err error) bool {
-	return os.IsNotExist(err) || os.IsPermission(err)
+// bootSkipInspectionError tolerates PIDs that exited during the scan and
+// processes of other users that the kernel hides from this one. A foreign UID
+// cannot be inside this user's unit cgroup; a permission error for a process
+// that could be (strict, or same UID) stays unresolved instead.
+func bootSkipInspectionError(pid int, err error, strict bool) bool {
+	if os.IsNotExist(err) {
+		return true
+	}
+	if !os.IsPermission(err) {
+		return false
+	}
+	if strict || bootProcessIsSameUID(pid) {
+		return false
+	}
+	return true
+}
+
+func bootProcessIsSameUID(pid int) bool {
+	info, err := os.Lstat(filepath.Join(bootProcRoot, strconv.Itoa(pid)))
+	if err != nil {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return int(stat.Uid) == os.Getuid()
 }
 
 func bootProbeAddr(addr string) string {
@@ -982,6 +1018,8 @@ func (snapshot bootOwnerSnapshot) describe() string {
 		return fmt.Sprintf("state directory is owned by zen.service (PID %d)", snapshot.LockPID)
 	case snapshot.LockPID > 0:
 		return fmt.Sprintf("state directory is owned by zen.service cgroup process PID %d while the unit is %s", snapshot.LockPID, snapshot.UnitState)
+	case snapshot.LockHeld && snapshot.ControlGroup == "":
+		return "state lifecycle lock is held, but the zen.service scope is unknown; zen boot never kills it"
 	case snapshot.LockHeld:
 		return "state lifecycle lock is held by a process outside zen.service; zen boot never kills it"
 	case snapshot.Active && (snapshot.MainPID <= 0 || !snapshot.MainMatches):
@@ -1294,34 +1332,43 @@ func bootUninstall(runner bootRunner, out io.Writer) error {
 	}
 
 	// An own daemon can outlive the unit when KillMode=process leaves a child
-	// behind (the DEV watcher/daemon pair). Detect it by the actual flock owner
-	// inside the captured unit cgroup and retain everything on any unresolved
-	// result instead of deleting metadata.
-	ownerPID := 0
-	if controlGroup != "" {
-		pid, err := bootStateLockPID(metadata.StateDir, controlGroup)
-		if err != nil {
-			return fmt.Errorf("inspect zen.service state ownership: %w (unit and configuration retained)", err)
-		}
-		ownerPID = pid
-	}
-	if ownerPID > 0 {
-		return fmt.Errorf("zen.service cgroup process %d still owns state directory %s after stop; configuration retained; stop that process explicitly before removing the unit", ownerPID, metadata.StateDir)
-	}
-	anyPID, err := bootStateLockPID(metadata.StateDir, "")
+	// behind (the DEV watcher/daemon pair). The lifecycle flock probe decides
+	// whether any owner remains at all; the scan only classifies it. When the
+	// lock is held but no holder can be attributed, removal is refused instead
+	// of deleting the configuration.
+	lockHeld, err := bootStateLockHeld(metadata.StateDir)
 	if err != nil {
-		return fmt.Errorf("inspect state ownership after stop: %w (unit and configuration retained)", err)
+		return fmt.Errorf("inspect state lifecycle lock after stop: %w (unit and configuration retained)", err)
 	}
 	outsideOwner := false
-	if controlGroup == "" && anyPID > 0 {
-		reason := "zen.service ControlGroup is unknown"
-		if controlGroupErr != nil {
-			reason = controlGroupErr.Error()
+	if lockHeld {
+		ownerPID := 0
+		if controlGroup != "" {
+			pid, err := bootStateLockPID(metadata.StateDir, controlGroup)
+			if err != nil {
+				return fmt.Errorf("inspect zen.service state ownership: %w (unit and configuration retained)", err)
+			}
+			ownerPID = pid
 		}
-		return fmt.Errorf("state directory %s is still owned after stop, but %s; configuration retained; stop the owning process explicitly", metadata.StateDir, reason)
-	}
-	if controlGroup != "" {
-		outsideOwner = anyPID > 0
+		if ownerPID > 0 {
+			return fmt.Errorf("zen.service cgroup process %d still owns state directory %s after stop; configuration retained; stop that process explicitly before removing the unit", ownerPID, metadata.StateDir)
+		}
+		anyPID, err := bootStateLockPID(metadata.StateDir, "")
+		if err != nil {
+			return fmt.Errorf("inspect state ownership after stop: %w (unit and configuration retained)", err)
+		}
+		switch {
+		case anyPID == 0:
+			return fmt.Errorf("state lifecycle lock is still held after stop, but its holder could not be attributed; configuration retained; stop the owning process explicitly")
+		case controlGroup == "":
+			reason := "zen.service ControlGroup is unknown"
+			if controlGroupErr != nil {
+				reason = controlGroupErr.Error()
+			}
+			return fmt.Errorf("state directory %s is still owned after stop, but %s; configuration retained; stop the owning process explicitly", metadata.StateDir, reason)
+		default:
+			outsideOwner = true
+		}
 	}
 
 	if output, err := runner.run("systemctl", "--user", "disable", bootServiceName); err != nil {

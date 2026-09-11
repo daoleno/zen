@@ -1326,14 +1326,14 @@ func TestBootStateLockPIDRequiresRealLock(t *testing.T) {
 	}
 	// The opener must never be reported, even though it is in the cgroup and
 	// has the lock file open.
-	openerHeld, err := bootPIDHoldsFileLock(opener.Process.Pid, lockPath)
+	openerHeld, err := bootPIDHoldsFileLock(opener.Process.Pid, lockPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if openerHeld {
 		t.Fatal("a process that only opened the lock file was reported as the holder")
 	}
-	holderHeld, err := bootPIDHoldsFileLock(os.Getpid(), lockPath)
+	holderHeld, err := bootPIDHoldsFileLock(os.Getpid(), lockPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1380,6 +1380,7 @@ func TestBootUninstallRetainsInvalidMetadata(t *testing.T) {
 func TestBootUninstallRetainsOnUnreadableOwnershipScan(t *testing.T) {
 	config, _ := newBootTestEnvironment(t)
 	path, _ := bootWriteInstalledUnit(t, config)
+	bootHoldStateLock(t, config.StateDir)
 	runner := bootTestRunner()
 	runner.set(bootIsActive, "inactive")
 	previous := bootProcRoot
@@ -1391,6 +1392,123 @@ func TestBootUninstallRetainsOnUnreadableOwnershipScan(t *testing.T) {
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Fatal("unreadable ownership scan removed the unit")
+	}
+}
+
+func TestBootStateLockPIDStrictPermissionIsUnknown(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	group := "/user.slice/user-1000.slice/user@1000.service/app.slice/zen.service"
+	root := t.TempDir()
+	processDir := filepath.Join(root, "4242")
+	if err := os.MkdirAll(processDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processDir, "cgroup"), []byte("0::"+group+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(processDir, "fd"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(processDir, "fd"), 0o755) })
+	previous := bootProcRoot
+	bootProcRoot = root
+	defer func() { bootProcRoot = previous }()
+
+	if _, err := bootStateLockPID(config.StateDir, group); err == nil {
+		t.Fatal("unreadable process in the matched cgroup was treated as no owner")
+	}
+}
+
+func TestBootUninstallRetainsHeldButUnattributable(t *testing.T) {
+	t.Run("matched cgroup inspection denied", func(t *testing.T) {
+		config, _ := newBootTestEnvironment(t)
+		path, metadataPath := bootWriteInstalledUnit(t, config)
+		bootHoldStateLock(t, config.StateDir)
+		group := "/user.slice/user-1000.slice/user@1000.service/app.slice/zen.service"
+		root := t.TempDir()
+		processDir := filepath.Join(root, "4242")
+		if err := os.MkdirAll(processDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(processDir, "cgroup"), []byte("0::"+group+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(processDir, "fd"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(processDir, "fd"), 0o755) })
+		previous := bootProcRoot
+		bootProcRoot = root
+		defer func() { bootProcRoot = previous }()
+
+		runner := bootTestRunner()
+		runner.set(bootIsActive, "inactive")
+		runner.set(bootControlGroup, group)
+		err := bootUninstall(runner, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "unit and configuration retained") {
+			t.Fatalf("denied inspection did not retain configuration: %v", err)
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatal("denied inspection removed the unit")
+		}
+		if _, statErr := os.Stat(metadataPath); statErr != nil {
+			t.Fatal("denied inspection removed the metadata")
+		}
+		if runner.called(bootDisable) {
+			t.Fatal("denied inspection disabled the unit")
+		}
+	})
+
+	t.Run("held but no attributable holder", func(t *testing.T) {
+		config, _ := newBootTestEnvironment(t)
+		path, metadataPath := bootWriteInstalledUnit(t, config)
+		bootHoldStateLock(t, config.StateDir)
+		previous := bootProcRoot
+		bootProcRoot = t.TempDir()
+		defer func() { bootProcRoot = previous }()
+
+		runner := bootTestRunner()
+		runner.set(bootIsActive, "inactive")
+		err := bootUninstall(runner, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "could not be attributed") {
+			t.Fatalf("unattributable held lock did not retain configuration: %v", err)
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatal("unattributable held lock removed the unit")
+		}
+		if _, statErr := os.Stat(metadataPath); statErr != nil {
+			t.Fatal("unattributable held lock removed the metadata")
+		}
+	})
+}
+
+func TestBootFDLockRecordParsing(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"acquired exclusive whole file", "pos:\t0\nlock:\t1: FLOCK  ADVISORY  WRITE 123 08:01:42 0 EOF\n", true},
+		{"shared read lock", "lock:\t1: FLOCK  ADVISORY  READ 123 08:01:42 0 EOF\n", false},
+		{"posix record lock", "lock:\t1: POSIX  ADVISORY  WRITE 123 08:01:42 0 EOF\n", false},
+		{"pending marker", "lock:\t1: -> FLOCK  ADVISORY  WRITE 123 08:01:42 0 EOF\n", false},
+		{"partial range", "lock:\t1: FLOCK  ADVISORY  WRITE 123 08:01:42 5 EOF\n", false},
+		{"open without lock", "pos:\t0\nflags:\t0100000\n", false},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "fdinfo")
+			if err := os.WriteFile(path, []byte(item.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := bootFDLockRecord(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != item.want {
+				t.Fatalf("bootFDLockRecord = %t, want %t", got, item.want)
+			}
+		})
 	}
 }
 

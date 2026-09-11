@@ -333,8 +333,9 @@ to the installed state identity. `zen boot uninstall` requires readable
 installed metadata, stops the unit, confirms it is no longer active and that
 no process inside (or unattributable to) the unit still holds the state lock,
 then disables and removes only its own unit and metadata; on any metadata,
-stop, disable or ownership failure it retains the unit and configuration for a
-retry and never deletes a running owner. Daemon state and pairing are never
+stop, disable or ownership failure — including a still-held lifecycle lock
+whose holder cannot be attributed — it retains the unit and configuration for
+a retry and never deletes a running owner. Daemon state and pairing are never
 touched.
 
 Remote desktop lock/login before an interactive login additionally needs the
