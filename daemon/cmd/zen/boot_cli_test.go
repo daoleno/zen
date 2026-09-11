@@ -1419,6 +1419,78 @@ func TestBootStateLockPIDStrictPermissionIsUnknown(t *testing.T) {
 	}
 }
 
+// TestBootStateLockPIDStrictProvenForeignIsSkipped models an undedicated host
+// where an unrelated root process shares the cgroup the unit reports (for
+// example the root cgroup on a CI runner). A process proven to belong to
+// another UID can never be the installing user's daemon, so it must be skipped
+// instead of failing the scan closed as unresolved ownership.
+func TestBootStateLockPIDStrictProvenForeignIsSkipped(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root owns every process; no foreign UID exists")
+	}
+	data, err := os.ReadFile("/proc/1/cgroup")
+	if err != nil {
+		t.Skip("/proc/1 is unavailable")
+	}
+	group := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) == 3 && strings.TrimSpace(fields[2]) != "" {
+			group = strings.TrimSpace(fields[2])
+			break
+		}
+	}
+	if group == "" {
+		t.Skip("/proc/1 has no cgroup path")
+	}
+	previous := bootProcRoot
+	bootProcRoot = "/proc"
+	defer func() { bootProcRoot = previous }()
+	pid, err := bootStateLockPID(t.TempDir(), group)
+	if err != nil {
+		t.Fatalf("proven-foreign process in the matched cgroup must be skipped: %v", err)
+	}
+	if pid != 0 {
+		t.Fatalf("no live holder exists, got pid %d", pid)
+	}
+}
+
+// TestBootStateLockPIDZombieIsSkipped covers an ambient zombie in the scanned
+// cgroup (for example a dead tunnel child the parent never reaped). A zombie
+// holds no descriptors and can never be the state lock owner, so the scan must
+// skip it instead of failing closed with an unreadable /proc/<pid>/fd.
+func TestBootStateLockPIDZombieIsSkipped(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reaped := false
+	t.Cleanup(func() {
+		if !reaped {
+			_ = cmd.Wait()
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if bootPIDZombie(cmd.Process.Pid) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !bootPIDZombie(cmd.Process.Pid) {
+		t.Fatal("child did not become a zombie")
+	}
+	previous := bootProcRoot
+	bootProcRoot = "/proc"
+	defer func() { bootProcRoot = previous }()
+	if !bootSkipInspectionError(cmd.Process.Pid, os.ErrPermission, true) {
+		t.Fatal("zombie process must be skippable in strict cgroup mode")
+	}
+	if _, err := bootStateLockPID(t.TempDir(), bootCurrentCgroup(t)); err != nil {
+		t.Fatalf("ambient zombie turned the strict scan into unresolved ownership: %v", err)
+	}
+}
+
 func TestBootUninstallRetainsHeldButUnattributable(t *testing.T) {
 	t.Run("matched cgroup inspection denied", func(t *testing.T) {
 		config, _ := newBootTestEnvironment(t)

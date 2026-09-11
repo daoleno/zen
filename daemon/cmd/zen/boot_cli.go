@@ -664,8 +664,10 @@ func bootLifecycleLockPath(stateDir string) (string, error) {
 // flock, or 0 when no live process holds it. A non-empty controlGroup
 // restricts the search to that systemd cgroup, which is how the installed
 // unit is bound to the state it owns. Inspection failures are returned, never
-// silently folded into "no owner"; a permission error for a process already
-// matched to the requested cgroup is unresolved ownership.
+// silently folded into "no owner"; an unknown or same-UID permission error for
+// a process already matched to the requested cgroup is unresolved ownership,
+// while a zombie or a process proven to belong to another UID is skipped
+// because neither can hold the state flock.
 func bootStateLockPID(stateDir, controlGroup string) (int, error) {
 	lockPath, err := bootLifecycleLockPath(stateDir)
 	if err != nil {
@@ -788,22 +790,44 @@ func bootFDLockRecord(path string) (bool, error) {
 	return false, nil
 }
 
-// bootSkipInspectionError tolerates PIDs that exited during the scan and
-// processes positively known to belong to another UID. Only that proven
-// foreign case is skippable: an unknown owner (missing stat data, unsupported
-// process info) stays unresolved, and a process that is or could be this user
-// cannot be assumed foreign.
+// bootSkipInspectionError tolerates PIDs that exited during the scan, zombies
+// that can no longer hold any descriptor, and processes positively known to
+// belong to another UID. Only those proven cases are skippable: an unknown
+// owner (missing stat data, unsupported process info) stays unresolved, and a
+// process that is or could be this user cannot be assumed foreign.
+// Proven-foreign processes are skippable even in strict cgroup mode: the
+// installing user's unit can never run as that UID, so they cannot be the
+// state owner. This keeps an ambient root process that shares an undedicated
+// cgroup (for example the root cgroup on a CI runner) from turning the whole
+// scan into unresolved ownership.
 func bootSkipInspectionError(pid int, err error, strict bool) bool {
+	_ = strict
 	if os.IsNotExist(err) {
 		return true
 	}
 	if !os.IsPermission(err) {
 		return false
 	}
-	if strict {
-		return false
+	if bootPIDZombie(pid) {
+		return true
 	}
 	return bootProcessOwnerKind(pid) == bootProcessOwnerForeignUID
+}
+
+// bootPIDZombie reports whether pid is a reaped-but-unwaited process. A zombie
+// holds no file descriptors, so it can never be the state lock owner; an
+// ambient zombie (for example a dead tunnel child) must not turn a scan into
+// unresolved ownership.
+func bootPIDZombie(pid int) bool {
+	data, err := os.ReadFile(filepath.Join(bootProcRoot, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return false
+	}
+	end := strings.LastIndexByte(string(data), ')')
+	if end < 0 || end+2 >= len(data) {
+		return false
+	}
+	return data[end+2] == 'Z'
 }
 
 type bootProcessOwner uint8
