@@ -6,7 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
 import { useAppColors } from "../constants/tokens";
 import { prepareDesktopConnection } from "../services/remoteDesktop";
-import { desktopKey, desktopPoint, desktopTextEdits, desktopStart, type DesktopInput } from "../services/remoteDesktopModel";
+import { desktopKey, desktopPoint, desktopTextEdits, desktopStart, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopPanState } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 import { desktopLanOrigin, hasDesktopLanConsent } from "../services/desktopTransportPolicy";
@@ -55,7 +55,10 @@ function DesktopSession() {
     setStatus({ state: "disconnected", reason });
   }));
   const inputGeneration = commands.currentGeneration;
-  const gestureStart = useRef({ x: 0, y: 0, time: 0, pinch: 0, zoom: 1, offset: { x: 0, y: 0 } });
+  const gestureStart = useRef<{
+    x: number; y: number; time: number; pinch: number; zoom: number;
+    offset: { x: number; y: number }; pan: DesktopPanState | null;
+  }>({ x: 0, y: 0, time: 0, pinch: 0, zoom: 1, offset: { x: 0, y: 0 }, pan: null });
   const connected = status.state === "connected";
   const lan = currentServer ? desktopLanOrigin(currentServer) : null;
   const lanAllowed = currentServer ? hasDesktopLanConsent(currentServer) : false;
@@ -157,7 +160,7 @@ function DesktopSession() {
       const touches = event.nativeEvent.touches;
       gestureStart.current = { x: event.nativeEvent.locationX, y: event.nativeEvent.locationY, time: Date.now(),
         pinch: touches.length === 2 ? Math.hypot(touches[0].pageX - touches[1].pageX, touches[0].pageY - touches[1].pageY) : 0,
-        zoom, offset };
+        zoom, offset, pan: null };
       if (dragMode && !panMode && touches.length === 1) {
         const point = pointer(event.nativeEvent.locationX, event.nativeEvent.locationY);
         if (point) input([{ type: "pointer", ...point }, { type: "button", code: 1, down: true }]);
@@ -171,7 +174,15 @@ function DesktopSession() {
         if (gestureStart.current.pinch === 0) gestureStart.current.pinch = distance;
         setZoom(Math.max(1, Math.min(4, gestureStart.current.zoom * distance / gestureStart.current.pinch)));
       } else if (panMode) {
-        setOffset({ x: gestureStart.current.offset.x + gesture.dx, y: gestureStart.current.offset.y + gesture.dy });
+        // The responder is recreated on each offset render, so accumulate pan
+        // state in the persistent ref; per-instance gestureState.dx would only
+        // ever reflect the last fragment.
+        const start = gestureStart.current;
+        const point = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY };
+        const pan = start.pan ? advanceDesktopPan(start.pan, point) : beginDesktopPan(start.offset, point);
+        start.pan = pan;
+        start.offset = pan.offset;
+        setOffset(pan.offset);
       } else {
         const point = pointer(event.nativeEvent.locationX, event.nativeEvent.locationY);
         if (point) input([{ type: "pointer", ...point }]);
@@ -179,13 +190,14 @@ function DesktopSession() {
     },
     onPanResponderRelease: (event, gesture) => {
       if (dragMode) input([{ type: "release" }]);
+      gestureStart.current.pan = null;
       if (!dragMode && !panMode && !gestureStart.current.pinch && Math.hypot(gesture.dx, gesture.dy) < 10) {
         const point = pointer(event.nativeEvent.locationX, event.nativeEvent.locationY);
         const code = Date.now() - gestureStart.current.time > 550 ? 3 : 1;
         if (point) input([{ type: "pointer", ...point }, { type: "button", code, down: true }, { type: "button", code, down: false }]);
       }
     },
-    onPanResponderTerminate: () => input([{ type: "release" }]),
+    onPanResponderTerminate: () => { gestureStart.current.pan = null; input([{ type: "release" }]); },
   });
   const tool = (icon: React.ComponentProps<typeof Ionicons>["name"], label: string, action: () => void, selected = false, disabled = false) => (
     <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected, disabled }}

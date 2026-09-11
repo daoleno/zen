@@ -20,6 +20,28 @@ export type DesktopInput =
   | { type: "scroll"; delta: number }
   | { type: "release" };
 
+export interface DesktopPanState {
+  point: { x: number; y: number };
+  offset: { x: number; y: number };
+}
+
+/**
+ * Pan state survives PanResponder recreation: the screen rebuilds the responder
+ * on every offset render, so a per-instance gestureState.dx only ever reflects
+ * the last fragment. Callers keep this state object in a persistent ref and
+ * hand it back on each move; coordinates are page units.
+ */
+export function beginDesktopPan(offset: { x: number; y: number }, point: { x: number; y: number }): DesktopPanState {
+  return { point: { x: point.x, y: point.y }, offset: { x: offset.x, y: offset.y } };
+}
+
+export function advanceDesktopPan(state: DesktopPanState, point: { x: number; y: number }): DesktopPanState {
+  return {
+    point: { x: point.x, y: point.y },
+    offset: { x: state.offset.x + point.x - state.point.x, y: state.offset.y + point.y - state.point.y },
+  };
+}
+
 export function desktopKey(code: number): DesktopInput[] {
   return [{ type: "key", code, down: true }, { type: "key", code, down: false }];
 }
