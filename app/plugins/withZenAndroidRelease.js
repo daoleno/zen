@@ -35,6 +35,25 @@ function injectStandaloneGradle(contents) {
 `);
 }
 
+function injectMetroGradle(contents) {
+  if (contents.includes('zenMetroLauncher')) return contents;
+  if (!/defaultConfig\s*\{/.test(contents)) {
+    throw new Error('withZenAndroidRelease: defaultConfig block not found');
+  }
+  return contents.replace(/(defaultConfig\s*\{)/, `$1
+        manifestPlaceholders.zenMetroLauncher = !(findProperty('zenStandalone') ?: 'false').toBoolean()
+        manifestPlaceholders.zenStandaloneLauncher = (findProperty('zenStandalone') ?: 'false').toBoolean()
+`);
+}
+
+function writeMetroDebugSources(platformRoot) {
+  const root = path.join(platformRoot, 'app/src/debug');
+  const java = path.join(root, 'java/com/daoleno/zen');
+  fs.mkdirSync(java, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, 'android/MetroConnectActivity.kt'), path.join(java, 'MetroConnectActivity.kt'));
+  fs.copyFileSync(path.join(__dirname, 'android/metro-debug-manifest.xml'), path.join(root, 'AndroidManifest.xml'));
+}
+
 function injectStandaloneMainApplication(contents) {
   const argument = 'useDevSupport = BuildConfig.DEBUG && !BuildConfig.ZEN_STANDALONE,';
   if (contents.includes(argument)) return contents;
@@ -170,6 +189,7 @@ function withZenNoticeAssets(config) {
       fs.mkdirSync(destDir, { recursive: true });
       const dest = path.join(destDir, 'GHOSTTY-MIT.txt');
       fs.copyFileSync(src, dest);
+      writeMetroDebugSources(cfg.modRequest.platformProjectRoot);
       return cfg;
     },
   ]);
@@ -180,6 +200,7 @@ function withZenReleaseSigning(config) {
     let contents = injectReleaseSigningGradle(cfg.modResults.contents);
     contents = injectDebugIdentityGradle(contents);
     contents = injectStandaloneGradle(contents);
+    contents = injectMetroGradle(contents);
     cfg.modResults.contents = contents;
     return cfg;
   });
@@ -223,6 +244,8 @@ module.exports = createRunOncePlugin(
 module.exports.injectReleaseSigningGradle = injectReleaseSigningGradle;
 module.exports.injectDebugIdentityGradle = injectDebugIdentityGradle;
 module.exports.injectStandaloneGradle = injectStandaloneGradle;
+module.exports.injectMetroGradle = injectMetroGradle;
+module.exports.writeMetroDebugSources = writeMetroDebugSources;
 module.exports.injectStandaloneMainApplication = injectStandaloneMainApplication;
 module.exports.enablePrivateNetworkHTTP = enablePrivateNetworkHTTP;
 module.exports.NOTICE_APK_REL = NOTICE_APK_REL;

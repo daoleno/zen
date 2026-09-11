@@ -72,13 +72,61 @@ Module wiring (source of truth for packaging):
 
 ## Day-to-day JS workflow
 
-From the monorepo root:
+Use a **Metro-connected debug APK** for development, not a standalone APK or
+Expo Go. Zen's custom terminal, pinned Link transport and remote desktop need
+their compiled native modules. The development APK uses the existing React
+Native dev-support runtime; it does not require an additional Expo Dev Client
+dependency. Android and iOS continue to share product JS; the native connection
+screen described below is Android-only, while iOS uses its native development
+build and standard React Native developer-menu server configuration.
+
+Reuse an already-running Metro for this checkout. Only when none is running,
+start it from the monorepo root:
 
 ```bash
 bun install
 cd app
-npx expo start
+bunx expo start
 ```
+
+Install the compatible debug APK once, open **Zen Debug**, enter the computer's
+reachable Metro `host:port` in **Zen Development**, and tap **Connect**. An HTTP
+origin with a port is also accepted. Use the computer's LAN address, not the
+phone's `localhost`. No USB cable, ADB reverse command or daemon pairing is
+needed to configure Metro. Metro is separate from the canonical Zen server;
+selecting Metro never selects or changes a paired daemon.
+
+The address is saved in native development preferences across relaunches. The
+connection screen checks Metro before opening JS and provides **Retry** when it
+cannot connect. Reopening the launcher returns to the connection screen; the
+standard React Native developer menu also provides server settings and reload.
+Shake the device to open that menu and enable **Fast Refresh**. Keep the computer
+and phone on a trusted network that allows the Metro port.
+
+- Saving ordinary JS, TS, component or style edits uses Fast Refresh. Compatible
+  component edits normally retain local React state; hook changes and module
+  boundaries can cause a remount or full reload. State retention is not a promise.
+- **Reload** fetches current JS again and resets in-memory state. Persisted app
+  settings and pairing credentials remain stored; normal server-switch and
+  authentication boundaries still apply.
+- Rebuild and install a compatible, same-signed APK for native dependency,
+  Kotlin/Java/C++ code, native config/permission or native resource changes.
+  Keep the same debug package and certificate and a nondecreasing version code.
+  Never uninstall or clear data to work around an incompatible upgrade.
+- This APK requires reachable Metro for startup and reload. It contains no
+  embedded application JS fallback. If Metro disappears during a session, the
+  already-running UI may remain visible, but new edits and reloads cannot work
+  until Metro is reachable. Reconnect or retry; do not treat that UI as updated.
+- This is trusted-network development, **not signed OTA production updating**.
+  Release builds never expose the connection activity or enable dev support.
+
+After applying native config with Expo prebuild, ordinary `assembleDebug` uses
+Metro (`zenStandalone=false`, the default, and React's default
+`debuggableVariants=['debug']`). Do not use a standalone packaging init script
+that empties `debuggableVariants` or sets `zenStandalone=true`. Explicit
+standalone debug builds retain their embedded-bundle workflow and disable the
+Metro launcher; release builds keep their normal launcher. The config plugin
+writes the connection activity and launcher overlay only to `src/debug`.
 
 Typecheck and unit tests:
 
