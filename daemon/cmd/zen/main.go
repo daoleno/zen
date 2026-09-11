@@ -100,6 +100,8 @@ func run(args []string, stderr io.Writer) error {
 			return runDevicesCommand(args[1:], stderr)
 		case "desktop-helper":
 			return runDesktopHelperCommand(args[1:])
+		case "boot":
+			return runBootCommand(args[1:], stderr)
 		case "desktop-host":
 			return runDesktopHostCommand(args[1:], stderr)
 		case "desktop-agent":
