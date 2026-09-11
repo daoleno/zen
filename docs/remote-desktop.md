@@ -867,6 +867,23 @@ these missing assignments. Wayland still needs an owned GNOME/KDE compositor
 and portal backend for actual integration execution; macOS/Windows hosting and hardware encoding
 remain separate implementation and OS-specific verification gates.
 
+Native Android closure on 2026-09-11 used the owned API35 AVD with a private ADB
+server and one reused provisioned QEMU SDDM guest (final ELF `f94f696b`). It
+verified fresh v2 Link pairing with scope grant and cancel, pinned native
+connect/stream, native secure-editor greeter login and lock unlock, editor
+cancel/background clearing without replay, drag-mode window movement with exact
+0.84375 coordinate mapping, long-press menu, scroll up/down round-trip, pinch
+zoom and pan/reset coordinate remapping (owned InputManager multi-touch
+injector), keyboard text with background no-replay, tunnel-drop auto-reconnect,
+wrong-pin and wrong-host rejection, and active revocation while streaming. The
+pan gesture had tracked only a fraction of the finger because the PanResponder
+instance was recreated on each offset render; pan deltas now accumulate in the
+persistent gesture ref. An ARM64 Metro debug APK (`versionCode 28`, same debug
+signer, `arm64-v8a` only) was packaged to upgrade over the user's code27 install
+without uninstall. Remaining gates: one operator-authorized root run for the
+personal host service, iOS simulator runtime, and a deliberate product decision
+on the manifest portrait lock (no landscape layout is implemented).
+
 The current keyboard supports printable ASCII and explicit special-key
 events, not Unicode composition or arbitrary keyboard layouts. Shared keyboard
 input tracks cumulative native text changes instead of clearing and replaying
