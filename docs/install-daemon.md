@@ -317,12 +317,13 @@ server, a shared per-user resource, so stopping or restarting `zen.service`
 terminates only the daemon and never tears down tmux or Worker sessions; tmux,
 Worker sessions and the pairing/state files are outside the unit's lifecycle.
 
-Known dependency: the DEV runner (`zen-dev`) currently starts its daemon child
-without a parent-death binding, so a crashed or killed watcher can leave that
-child holding the state. `zen boot install` and `uninstall` detect that
-leftover as a process inside the unit cgroup and refuse or retain the
-configuration instead of deleting it; the child-lifetime fix is tracked by the
-runtime worker.
+Known dependency: the DEV runner (`zen-dev`) binds its daemon child to the
+watcher lifetime on Linux (`PR_SET_PDEATHSIG`), so an abrupt watcher death
+stops the child and releases the state lock. Even with that binding, `zen boot
+install` and `uninstall` treat a process inside the unit cgroup that still
+holds the state lock as an own leftover and refuse or retain the configuration
+instead of deleting it; real guest acceptance of the DEV crash path is still
+owned by the runtime worker.
 
 Lingering starts the unit before an interactive login (`zen boot install`
 reports `sudo loginctl enable-linger <user>` when it cannot enable it itself).

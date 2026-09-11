@@ -38,11 +38,10 @@ import (
 //
 // KillMode=process is required because the daemon reuses the user's ordinary
 // tmux server, a shared per-user resource that must survive unit stop and
-// restart. Known dependency: the DEV runner's daemon child has no
-// parent-death binding yet, so a killed watcher can leave an own daemon
-// holding the state; install/uninstall detect and refuse that leftover as an
-// own process instead of deleting its configuration. The zen-dev child
-// lifetime fix is owned by a separate worker.
+// restart. The DEV runner binds its daemon child to the watcher lifetime on
+// Linux (PR_SET_PDEATHSIG), so an abrupt watcher death stops the child and
+// releases the state lock; install/uninstall still detect and refuse an own
+// leftover in the unit cgroup rather than deleting its configuration.
 
 const (
 	bootManagedMarker  = "# Managed by zen boot install"
