@@ -2902,6 +2902,12 @@ func visibleWorkerSessions(workers []*classifier.Worker) []*classifier.Worker {
 }
 
 func (s *Server) currentVisibleWorkerSessions() []*classifier.Worker {
+	// The owned-VM fixture serves the full handler without a watcher. A chat
+	// WebSocket must get an empty session list, not a system-process panic
+	// that also breaks the shared native tunnel retries.
+	if s == nil || s.watcher == nil {
+		return nil
+	}
 	return visibleWorkerSessions(s.watcher.Workers())
 }
 
