@@ -136,9 +136,11 @@ func TestExternalSocketNeverForksFallbackServer(t *testing.T) {
 	}
 	assertNoServer("after last-session exit")
 
-	// 7. No live user server mutation: the ambient default socket is untouched
-	// by every step above (all commands carried explicit -S under the root).
-	if _, err := os.Stat("/tmp/tmux-1000/default"); err != nil {
-		t.Fatalf("live default socket disturbed: %v", err)
+	// 7. Unrelated fixture server is healthy at the end: every step above
+	// carried an explicit private -S socket, so no ambient/user server could
+	// have been touched. Proven against the test's own unrelated server,
+	// never against a live user socket (CI may have no server at all).
+	if out, err := exec.Command("tmux", "-S", other, "-N", "display-message", "-p", "-t", "unrelated-keep", "#{session_name}").Output(); err != nil || strings.TrimSpace(string(out)) != "unrelated-keep" {
+		t.Fatalf("unrelated fixture server disturbed at end: %q err=%v", out, err)
 	}
 }

@@ -75,7 +75,7 @@ func TestCurrentWorkerIDQueryNeverAutostartsServer(t *testing.T) {
 	dir := t.TempDir()
 	argvPath := filepath.Join(dir, "argv")
 	shim := filepath.Join(dir, "tmux")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvPath + "\nexit 1\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argvPath + "\"\nexit 1\n"
 	if err := os.WriteFile(shim, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

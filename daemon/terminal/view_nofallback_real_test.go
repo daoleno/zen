@@ -44,7 +44,7 @@ func TestViewBootstrapNeverForksFallbackServer(t *testing.T) {
 
 	bootstrap := func() {
 		t.Helper()
-		if out, err := exec.Command(realTmux, "-S", socket, "new-session", "-d", "-s", "view-keeper", "-x", "80", "-y", "24", "sleep 300").CombinedOutput(); err != nil {
+		if out, err := exec.Command(realTmux, "-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "view-keeper", "-x", "80", "-y", "24", "sleep 300").CombinedOutput(); err != nil {
 			t.Fatalf("bootstrap fixture server: %v: %s", err, out)
 		}
 	}
