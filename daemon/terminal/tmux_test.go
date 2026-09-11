@@ -25,6 +25,33 @@ func TestTmuxNewViewSessionCommandCreatesIndependentWindowSelector(t *testing.T)
 	}
 }
 
+func TestExplicitSocketPinsClientWithoutServerAutostart(t *testing.T) {
+	if got := tmuxSocketArgs(""); got != nil {
+		t.Fatalf("empty tmux socket args = %#v, want nil (default server)", got)
+	}
+	socket := "/run/user/1000/zen.sock"
+	if got := tmuxSocketArgs(socket); !reflect.DeepEqual(got, []string{"-S", socket, "-N"}) {
+		t.Fatalf("explicit tmux socket args = %#v, want [-S socket -N]", got)
+	}
+	cmd := tmuxNewViewSessionCommand(context.Background(), socket, "zen-view")
+	want := []string{
+		"tmux",
+		"-S", socket,
+		"-N",
+		"new-session",
+		"-d",
+		"-P",
+		"-F",
+		"#{window_id}",
+		"-s",
+		"zen-view",
+		"sleep 86400",
+	}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("explicit-socket view command args = %v, want %v", cmd.Args, want)
+	}
+}
+
 func TestTmuxLinkViewWindowCommandReplacesOnlyBootstrapWindow(t *testing.T) {
 	cmd := tmuxLinkViewWindowCommand(
 		context.Background(),

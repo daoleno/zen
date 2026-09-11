@@ -51,12 +51,29 @@ func newSharedTmuxHarness(t *testing.T, defaultServer bool) *sharedTmuxHarness {
 		t.Fatal(err)
 	}
 	h.w.SetTmuxServer(h.selected, h.scratch)
+	if h.selected != "" {
+		// Explicit fixture-owned bootstrap: production builders carry -N
+		// and never auto-start a server, so the selected test server must
+		// exist before any production creation call. Raw fixture command,
+		// never production client logic.
+		bootstrapHarnessServer(t, h.selected)
+	}
 	t.Cleanup(func() {
 		for _, socket := range []string{filepath.Join(root, "inherited.sock"), defaultSocket} {
 			stopHarnessTmuxServer(t, h.realTmux, socket)
 		}
 	})
 	return h
+}
+
+// bootstrapHarnessServer explicitly starts the fixture-owned test server with
+// a keeper session via a raw command (no -N). Production code under test must
+// never be the process that creates this server.
+func bootstrapHarnessServer(t *testing.T, socket string) {
+	t.Helper()
+	if out, err := exec.Command("tmux", "-S", socket, "new-session", "-d", "-s", "harness-keeper", "-x", "80", "-y", "24", "sleep 300").CombinedOutput(); err != nil {
+		t.Fatalf("bootstrap fixture server on %q: %v: %s", socket, err, out)
+	}
 }
 
 func requireTmux(t *testing.T) {
@@ -204,7 +221,9 @@ func tmuxHarnessCommand(socket string, args ...string) *exec.Cmd {
 
 func createHarnessPane(t *testing.T, socket, session, command string) string {
 	t.Helper()
-	if out, err := tmuxHarnessCommand(socket, "new-session", "-d", "-s", session, command).CombinedOutput(); err != nil {
+	// Raw fixture creation (no -N): the fixture, not the production client,
+	// owns server bootstrap.
+	if out, err := exec.Command("tmux", "-S", socket, "new-session", "-d", "-s", session, command).CombinedOutput(); err != nil {
 		t.Fatalf("create %s on %q: %v: %s", session, socket, err, out)
 	}
 	out, err := tmuxHarnessCommand(socket, "display-message", "-p", "-t", session, "#{session_name}:#{window_id}").Output()

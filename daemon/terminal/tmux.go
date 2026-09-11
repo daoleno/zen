@@ -37,7 +37,9 @@ func tmuxSocketArgs(socketPath string) []string {
 	if socketPath == "" {
 		return nil
 	}
-	return []string{"-S", socketPath}
+	// -N pins the client to the externally owned server: a missing server
+	// fails instead of forking a fallback into our own cgroup.
+	return []string{"-S", socketPath, "-N"}
 }
 
 // TmuxBackend attaches a dedicated tmux client to an existing tmux session

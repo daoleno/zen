@@ -23,8 +23,11 @@ func TestWatcherUsesOneSelectedHostServerForKnownTargets(t *testing.T) {
 	if got := w.SocketPathFor("ambient:@9"); got != "" {
 		t.Fatalf("unknown target exposed custom socket %q", got)
 	}
-	if args := tmuxSocketArgs(socket); len(args) != 2 || args[1] != socket {
-		t.Fatalf("tmux socket args = %#v, want byte-exact socket", args)
+	if args := tmuxSocketArgs(socket); len(args) != 3 || args[0] != "-S" || args[1] != socket || args[2] != "-N" {
+		t.Fatalf("tmux socket args = %#v, want [-S byte-exact-socket -N]", args)
+	}
+	if args := tmuxSocketArgs(""); args != nil {
+		t.Fatalf("empty tmux socket args = %#v, want nil (default server)", args)
 	}
 }
 

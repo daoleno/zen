@@ -1048,7 +1048,9 @@ func currentWorkerID() string {
 	}
 	args := []string{"display-message", "-p", "-t", pane, "#{session_name}:#{window_id}"}
 	if socket := tmuxClientSocket(); socket != "" {
-		args = append([]string{"-S", socket}, args...)
+		// -N keeps this read-only query from starting a server when the
+		// caller's server is gone; a missing server yields no worker ID.
+		args = append([]string{"-S", socket, "-N"}, args...)
 	}
 	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
