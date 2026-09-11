@@ -32,6 +32,7 @@ func WriteHuman(w io.Writer, report Report) error {
 	writeCheck(w, "State dir", report.StateDir.Status, report.StateDir.Summary)
 	writeCheck(w, "Listen", report.Listen.Status, report.Listen.Summary)
 	writeCheck(w, "Executors", report.Executors.Status, report.Executors.Summary)
+	writeCheck(w, "Desktop", report.Desktop.Status, report.Desktop.Summary)
 
 	if len(report.Executors.Items) > 0 {
 		fmt.Fprintln(w, "")

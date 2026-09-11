@@ -9,7 +9,7 @@ export type MessageBlock =
   | { type: "paragraph"; text: string }
   | { type: "list"; items: MessageListItem[] }
   | MessageTableBlock
-  | { type: "code"; text: string; language?: string }
+  | { type: "code"; text: string; language?: string; closed?: boolean }
   | { type: "quote"; text: string };
 
 export type MessageListItem = {
@@ -107,6 +107,7 @@ function parseMessageBlocksUninstrumented(value: string): MessageBlock[] {
           type: "code",
           text: code.lines.join("\n").replace(/\n+$/, ""),
           language: code.language,
+          closed: true,
         });
         code = null;
       } else {
@@ -203,6 +204,7 @@ function parseMessageBlocksUninstrumented(value: string): MessageBlock[] {
       type: "code",
       text: code.lines.join("\n").replace(/\n+$/, ""),
       language: code.language,
+      closed: false,
     });
   }
   flushOpenBlocks();

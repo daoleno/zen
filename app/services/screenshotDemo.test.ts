@@ -95,6 +95,7 @@ describe("screenshot demo isolation", () => {
     expect(resolveScreenshotDemoState("profile")).toBe("profile");
     expect(resolveScreenshotDemoState("providers")).toBe("providers");
     expect(resolveScreenshotDemoState("skills")).toBe("skills");
+    expect(resolveScreenshotDemoState("mermaid")).toBe("mermaid");
     expect(resolveScreenshotDemoState("unknown")).toBe("chat");
     expect(resolveScreenshotDemoState(undefined)).toBe("chat");
   });

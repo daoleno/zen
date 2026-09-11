@@ -97,6 +97,14 @@ private enum LinkTransportError: Error, LocalizedError {
   }
 }
 
+private func pinnedServerName(_ host: String) -> String {
+  let literal = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+  if literal.contains(":") || literal.range(of: #"^\d{1,3}(?:\.\d{1,3}){3}$"#, options: .regularExpression) != nil {
+    return "zen-desktop.invalid"
+  }
+  return host
+}
+
 private func validate(
   key: String,
   host: String,
@@ -122,6 +130,7 @@ private func validate(
 }
 
 private final class PinnedProxy {
+  private let registryOwner = UUID()
   // File-visible so ZenLinkTransportModule can read start(completion:) payload fields.
   fileprivate struct StartResult {
     let port: Int
@@ -202,8 +211,10 @@ private final class PinnedProxy {
             return
           }
           self.lock.lock()
+          guard !self.stopped else { self.lock.unlock(); return }
           self.localPort = Int(localPort.rawValue)
           self.lastRTTMilliseconds = rttMilliseconds
+          PinnedEndpointRegistry.register(port: self.localPort, pin: self.pin, owner: self.registryOwner)
           self.lock.unlock()
           self.finishStart(
             .success(StartResult(
@@ -214,6 +225,7 @@ private final class PinnedProxy {
           )
         case .failed(let error):
           self.finishStart(.failure(error), completion: completion)
+          self.stop()
         default:
           break
         }
@@ -245,6 +257,7 @@ private final class PinnedProxy {
       return
     }
     stopped = true
+    PinnedEndpointRegistry.remove(port: localPort, owner: registryOwner)
     let currentListener = listener
     let currentConnections = Array(connections.values)
     connections.removeAll()
@@ -310,7 +323,7 @@ private final class PinnedProxy {
       tls.securityProtocolOptions,
       .TLSv13
     )
-    sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, host)
+    sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, pinnedServerName(host))
     let expectedPin = pin
     sec_protocol_options_set_verify_block(
       tls.securityProtocolOptions,

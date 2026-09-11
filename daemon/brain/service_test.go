@@ -420,6 +420,16 @@ func (w *fakeWatcher) ProbeSession(target string) (watcher.SessionPresence, erro
 	return watcher.SessionPresenceAbsent, nil
 }
 
+// ResolveDelegatedAbsence mirrors the strict watcher decision: an unreachable
+// or unreadable server is an error (Unknown), never proof of absence.
+func (w *fakeWatcher) ResolveDelegatedAbsence(target string) (bool, error) {
+	presence, err := w.ProbeSession(target)
+	if err != nil {
+		return false, err
+	}
+	return presence == watcher.SessionPresenceAbsent, nil
+}
+
 func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
 	if w.createErr != nil {
 		return "", w.createErr

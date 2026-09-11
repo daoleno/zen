@@ -3993,6 +3993,11 @@ function normalizeSessionService(value: any): SessionService {
     binds: Array.isArray(service.binds) ? service.binds : [],
     urls: Array.isArray(service.urls) ? service.urls : [],
     local_only: Boolean(service.local_only),
+    source: typeof service.source === "string" ? service.source : undefined,
+    unit: typeof service.unit === "string" ? service.unit : undefined,
+    state: typeof service.state === "string" ? service.state : undefined,
+    status_detail:
+      typeof service.status_detail === "string" ? service.status_detail : undefined,
   };
 }
 

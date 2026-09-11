@@ -28,6 +28,7 @@ type controlWatcher interface {
 	GetWorker(id string) *classifier.Worker
 	HasSession(target string) bool
 	ProbeSession(target string) (watcher.SessionPresence, error)
+	ResolveDelegatedAbsence(target string) (bool, error)
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	UpdateWorkerProgress(id string, progress classifier.WorkerProgress) (*classifier.Worker, error)
 	RebindDelegatedTurnProjection(id string) (*classifier.Worker, error)
@@ -91,6 +92,12 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleWorkerProgress(req)
 	case "worker_close":
 		return a.handleWorkerClose(req)
+	case "service_list":
+		return a.handleServiceList()
+	case "service_register":
+		return a.handleServiceRegister(req)
+	case "service_unregister":
+		return a.handleServiceUnregister(req)
 	case "brain_executors":
 		return a.handleBrainExecutors()
 	case "brain_context":
@@ -926,6 +933,16 @@ func brainWorkControlError(err error) control.Response {
 	return control.ErrorResponse(code, err.Error())
 }
 
+// inputConfirmation labels an accepted input as "submitted" unless the
+// submission was correlated with an exact provider-native admission. Delegated
+// transport success never claims provider confirmation it did not observe.
+func inputConfirmation(result watcher.InputResult) string {
+	if result.Outcome == watcher.InputAccepted && !result.ProviderConfirmed {
+		return "submitted"
+	}
+	return string(result.Outcome)
+}
+
 func (a *controlApp) handleWorkerSend(req control.Request) control.Response {
 	if a == nil || a.watcher == nil {
 		return control.ErrorResponse("watcher_unavailable", "Worker watcher is not running.")
@@ -957,7 +974,7 @@ func (a *controlApp) handleWorkerSend(req control.Request) control.Response {
 		if err != nil {
 			return control.ErrorResponse("send_failed", err.Error())
 		}
-		return control.Response{OK: result.Outcome == watcher.InputAccepted, TurnID: turnID, Confirmation: string(result.Outcome)}
+		return control.Response{OK: result.Outcome == watcher.InputAccepted, TurnID: turnID, Confirmation: inputConfirmation(result)}
 	}
 	var sendErr error
 	if req.Submit && worker != nil && payload != "" {

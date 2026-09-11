@@ -1,21 +1,29 @@
 import React, { useCallback, useMemo } from "react";
 import { Linking, StyleSheet, Text, View } from "react-native";
-import { Colors, Spacing, Typography, useAppColors } from "../../constants/tokens";
+import { Colors, Spacing, Typography, useAppColors, useAppTheme } from "../../constants/tokens";
+import { buildChatChrome } from "../../theme";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
+import { MermaidDiagram } from "../markdown/MermaidDiagram";
+import { isMermaidFenceLanguage } from "../markdown/mermaidFences";
 import { tokenizeMarkdownInline } from "./MarkdownViewModel";
 
 type Block =
   | { type: "heading"; level: number; text: string }
   | { type: "paragraph"; text: string }
   | { type: "list"; items: string[] }
-  | { type: "code"; text: string }
+  | { type: "code"; text: string; language?: string }
   | { type: "quote"; text: string }
   | { type: "rule" };
 
 export function MarkdownView({ value }: { value: string }) {
   const colors = useAppColors();
+  const { theme: appTheme } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const blocks = useMemo(() => parseMarkdown(value), [value]);
+  const { chrome, theme } = useMemo(
+    () => buildChatChrome(appTheme),
+    [appTheme],
+  );
   const handleLinkPress = useCallback((url: string) => {
     void openSafeMarkdownUrl(url, (safeUrl) => Linking.openURL(safeUrl));
   }, []);
@@ -59,6 +67,21 @@ export function MarkdownView({ value }: { value: string }) {
               </View>
             );
           case "code":
+            if (isMermaidFenceLanguage(block.language)) {
+              return (
+                <MermaidDiagram
+                  key={index}
+                  source={block.text}
+                  chrome={chrome}
+                  theme={theme}
+                  fallback={
+                    <Text selectable style={styles.codeBlock}>
+                      {block.text}
+                    </Text>
+                  }
+                />
+              );
+            }
             return (
               <Text key={index} selectable style={styles.codeBlock}>
                 {block.text}
@@ -94,7 +117,7 @@ function parseMarkdown(value: string): Block[] {
   let paragraph: string[] = [];
   let list: string[] = [];
   let quote: string[] = [];
-  let code: string[] | null = null;
+  let code: { language?: string; lines: string[] } | null = null;
 
   const flushParagraph = () => {
     const text = paragraph.join(" ").trim();
@@ -128,17 +151,28 @@ function parseMarkdown(value: string): Block[] {
 
     if (code) {
       if (/^```/.test(trimmed)) {
-        blocks.push({ type: "code", text: code.join("\n").replace(/\n+$/, "") });
+        blocks.push({
+          type: "code",
+          text: code.lines.join("\n").replace(/\n+$/, ""),
+          language: code.language,
+        });
         code = null;
       } else {
-        code.push(rawLine);
+        code.lines.push(rawLine);
       }
       continue;
     }
 
-    if (/^```/.test(trimmed)) {
+    const fence = /^```\s*(.*)$/.exec(trimmed);
+    if (fence) {
       flushOpenBlocks();
-      code = [];
+      const language = fence[1]
+        .trim()
+        .split(/\s+/)[0]
+        ?.replace(/^language-/, "")
+        .trim()
+        .toLowerCase();
+      code = { language: language || undefined, lines: [] };
       continue;
     }
 
@@ -186,7 +220,11 @@ function parseMarkdown(value: string): Block[] {
   }
 
   if (code) {
-    blocks.push({ type: "code", text: code.join("\n").replace(/\n+$/, "") });
+    blocks.push({
+      type: "code",
+      text: code.lines.join("\n").replace(/\n+$/, ""),
+      language: code.language,
+    });
   }
   flushOpenBlocks();
   return blocks;

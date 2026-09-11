@@ -116,10 +116,35 @@ If `~/.local/bin` is not on your `PATH`, install into another user-owned directo
 
 Startup prints the listening address, available private-network addresses, and one pairing command. Saved model routes are reclaimed when the selected tmux server confirms their sessions are absent. Live or unobservable sessions retain their routes; a model-settings warning for a retained route does not mean the HTTP server failed to start.
 
-Source builds require the Go toolchain declared in `daemon/go.mod`:
+Source builds require the Go toolchain declared in `daemon/go.mod`. On Linux,
+the local recipe links desktop capture when development libraries are present:
 
 ```bash
 git clone https://github.com/daoleno/zen.git
+cd zen
+bun run daemon:build
+./bin/zen --help
+./bin/zen doctor
+```
+
+`bun run daemon:build` (and `cd daemon && go run ./cmd/zen-dev`) enable CGO and
+`-tags zen_desktop` when `pkg-config` finds GTK3, GStreamer app/video, GIO Unix,
+X11 and XTest. Desktop-capable builds pass a content-hash
+`-DZEN_NATIVE_BUILD_INPUT=…` compiler define so cgo rebuilds when external
+`desktop/native` C/headers change, without deleting GOCACHE. That produces one
+`zen` ELF whose `desktop-helper`, `desktop-host` and `desktop-agent` roles are
+the same file. It does not extract a second helper, emit `libzen-desktop.so`,
+or compile C at end-user startup. System GTK/GStreamer/X11
+remain dynamically linked (`DT_NEEDED`). If those OS libraries are absent, the
+dynamic loader refuses to start the ELF before `zen doctor` can run; install them
+first. `zen doctor` on a running desktop-capable ELF reports `native_linked`
+and lists `DT_NEEDED` names. Linking is not stream readiness.
+
+A plain `cd zen/daemon && go build -o bin/zen ./cmd/zen/` without the tag is a
+daemon-only artifact. Desktop capture is then unavailable until you rebuild with
+the local or Linux amd64 production recipe.
+
+```bash
 cd zen/daemon
 go build -o bin/zen ./cmd/zen/
 ./bin/zen --help
@@ -129,13 +154,18 @@ Product version for banners and release staging comes from `app/app.base.json` (
 
 ## Release binaries (Linux and Apple Silicon macOS)
 
-Cross-build without CGO (deterministic flags: `-trimpath`, `-buildvcs=false`, stripped ldflags):
+On a Linux amd64 host, `scripts/build-daemon-linux.sh` builds **desktop-capable**
+`zen-linux-amd64` (`CGO_ENABLED=1 -tags zen_desktop`). linux/arm64 and Darwin
+archives stay `CGO_ENABLED=0` daemon-only (no matching GTK sysroot). Staging
+from macOS likewise produces a daemon-only linux/amd64 archive; that is not a
+universal desktop binary. Deterministic flags: `-trimpath`, `-buildvcs=false`,
+stripped ldflags.
 
 ```bash
 ./scripts/build-daemon-linux.sh
-# → dist-download/staging/bin/zen-linux-amd64
-# → dist-download/staging/bin/zen-linux-arm64
-# → dist-download/staging/bin/zen-darwin-arm64
+# → dist-download/staging/bin/zen-linux-amd64   (desktop-capable on Linux amd64 hosts)
+# → dist-download/staging/bin/zen-linux-arm64   (daemon-only)
+# → dist-download/staging/bin/zen-darwin-arm64  (daemon-only)
 ```
 
 Full local stage (clean directory each run; **no** GitHub Release):
@@ -173,9 +203,17 @@ This path depends on the published module and Go proxy state. If `@latest` fails
 
 ## Run as a background service
 
-Zen does not yet install a system service automatically. Start `zen` in a persistent shell, tmux session, or a user service you manage. The same host user must be able to access `tmux`, your repositories, and the authenticated AI CLI.
+`zen` is the whole runtime. Running it in a persistent shell or tmux session
+and running it under systemd are equivalent deployment choices: the same ELF,
+the same arguments, the same `-state-dir`, identity, port and authority. The
+development command `zen-dev` exists only to rebuild and restart that same
+runtime while you edit source; it is not a different daemon and adds no
+separate trust, enrollment, scope or state database. A build failure leaves the
+last healthy daemon running.
 
-Do not run the daemon as root merely to keep it alive.
+Zen does not install a system service automatically. Start `zen` in a
+persistent shell, a tmux session, or a service you manage. Do not run the
+daemon as root merely to keep it alive.
 
 ## Defaults
 
@@ -221,7 +259,8 @@ pair time; Pairing V2 receives candidates from explicit Link config.
 
 ## Keep it running
 
-For personal use, a tmux pane or systemd user unit is enough. Example user unit (adjust paths):
+For personal use, a tmux pane, a user service, or a system service are all
+supported because the runtime is identical. Example user unit (adjust paths):
 
 ```ini
 [Unit]
@@ -235,6 +274,77 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 ```
+
+For an optional boot installation, one command renders and enables a standard
+systemd user unit for the same binary, state, address and working directory:
+
+```bash
+zen boot install                 # this executable, default state/address
+zen boot install -binary ./tmp/zen-dev -work-dir "$PWD"   # DEV runner
+zen boot status
+zen boot uninstall
+```
+
+The unit carries the explicit runtime contract: an absolute `ExecStart` with
+`-state-dir` and `-addr` (or `-lan`), `WorkingDirectory`, and the non-secret
+`HOME`/`PATH` environment. Relative paths and `~` are resolved at install time
+against the invoking directory, so a relative `-state-dir` never becomes a
+second state, identity or loopback bind. Pointing `-binary` at `zen-dev`
+requires `-work-dir` (by default the current directory) to be the source
+module root because the DEV runner rebuilds there.
+
+Install validates the contract before writing anything: it refuses to run as
+root, refuses a binary or working directory this user cannot execute, refuses a
+foreign `zen.service`, and refuses when the state directory is already locked
+by a process outside the installed unit's own systemd cgroup, or when the
+listen address is unavailable. It never kills those processes; stop them
+first. After `enable --now` (or `restart` for a changed contract) it verifies
+that the unit is active, its main process is the installed binary, a process
+inside the unit's own cgroup holds the installed state's lifecycle lock, and
+`/health` on the installed address serves the installed state's `daemon_id`.
+Only then does it report success. Re-running `install` with the same contract
+leaves a healthy daemon running; any changed runtime context (binary, state,
+address, working directory, `HOME`/`PATH`) updates the unit and restarts it
+explicitly.
+
+The unit is enabled into `default.target` without `After=default.target`: a
+target already orders itself after the units it wants, so that line would form
+an ordering cycle at boot and drop the implicit ordering. Ownership is bound
+to the unit, not to a same-binary guess: an active unit that owns a different
+state does not satisfy the cgroup-lock and identity checks above.
+`KillMode=process` is intentional: the daemon reuses the user's ordinary tmux
+server, a shared per-user resource, so stopping or restarting `zen.service`
+terminates only the daemon and never tears down tmux or Worker sessions; tmux,
+Worker sessions and the pairing/state files are outside the unit's lifecycle.
+
+Known dependency: the DEV runner (`zen-dev`) binds its daemon child to the
+watcher lifetime on Linux (`PR_SET_PDEATHSIG`), so an abrupt watcher death
+stops the child and releases the state lock. Even with that binding, `zen boot
+install` and `uninstall` treat a process inside the unit cgroup that still
+holds the state lock as an own leftover and refuse or retain the configuration
+instead of deleting it; real guest acceptance of the DEV crash path is still
+owned by the runtime worker.
+
+Lingering starts the unit before an interactive login (`zen boot install`
+reports `sudo loginctl enable-linger <user>` when it cannot enable it itself).
+`zen boot status` always reads the installed unit configuration rather than the
+invocation defaults, shows the installed binary hash, and attributes `/health`
+to the installed state identity. `zen boot uninstall` requires readable
+installed metadata, stops the unit, confirms it is no longer active and that
+no process inside (or unattributable to) the unit still holds the state lock,
+then disables and removes only its own unit and metadata; on any metadata,
+stop, disable or ownership failure — including a still-held lifecycle lock
+whose holder cannot be attributed — it retains the unit and configuration for
+a retry and never deletes a running owner. Daemon state and pairing are never
+touched.
+
+Remote desktop lock/login before an interactive login additionally needs the
+administrator-installed desktop broker and SDDM hooks described in
+[Remote Desktop](remote-desktop.md). That installation is independent of how
+you run the daemon: the broker admits the configured owner account whether the
+daemon runs in the foreground, in tmux, or under a service, and an optional
+`ownerUnit` setting adds a stricter root-enrolled process boundary. No separate
+tmux service is installed or required.
 
 ## Docker (advanced)
 

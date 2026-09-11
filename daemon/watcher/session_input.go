@@ -30,10 +30,16 @@ const (
 )
 
 type InputResult struct {
-	Outcome   InputOutcome
-	Receipt   string
-	TurnID    string
-	Duplicate bool
+	Outcome InputOutcome
+	Receipt string
+	TurnID  string
+	// ProviderConfirmed reports whether the submission was correlated with an
+	// exact provider-native admission. Delegated transport-submitted inputs
+	// (SignalProtocol) return InputAccepted with ProviderConfirmed false: the
+	// owned tmux paste+submit succeeded and is queued, but provider execution
+	// and completion are owned by the lifecycle signal and background evidence.
+	ProviderConfirmed bool
+	Duplicate         bool
 }
 
 // delegatedTurnDraft is the pre-dispatch turn identity minted by the control
@@ -62,6 +68,13 @@ type delegatedAdmissionEvidence struct {
 	Cursor      uint64
 	StartedAt   time.Time
 	InputSHA256 string
+}
+
+// complete reports whether this is a full provider-native admission tuple. The
+// zero value means no provider admission was observed (transport-only submit).
+func (e delegatedAdmissionEvidence) complete() bool {
+	return strings.TrimSpace(e.Stream) != "" && strings.TrimSpace(e.ID) != "" &&
+		e.Cursor != 0 && strings.TrimSpace(e.InputSHA256) != ""
 }
 
 type delegatedInputConfirmation struct {
@@ -549,6 +562,12 @@ func (owner *sessionInputOwner) submitWithTurn(
 ) (InputResult, error) {
 	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
 	requiresConfirmation := turn != nil
+	// Delegated transport contract: a successful owned tmux paste+submit is the
+	// submission outcome. The provider transcript digest and completion are owned
+	// by the prompt-carried lifecycle signal and the background evidence poll and
+	// never gate the send. Brain/host submissions have no prompt signal contract
+	// and keep provider-evidence confirmation.
+	delegatedTransportSubmit := turn != nil && turn.SignalProtocol
 	if turn != nil {
 		result.TurnID = strings.TrimSpace(turn.ID)
 	}
@@ -597,6 +616,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 				case InputAdmissionResolved:
 					result.Outcome = InputAccepted
 					result.TurnID = submission.ResolvedTurnID
+					result.ProviderConfirmed = !submission.ResolvedAdmission.Empty()
 					return nil
 				case InputAdmissionAborted:
 					// Exact definite non-submission is retryable under the same
@@ -609,7 +629,24 @@ func (owner *sessionInputOwner) submitWithTurn(
 						submission.PaneGeneration != baseline.generation {
 						return ambiguousSubmission(result.Receipt, fmt.Errorf("pending submission target identity no longer matches; input will not be replayed"))
 					}
-					if _, transportFound := ledger.entry(result.Receipt); transportFound {
+					if entry, transportFound := ledger.entry(result.Receipt); transportFound {
+						// The pre-mutation transport marker is persisted before
+						// mutation, so an Ambiguous entry only proves the attempt
+						// started, not that the queue succeeded. Re-report a known
+						// delegated submission only from a confirmed acceptance
+						// receipt; an unconfirmed marker stays ambiguous and is
+						// never resent.
+						if turn.SignalProtocol {
+							if entry.PayloadSHA256 == payloadDigest && entry.Outcome == InputAccepted {
+								// The exact transport ran and its acceptance was
+								// confirmed. Report the known submission; never
+								// resend it, never reclassify it as failed.
+								result.Outcome = InputAccepted
+								result.TurnID = turn.ID
+								return nil
+							}
+							return ambiguousSubmission(result.Receipt, fmt.Errorf("delegated transport acceptance was not confirmed; input will not be replayed"))
+						}
 						resolved, resolveErr := owner.resolvePendingFromBaseline(submission, confirm)
 						if resolveErr == nil {
 							result.Outcome = InputAccepted
@@ -652,7 +689,7 @@ func (owner *sessionInputOwner) submitWithTurn(
 		var admissionBaseline delegatedAdmissionEvidence
 		var providerBaseline ProviderActivityObservation
 		if requiresConfirmation {
-			if confirm.baseline == nil || confirm.confirm == nil {
+			if confirm.baseline == nil || (!delegatedTransportSubmit && confirm.confirm == nil) {
 				return definitelyNotSubmitted(
 					result.Receipt,
 					fmt.Errorf("delegated provider admission observer is unavailable"),
@@ -816,47 +853,69 @@ func (owner *sessionInputOwner) submitWithTurn(
 		var confirmation delegatedInputConfirmation
 		resolvedBySignal := false
 		if requiresConfirmation {
-			var confirmErr error
-			confirmation, confirmErr = confirm.confirm(
-				admissionBaseline,
-				mutationBoundary,
-				payloadDigest,
-			)
-			if confirmErr != nil {
-				submission, found, submissionErr := owner.inputAdmission(sessionID, turn.ID)
-				resolvedBySignal = submissionErr == nil && found && submission.SignalProtocol &&
-					submission.State == InputAdmissionResolved && submission.ResolvedTurnID == turn.ID
-				if !resolvedBySignal {
-					if ambiguityLedger, ok := owner.ledger.(InputAdmissionAmbiguityLedger); ok {
-						confirmErr = errors.Join(confirmErr, ambiguityLedger.MarkInputAdmissionAmbiguous(sessionID, turn.ID, confirmErr.Error()))
-					}
+			if delegatedTransportSubmit {
+				// The transport is the contract. Re-prove the target process
+				// lifetime and immutable pane generation after mutation so a
+				// replaced target is still reported ambiguous, then leave the
+				// Prepared admission to the existing prompt signal (or the
+				// background evidence poll). No provider byte equality, no
+				// invented provider proof.
+				if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
 					result.Outcome = InputAmbiguous
-					return ambiguousSubmission(result.Receipt, errors.Join(confirmErr, submissionErr))
+					return ambiguousSubmission(result.Receipt, err)
 				}
-				result.TurnID = submission.ResolvedTurnID
-			}
-			if !resolvedBySignal && confirmation.Outcome != InputAccepted {
-				result.Outcome = InputAmbiguous
-				return ambiguousSubmission(
-					result.Receipt,
-					fmt.Errorf("provider turn start was not authoritatively observed"),
+				confirmedPane := owner.io.pane(socket, current.paneID)
+				if err := validateSameSessionInputPane(current, confirmedPane); err != nil {
+					result.Outcome = InputAmbiguous
+					return ambiguousSubmission(result.Receipt, err)
+				}
+			} else {
+				var confirmErr error
+				confirmation, confirmErr = confirm.confirm(
+					admissionBaseline,
+					mutationBoundary,
+					payloadDigest,
 				)
-			}
-			// Mutation has begun, so a target replacement is Ambiguous. Never
-			// let admission from a replacement process/pane claim the pending
-			// transaction that was bound before mutation.
-			if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
-				result.Outcome = InputAmbiguous
-				return ambiguousSubmission(result.Receipt, err)
-			}
-			confirmedPane := owner.io.pane(socket, current.paneID)
-			if err := validateSameSessionInputPane(current, confirmedPane); err != nil {
-				result.Outcome = InputAmbiguous
-				return ambiguousSubmission(result.Receipt, err)
+				if confirmErr != nil {
+					submission, found, submissionErr := owner.inputAdmission(sessionID, turn.ID)
+					resolvedBySignal = submissionErr == nil && found && submission.SignalProtocol &&
+						submission.State == InputAdmissionResolved && submission.ResolvedTurnID == turn.ID
+					if !resolvedBySignal {
+						if ambiguityLedger, ok := owner.ledger.(InputAdmissionAmbiguityLedger); ok {
+							confirmErr = errors.Join(confirmErr, ambiguityLedger.MarkInputAdmissionAmbiguous(sessionID, turn.ID, confirmErr.Error()))
+						}
+						result.Outcome = InputAmbiguous
+						return ambiguousSubmission(result.Receipt, errors.Join(confirmErr, submissionErr))
+					}
+					result.TurnID = submission.ResolvedTurnID
+				}
+				if !resolvedBySignal && confirmation.Outcome != InputAccepted {
+					result.Outcome = InputAmbiguous
+					return ambiguousSubmission(
+						result.Receipt,
+						fmt.Errorf("provider turn start was not authoritatively observed"),
+					)
+				}
+				// Mutation has begun, so a target replacement is Ambiguous. Never
+				// let admission from a replacement process/pane claim the pending
+				// transaction that was bound before mutation.
+				if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
+					result.Outcome = InputAmbiguous
+					return ambiguousSubmission(result.Receipt, err)
+				}
+				confirmedPane := owner.io.pane(socket, current.paneID)
+				if err := validateSameSessionInputPane(current, confirmedPane); err != nil {
+					result.Outcome = InputAmbiguous
+					return ambiguousSubmission(result.Receipt, err)
+				}
 			}
 		}
+		// ProviderConfirmed is true only when a provider-native admission
+		// confirmed this submission; transport-submitted delegated sends and
+		// signal-resolved submissions stay unconfirmed.
+		result.ProviderConfirmed = !delegatedTransportSubmit && confirmation.Admission.complete()
 
-		if turn != nil && !resolvedBySignal {
+		if turn != nil && !resolvedBySignal && !delegatedTransportSubmit {
 			resolvedActivityID := strings.TrimSpace(confirmation.ProviderActivity)
 			if queuedBehindActivityID != "" && resolvedActivityID == queuedBehindActivityID {
 				resolvedActivityID = ""
@@ -1053,10 +1112,17 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 	historicalTerminal := strings.TrimSpace(boundProvider.ID) != "" &&
 		strings.TrimSpace(boundProvider.ID) != strings.TrimSpace(currentProvider.ID)
 	if historicalTerminal && !providerActivityTerminal(currentProvider.Status) {
-		return decision, fmt.Errorf(
-			"%w: current provider activity is live while canonical turn %s belongs to a historical terminal",
-			errDelegatedProviderOwnershipMismatch, turn.TurnID,
-		)
+		// A delegated signal-protocol Turn is completed by its prompt-carried
+		// identity, not by provider activity. A newer live provider activity
+		// (a distinct tool-message activity) is a separate observation; the
+		// signal branches below decide whether to steer the active Attempt or
+		// start an isolated fresh Turn. Non-signal turns keep failing closed.
+		if !turn.SignalProtocol {
+			return decision, fmt.Errorf(
+				"%w: current provider activity is live while canonical turn %s belongs to a historical terminal",
+				errDelegatedProviderOwnershipMismatch, turn.TurnID,
+			)
+		}
 	}
 	if !providerObservationCanBindTurn(turn, boundProvider) {
 		// A globally final canonical result and a different exact terminal
@@ -1066,6 +1132,35 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 		// post-mutation admission digest may own the new candidate.
 		if TurnImmutable(turn.Status) && providerActivityTerminal(currentProvider.Status) &&
 			strings.TrimSpace(currentProvider.ID) != "" {
+			return decision, nil
+		}
+		if turn.SignalProtocol {
+			if TurnTerminal(turn.Status) {
+				// Unknown/Done/Failed predecessors have no active Attempt to
+				// steer; a fresh candidate is safe and remains isolated by its
+				// own prompt-carried turn identity.
+				return decision, nil
+			}
+			// A non-terminal signal Turn still owns its active Attempt, so a
+			// Fresh admission would be rejected by the lifecycle owner ("Work
+			// already has an active Attempt"). Steer that exact Attempt
+			// instead; the prompt-carried signal, not provider activity,
+			// resolves the new Turn. The baseline is the recorded turn
+			// activity when present, else the real observed activity — never an
+			// invented identity.
+			baseline := strings.TrimSpace(turn.ActivityID)
+			if baseline == "" {
+				baseline = strings.TrimSpace(currentProvider.ID)
+			}
+			if baseline == "" {
+				return decision, fmt.Errorf(
+					"%w: live canonical turn %s has no steerable provider activity",
+					errDelegatedProviderOwnershipMismatch, turn.TurnID,
+				)
+			}
+			decision.Mode = delegatedReuseConditionalSteer
+			decision.ExistingTurn = turn
+			decision.BaselineActivity = baseline
 			return decision, nil
 		}
 		return decision, fmt.Errorf(
@@ -1079,6 +1174,11 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 		return decision, fmt.Errorf("current provider activity has no authoritative lifecycle status")
 	}
 	if strings.TrimSpace(boundProvider.Status) == "running" && TurnTerminal(turn.Status) {
+		if turn.SignalProtocol {
+			// A terminal/unknown signal Turn cannot be reopened by a later
+			// running activity; allow the fresh candidate instead.
+			return decision, nil
+		}
 		return decision, fmt.Errorf(
 			"%w: terminal canonical turn %s cannot be reused from a running provider baseline",
 			errDelegatedProviderOwnershipMismatch, turn.TurnID,

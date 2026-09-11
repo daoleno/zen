@@ -873,3 +873,60 @@ func TestOpenCodeSettleReportsPartialFlipsAsChanged(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenCodeReaderPreservesRawProviderUserBytes proves the provider
+// projection applies no trim or composer-artifact reversal: the Body and
+// admission digest are exactly the persisted bytes for indentation, trailing
+// whitespace, tabs/newlines, a large paste-summary-shaped text (the shape the
+// composer actually persists), and a large manually typed/API text. Admission
+// normalization lives only on the send side, never on provider evidence.
+func TestOpenCodeReaderPreservesRawProviderUserBytes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	started := time.Date(2026, 9, 10, 14, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"leading indentation", "    indented first line\nsecond line"},
+		{"double trailing spaces", "line one\nline two  "},
+		{"tab then newline then space", "line one\t\n "},
+		{"large paste-summary shape", "Fix the task.\n\n" + strings.Repeat("context line\n", 12) + "run --lease 300 "},
+		{"large manually typed text", "Typed directly.\n\n" + strings.Repeat("detail line\n", 12) + "end --lease 300"},
+		{"embedded CRLF", "first\r\nsecond\r\n"},
+	}
+	messages := make([]openCodeMessageSeed, 0, len(cases))
+	parts := make([]openCodePartSeed, 0, len(cases))
+	for index, test := range cases {
+		messageID := fmt.Sprintf("msg_raw_%d", index)
+		messages = append(messages, openCodeMessageSeed{
+			ID: messageID, SessionID: "ses_raw", CreatedMS: started.Add(time.Duration(index) * time.Second).UnixMilli(), Data: `{"role":"user"}`,
+		})
+		parts = append(parts, openCodePartSeed{
+			ID: fmt.Sprintf("p_raw_%d", index), MessageID: messageID, SessionID: "ses_raw",
+			CreatedMS: started.Add(time.Duration(index) * time.Second).UnixMilli(), Data: mustOpenCodeTextPart(test.text),
+		})
+	}
+	createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+		{ID: "ses_raw", Directory: "/repo", CreatedMS: started.UnixMilli(), UpdatedMS: started.Add(time.Minute).UnixMilli()},
+	}, messages, parts)
+	conversation, err := parseOpenCodeConversation(dbPath, "ses_raw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byBody := map[string]CodexConversationEvent{}
+	for _, event := range conversation.Events {
+		if event.Kind == "user_message" {
+			byBody[event.Body] = event
+		}
+	}
+	for _, test := range cases {
+		event, ok := byBody[test.text]
+		if !ok {
+			t.Fatalf("%s: provider bytes were rewritten; got %#v", test.name, byBody)
+		}
+		want := fmt.Sprintf("%x", sha256.Sum256([]byte(test.text)))
+		if event.AdmissionSHA256 != want {
+			t.Fatalf("%s: admission digest = %q, want raw bytes digest %q", test.name, event.AdmissionSHA256, want)
+		}
+	}
+}

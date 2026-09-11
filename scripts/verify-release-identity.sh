@@ -24,7 +24,7 @@ done
 
 EXPECTED_VERSION="0.1.5"
 EXPECTED_PACKAGE="com.daoleno.zen"
-EXPECTED_VERSION_CODE="26"
+EXPECTED_VERSION_CODE="28"
 EXPECTED_IOS_BUILD_NUMBER="27"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
 
@@ -456,6 +456,17 @@ if stage:
                 expected = ["LICENSE", "NOTICE", "TRADEMARKS.md", "zen"]
                 if names != expected:
                     errors.append(f"{archive} contents: got {names!r} want {expected!r}")
+                if "libzen-desktop.so" in names:
+                    errors.append(f"{archive} must not include libzen-desktop.so")
+
+        ident = json.loads((stage_p / "release-manifest.json").read_text(encoding="utf-8")) if (stage_p / "release-manifest.json").is_file() else {}
+        desktop_native = ident.get("daemon", {}).get("desktop_native", {})
+        if desktop_native.get("linux/arm64") or desktop_native.get("darwin/arm64"):
+            errors.append("linux/arm64 and darwin/arm64 must not advertise desktop_native")
+        artifacts = {item.get("path"): item for item in ident.get("artifacts", []) if isinstance(item, dict)}
+        linux_amd64 = artifacts.get("zen-linux-amd64.tar.gz", {})
+        if linux_amd64 and bool(linux_amd64.get("desktop_native")) != bool(desktop_native.get("linux/amd64")):
+            errors.append("linux/amd64 desktop_native flag disagrees between artifact and daemon map")
 
 if errors:
     print("FAIL: release identity checks", file=sys.stderr)

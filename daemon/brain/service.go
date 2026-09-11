@@ -39,6 +39,10 @@ type Watcher interface {
 	GetWorker(id string) *classifier.Worker
 	HasSession(target string) bool
 	ProbeSession(target string) (watcher.SessionPresence, error)
+	// ResolveDelegatedAbsence proves that a previously-owned delegated target
+	// is definitively gone on a reachable server. An unreachable or unreadable
+	// server returns an error so an observation gap can never end a live Turn.
+	ResolveDelegatedAbsence(target string) (bool, error)
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
@@ -1778,12 +1782,15 @@ func (s *Service) ReconcileDelegatedSessions(workers []*classifier.Worker) {
 		}
 		if worker == nil {
 			// Inventory is a discovery snapshot, not proof of process death. A
-			// restarted watcher may not have rediscovered an owned Session yet.
+			// restarted watcher may not have rediscovered an owned Session yet,
+			// and the selected tmux server may itself be momentarily unreadable.
+			// Only a reachable server that definitively no longer owns the
+			// target proves end-of-identity.
 			if s.watcher == nil {
 				continue
 			}
-			presence, probeErr := s.watcher.ProbeSession(item.AttemptSessionID)
-			if probeErr != nil || presence != watcher.SessionPresenceAbsent {
+			gone, absenceErr := s.watcher.ResolveDelegatedAbsence(item.AttemptSessionID)
+			if absenceErr != nil || !gone {
 				continue
 			}
 			if !item.AttemptDelegated && !hasTurn {

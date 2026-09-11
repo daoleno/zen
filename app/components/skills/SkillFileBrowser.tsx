@@ -10,8 +10,10 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
-import { TypeScale, Typography, useAppColors } from "../../constants/tokens";
+import { TypeScale, Typography, useAppColors, useAppTheme } from "../../constants/tokens";
+import { buildChatChrome } from "../../theme";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
+import { MarkdownWithMermaid } from "../markdown/MarkdownWithMermaid";
 import type { PackageDetail } from "../../services/skillsManagement";
 import {
   buildSkillFileTree,
@@ -150,6 +152,11 @@ export function SkillFileBrowser({
 
 function MarkdownContent({ content }: { content: string }) {
   const colors = useAppColors();
+  const { theme: appTheme } = useAppTheme();
+  const { chrome, theme } = useMemo(
+    () => buildChatChrome(appTheme),
+    [appTheme],
+  );
   const markdownStyle = useMemo(
     () =>
       buildSkillsMarkdownStyle(colors, {
@@ -160,13 +167,20 @@ function MarkdownContent({ content }: { content: string }) {
     [colors],
   );
   return (
-    <EnrichedMarkdownText
+    <MarkdownWithMermaid
       markdown={content}
-      markdownStyle={markdownStyle}
-      selectable
-      onLinkPress={(event) =>
-        void openSafeMarkdownUrl(event.url, (url) => Linking.openURL(url))
-      }
+      chrome={chrome}
+      theme={theme}
+      renderMarkdown={(value) => (
+        <EnrichedMarkdownText
+          markdown={value}
+          markdownStyle={markdownStyle}
+          selectable
+          onLinkPress={(event) =>
+            void openSafeMarkdownUrl(event.url, (url) => Linking.openURL(url))
+          }
+        />
+      )}
     />
   );
 }

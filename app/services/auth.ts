@@ -36,6 +36,8 @@ export interface DaemonAssertionInput {
 }
 
 export type AuthPurpose =
+  | "zen-desktop"
+  | "zen-desktop-capability"
   | "zen-connect"
   | "zen-upload"
   | "zen-probe"

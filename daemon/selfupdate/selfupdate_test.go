@@ -208,3 +208,27 @@ func TestCacheFreshnessAndNotice(t *testing.T) {
 		t.Fatalf("downgrade notice = %q", got)
 	}
 }
+
+func TestDaemonArchiveRoleIsSingleZenExecutable(t *testing.T) {
+	name, err := PlatformArtifactName("linux", "amd64")
+	if err != nil || name != "zen-linux-amd64.tar.gz" {
+		t.Fatalf("artifact=%q err=%v", name, err)
+	}
+	manifest := Manifest{
+		SchemaVersion: 2,
+		Product:       "zen",
+		Version:       "0.1.6",
+		Artifacts: []Artifact{{
+			Path: name, Role: "daemon_archive", SHA256: strings.Repeat("ab", 32), Size: 8, GOOS: "linux", GOARCH: "amd64",
+		}},
+	}
+	got, ok := manifestArtifact(manifest, "linux", "amd64", name)
+	if !ok || got.Role != "daemon_archive" || got.Path != name {
+		t.Fatalf("manifest artifact %+v ok=%v", got, ok)
+	}
+	for _, artifact := range manifest.Artifacts {
+		if artifact.Role == "desktop_helper" || strings.Contains(artifact.Path, "desktop-helper") {
+			t.Fatal("update manifest must not ship a separate helper ELF")
+		}
+	}
+}

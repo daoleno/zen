@@ -63,6 +63,8 @@ import {
 } from "../services/screenshotDemo";
 import { InterfaceDevicePerformanceDemoGate } from "../components/terminal/InterfaceDevicePerformanceDemo";
 import { InterfaceReadingFixture } from "../components/terminal/InterfaceReadingFixture";
+import { MessageBody } from "../components/terminal/InterfaceMessageBody";
+import { MERMAID_MARKDOWN_FIXTURE } from "../components/markdown/mermaidFixtures";
 import { ProvidersPresentation } from "../components/providers/ProvidersPresentation";
 import { SessionModelSheet } from "../components/providers/SessionModelSheet";
 import {
@@ -122,6 +124,8 @@ export default function ScreenshotDemoRoute() {
       return <InterfaceDevicePerformanceDemoGate />;
     case "reading":
       return <InterfaceReadingFixture />;
+    case "mermaid":
+      return <MermaidDemo />;
     case "composer":
       return <ComposerStatesDemo />;
     case "chat":
@@ -278,6 +282,28 @@ function calendarFixtures(): CalendarItem[] {
       failure_reason: "The linked agent stopped before the report was written.",
     },
   ];
+}
+
+function MermaidDemo() {
+  const { theme: zenTheme } = useAppTheme();
+  const { chrome, theme } = useMemo(
+    () => buildChatChrome(zenTheme),
+    [zenTheme],
+  );
+  return (
+    <SafeAreaView
+      accessibilityLabel="Mermaid flowchart fixture"
+      style={[styles.mermaidRoot, { backgroundColor: chrome.appBackground }]}
+    >
+      <ScrollView contentContainerStyle={styles.mermaidContent}>
+        <MessageBody
+          value={MERMAID_MARKDOWN_FIXTURE}
+          chrome={chrome}
+          theme={theme}
+        />
+      </ScrollView>
+    </SafeAreaView>
+  );
 }
 
 function ChatDemo() {
@@ -1282,5 +1308,12 @@ const styles = StyleSheet.create({
   composerStateRow: {
     width: 320,
     alignSelf: "center",
+  },
+  mermaidRoot: {
+    flex: 1,
+  },
+  mermaidContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
 });

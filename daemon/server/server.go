@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/codexctl"
+	"github.com/daoleno/zen/daemon/desktop"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/push"
 	skillmgmt "github.com/daoleno/zen/daemon/skills"
@@ -79,6 +81,7 @@ type notificationPusher interface {
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
+	desktop                      desktop.Manager
 	auth                         *auth.Manager
 	watcher                      *watcher.Watcher
 	terminal                     *terminal.Manager
@@ -119,6 +122,7 @@ type Server struct {
 	authRevocationUnsubscribe  func()
 	runtimeClosing             bool
 	terminalCleanup            terminalCleanupOwner
+	desktopTransport           DesktopTransport
 
 	workSubID                   int
 	workSub                     <-chan work.Event
@@ -140,6 +144,18 @@ type Server struct {
 	pluginsMutations   map[*websocket.Conn]pluginsMutationRequest
 	pluginRuntime      skillmgmt.PluginRuntime
 	mu                 sync.Mutex
+}
+
+// DesktopTransport is identity-bound TLS for unattended desktop. Pin is the
+// Link/desktop SPKI; TLSConfig is the matching server certificate. HTTP clients
+// keep working on the same port; unattended /desktop requires actual TLS.
+type DesktopTransport struct {
+	TLSConfig *tls.Config
+	Pin       string
+}
+
+func (s *Server) SetDesktopTransport(transport DesktopTransport) {
+	s.desktopTransport = transport
 }
 
 func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Scheduler) {
@@ -374,6 +390,8 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/desktop", s.handleDesktop)
+	mux.HandleFunc("/desktop/capability", s.handleDesktopCapability)
 	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/devices", s.handleDevices)
@@ -394,11 +412,15 @@ func (s *Server) Handler() http.Handler {
 // listener has been acquired successfully.
 func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) error {
 	defer s.closeEventSubscriptions()
-	listener, err := net.Listen("tcp", addr)
+	tcp, err := net.Listen("tcp", addr)
 	if err != nil {
 		s.shutdownAuthenticatedClients()
 		s.terminalCleanup.Drain()
 		return err
+	}
+	var listener net.Listener = tcp
+	if s.desktopTransport.TLSConfig != nil {
+		listener = &tlsHTTPListener{Listener: tcp, config: s.desktopTransport.TLSConfig.Clone()}
 	}
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -533,6 +555,7 @@ func (s *Server) detachAuthenticatedClient(
 }
 
 func (s *Server) revokeAuthenticatedDevice(deviceID string) {
+	s.desktop.Revoke(deviceID)
 	normalizedID := strings.TrimSpace(deviceID)
 	if normalizedID == "" {
 		return
@@ -553,6 +576,7 @@ func (s *Server) revokeAuthenticatedDevice(deviceID string) {
 }
 
 func (s *Server) shutdownAuthenticatedClients() {
+	s.desktop.Close()
 	var closing []clientDetachWork
 	s.mu.Lock()
 	if s.runtimeClosing {
@@ -641,26 +665,36 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var raw struct {
-		EnrollmentToken   string `json:"enrollment_token"`
-		ExpectedDaemonID  string `json:"expected_daemon_id"`
-		ExpectedPublicKey string `json:"expected_daemon_public_key"`
-		DeviceID          string `json:"device_id"`
-		DeviceName        string `json:"device_name"`
-		DevicePublicKey   string `json:"device_public_key"`
+		EnrollmentToken       string `json:"enrollment_token"`
+		ExpectedDaemonID      string `json:"expected_daemon_id"`
+		ExpectedPublicKey     string `json:"expected_daemon_public_key"`
+		DeviceID              string `json:"device_id"`
+		DeviceName            string `json:"device_name"`
+		DevicePublicKey       string `json:"device_public_key"`
+		DesktopScopeVersion   int    `json:"desktop_scope_version"`
+		DesktopScopeSignature string `json:"desktop_scope_signature"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	decoder := json.NewDecoder(r.Body)
+	if decoder.Decode(&raw) != nil || decoder.Decode(new(any)) != io.EOF {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
 		return
 	}
 
-	device, err := s.auth.EnrollDevice(
-		raw.EnrollmentToken,
-		raw.ExpectedDaemonID,
-		raw.ExpectedPublicKey,
-		raw.DeviceID,
-		raw.DeviceName,
-		raw.DevicePublicKey,
-	)
+	var device *auth.TrustedDevice
+	var err error
+	if raw.DesktopScopeVersion != 0 || raw.DesktopScopeSignature != "" {
+		device, err = s.auth.EnrollDeviceWithDesktopScope(raw.EnrollmentToken, raw.ExpectedDaemonID, raw.ExpectedPublicKey, raw.DeviceID, raw.DeviceName, raw.DevicePublicKey, raw.DesktopScopeVersion, raw.DesktopScopeSignature)
+	} else {
+		device, err = s.auth.EnrollDevice(
+			raw.EnrollmentToken,
+			raw.ExpectedDaemonID,
+			raw.ExpectedPublicKey,
+			raw.DeviceID,
+			raw.DeviceName,
+			raw.DevicePublicKey,
+		)
+	}
 	if err != nil {
 		status := http.StatusUnauthorized
 		switch err {
@@ -678,11 +712,12 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSONWithAssertion(w, http.StatusOK, "zen-pair", map[string]any{
-		"ok":                true,
-		"daemon_id":         s.auth.DaemonID(),
-		"daemon_public_key": s.auth.PublicKeyHex(),
-		"device_id":         device.ID,
-		"device_name":       device.Name,
+		"ok":                    true,
+		"daemon_id":             s.auth.DaemonID(),
+		"daemon_public_key":     s.auth.PublicKeyHex(),
+		"device_id":             device.ID,
+		"device_name":           device.Name,
+		"desktop_scope_version": device.DesktopScopeVersion,
 	})
 }
 
@@ -692,10 +727,11 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSONWithAssertion(w, http.StatusOK, "zen-probe", map[string]any{
-		"ok":                true,
-		"device_id":         device.ID,
-		"daemon_id":         s.auth.DaemonID(),
-		"daemon_public_key": s.auth.PublicKeyHex(),
+		"ok":                    true,
+		"device_id":             device.ID,
+		"daemon_id":             s.auth.DaemonID(),
+		"daemon_public_key":     s.auth.PublicKeyHex(),
+		"desktop_scope_version": device.DesktopScopeVersion,
 	})
 }
 
@@ -2866,6 +2902,12 @@ func visibleWorkerSessions(workers []*classifier.Worker) []*classifier.Worker {
 }
 
 func (s *Server) currentVisibleWorkerSessions() []*classifier.Worker {
+	// The owned-VM fixture serves the full handler without a watcher. A chat
+	// WebSocket must get an empty session list, not a system-process panic
+	// that also breaks the shared native tunnel retries.
+	if s == nil || s.watcher == nil {
+		return nil
+	}
 	return visibleWorkerSessions(s.watcher.Workers())
 }
 

@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { desktopLanOrigin } from "./desktopTransportPolicy";
 import {
   mergeStoredServer,
   normalizeStoredServers,
@@ -25,6 +26,13 @@ const KEYS = {
   themePreference: "zen:theme_preference",
 } as const;
 
+let serverWriteTail: Promise<unknown> = Promise.resolve();
+function writeServers<T>(action: () => Promise<T>): Promise<T> {
+  const result = serverWriteTail.then(action, action);
+  serverWriteTail = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 export type StoredThemePreference = "system" | string;
 
 export type StoredRecentWorkerOpens = Record<string, number>;
@@ -48,17 +56,38 @@ export async function getServers(): Promise<StoredServer[]> {
 export async function saveServer(
   input: StoredServerInput,
 ): Promise<StoredServer> {
+  return writeServers(async () => {
   const servers = await getServers();
   const next = mergeStoredServer(input, servers, createServerID);
   await AsyncStorage.setItem(KEYS.servers, JSON.stringify(next.servers));
   return next.server;
+  });
 }
 
 export async function removeServer(serverID: string): Promise<void> {
+  return writeServers(async () => {
   const servers = await getServers();
   const nextServers = servers.filter((server) => server.id !== serverID);
   await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
   await setServerAutoConnect(serverID, true);
+  });
+}
+
+export async function setDesktopLanConsent(expected: StoredServer, allowed: boolean, isCurrent: () => boolean): Promise<StoredServer> {
+  return writeServers(async () => {
+  const servers = await getServers();
+  const current = servers.find((server) => server.id === expected.id);
+  const origin = current && desktopLanOrigin(current);
+  if (!isCurrent() || !current || !origin || origin !== desktopLanOrigin(expected) || current.daemonId !== expected.daemonId ||
+      current.daemonPublicKey !== expected.daemonPublicKey) {
+    throw new Error("The paired server changed. Review its current connection first.");
+  }
+  const updated = { ...current, desktopLanConsent: allowed ? {
+    origin, daemonId: current.daemonId, daemonPublicKey: current.daemonPublicKey, acknowledgedAt: Date.now(),
+  } : undefined };
+  await AsyncStorage.setItem(KEYS.servers, JSON.stringify(servers.map((server) => server.id === current.id ? updated : server)));
+  return updated;
+  });
 }
 
 export async function getServerById(

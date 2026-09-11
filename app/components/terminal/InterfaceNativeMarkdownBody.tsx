@@ -15,6 +15,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
+import { MarkdownWithMermaid } from "../markdown/MarkdownWithMermaid";
 import { InterfaceMarkdownErrorBoundary } from "./InterfaceMarkdownErrorBoundary";
 import {
   interfaceMarkdownStyle,
@@ -108,19 +109,28 @@ export function InterfaceNativeMarkdownBody({
       style={styles.messageBody}
     >
       <InterfaceMarkdownErrorBoundary fallback={fallback} resetKey={markdown}>
-        <EnrichedMarkdownText
+        <MarkdownWithMermaid
           markdown={markdown}
-          markdownStyle={markdownStyle}
-          containerStyle={styles.messageBody}
-          flavor="github"
-          selectable={textSelectable}
-          allowFontScaling={false}
-          allowTrailingMargin={false}
-          enableLinkPreview={false}
-          md4cFlags={{ latexMath: false, underline: false }}
-          onLinkPress={handleLinkPress}
-          streamingAnimation={streaming}
-          spoilerOverlay="solid"
+          chrome={chrome}
+          theme={theme}
+          compact={compact}
+          streaming={streaming}
+          renderMarkdown={(value) => (
+            <EnrichedMarkdownText
+              markdown={value}
+              markdownStyle={markdownStyle}
+              containerStyle={styles.messageBody}
+              flavor="github"
+              selectable={textSelectable}
+              allowFontScaling={false}
+              allowTrailingMargin={false}
+              enableLinkPreview={false}
+              md4cFlags={{ latexMath: false, underline: false }}
+              onLinkPress={handleLinkPress}
+              streamingAnimation={streaming}
+              spoilerOverlay="solid"
+            />
+          )}
         />
       </InterfaceMarkdownErrorBoundary>
     </View>

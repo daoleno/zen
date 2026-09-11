@@ -86,6 +86,8 @@ func run(args []string, stderr io.Writer) error {
 			return runUpdateCommand(args[1:], stderr)
 		case "worker":
 			return runWorkerCommand(args[1:], stderr)
+		case "service":
+			return runServiceCommand(args[1:], stderr)
 		case "brain":
 			return runBrainCommand(args[1:], stderr)
 		case "calendar":
@@ -96,6 +98,16 @@ func run(args []string, stderr io.Writer) error {
 			return runCodexGatewayCommand(args[1:], stderr)
 		case "devices":
 			return runDevicesCommand(args[1:], stderr)
+		case "desktop-helper":
+			return runDesktopHelperCommand(args[1:])
+		case "boot":
+			return runBootCommand(args[1:], stderr)
+		case "desktop-host":
+			return runDesktopHostCommand(args[1:], stderr)
+		case "desktop-agent":
+			return runDesktopAgentCommand(args[1:])
+		case "desktop-identity":
+			return runDesktopIdentityCommand(stderr)
 		}
 	}
 	return runDaemon(args, stderr)
@@ -153,6 +165,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 
 	w := watcher.New(500 * time.Millisecond)
 	w.ConfigureDelegatedResources(authManager.DaemonID())
+	w.SetManagedServicesPath(watcher.ManagedServicesPathForStateDir(authManager.StorageDir()))
 	// Bind every Zen-owned Brain and delegated Session to the server visible to
 	// the daemon's caller. When launched inside tmux this is the exact inherited
 	// server socket; otherwise empty socket semantics select the user's ordinary
@@ -372,6 +385,21 @@ func runDaemon(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var relayDomains []string
+	if linkEnabled {
+		relayDomains = link.RelayDomains(linkConfig)
+	}
+	transportIdentity, identityErr := link.LoadOrCreateTransportIdentity(
+		authManager.StorageDir(),
+		relayDomains,
+	)
+	if identityErr != nil {
+		return fmt.Errorf("initialize desktop transport identity: %w", identityErr)
+	}
+	srv.SetDesktopTransport(server.DesktopTransport{
+		TLSConfig: transportIdentity.ServerTLSConfig(),
+		Pin:       transportIdentity.SPKISHA256,
+	})
 	if linkEnabled {
 		linkConfig.StateObserver = func(state link.ConnectorState) {
 			switch {
@@ -387,16 +415,6 @@ func runDaemon(args []string, stderr io.Writer) error {
 					state.LastError,
 				)
 			}
-		}
-		transportIdentity, identityErr := link.LoadOrCreateTransportIdentity(
-			authManager.StorageDir(),
-			link.RelayDomains(linkConfig),
-		)
-		if identityErr != nil {
-			return fmt.Errorf(
-				"initialize Zen Link transport identity: %w",
-				identityErr,
-			)
 		}
 		connector, connectorErr := link.NewConnector(
 			linkConfig,
@@ -861,6 +879,11 @@ func printWorkerUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen worker progress --status running --phase working --attention none --summary \"Reading files\" --task-class lasting_design --event-kind invariant --lease 300")
 	fmt.Fprintln(w, "  zen worker send -id zen-worker-review-docs:@1 -text \"continue\" --submit=true")
 	fmt.Fprintln(w, "  zen worker close -id zen-worker-review-docs:@1 --force")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Retained services:")
+	fmt.Fprintln(w, "  A service kept running outside tmux (for example a user systemd unit)")
+	fmt.Fprintln(w, "  stays invisible until adopted: zen service register -unit NAME.service")
+	fmt.Fprintln(w, "  -name \"Display name\" -port PORT. See zen service --help and docs/services.md.")
 }
 
 func printBrainUsage(w io.Writer) {
@@ -1035,7 +1058,9 @@ func currentWorkerID() string {
 	}
 	args := []string{"display-message", "-p", "-t", pane, "#{session_name}:#{window_id}"}
 	if socket := tmuxClientSocket(); socket != "" {
-		args = append([]string{"-S", socket}, args...)
+		// -N keeps this read-only query from starting a server when the
+		// caller's server is gone; a missing server yields no worker ID.
+		args = append([]string{"-S", socket, "-N"}, args...)
 	}
 	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
@@ -1726,6 +1751,24 @@ func writeControlResponse(w io.Writer, resp control.Response, asJSON bool) error
 	for _, worker := range resp.Workers {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", worker.ID, worker.Status, worker.Name)
 	}
+	if resp.ServiceSnapshot != nil {
+		for _, service := range resp.ServiceSnapshot.Services {
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
+				serviceDisplayState(service),
+				serviceDisplaySource(service),
+				service.Port,
+				strings.Join(service.Binds, ","),
+				serviceDisplayName(service),
+			)
+		}
+		if resp.Confirmation != "" {
+			fmt.Fprintln(w, resp.Confirmation)
+		}
+		return nil
+	}
+	if resp.Service != nil {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", resp.Service.Unit, resp.Service.Name, resp.Service.Project)
+	}
 	return nil
 }
 
@@ -1880,6 +1923,8 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "  worker     List, spawn, inspect, message, progress, and close Zen Workers")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
 		fmt.Fprintln(stderr, "  devices    List or revoke paired mobile devices")
+		fmt.Fprintln(stderr, "  desktop-host  Linux unattended desktop broker (plan/install/register/serve)")
+		fmt.Fprintln(stderr, "  desktop-identity  Print this zen ELF hash and native role provenance")
 	}
 
 	if err := fs.Parse(args); err != nil {

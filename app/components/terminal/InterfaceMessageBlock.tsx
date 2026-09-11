@@ -12,6 +12,8 @@ import type {
   MessageTableAlignment,
 } from "./InterfaceMessageBodyModel";
 import { InterfaceInlineMessage } from "./InterfaceInlineMessage";
+import { MermaidDiagram } from "../markdown/MermaidDiagram";
+import { isMermaidFenceLanguage } from "../markdown/mermaidFences";
 import { InterfaceMessageCodeBlock } from "./InterfaceMessageCodeBlock";
 import {
   messageTableRowTone,
@@ -26,6 +28,7 @@ interface InterfaceMessageBlockProps {
   compact: boolean;
   dense?: boolean;
   isLast: boolean;
+  streaming?: boolean;
 }
 
 export function InterfaceMessageBlock({
@@ -35,6 +38,7 @@ export function InterfaceMessageBlock({
   compact,
   dense = false,
   isLast,
+  streaming = false,
 }: InterfaceMessageBlockProps) {
   const selectableTextProps = useTimelineSelectableTextProps();
   const tableColors = messageTableSemanticColors(chrome);
@@ -288,8 +292,8 @@ export function InterfaceMessageBlock({
           </GestureDetector>
         </View>
       );
-    case "code":
-      return (
+    case "code": {
+      const codeBlock = (
         <InterfaceMessageCodeBlock
           text={block.text}
           language={block.language}
@@ -299,6 +303,22 @@ export function InterfaceMessageBlock({
           isLast={isLast}
         />
       );
+      if (isMermaidFenceLanguage(block.language)) {
+        return (
+          <MermaidDiagram
+            source={block.text}
+            chrome={chrome}
+            theme={theme}
+            compact={compact}
+            isLast={isLast}
+            streaming={streaming}
+            closed={block.closed !== false}
+            fallback={codeBlock}
+          />
+        );
+      }
+      return codeBlock;
+    }
     case "quote":
       return (
         <View

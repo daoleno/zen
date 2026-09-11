@@ -51,12 +51,29 @@ func newSharedTmuxHarness(t *testing.T, defaultServer bool) *sharedTmuxHarness {
 		t.Fatal(err)
 	}
 	h.w.SetTmuxServer(h.selected, h.scratch)
+	if h.selected != "" {
+		// Explicit fixture-owned bootstrap: production builders carry -N
+		// and never auto-start a server, so the selected test server must
+		// exist before any production creation call. Raw fixture command,
+		// never production client logic.
+		bootstrapHarnessServer(t, h.selected)
+	}
 	t.Cleanup(func() {
 		for _, socket := range []string{filepath.Join(root, "inherited.sock"), defaultSocket} {
 			stopHarnessTmuxServer(t, h.realTmux, socket)
 		}
 	})
 	return h
+}
+
+// bootstrapHarnessServer explicitly starts the fixture-owned test server with
+// a keeper session via a raw command (no -N). Production code under test must
+// never be the process that creates this server.
+func bootstrapHarnessServer(t *testing.T, socket string) {
+	t.Helper()
+	if out, err := exec.Command("tmux", "-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "harness-keeper", "-x", "80", "-y", "24", "sleep 300").CombinedOutput(); err != nil {
+		t.Fatalf("bootstrap fixture server on %q: %v: %s", socket, err, out)
+	}
 }
 
 func requireTmux(t *testing.T) {
@@ -158,15 +175,22 @@ audit=${ZEN_TEST_TMUX_AUDIT:?}
 socket=
 expect_socket=0
 scan_global=1
+skip_next=0
+seen_f=0
+cmd=
 for arg in "$@"; do
+  if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
   if [ "$scan_global" -eq 0 ]; then continue; fi
   if [ "$expect_socket" -eq 1 ]; then socket=$arg; expect_socket=0; continue; fi
   case "$arg" in
     -S) expect_socket=1 ;;
     -S*) socket=${arg#-S} ;;
+    -f) seen_f=1; skip_next=1 ;;
+    -f*) seen_f=1 ;;
     -L|-L*) echo "tmux test firewall: -L is not allowed" >&2; exit 97 ;;
+    -N) ;;
     -*) ;;
-    *) scan_global=0 ;;
+    *) scan_global=0; cmd=$arg ;;
   esac
 done
 if [ "$expect_socket" -eq 1 ]; then
@@ -186,6 +210,12 @@ case "$socket" in
     ;;
 esac
 printf '%s\t%s\n' "$socket" "$*" >>"$audit"
+# Isolated servers must never read the real user tmux config: enforce an
+# empty config on exactly the commands that can start a server, unless the
+# caller already selected one explicitly.
+if [ "$seen_f" -eq 0 ] && { [ "$cmd" = "new-session" ] || [ "$cmd" = "start-server" ]; }; then
+  set -- -f /dev/null "$@"
+fi
 exec "$real" "$@"
 `
 	if err := os.WriteFile(shimPath, []byte(shim), 0o700); err != nil {
@@ -204,7 +234,9 @@ func tmuxHarnessCommand(socket string, args ...string) *exec.Cmd {
 
 func createHarnessPane(t *testing.T, socket, session, command string) string {
 	t.Helper()
-	if out, err := tmuxHarnessCommand(socket, "new-session", "-d", "-s", session, command).CombinedOutput(); err != nil {
+	// Raw fixture creation (no -N) with an empty config: the fixture, not
+	// the production client, owns server bootstrap and never reads user config.
+	if out, err := exec.Command("tmux", "-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", session, command).CombinedOutput(); err != nil {
 		t.Fatalf("create %s on %q: %v: %s", session, socket, err, out)
 	}
 	out, err := tmuxHarnessCommand(socket, "display-message", "-p", "-t", session, "#{session_name}:#{window_id}").Output()

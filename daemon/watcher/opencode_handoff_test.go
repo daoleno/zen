@@ -212,11 +212,22 @@ func TestSubmitDelegatedInputWhenReadyBudgetedRetriesReadinessAndAdmitsOneTurn(t
 		"work-budgeted-delegated", "turn-budgeted-delegated", acceptedAt,
 		1400*time.Millisecond,
 	)
-	if err != nil || result.Outcome != InputAccepted || result.TurnID != "turn-budgeted-delegated" {
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != "turn-budgeted-delegated" || result.ProviderConfirmed {
 		t.Fatalf("budgeted delegated result=%+v err=%v", result, err)
 	}
 	if len(io.submissions) != 1 || len(io.queues) != 1 || io.submissions[0] != payload {
 		t.Fatalf("budgeted delegated effects submissions=%+v queues=%d", io.submissions, len(io.queues))
+	}
+	pending, found, _ := ledger.InputAdmission("opencode-handoff:@1", "turn-budgeted-delegated")
+	if !found || pending.State != InputAdmissionPending {
+		t.Fatalf("budgeted delegated pending=%+v found=%v", pending, found)
+	}
+	if _, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: "opencode-handoff:@1", TurnID: "turn-budgeted-delegated",
+		Class: EvidenceControl, Kind: "running", SourceID: "control\x00budgeted",
+		At: acceptedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if turn := ledger.snapshot("opencode-handoff:@1"); turn.TurnID != "turn-budgeted-delegated" ||
 		turn.Status != TurnAccepted {

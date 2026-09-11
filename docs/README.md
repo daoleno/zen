@@ -23,6 +23,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 - [Telegram setup and recovery](telegram-brain-connection.md#setup-and-recovery)
 - [Usage and pricing](usage-and-pricing.md)
 - [Git review](git-review.md)
+- [Services](services.md) explains the mobile Services sheet and the retained-service handoff for persistent Agent services.
 - [Mobile copy boundaries](mobile-copy.md)
 
 ## Development and maintenance

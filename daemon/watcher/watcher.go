@@ -81,7 +81,7 @@ var piChromeRe = regexp.MustCompile(`(?im)(escape interrupt|/ commands|! bash)`)
 //
 // Model overlays are not ready. Do not treat arbitrary pane semver (tool
 // output, deps) as OpenCode's version footer.
-var openCodeComposerPlaceholderRe = regexp.MustCompile(`(?im)Ask anything\.\.\.`)
+var openCodeComposerPlaceholderRe = regexp.MustCompile(`(?im)Ask anything(?:\.\.\.|\x{2026})`)
 var openCodeAgentLineRe = regexp.MustCompile(`(?im)\b(Build|Plan|Ask)\b[^\n]*[·•]`)
 var openCodeFooterPathPrefix = `(?:~|/|\.{1,2}/|[A-Za-z]:\\)`
 var openCodeVersionFooterRe = regexp.MustCompile(`(?m)^\s*` + openCodeFooterPathPrefix + `\S*(?:\s+\S+)*?\s{2,}\d+\.\d+\.\d+\s*$`)
@@ -263,8 +263,27 @@ type Watcher struct {
 	// tmuxScratchDir is the private TMUX_TMPDIR for provider panes without a
 	// per-agent resource scratch. It contains provider-internal plain tmux;
 	// it is never the host server.
-	tmuxSocketPath        string
-	tmuxScratchDir        string
+	tmuxSocketPath string
+	tmuxScratchDir string
+	// managedServicesPath is the persisted explicit registry for
+	// Agent-retained persistent services (user systemd units). Empty means
+	// persistent discovery is disabled; tmux discovery is unaffected.
+	managedServicesPath string
+	// managedMu serializes registry read-modify-write cycles. The local
+	// control server handles requests concurrently; without it two
+	// registrations can read the same file and one update silently wins.
+	// It never covers systemctl/proc IO, only the file RMW.
+	managedMu sync.Mutex
+	// Test-only seams for persistent service discovery; production leaves
+	// them nil and queries live user systemd, /proc cgroups and ss.
+	systemctlShowFn systemctlShowFunc
+	procCgroupFn    procCgroupFunc
+	procUIDFn       procUIDFunc
+	listSocketsFn   func() ([]listeningSocket, error)
+	servicePanesFn  func() ([]servicePane, error)
+	// managedDiscoveryFn replaces persistent resolution wholesale in tests
+	// (see SetManagedDiscoveryFunc). Production leaves it nil.
+	managedDiscoveryFn    func(claimed map[string]bool, interfaces []SessionServiceInterface) []SessionService
 	mu                    sync.RWMutex
 	events                chan SessionEvent
 	resources             delegatedResourceManager
@@ -1156,6 +1175,54 @@ func (w *Watcher) ProbeSession(target string) (SessionPresence, error) {
 		return SessionPresencePresent, nil
 	}
 	return SessionPresenceAbsent, nil
+}
+
+// ResolveDelegatedAbsence proves that a previously-owned delegated target is
+// definitively gone on the selected server: the target is absent, or present
+// but no longer Zen-owned (a foreign replacement). It is the restart/reconcile
+// decision boundary, so it is based on one authoritative exact inventory that
+// itself distinguishes transport-unavailable from proven missing. An
+// unreachable or unreadable server returns ErrOwnershipProbeUnavailable;
+// callers must treat that as Unknown and retain the canonical Turn. ProbeSession
+// keeps its long-standing absent-on-no-server semantics for cleanup callers.
+func (w *Watcher) ResolveDelegatedAbsence(target string) (bool, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false, fmt.Errorf("missing session id")
+	}
+	socket := w.socketPathFor(target)
+	// One authoritative exact inventory. A transport failure is never combined
+	// with a later reachability claim: either this single read succeeds and is
+	// authoritative for presence + ownership of the exact window, or it fails
+	// closed as Unknown.
+	out, err := tmuxCommand(
+		socket,
+		"list-windows", "-a",
+		"-F", "#{session_name}:#{window_id}\t#{@zen_worker_created}",
+	).CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(out))
+		if isNoTmuxServerError(err) || isNoTmuxServerError(fmt.Errorf("%s", text)) {
+			return false, fmt.Errorf("%w: selected tmux server is unavailable for %s", ErrOwnershipProbeUnavailable, target)
+		}
+		return false, errors.Join(ErrOwnershipProbeUnavailable, fmt.Errorf("tmux window inventory: %w: %s", err, text))
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if strings.TrimSpace(parts[0]) != target {
+			continue
+		}
+		owned := len(parts) > 1 && tmuxBoolOption(parts[1])
+		// Present: owned means the live Worker still owns it; unowned is a
+		// foreign replacement and therefore end-of-identity for our Turn.
+		return !owned, nil
+	}
+	// The exact target is absent from a successful, reachable inventory.
+	return true, nil
 }
 
 // ProbeProviderEvidence returns the current provider-native observation for a
@@ -2400,13 +2467,20 @@ func tmuxBoolOption(value string) bool {
 }
 
 // probeTmuxTargetOwnership reads the durable, window-local ownership fact from
-// the selected server. show-options intentionally omits -A: an ambient window
-// must not inherit @zen_worker_created from a global tmux option. Missing targets
-// and missing servers are ordinary absence; any other failure is unknown.
+// the selected server. Presence is proven with list-panes: tmux 3.6a
+// `show-options -q` returns exit 0 with empty output for a missing session, and
+// display-message / quiet show-options can fall back to another window in the
+// same session. show-options intentionally omits -A: an ambient window must not
+// inherit @zen_worker_created from a global tmux option. Missing targets and
+// missing servers are ordinary absence; any other failure is unknown.
 func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return false, false, nil
+	}
+	present, err = tmuxTargetPresent(socket, target)
+	if err != nil || !present {
+		return false, false, err
 	}
 	out, commandErr := tmuxCommand(
 		socket,
@@ -2417,13 +2491,13 @@ func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err e
 		target,
 		"@zen_worker_created",
 	).CombinedOutput()
+	outText := strings.TrimSpace(string(out))
+	if isTmuxTargetMissing(commandErr, outText) ||
+		isNoTmuxServerError(commandErr) ||
+		isNoTmuxServerError(fmt.Errorf("%s", outText)) {
+		return false, false, nil
+	}
 	if commandErr != nil {
-		outText := strings.TrimSpace(string(out))
-		if isTmuxTargetMissing(commandErr, outText) ||
-			isNoTmuxServerError(commandErr) ||
-			isNoTmuxServerError(fmt.Errorf("%s", outText)) {
-			return false, false, nil
-		}
 		return false, false, fmt.Errorf(
 			"probe tmux ownership for %s: %w: %s",
 			target,
@@ -2432,6 +2506,45 @@ func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err e
 		)
 	}
 	return true, tmuxBoolOption(string(out)), nil
+}
+
+// tmuxTargetPresent reports whether the selected server still has the exact
+// window (or session) target. list-panes does not fall back to another window
+// when the requested window_id is gone.
+func tmuxTargetPresent(socket, target string) (bool, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false, nil
+	}
+	out, commandErr := tmuxCommand(
+		socket,
+		"list-panes",
+		"-t",
+		target,
+		"-F",
+		"#{session_name}:#{window_id}",
+	).CombinedOutput()
+	outText := strings.TrimSpace(string(out))
+	if isTmuxTargetMissing(commandErr, outText) ||
+		isNoTmuxServerError(commandErr) ||
+		isNoTmuxServerError(fmt.Errorf("%s", outText)) {
+		return false, nil
+	}
+	if commandErr != nil {
+		return false, fmt.Errorf("probe tmux presence for %s: %w: %s", target, commandErr, outText)
+	}
+	if outText == "" {
+		return false, fmt.Errorf("%w: tmux presence for %s returned no window identity", ErrOwnershipProbeUnavailable, target)
+	}
+	if !strings.Contains(target, ":") {
+		return true, nil
+	}
+	for _, line := range strings.Split(outText, "\n") {
+		if strings.TrimSpace(line) == target {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("%w: tmux presence for %s listed a different identity", ErrOwnershipProbeUnavailable, target)
 }
 
 // capturePaneContent captures the visible content of a tmux window's active
@@ -3602,7 +3715,7 @@ func isOpenCodeInputReady(content string) bool {
 
 func looksLikeOpenCodePane(content string) bool {
 	lower := strings.ToLower(content)
-	return strings.Contains(lower, "ask anything...") ||
+	return openCodeComposerPlaceholderRe.MatchString(content) ||
 		(strings.Contains(lower, "tab agents") && strings.Contains(lower, "ctrl+p commands"))
 }
 
@@ -4556,26 +4669,84 @@ func (w *Watcher) KillCompletedSession(sessionID, turnID string) error {
 		if len(pending) != 0 {
 			return fmt.Errorf("completed Session %s has pending input", sessionID)
 		}
-		presence, err := w.ProbeSession(sessionID)
+		present, owned, err := probeTmuxTargetOwnership(w.socketPathFor(sessionID), sessionID)
 		if err != nil {
 			return err
 		}
-		if presence == SessionPresenceAbsent {
+		if !present {
 			return w.KillSession(sessionID)
 		}
-		worker := w.GetWorker(sessionID)
-		if worker == nil || worker.Hidden || !worker.Delegated {
+		if !owned {
+			return fmt.Errorf("%w: %s", ErrUnownedTmuxTarget, sessionID)
+		}
+		if worker := w.GetWorker(sessionID); worker != nil && (worker.Hidden || !worker.Delegated) {
 			return fmt.Errorf("Session %s is not an owned delegated Worker", sessionID)
 		}
-		owned, err := w.ResolveOwnedGeneration(sessionID)
-		if err != nil {
-			return err
-		}
-		if owned.ProcessIdentity != turn.ProcessIdentity || owned.PaneGeneration != turn.PaneGeneration {
-			return fmt.Errorf("completed Session %s generation changed", sessionID)
+		if turn.ProcessIdentity != "" {
+			if err := w.guardCompletedOwnedIdentity(sessionID, turn); err != nil {
+				return err
+			}
 		}
 		return w.KillSession(sessionID)
 	})
+}
+
+// guardCompletedOwnedIdentity refuses to mutate a still-present owned window
+// unless the current pane/process generation is proven. An unknown probe must
+// not skip the check: that window may have been reused. A dead pane may still
+// be the same lifecycle when the recorded pane generation is present and matches.
+func (w *Watcher) guardCompletedOwnedIdentity(sessionID string, turn TurnSnapshot) error {
+	identity, known, identityErr := w.completedTargetIdentity(sessionID)
+	if identityErr != nil {
+		return identityErr
+	}
+	paneGeneration := strings.TrimSpace(w.currentPaneGeneration(sessionID))
+	if known {
+		if delegatedTurnIdentity(identity) != turn.ProcessIdentity {
+			return fmt.Errorf("completed Session %s generation changed", sessionID)
+		}
+		if turn.PaneGeneration == "" {
+			return nil
+		}
+		if paneGeneration == "" {
+			return fmt.Errorf("%w: completed Session %s pane generation is unproven", ErrOwnershipProbeUnavailable, sessionID)
+		}
+		if paneGeneration != turn.PaneGeneration {
+			return fmt.Errorf("completed Session %s generation changed", sessionID)
+		}
+		return nil
+	}
+	if turn.PaneGeneration != "" && paneGeneration != "" && paneGeneration == turn.PaneGeneration {
+		return nil
+	}
+	return fmt.Errorf("%w: completed Session %s identity is unproven", ErrOwnershipProbeUnavailable, sessionID)
+}
+
+// completedTargetIdentity reads the current pane/process identity for a
+// durably owned completed target. It must not use the live worker projection:
+// already-reclaimed Sessions can still have a leftover owned window, and the
+// projection's Unowned gate would mis-classify them.
+func (w *Watcher) completedTargetIdentity(sessionID string) (targetProcessIdentity, bool, error) {
+	if w == nil {
+		return targetProcessIdentity{}, false, ErrOwnershipProbeUnavailable
+	}
+	w.mu.RLock()
+	identityResolver := w.targetProcessResolver
+	resolver := w.targetCommandResolver
+	w.mu.RUnlock()
+	if identityResolver != nil {
+		identity, known := identityResolver(sessionID)
+		if !known {
+			return targetProcessIdentity{}, false, nil
+		}
+		return identity, true, nil
+	}
+	if resolver != nil {
+		identity, known := targetIdentityResolverFromCommandResolver(resolver)(sessionID)
+		return identity, known, nil
+	}
+	identity, known := w.resolveTargetProcessIdentity(sessionID)
+	return identity, known, nil
 }
 
 // KillSession terminates only the owned window and releases its delegated

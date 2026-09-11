@@ -1164,6 +1164,12 @@ func reduceTurnFact(turn *TurnRecord, fact watcher.TurnFact, now time.Time) (tur
 			// ProcessDead without a readable bound terminal, or SessionReplaced
 			// with a different live identity: end-of-identity → Unknown, never
 			// Failed. The uncertain event is actionable so Brain reconciles.
+			// A transient/unreadable observation (for example PaneAbsent, or a
+			// probe gap with no positive disappearance) is audit only and must
+			// never end a known live Worker's Turn.
+			if !fact.ProcessDead && !fact.SessionReplaced {
+				return mutation, nil
+			}
 			if status != watcher.TurnUnknown {
 				status = watcher.TurnUnknown
 				attention = ""

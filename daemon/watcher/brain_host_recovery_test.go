@@ -170,19 +170,23 @@ func TestReviewAuthorizedReuseUnknownRetryNeverReplays(t *testing.T) {
 			return delegatedInputConfirmation{Outcome: InputAmbiguous}, errors.New("provider admission outcome unknown")
 		},
 	}
+	// The delegated transport contract accepts the paste+submit without waiting
+	// for provider evidence; the admission stays pending for its lifecycle
+	// signal. An exact retry reports the known submission and never resends.
 	first, err := owner.submitDelegated(
 		"agent:@500", identity, fixedSessionInputResolver(identity), identity.Command,
 		"reviewed follow-up", draft, unknown,
 	)
-	if err == nil || first.Outcome != InputAmbiguous || len(io.queues) != 1 {
-		t.Fatalf("first unknown result=(%+v,%v) queues=%d", first, err, len(io.queues))
+	if err != nil || first.Outcome != InputAccepted || first.ProviderConfirmed || len(io.queues) != 1 {
+		t.Fatalf("first transport result=(%+v,%v) queues=%d", first, err, len(io.queues))
 	}
 	second, retryErr := owner.submitDelegated(
 		"agent:@500", identity, fixedSessionInputResolver(identity), identity.Command,
 		"reviewed follow-up", draft, unknown,
 	)
-	if retryErr == nil || second.Outcome != InputAmbiguous || !second.Duplicate || len(io.queues) != 1 {
-		t.Fatalf("unknown retry=(%+v,%v) queues=%d", second, retryErr, len(io.queues))
+	if retryErr != nil || second.Outcome != InputAccepted || !second.Duplicate ||
+		second.ProviderConfirmed || len(io.queues) != 1 {
+		t.Fatalf("transport retry=(%+v,%v) queues=%d", second, retryErr, len(io.queues))
 	}
 }
 
@@ -262,11 +266,14 @@ func TestReviewAuthorizedReuseDefiniteAbortRearmsSameTurn(t *testing.T) {
 		"agent:@500", identity, fixedSessionInputResolver(identity), identity.Command,
 		"reviewed follow-up", draft, confirmer,
 	)
-	if retryErr != nil || second.Outcome != InputAccepted || second.TurnID != draft.ID || io.startedQueues != 1 {
+	if retryErr != nil || second.Outcome != InputAccepted || second.TurnID != draft.ID ||
+		second.ProviderConfirmed || io.startedQueues != 1 {
 		t.Fatalf("same-turn retry=(%+v,%v) started=%d", second, retryErr, io.startedQueues)
 	}
-	resolved, found, _ := ledger.InputAdmission("agent:@500", draft.ID)
-	if !found || resolved.State != InputAdmissionResolved {
-		t.Fatalf("resolved retry found=%v admission=%+v", found, resolved)
+	// The retry re-ran the transport under the same receipt and now awaits its
+	// lifecycle signal; it is a known submission, never reclassified failed.
+	pending, found, _ := ledger.InputAdmission("agent:@500", draft.ID)
+	if !found || pending.State != InputAdmissionPending {
+		t.Fatalf("retried transport found=%v admission=%+v", found, pending)
 	}
 }

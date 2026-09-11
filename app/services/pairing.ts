@@ -6,6 +6,7 @@ import {
   normalizePublicKeyHex,
   verifyDaemonAssertion,
 } from "./auth";
+import { DESKTOP_SCOPE_VERSION, signPairingScope } from "./pairingScope";
 
 export interface PairingInput {
   serverUrl: string;
@@ -28,6 +29,7 @@ export async function enrollWithDaemon(input: PairingInput): Promise<{
   }
 
   const identity = await getOrCreateLocalDeviceIdentity();
+  const scopeSignature = signPairingScope({ daemonPublicKey, enrollmentToken, ...identity });
   let response: Response;
   try {
     response = await fetch(pairURL, {
@@ -42,6 +44,8 @@ export async function enrollWithDaemon(input: PairingInput): Promise<{
         device_id: identity.deviceId,
         device_name: identity.deviceName,
         device_public_key: identity.publicKeyHex,
+        desktop_scope_version: DESKTOP_SCOPE_VERSION,
+        desktop_scope_signature: scopeSignature,
       }),
     });
   } catch (error) {
@@ -59,6 +63,7 @@ export async function enrollWithDaemon(input: PairingInput): Promise<{
     assertion_timestamp?: string;
     assertion_nonce?: string;
     assertion_signature?: string;
+    desktop_scope_version?: number;
   };
   const pairedDaemonId = normalizeDaemonId(payload.daemon_id);
   const pairedDaemonPublicKey = normalizePublicKeyHex(
@@ -84,6 +89,10 @@ export async function enrollWithDaemon(input: PairingInput): Promise<{
     })
   ) {
     throw new Error("Pairing target failed daemon identity proof.");
+  }
+
+  if (payload.desktop_scope_version !== DESKTOP_SCOPE_VERSION) {
+    throw new Error("Update this computer's Zen host before pairing with desktop access.");
   }
 
   return {

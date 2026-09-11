@@ -689,6 +689,35 @@ func workTurnHasRelinquishmentEvidence(database presentationDatabase, workID str
 			return true
 		}
 	}
+	// A canonically resolved loss review for this exact Turn is durable
+	// lifecycle evidence that the Turn no longer owns execution, even when the
+	// provider session stayed alive and no terminal turn fact was ever
+	// observed (for example sweep lease-expiry escalation). The handled review
+	// already replaced execution authority; without this excuse the projection
+	// that closed the review cannot persist, so canonical state advances while
+	// the presentation keeps a ghost open review. Open loss reviews are Ready
+	// attention and never reach this excuse. Identity is the exact canonical
+	// payload: the loss projection carries the full Turn token as its
+	// PayloadRef when no provider evidence exists, and provider evidence is
+	// already covered by the result-event rule above. Substrings never confer
+	// authority.
+	turnID := strings.TrimSpace(turn.TurnID)
+	if turnID == "" {
+		return false
+	}
+	for _, event := range database.BrainWorkEvents {
+		if event.WorkID != workID || event.HandledAt == nil {
+			continue
+		}
+		switch strings.TrimSpace(event.Kind) {
+		case "turn_lost", "lease_expired":
+		default:
+			continue
+		}
+		if strings.TrimSpace(event.PayloadRef) == turnID {
+			return true
+		}
+	}
 	return false
 }
 

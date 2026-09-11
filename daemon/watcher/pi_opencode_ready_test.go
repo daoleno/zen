@@ -1,6 +1,34 @@
 package watcher
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestOpenCodeUnicodePlaceholder(t *testing.T) {
+	// OpenCode 1.18.30 uses U+2026 in the empty composer.
+	pane := "  Ask anything\u2026 \"What is the tech stack of this project?\"\n" +
+		"  Build · DeepSeek V4.1 Flash OpenCode Go\n" +
+		"  ~/acelabs/perpetuo:main                                        1.18.30\n"
+	for _, placeholder := range []string{"\u2026", "..."} {
+		ready := strings.ReplaceAll(pane, "\u2026", placeholder)
+		if !isOpenCodeInputReady(ready) || !looksLikeOpenCodePane(ready) {
+			t.Fatalf("placeholder %q not recognized", placeholder)
+		}
+		for _, overlay := range []string{"Select a model", "Permission required", "Sign in"} {
+			if isOpenCodeInputReady(ready + overlay) {
+				t.Fatalf("overlay %q must block readiness", overlay)
+			}
+		}
+		busy := strings.ReplaceAll(ready, "~/acelabs/perpetuo:main                                        1.18.30", "esc interrupt  ctrl+p commands")
+		if isOpenCodeInputReady(busy) {
+			t.Fatal("busy footer must block readiness")
+		}
+		if isOpenCodeInputReady(strings.ReplaceAll(ready, "Ask anything"+placeholder, "draft")) {
+			t.Fatal("draft must block readiness")
+		}
+	}
+}
 
 func TestPiAndOpenCodeInputReadyPredicates(t *testing.T) {
 	piReady := `

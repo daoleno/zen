@@ -38,14 +38,18 @@ const (
 type Remediation string
 
 const (
-	RemediationUnsupportedPlatform Remediation = "unsupported_platform"
-	RemediationInstallTmux         Remediation = "install_tmux"
-	RemediationFixTmux             Remediation = "fix_tmux"
-	RemediationStateDirUnwritable  Remediation = "state_dir_unwritable"
-	RemediationPortInUse           Remediation = "port_in_use"
-	RemediationInstallExecutor     Remediation = "install_executor"
-	RemediationAuthenticateExec    Remediation = "authenticate_executor"
-	RemediationConfigureExecutor   Remediation = "configure_executor"
+	RemediationUnsupportedPlatform  Remediation = "unsupported_platform"
+	RemediationInstallTmux          Remediation = "install_tmux"
+	RemediationFixTmux              Remediation = "fix_tmux"
+	RemediationStateDirUnwritable   Remediation = "state_dir_unwritable"
+	RemediationPortInUse            Remediation = "port_in_use"
+	RemediationInstallExecutor      Remediation = "install_executor"
+	RemediationAuthenticateExec     Remediation = "authenticate_executor"
+	RemediationConfigureExecutor    Remediation = "configure_executor"
+	RemediationDesktopNativeMissing Remediation = "desktop_native_missing"
+	RemediationDesktopLibraries     Remediation = "desktop_libraries_missing"
+	RemediationDesktopCorrupt       Remediation = "desktop_corrupt_binary"
+	RemediationDesktopHostSetup     Remediation = "desktop_host_setup_required"
 )
 
 // InstallHint is an OS-specific non-destructive install suggestion.
@@ -77,6 +81,7 @@ type Report struct {
 	StateDir     StateDirCheck  `json:"state_dir"`
 	Listen       ListenCheck    `json:"listen"`
 	Executors    ExecutorsCheck `json:"executors"`
+	Desktop      DesktopCheck   `json:"desktop"`
 	Checks       []NamedCheck   `json:"checks"`
 	Warnings     []string       `json:"warnings,omitempty"`
 	Remediations []Remediation  `json:"remediations"`
@@ -176,6 +181,26 @@ type ExecutorCheck struct {
 	// run or failed ambiguously; never includes model lists or secrets.
 	ModelsStatus Status `json:"models_status,omitempty"`
 	DBPathStatus Status `json:"db_path_status,omitempty"`
+}
+
+// DesktopCheck reports same-binary native role provenance and shared libraries.
+// Missing desktop native does not block daemon Ready. StreamReady is never
+// inferred from linking alone.
+type DesktopCheck struct {
+	Executable     string      `json:"executable,omitempty"`
+	SHA256         string      `json:"sha256,omitempty"`
+	NativeLinked   bool        `json:"native_linked"`
+	StreamReady    bool        `json:"stream_ready"`
+	DisplaySet     bool        `json:"display_set"`
+	Roles          []string    `json:"roles,omitempty"`
+	Libraries      []string    `json:"libraries,omitempty"`
+	Missing        []string    `json:"missing_libraries,omitempty"`
+	HostBroker     bool        `json:"host_broker"`
+	CurrentSession bool        `json:"current_session"`
+	IdentityTLS    bool        `json:"identity_tls"`
+	Status         Status      `json:"status"`
+	Remediation    Remediation `json:"remediation,omitempty"`
+	Summary        string      `json:"summary"`
 }
 
 // TmuxInstallHints returns OS-specific install commands. Doctor never runs them.

@@ -19,8 +19,12 @@ behavior on both. One supported coding CLI is enough to run a Zen Worker.
 ## Development
 
 ```bash
-# Daemon
+# Daemon (Linux desktop-capable when pkg-config libraries are present)
+bun run daemon:build && cd daemon && go test ./...
+
+# Daemon without desktop native (plain Go)
 cd daemon && go test ./... && go build -o bin/zen ./cmd/zen/
+
 
 # App
 bun install

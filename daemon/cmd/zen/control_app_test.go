@@ -206,6 +206,14 @@ func (w *fakeControlWatcher) ProbeSession(target string) (watcher.SessionPresenc
 	return watcher.SessionPresenceAbsent, nil
 }
 
+func (w *fakeControlWatcher) ResolveDelegatedAbsence(target string) (bool, error) {
+	presence, err := w.ProbeSession(target)
+	if err != nil {
+		return false, err
+	}
+	return presence == watcher.SessionPresenceAbsent, nil
+}
+
 func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
 	if w.createErr != nil {
 		w.created = append(w.created, opts)

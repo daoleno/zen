@@ -1,0 +1,75 @@
+export function desktopStart(source: unknown, control: boolean) {
+  if (source !== "x11" && source !== "wayland") return null;
+  return { type: "start" as const, source, control };
+}
+
+export function desktopPoint(x: number, y: number, viewportWidth: number, viewportHeight: number, frameWidth: number, frameHeight: number) {
+  if (![x, y, viewportWidth, viewportHeight, frameWidth, frameHeight].every(Number.isFinite) ||
+    Math.min(viewportWidth, viewportHeight, frameWidth, frameHeight) <= 0) return null;
+  const scale = Math.min(viewportWidth / frameWidth, viewportHeight / frameHeight);
+  const width = frameWidth * scale;
+  const height = frameHeight * scale;
+  const px = (x - (viewportWidth - width) / 2) / width;
+  const py = (y - (viewportHeight - height) / 2) / height;
+  return px < 0 || px > 1 || py < 0 || py > 1 ? null : { x: px, y: py };
+}
+
+export type DesktopInput =
+  | { type: "pointer"; x: number; y: number }
+  | { type: "button" | "key"; code: number; down: boolean }
+  | { type: "scroll"; delta: number }
+  | { type: "release" };
+
+export interface DesktopPanState {
+  point: { x: number; y: number };
+  offset: { x: number; y: number };
+}
+
+/**
+ * Pan state survives PanResponder recreation: the screen rebuilds the responder
+ * on every offset render, so a per-instance gestureState.dx only ever reflects
+ * the last fragment. Callers keep this state object in a persistent ref and
+ * hand it back on each move; coordinates are page units.
+ */
+export function beginDesktopPan(offset: { x: number; y: number }, point: { x: number; y: number }): DesktopPanState {
+  return { point: { x: point.x, y: point.y }, offset: { x: offset.x, y: offset.y } };
+}
+
+export function advanceDesktopPan(state: DesktopPanState, point: { x: number; y: number }): DesktopPanState {
+  return {
+    point: { x: point.x, y: point.y },
+    offset: { x: state.offset.x + point.x - state.point.x, y: state.offset.y + point.y - state.point.y },
+  };
+}
+
+export function desktopKey(code: number): DesktopInput[] {
+  return [{ type: "key", code, down: true }, { type: "key", code, down: false }];
+}
+
+export function desktopText(text: string): DesktopInput[] {
+  const events: DesktopInput[] = [];
+  for (const char of text.slice(0, 16)) {
+    const code = char.codePointAt(0)!;
+    if (code < 32 || code > 126) continue;
+    const shifted = /[A-Z~!@#$%^&*()_+{}|:"<>?]/.test(char);
+    if (shifted) events.push({ type: "key", code: 0xffe1, down: true });
+    events.push(...desktopKey(code));
+    if (shifted) events.push({ type: "key", code: 0xffe1, down: false });
+  }
+  return events;
+}
+
+export function desktopTextEdits(previous: string, next: string): DesktopInput[][] {
+  const before = previous.replace(/[^\x20-\x7e]/g, "");
+  const after = next.replace(/[^\x20-\x7e]/g, "");
+  let prefix = 0;
+  while (prefix < before.length && before[prefix] === after[prefix]) prefix++;
+  const batches: DesktopInput[][] = [];
+  for (let remaining = before.length - prefix; remaining > 0; remaining -= 32) {
+    batches.push(Array.from({ length: Math.min(remaining, 32) }, () => desktopKey(0xff08)).flat());
+  }
+  for (let offset = prefix; offset < after.length; offset += 16) {
+    batches.push(desktopText(after.slice(offset, offset + 16)));
+  }
+  return batches;
+}

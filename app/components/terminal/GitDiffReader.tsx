@@ -16,12 +16,13 @@ export interface GitDiffPosition {
   layout?: string;
 }
 
-export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, onPosition, wrap, fontSize, refreshKey, showSearch, showHeaders }: {
+export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, onPosition, wrap, fontSize, refreshKey, showSearch, showHeaders, bottomInset }: {
   path: string; scope: GitDiffScope;
   loadPage(request: GitDiffPageRequest): Promise<GitDiffPage>;
   chrome: TerminalThemeChrome; theme: TerminalThemePalette;
   position: GitDiffPosition; onPosition(position: GitDiffPosition): void;
   wrap: boolean; fontSize: number; refreshKey: number; showSearch: boolean; showHeaders: boolean;
+  bottomInset: number;
 }) {
   const restored = position.refreshKey === refreshKey ? position : { offset: 0 };
   const stream = useMemo(() => new GitDiffStream(loadPage, path, scope, restoreDiffStream(restored.snapshot, restored.row)), [loadPage, path, scope, refreshKey]);
@@ -35,6 +36,9 @@ export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, 
   const frames = useRef(new Map<number, DiffCellFrame>());
   const withinRow = useRef(restored.layout === layout ? restored.offset : 0);
   const horizontalOffset = useRef(restored.horizontalOffset ?? 0);
+  // Captured once: a live horizontal contentOffset would be re-applied by
+  // Android Fabric on every reader re-render and fight native panning.
+  const initialHorizontalOffset = useRef(horizontalOffset.current).current;
   const visibleRow = useRef(state.targetRow ?? state.start);
   const interacted = useRef(false);
   const list = useRef<VirtualizedList<IndexedDiffRow>>(null);
@@ -119,6 +123,7 @@ export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, 
       renderItem={renderRow}
       CellRendererComponent={MeasuredCell}
       style={styles.root}
+      contentContainerStyle={{ paddingBottom: bottomInset + 12 }}
       initialNumToRender={initialCount.current}
       maxToRenderPerBatch={8}
       windowSize={5}
@@ -165,7 +170,7 @@ export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, 
       </View> : null}
       {hasRows ? wrap ? rows : <ScrollView
         horizontal style={styles.root} contentContainerStyle={styles.horizontal}
-        contentOffset={{ x: horizontalOffset.current, y: 0 }}
+        contentOffset={{ x: initialHorizontalOffset, y: 0 }}
         onScroll={event => { horizontalOffset.current = event.nativeEvent.contentOffset.x; }} scrollEventThrottle={100}
       >
         <View style={{ width: Math.max(width, state.maxCharacters * fontSize * fontScale + 120 * fontScale) }}>{rows}</View>

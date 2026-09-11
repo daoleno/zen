@@ -1,7 +1,9 @@
 package link
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -19,11 +21,22 @@ import (
 	"time"
 )
 
-const transportIdentityFilename = "link-identity.json"
+const (
+	transportIdentityFilename = "link-identity.json"
+	// DesktopIdentityServerName is a non-resolving TLS server name so LAN IP
+	// clients can present SNI without a user-owned domain. Authentication is
+	// the SPKI pin, not this name or a public CA.
+	DesktopIdentityServerName = "zen-desktop.invalid"
+)
 
 type persistedTransportIdentity struct {
 	RouteID       string `json:"route_id"`
 	PrivateKeyHex string `json:"private_key_hex"`
+	// TLSPrivateKeyHex is the SEC1 DER-encoded ECDSA P-256 key used for the
+	// self-signed TLS certificate. Android's TLS stack does not offer Ed25519,
+	// so the certificate must use a curve every supported client negotiates.
+	// The Ed25519 key remains for compatibility but no longer signs TLS.
+	TLSPrivateKeyHex string `json:"tls_private_key_hex,omitempty"`
 }
 
 // TransportIdentity is a daemon-local TLS identity used only by Zen Link.
@@ -45,17 +58,27 @@ func LoadOrCreateTransportIdentity(stateDir string, relayDomains []string) (*Tra
 	}
 
 	path := filepath.Join(dir, transportIdentityFilename)
-	persisted, privateKey, err := loadTransportIdentity(path)
+	persisted, err := loadTransportIdentity(path)
 	if errors.Is(err, os.ErrNotExist) {
-		persisted, privateKey, err = createTransportIdentity(path)
+		persisted, err = createTransportIdentity(path)
 	}
 	if err != nil {
 		return nil, err
 	}
 
+	tlsKey, migrated, err := persistedTransportTLSKey(&persisted)
+	if err != nil {
+		return nil, err
+	}
+	if migrated {
+		if err := writeTransportIdentity(path, persisted); err != nil {
+			return nil, err
+		}
+	}
+
 	certificate, leaf, err := issueTransportCertificate(
 		persisted.RouteID,
-		privateKey,
+		tlsKey,
 		relayDomains,
 		time.Now(),
 	)
@@ -72,53 +95,103 @@ func LoadOrCreateTransportIdentity(stateDir string, relayDomains []string) (*Tra
 	}, nil
 }
 
-func loadTransportIdentity(path string) (persistedTransportIdentity, ed25519.PrivateKey, error) {
+func loadTransportIdentity(path string) (persistedTransportIdentity, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return persistedTransportIdentity{}, nil, err
+		return persistedTransportIdentity{}, err
 	}
 	var persisted persistedTransportIdentity
 	if err := json.Unmarshal(raw, &persisted); err != nil {
-		return persistedTransportIdentity{}, nil, fmt.Errorf("decode Link transport identity: %w", err)
+		return persistedTransportIdentity{}, fmt.Errorf("decode Link transport identity: %w", err)
 	}
 	persisted.RouteID = normalizeRouteID(persisted.RouteID)
 	if persisted.RouteID == "" {
-		return persistedTransportIdentity{}, nil, errors.New("Link transport identity has an invalid route id")
+		return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid route id")
 	}
-	keyBytes, err := hex.DecodeString(strings.TrimSpace(persisted.PrivateKeyHex))
-	if err != nil || len(keyBytes) != ed25519.PrivateKeySize {
-		return persistedTransportIdentity{}, nil, errors.New("Link transport identity has an invalid private key")
+	identityKey, err := hex.DecodeString(strings.TrimSpace(persisted.PrivateKeyHex))
+	if err != nil || len(identityKey) != ed25519.PrivateKeySize {
+		return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid identity key")
 	}
-	privateKey := ed25519.PrivateKey(append([]byte(nil), keyBytes...))
-	return persisted, privateKey, nil
+	if rawTLS := strings.TrimSpace(persisted.TLSPrivateKeyHex); rawTLS != "" {
+		der, err := hex.DecodeString(rawTLS)
+		if err != nil {
+			return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid TLS key")
+		}
+		key, err := x509.ParseECPrivateKey(der)
+		if err != nil || key.Curve != elliptic.P256() {
+			return persistedTransportIdentity{}, errors.New("Link transport identity has an invalid TLS key")
+		}
+	}
+	return persisted, nil
 }
 
-func createTransportIdentity(path string) (persistedTransportIdentity, ed25519.PrivateKey, error) {
+func createTransportIdentity(path string) (persistedTransportIdentity, error) {
 	routeBytes := make([]byte, 16)
 	if _, err := rand.Read(routeBytes); err != nil {
-		return persistedTransportIdentity{}, nil, fmt.Errorf("generate Link route id: %w", err)
+		return persistedTransportIdentity{}, fmt.Errorf("generate Link route id: %w", err)
 	}
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	_, identityKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return persistedTransportIdentity{}, nil, fmt.Errorf("generate Link transport key: %w", err)
+		return persistedTransportIdentity{}, fmt.Errorf("generate Link transport key: %w", err)
+	}
+	tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return persistedTransportIdentity{}, fmt.Errorf("generate Link TLS key: %w", err)
+	}
+	tlsDER, err := x509.MarshalECPrivateKey(tlsKey)
+	if err != nil {
+		return persistedTransportIdentity{}, fmt.Errorf("encode Link TLS key: %w", err)
 	}
 	persisted := persistedTransportIdentity{
-		RouteID:       hex.EncodeToString(routeBytes),
-		PrivateKeyHex: hex.EncodeToString(privateKey),
+		RouteID:          hex.EncodeToString(routeBytes),
+		PrivateKeyHex:    hex.EncodeToString(identityKey),
+		TLSPrivateKeyHex: hex.EncodeToString(tlsDER),
 	}
+	if err := writeTransportIdentity(path, persisted); err != nil {
+		return persistedTransportIdentity{}, err
+	}
+	return persisted, nil
+}
+
+// persistedTransportTLSKey returns the ECDSA P-256 key that signs the TLS
+// certificate. Older identity files predate the field; a key is generated and
+// the migration flag tells the caller to persist it.
+func persistedTransportTLSKey(persisted *persistedTransportIdentity) (*ecdsa.PrivateKey, bool, error) {
+	raw := strings.TrimSpace(persisted.TLSPrivateKeyHex)
+	if raw == "" {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, false, fmt.Errorf("generate Link TLS key: %w", err)
+		}
+		der, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			return nil, false, fmt.Errorf("encode Link TLS key: %w", err)
+		}
+		persisted.TLSPrivateKeyHex = hex.EncodeToString(der)
+		return key, true, nil
+	}
+	der, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, false, errors.New("Link transport identity has an invalid TLS key")
+	}
+	key, err := x509.ParseECPrivateKey(der)
+	if err != nil {
+		return nil, false, errors.New("Link transport identity has an invalid TLS key")
+	}
+	return key, false, nil
+}
+
+func writeTransportIdentity(path string, persisted persistedTransportIdentity) error {
 	raw, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
-		return persistedTransportIdentity{}, nil, fmt.Errorf("encode Link transport identity: %w", err)
+		return fmt.Errorf("encode Link transport identity: %w", err)
 	}
-	if err := writePrivateFileAtomic(path, raw); err != nil {
-		return persistedTransportIdentity{}, nil, err
-	}
-	return persisted, privateKey, nil
+	return writePrivateFileAtomic(path, raw)
 }
 
 func issueTransportCertificate(
 	routeID string,
-	privateKey ed25519.PrivateKey,
+	privateKey *ecdsa.PrivateKey,
 	relayDomains []string,
 	now time.Time,
 ) (tls.Certificate, *x509.Certificate, error) {
@@ -144,7 +217,7 @@ func issueTransportCertificate(
 		BasicConstraintsValid: true,
 		DNSNames:              dnsNames,
 	}
-	publicKey := privateKey.Public().(ed25519.PublicKey)
+	publicKey := privateKey.Public()
 	der, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
 	if err != nil {
 		return tls.Certificate{}, nil, fmt.Errorf("issue Link transport certificate: %w", err)
@@ -160,7 +233,7 @@ func issueTransportCertificate(
 }
 
 func transportDNSNames(relayDomains []string) []string {
-	seen := make(map[string]struct{})
+	seen := map[string]struct{}{DesktopIdentityServerName: {}}
 	for _, raw := range relayDomains {
 		domain := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
 		if domain == "" {

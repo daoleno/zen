@@ -35,6 +35,7 @@ import {
 import { syncCalendarNotifications } from "../services/calendarNotifications";
 import { useAppTheme } from "../constants/tokens";
 import { ThemeProvider } from "../theme";
+import { MermaidEngineHost } from "../components/markdown/MermaidEngineHost";
 import { wsClient } from "../services/websocket";
 import {
   createConnectedReadRefreshHandler,
@@ -47,6 +48,7 @@ import {
   markOnboarded,
 } from "../services/storage";
 import { importConnection } from "../services/importConnection";
+import { PairingCancelledError } from "../services/pairingScope";
 import {
   clearNativeTerminalCrashBreadcrumb,
   getNativeTerminalCrashBreadcrumb,
@@ -220,6 +222,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         return true;
       } catch (error) {
         handledConnectLinksRef.current.delete(trimmed);
+        if (error instanceof PairingCancelledError) return false;
         console.log("Failed to import connect link:", error);
         return false;
       }
@@ -777,6 +780,7 @@ export default function RootLayout() {
                     <CalendarProvider>
                       <SafeAreaProvider>
                         <ThemedStatusBar />
+                        <MermaidEngineHost />
                         <AppRuntime />
                       </SafeAreaProvider>
                     </CalendarProvider>

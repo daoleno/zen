@@ -1155,27 +1155,33 @@ func TestSessionInputMatchingSignalCompletesWhenProviderEvidenceIsUnavailable(t 
 			}}, nil
 		},
 		confirm: func(delegatedAdmissionEvidence, time.Time, string) (delegatedInputConfirmation, error) {
-			result, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
-				SessionID: "agent:@1", TurnID: turn.ID, Class: EvidenceControl, Kind: "done",
-				SourceID: "control\x00provider-unavailable", At: time.Now().UTC(),
-				Summary: "REVIEW_READY without provider evidence",
-			})
-			if err != nil || !result.Owned || !result.Matched || result.Turn.Status != TurnDone {
-				return delegatedInputConfirmation{}, fmt.Errorf("matching signal did not settle: result=%+v err=%v", result, err)
-			}
-			return delegatedInputConfirmation{Outcome: InputAmbiguous}, errors.New("provider evidence intentionally unavailable")
+			return delegatedInputConfirmation{}, errors.New("provider evidence intentionally unavailable")
 		},
 	}
 	result, err := owner.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
 		payload, turn, confirmer,
 	)
-	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID || len(io.queues) != 1 {
-		t.Fatalf("control-only admission = (%+v, %v), queues=%d", result, err, len(io.queues))
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID ||
+		result.ProviderConfirmed || len(io.queues) != 1 {
+		t.Fatalf("control-only transport = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
 	submission, found, err := ledger.InputAdmission("agent:@1", turn.ID)
-	if err != nil || !found || submission.State != InputAdmissionResolved ||
-		submission.ResolvedTurnID != turn.ID || !submission.ResolvedAdmission.Empty() {
+	if err != nil || !found || submission.State != InputAdmissionPending {
+		t.Fatalf("transport submission must await its signal: (%+v, %v, %v)", submission, found, err)
+	}
+	// The prompt-carried signal alone completes the current turn; provider
+	// evidence was never available.
+	progress, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: "agent:@1", TurnID: turn.ID, Class: EvidenceControl, Kind: "done",
+		SourceID: "control\x00provider-unavailable", At: time.Now().UTC(),
+		Summary: "REVIEW_READY without provider evidence",
+	})
+	if err != nil || !progress.Owned || !progress.Matched || progress.Turn.Status != TurnDone {
+		t.Fatalf("matching signal did not settle: result=%+v err=%v", progress, err)
+	}
+	submission, found, err = ledger.InputAdmission("agent:@1", turn.ID)
+	if err != nil || !found || submission.State != InputAdmissionResolved || submission.ResolvedTurnID != turn.ID {
 		t.Fatalf("control-only submission = (%+v, %v, %v)", submission, found, err)
 	}
 	if current, found, err := ledger.Turn("agent:@1"); err != nil || !found || current.Status != TurnDone {
@@ -1499,21 +1505,30 @@ func TestSessionInputCompletedTurnReusesDifferentIdleProviderActivity(t *testing
 		"agent:@1", identity, fixedSessionInputResolver(identity), identity.Command,
 		"follow-up", next, confirm,
 	)
-	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID {
-		t.Fatalf("completed-turn idle reuse = (%+v, %v), want accepted", result, err)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != next.ID || result.ProviderConfirmed {
+		t.Fatalf("completed-turn idle reuse transport = (%+v, %v), want submitted", result, err)
 	}
 	if len(io.queues) != 1 {
 		t.Fatalf("completed-turn idle reuse queues=%d, want one", len(io.queues))
 	}
-	current := ledger.snapshot("agent:@1")
-	if current.TurnID != next.ID || current.Status != TurnAccepted ||
-		current.ActivityID != "activity-follow-up" {
-		t.Fatalf("fresh follow-up did not become canonical: %+v", current)
+	if current := ledger.snapshot("agent:@1"); current.TurnID != "canonical-completed" {
+		t.Fatalf("transport submit replaced the canonical turn before its signal: %+v", current)
 	}
 	for _, fact := range ledger.applied {
 		if fact.TurnID == "canonical-completed" && fact.ActivityID == "activity-current-idle" {
 			t.Fatalf("different idle activity was ambiently adopted by prior turn: %+v", fact)
 		}
+	}
+	// The fresh follow-up is owned by its own prompt signal.
+	if _, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: "agent:@1", TurnID: next.ID, Class: EvidenceControl, Kind: "running",
+		SourceID: "control\x00" + next.ID, At: acceptedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := ledger.snapshot("agent:@1")
+	if current.TurnID != next.ID || current.Status != TurnAccepted {
+		t.Fatalf("fresh follow-up did not become canonical: %+v", current)
 	}
 }
 
@@ -3037,4 +3052,101 @@ func TestSessionInputWorkWakeAndForegroundChatIsolateReceiptIdentities(t *testin
 	if _, found, err := ledger.InputAdmission("agent:@1", "turn-wake"); err != nil || !found {
 		t.Fatalf("wake canonical submission is missing: found=%v err=%v", found, err)
 	}
+}
+
+// TestDelegatedReceiptReplayRequiresConfirmedTransportAcceptance guards the
+// pending-receipt branch: the pre-mutation transport marker is persisted before
+// the queue runs, so an Ambiguous receipt (a crash before the queue, or a
+// started queue failure) proves only that the attempt began. It must never be
+// re-reported as submitted and must never be replayed. Only a confirmed
+// InputAccepted receipt re-reports the known delegated submission.
+func TestDelegatedReceiptReplayRequiresConfirmedTransportAcceptance(t *testing.T) {
+	identity := testSessionInputIdentity("codex")
+	payload := "replayed delegated payload"
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	baseTurn := testTurnDraft("turn:replay-guard", time.Now().UTC(), identity)
+	baseTurn.SignalProtocol = true
+	baselineOnly := delegatedInputConfirmer{
+		baseline: func() (delegatedInputBaseline, error) { return delegatedInputBaseline{}, nil },
+	}
+
+	t.Run("pre-mutation ambiguous receipt is not submitted", func(t *testing.T) {
+		io := newFakeSessionInputIO()
+		ledger := newFakeTurnLedger()
+		owner := newLedgerSessionInputOwner(io, ledger)
+		if _, created, err := ledger.PrepareInputAdmission(InputAdmission{
+			WorkID: "work-replay", SessionID: "agent:@replay", ProposedTurnID: baseTurn.ID,
+			Receipt: baseTurn.ID, PayloadSHA256: digest, ProcessIdentity: delegatedTurnIdentity(identity),
+			PaneGeneration: io.paneValue.generation, AcceptedAt: baseTurn.AcceptedAt,
+			Mode: InputAdmissionFresh, SignalProtocol: true,
+		}); err != nil || !created {
+			t.Fatalf("seed pending created=%v err=%v", created, err)
+		}
+		io.ledger = sessionInputReceiptLedger{
+			SchemaVersion: sessionInputReceiptLedgerSchema,
+			Entries:       []sessionInputReceiptEntry{{Receipt: baseTurn.ID, PayloadSHA256: digest, Outcome: InputAmbiguous}},
+		}
+		result, err := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, baseTurn, baselineOnly,
+		)
+		if err == nil || result.Outcome != InputAmbiguous || !result.Duplicate {
+			t.Fatalf("ambiguous receipt replay = (%+v, %v), want unknown duplicate", result, err)
+		}
+		if len(io.queues) != 0 {
+			t.Fatalf("ambiguous receipt replay resent input: queues=%d", len(io.queues))
+		}
+	})
+
+	t.Run("started queue failure retry stays unknown without replay", func(t *testing.T) {
+		io := newFakeSessionInputIO()
+		io.runStarted = true
+		io.runErr = errors.New("tmux queue failed after start")
+		ledger := newFakeTurnLedger()
+		owner := newLedgerSessionInputOwner(io, ledger)
+		first, err := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, baseTurn, baselineOnly,
+		)
+		if err == nil || first.Outcome != InputAmbiguous || len(io.queues) != 1 {
+			t.Fatalf("started queue failure = (%+v, %v) queues=%d", first, err, len(io.queues))
+		}
+		io.runStarted = false
+		io.runErr = nil
+		retry, retryErr := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, baseTurn, baselineOnly,
+		)
+		if retryErr == nil || retry.Outcome != InputAmbiguous || !retry.Duplicate {
+			t.Fatalf("failed-transport retry = (%+v, %v), want unknown duplicate", retry, retryErr)
+		}
+		if len(io.queues) != 1 {
+			t.Fatalf("failed-transport retry replayed: queues=%d", len(io.queues))
+		}
+	})
+
+	t.Run("confirmed acceptance receipt retry is accepted", func(t *testing.T) {
+		io := newFakeSessionInputIO()
+		ledger := newFakeTurnLedger()
+		owner := newLedgerSessionInputOwner(io, ledger)
+		turn := baseTurn
+		turn.ID = "turn:replay-accepted"
+		first, err := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, turn, baselineOnly,
+		)
+		if err != nil || first.Outcome != InputAccepted || first.ProviderConfirmed || len(io.queues) != 1 {
+			t.Fatalf("initial transport = (%+v, %v) queues=%d", first, err, len(io.queues))
+		}
+		retry, retryErr := owner.submitDelegated(
+			"agent:@replay", identity, fixedSessionInputResolver(identity), identity.Command,
+			payload, turn, baselineOnly,
+		)
+		if retryErr != nil || retry.Outcome != InputAccepted || !retry.Duplicate {
+			t.Fatalf("confirmed receipt retry = (%+v, %v), want accepted duplicate", retry, retryErr)
+		}
+		if len(io.queues) != 1 {
+			t.Fatalf("confirmed receipt retry replayed: queues=%d", len(io.queues))
+		}
+	})
 }

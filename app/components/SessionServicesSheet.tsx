@@ -12,7 +12,9 @@ import { Typography, useAppColors } from "../constants/tokens";
 import { BottomSheetFrame } from "./ui/BottomSheetFrame";
 import {
   groupSessionServices,
+  hasServiceTerminal,
   presentSessionServiceURL,
+  serviceSourceLabel,
   serviceWorkerLabel,
   serviceBindLabel,
   serviceCommandDetail,
@@ -205,6 +207,8 @@ function ServicePortRow({
 }) {
   const urls = (service.urls ?? []).map(presentSessionServiceURL);
   const commandDetail = serviceCommandDetail(service);
+  const persistent = !hasServiceTerminal(service) && service.source === "persistent";
+  const statusDetail = (service.status_detail || "").trim();
 
   return (
     <View style={[styles.portRow, !last ? styles.portRowDivider : null]}>
@@ -220,18 +224,20 @@ function ServicePortRow({
           >
             {serviceProcessLabel(service)}
           </Text>
-          <TouchableOpacity
-            style={styles.terminalButton}
-            onPress={() => onOpenTerminal(service)}
-            activeOpacity={0.82}
-            accessibilityLabel={`Open terminal for port ${service.port}`}
-          >
-            <Ionicons
-              name="terminal-outline"
-              size={15}
-              color={colors.textSecondary}
-            />
-          </TouchableOpacity>
+          {hasServiceTerminal(service) ? (
+            <TouchableOpacity
+              style={styles.terminalButton}
+              onPress={() => onOpenTerminal(service)}
+              activeOpacity={0.82}
+              accessibilityLabel={`Open terminal for port ${service.port}`}
+            >
+              <Ionicons
+                name="terminal-outline"
+                size={15}
+                color={colors.textSecondary}
+              />
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {commandDetail ? (
@@ -254,6 +260,29 @@ function ServicePortRow({
             {serviceWorkerLabel(service)}
           </Text>
         </View>
+
+        {persistent ? (
+          <View style={styles.workerRow}>
+            <Ionicons
+              name="bookmark-outline"
+              size={13}
+              color={colors.textSecondary}
+            />
+            <Text style={styles.portWorker} numberOfLines={1}>
+              {serviceSourceLabel(service)}
+            </Text>
+          </View>
+        ) : null}
+
+        {persistent && statusDetail ? (
+          <Text
+            style={styles.commandDetail}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+          >
+            {statusDetail}
+          </Text>
+        ) : null}
 
         <View style={styles.linkRow}>
           {urls.length > 0 ? (

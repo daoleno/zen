@@ -62,7 +62,7 @@ func TestRunCleanPathNotReadyButValidJSON(t *testing.T) {
 	if err := json.Unmarshal(raw, &roundtrip); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	for _, key := range []string{"ready", "platform", "tmux", "state_dir", "listen", "executors", "checks", "remediations"} {
+	for _, key := range []string{"ready", "platform", "tmux", "state_dir", "listen", "executors", "desktop", "checks", "remediations"} {
 		if _, ok := roundtrip[key]; !ok {
 			t.Fatalf("missing JSON key %q in %s", key, raw)
 		}

@@ -53,6 +53,7 @@ export function MessageBody({
             compact={compact}
             dense={dense}
             isLast={isLast}
+            streaming={streaming}
           />
         );
       })}

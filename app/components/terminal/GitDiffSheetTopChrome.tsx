@@ -1,199 +1,313 @@
 import React from "react";
-import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Typography } from "../../constants/tokens";
 import { buildTerminalChrome } from "../../constants/terminalThemes";
-import type { GitDiffStatusSnapshot } from "../../services/gitDiff";
-import { withAlpha } from "./colorWithAlpha";
+import type {
+  GitDiffFileInfo,
+  GitDiffStatusSnapshot,
+} from "../../services/gitDiff";
+import type { GitDiffViewMode } from "./gitDiffNavigation";
+import { describeGitDiffFile } from "./gitDiffPresentation";
+import { DiffIconButton } from "./GitDiffReviewControls";
 
-export type GitDiffSheetTab = "diff" | "browser";
+export type GitDiffSheetView = "overview" | "reader" | "files" | "file";
 
 interface GitDiffSheetTopChromeProps {
   chrome: ReturnType<typeof buildTerminalChrome>;
   snapshot: GitDiffStatusSnapshot | null;
   loading: boolean;
-  compact?: boolean;
-  activeTab: GitDiffSheetTab;
-  fileCount: number;
-  accentColor: string;
+  view: GitDiffSheetView;
+  file: GitDiffFileInfo | null;
+  repoTitle: string;
+  browserFilePath: string | null;
+  workingFileOrigin: GitDiffViewMode;
+  fileFilterOpen: boolean;
+  diffSearchOpen: boolean;
+  diffOptionsOpen: boolean;
   onClose(): void;
+  onBack(): void;
   onRefresh(): void;
-  onTabChange(tab: GitDiffSheetTab): void;
+  onBrowseFiles(): void;
+  onToggleFileFilter(): void;
+  onToggleDiffSearch(): void;
+  onToggleDiffOptions(): void;
 }
 
 export function GitDiffSheetTopChrome({
   chrome,
   snapshot,
   loading,
-  compact = false,
-  activeTab,
-  fileCount,
-  accentColor,
+  view,
+  file,
+  repoTitle,
+  browserFilePath,
+  workingFileOrigin,
+  fileFilterOpen,
+  diffSearchOpen,
+  diffOptionsOpen,
   onClose,
+  onBack,
   onRefresh,
-  onTabChange,
+  onBrowseFiles,
+  onToggleFileFilter,
+  onToggleDiffSearch,
+  onToggleDiffOptions,
 }: GitDiffSheetTopChromeProps) {
-  return (
-    <>
-      <View style={[styles.header, { borderBottomColor: chrome.border }]}>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel="Close Git Diff"
-          style={styles.iconButton}
-          onPress={onClose}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="close" size={18} color={chrome.textMuted} />
-        </TouchableOpacity>
+  const filePresentation = file ? describeGitDiffFile(file, "all") : null;
+  const browserName =
+    browserFilePath?.slice(browserFilePath.lastIndexOf("/") + 1) ??
+    browserFilePath;
+  const backLabel =
+    view === "reader"
+      ? "Changed files"
+      : view === "files"
+        ? "Changes"
+        : view === "file"
+          ? workingFileOrigin === "changes"
+            ? "Changed files"
+            : "Files"
+          : "Close Git diff";
 
-        <View style={styles.headerCopy}>
-          <View style={styles.titleRow}>
-            <Ionicons
-              name="git-branch-outline"
-              size={15}
-              color={chrome.textMuted}
-            />
-            <Text
-              style={[styles.title, { color: chrome.text }]}
-              numberOfLines={1}
-            >
-              Git Diff
-            </Text>
-          </View>
+  const title =
+    view === "reader" && filePresentation
+      ? filePresentation.name
+      : view === "file"
+        ? browserName || repoTitle
+        : view === "files"
+          ? "Files"
+          : "Changes";
+  const subtitle =
+    view === "reader" && filePresentation
+      ? [filePresentation.statusLabel, filePresentation.directory || null]
+          .filter(Boolean)
+          .join("  ·  ")
+      : view === "file"
+        ? browserFilePath || repoTitle
+        : buildSubtitle(snapshot, repoTitle);
+
+  return (
+    <View style={[styles.header, { borderBottomColor: chrome.border }]}>
+      <DiffIconButton
+        icon={view === "overview" ? "close" : "arrow-back"}
+        label={backLabel}
+        chrome={chrome}
+        onPress={view === "overview" ? onClose : onBack}
+      />
+
+      <View style={styles.headerCopy}>
+        <View style={styles.titleRow}>
+          <Ionicons
+            name={
+              view === "overview" || view === "reader"
+                ? "git-branch-outline"
+                : "folder-open-outline"
+            }
+            size={14}
+            color={chrome.textSubtle}
+          />
           <Text
-            style={[styles.subtitle, { color: chrome.textMuted }]}
+            style={[styles.title, { color: chrome.text }]}
             numberOfLines={1}
           >
-            {buildSubtitle(snapshot)}
+            {title}
           </Text>
+          {view === "reader" && file ? (
+            <StatusPill file={file} chrome={chrome} />
+          ) : null}
         </View>
-
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel="Refresh Git Diff"
-          disabled={loading}
-          style={styles.iconButton}
-          onPress={onRefresh}
-          activeOpacity={0.82}
+        <Text
+          style={[styles.subtitle, { color: chrome.textMuted }]}
+          numberOfLines={1}
+          ellipsizeMode={view === "file" ? "head" : "tail"}
         >
-          {loading ? (
-            <ActivityIndicator size="small" color={chrome.accent} />
-          ) : (
-            <Ionicons name="refresh" size={16} color={chrome.textMuted} />
-          )}
-        </TouchableOpacity>
+          {subtitle}
+        </Text>
       </View>
 
-      {snapshot?.available && !compact ? (
-        <View style={[styles.modeBar, { borderBottomColor: chrome.border }]}>
-          <View style={styles.modeMetaRow}>
-            <View style={styles.modeSwitch}>
-              <ModeButton
-                label={`Diff ${fileCount}`}
-                active={activeTab === "diff"}
-                chrome={chrome}
-                accentColor={accentColor}
-                onPress={() => onTabChange("diff")}
-              />
-              <ModeButton
-                label="Files"
-                active={activeTab === "browser"}
-                chrome={chrome}
-                accentColor={accentColor}
-                onPress={() => onTabChange("browser")}
-              />
-            </View>
-            <View style={styles.modeSummaryWrap}>
-              <Text
-                style={[styles.modeSummary, { color: chrome.textMuted }]}
-                numberOfLines={2}
-              >
-                {buildCompactSummary(snapshot)}
-              </Text>
-            </View>
-          </View>
-        </View>
+      {view === "overview" ? (
+        <>
+          <DiffIconButton
+            icon="filter-outline"
+            label="Filter changed paths"
+            chrome={chrome}
+            selected={fileFilterOpen}
+            onPress={onToggleFileFilter}
+          />
+          <DiffIconButton
+            icon="folder-open-outline"
+            label="Browse repository files"
+            chrome={chrome}
+            onPress={onBrowseFiles}
+          />
+        </>
       ) : null}
-    </>
+
+      {view === "reader" ? (
+        <>
+          <DiffIconButton
+            icon="search"
+            label="Find in diff"
+            chrome={chrome}
+            selected={diffSearchOpen}
+            onPress={onToggleDiffSearch}
+          />
+          <DiffIconButton
+            icon="options-outline"
+            label="Diff options"
+            chrome={chrome}
+            selected={diffOptionsOpen}
+            onPress={onToggleDiffOptions}
+          />
+        </>
+      ) : null}
+
+      {view === "overview" || view === "reader" || view === "files" ? (
+        <DiffIconButton
+          icon="refresh"
+          label="Refresh Git diff"
+          chrome={chrome}
+          disabled={loading}
+          busy={loading}
+          onPress={onRefresh}
+        />
+      ) : null}
+    </View>
   );
 }
 
-function ModeButton({
-  label,
-  active,
+/**
+ * Detail-pane header used only on the wide master-detail layout. The list side
+ * keeps its own repo header, so selecting a file never hides list filtering.
+ */
+export function GitDiffDetailHeader({
   chrome,
-  accentColor,
-  onPress,
+  file,
+  loading,
+  diffSearchOpen,
+  diffOptionsOpen,
+  onClear,
+  onRefresh,
+  onToggleSearch,
+  onToggleOptions,
 }: {
-  label: string;
-  active: boolean;
   chrome: ReturnType<typeof buildTerminalChrome>;
-  accentColor: string;
-  onPress(): void;
+  file: GitDiffFileInfo;
+  loading: boolean;
+  diffSearchOpen: boolean;
+  diffOptionsOpen: boolean;
+  onClear(): void;
+  onRefresh(): void;
+  onToggleSearch(): void;
+  onToggleOptions(): void;
 }) {
+  const presentation = describeGitDiffFile(file, "all");
   return (
-    <TouchableOpacity
-      style={[
-        styles.modeButton,
-        active
-          ? {
-              backgroundColor: withAlpha(accentColor, 0.16),
-              borderColor: withAlpha(accentColor, 0.36),
-            }
-          : {
-              backgroundColor: "transparent",
-              borderColor: "transparent",
-            },
-      ]}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
+    <View style={[styles.header, { borderBottomColor: chrome.border }]}>
+      <DiffIconButton
+        icon="arrow-back"
+        label="Clear selection"
+        chrome={chrome}
+        onPress={onClear}
+      />
+      <View style={styles.headerCopy}>
+        <View style={styles.titleRow}>
+          <Ionicons
+            name="git-branch-outline"
+            size={14}
+            color={chrome.textSubtle}
+          />
+          <Text
+            style={[styles.title, { color: chrome.text }]}
+            numberOfLines={1}
+          >
+            {presentation.name}
+          </Text>
+          <StatusPill file={file} chrome={chrome} />
+        </View>
+        <Text
+          style={[styles.subtitle, { color: chrome.textMuted }]}
+          numberOfLines={1}
+          ellipsizeMode="head"
+        >
+          {[presentation.statusLabel, presentation.directory || null]
+            .filter(Boolean)
+            .join("  ·  ")}
+        </Text>
+      </View>
+      <DiffIconButton
+        icon="search"
+        label="Find in diff"
+        chrome={chrome}
+        selected={diffSearchOpen}
+        onPress={onToggleSearch}
+      />
+      <DiffIconButton
+        icon="options-outline"
+        label="Diff options"
+        chrome={chrome}
+        selected={diffOptionsOpen}
+        onPress={onToggleOptions}
+      />
+      <DiffIconButton
+        icon="refresh"
+        label="Refresh Git diff"
+        chrome={chrome}
+        disabled={loading}
+        busy={loading}
+        onPress={onRefresh}
+      />
+    </View>
+  );
+}
+
+function StatusPill({
+  file,
+  chrome,
+}: {
+  file: GitDiffFileInfo;
+  chrome: ReturnType<typeof buildTerminalChrome>;
+}) {
+  const label = file.status.charAt(0).toUpperCase() + file.status.slice(1);
+  return (
+    <View style={[styles.statusPill, { backgroundColor: chrome.surfaceMuted }]}>
       <Text
-        style={[
-          styles.modeButtonText,
-          { color: active ? chrome.text : chrome.textMuted },
-        ]}
+        style={[styles.statusPillText, { color: chrome.textMuted }]}
         numberOfLines={1}
       >
         {label}
       </Text>
-    </TouchableOpacity>
+    </View>
   );
 }
 
-function buildSubtitle(snapshot: GitDiffStatusSnapshot | null): string {
+function buildSubtitle(
+  snapshot: GitDiffStatusSnapshot | null,
+  repoTitle: string,
+): string {
   if (!snapshot?.available) {
     return "Diff and files";
   }
-  if (snapshot.repo_name && snapshot.branch) {
-    return `${snapshot.repo_name} · ${snapshot.branch}`;
+  if (snapshot.branch) {
+    return `${repoTitle} · ${snapshot.branch}`;
   }
-  return snapshot.repo_name || "Repository";
-}
-
-function buildCompactSummary(snapshot: GitDiffStatusSnapshot): string {
-  return `+${snapshot.additions} -${snapshot.deletions}`;
+  return repoTitle || "Repository";
 }
 
 const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 8,
-    paddingTop: 4,
-    paddingBottom: 5,
-    gap: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    gap: 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
+    minHeight: 52,
   },
   headerCopy: {
     flex: 1,
     minWidth: 0,
+    paddingHorizontal: 2,
   },
   titleRow: {
     flexDirection: "row",
@@ -201,76 +315,25 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   title: {
-    flex: 1,
+    flexShrink: 1,
     minWidth: 0,
     fontSize: 15,
-    lineHeight: 19,
+    lineHeight: 20,
     fontFamily: Typography.uiFontMedium,
   },
   subtitle: {
-    marginTop: 0,
+    marginTop: 1,
     fontSize: 10,
     lineHeight: 13,
     fontFamily: Typography.uiFont,
   },
-  iconButton: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  modeBar: {
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  modeSummary: {
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-    flexShrink: 1,
-  },
-  modeSummaryWrap: {
-    flex: 1,
-    minWidth: 0,
-    paddingRight: 4,
-  },
-  modeMetaRow: {
-    minHeight: 24,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  modeSwitch: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
+  statusPill: {
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     flexShrink: 0,
   },
-  modeButton: {
-    minHeight: 26,
-    borderRadius: 7,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    justifyContent: "center",
-  },
-  modeButtonText: {
-    fontSize: 11,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  collapseAllButton: {
-    minHeight: 26,
-    borderRadius: 7,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-  collapseAllText: {
+  statusPillText: {
     fontSize: 10,
     lineHeight: 12,
     fontFamily: Typography.uiFontMedium,
