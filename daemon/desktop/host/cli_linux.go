@@ -90,7 +90,11 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 				}
 			}
 			if err == nil && *activate {
-				err = serviceCommand("is-active", "--quiet", config.OwnerUnit)
+				// An ownerUnit is optional: with account scope there is no unit to
+				// preflight, and the broker admits the owner UID directly.
+				if config.OwnerUnit != "" {
+					err = serviceCommand("is-active", "--quiet", config.OwnerUnit)
+				}
 				if err == nil {
 					err = serviceCommand("daemon-reload")
 				}

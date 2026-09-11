@@ -459,7 +459,43 @@ func (b *broker) proxyLocked(owner *net.UnixConn, agentFile *os.File) (*os.File,
 // carry the enrolled UID and live in the enrolled system unit's ControlGroup
 // (members include the watcher-spawned daemon child and its rebuilds); the
 // unit's MainPID only proves the unit is active. See owner_linux.go.
+func peerCredentials(peer *net.UnixConn) (int32, uint32, bool) {
+	raw, err := peer.SyscallConn()
+	if err != nil {
+		return 0, 0, false
+	}
+	var peerPid int32
+	var peerUid uint32
+	controlErr := raw.Control(func(fd uintptr) {
+		credentials, e := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+		if e != nil {
+			return
+		}
+		peerPid, peerUid = credentials.Pid, credentials.Uid
+	})
+	if controlErr != nil || peerPid <= 0 {
+		return 0, 0, false
+	}
+	return peerPid, peerUid, true
+}
+
+// isCanonicalOwner admits the enrolled owner account. With an ownerUnit the
+// optional unit scope additionally requires membership in that root-enrolled
+// system unit's cgroup; without one, kernel peer credentials are the boundary
+// documented in owner_linux.go.
 func (b *broker) isCanonicalOwner(ctx context.Context, peer *net.UnixConn) bool {
+	peerPid, peerUid, ok := peerCredentials(peer)
+	if !ok {
+		log.Print("desktop admission rejected: canonical_peer")
+		return false
+	}
+	if b.config.OwnerUnit == "" {
+		if !verifyCanonicalAccount(peerPid, peerUid, b.config.OwnerUID) {
+			log.Print("desktop admission rejected: canonical_account")
+			return false
+		}
+		return true
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	conn, err := dbus.ConnectSystemBus(dbus.WithContext(ctx))
@@ -493,24 +529,6 @@ func (b *broker) isCanonicalOwner(ctx context.Context, peer *net.UnixConn) bool 
 	cgroup, ok := group.Value().(string)
 	if !ok {
 		log.Print("desktop admission rejected: canonical_cgroup")
-		return false
-	}
-	raw, err := peer.SyscallConn()
-	if err != nil {
-		log.Print("desktop admission rejected: canonical_peer")
-		return false
-	}
-	var peerPid int32
-	var peerUid uint32
-	controlErr := raw.Control(func(fd uintptr) {
-		credentials, e := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-		if e != nil {
-			return
-		}
-		peerPid, peerUid = credentials.Pid, credentials.Uid
-	})
-	if controlErr != nil || peerPid <= 0 {
-		log.Print("desktop admission rejected: canonical_peer")
 		return false
 	}
 	if !verifyCanonicalOwner(peerPid, peerUid, pid, b.config.OwnerUID, cgroup, ownerCgroupMember("/proc", uint32(peerPid), cgroup)) {
@@ -624,8 +642,13 @@ func rootListener(path string, uid uint32) (*net.UnixListener, error) {
 }
 
 func ServeBroker(ctx context.Context, config HostConfig) error {
-	if os.Geteuid() != 0 || config.Validate() != nil || !ownerUnitName.MatchString(config.OwnerUnit) {
+	if os.Geteuid() != 0 || config.Validate() != nil {
 		return errors.New("invalid_broker_owner")
+	}
+	if config.OwnerUnit == "" {
+		log.Printf("desktop broker owner scope: account uid=%d (owner-only socket; unit scope not configured)", config.OwnerUID)
+	} else {
+		log.Printf("desktop broker owner scope: unit=%s uid=%d", config.OwnerUnit, config.OwnerUID)
 	}
 	header := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var capabilities [2]unix.CapUserData

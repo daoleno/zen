@@ -203,9 +203,17 @@ This path depends on the published module and Go proxy state. If `@latest` fails
 
 ## Run as a background service
 
-Zen does not yet install a system service automatically. Start `zen` in a persistent shell, tmux session, or a user service you manage. The same host user must be able to access `tmux`, your repositories, and the authenticated AI CLI.
+`zen` is the whole runtime. Running it in a persistent shell or tmux session
+and running it under systemd are equivalent deployment choices: the same ELF,
+the same arguments, the same `-state-dir`, identity, port and authority. The
+development command `zen-dev` exists only to rebuild and restart that same
+runtime while you edit source; it is not a different daemon and adds no
+separate trust, enrollment, scope or state database. A build failure leaves the
+last healthy daemon running.
 
-Do not run the daemon as root merely to keep it alive.
+Zen does not install a system service automatically. Start `zen` in a
+persistent shell, a tmux session, or a service you manage. Do not run the
+daemon as root merely to keep it alive.
 
 ## Defaults
 
@@ -251,7 +259,8 @@ pair time; Pairing V2 receives candidates from explicit Link config.
 
 ## Keep it running
 
-For personal use, a tmux pane or systemd user unit is enough. Example user unit (adjust paths):
+For personal use, a tmux pane, a user service, or a system service are all
+supported because the runtime is identical. Example user unit (adjust paths):
 
 ```ini
 [Unit]
@@ -265,6 +274,14 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 ```
+
+Remote desktop lock/login before an interactive login additionally needs the
+administrator-installed desktop broker and SDDM hooks described in
+[Remote Desktop](remote-desktop.md). That installation is independent of how
+you run the daemon: the broker admits the configured owner account whether the
+daemon runs in the foreground, in tmux, or under a service, and an optional
+`ownerUnit` setting adds a stricter root-enrolled process boundary. No separate
+tmux service is installed or required.
 
 ## Docker (advanced)
 

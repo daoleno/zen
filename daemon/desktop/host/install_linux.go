@@ -195,7 +195,7 @@ func sddmConfiguration() (*ini.File, string, string, error) {
 // starts, stops or enables a service. Activation is an explicit installer CLI
 // operation. The existing canonical owner unit/state is referenced, not copied.
 func InstallLinux(config HostConfig, binarySource string) error {
-	if os.Geteuid() != 0 || config.Validate() != nil || !ownerUnitName.MatchString(config.OwnerUnit) {
+	if os.Geteuid() != 0 || config.Validate() != nil {
 		return errors.New("invalid_install_owner")
 	}
 	lock, err := lockInstaller()

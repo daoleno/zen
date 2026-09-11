@@ -311,11 +311,15 @@ the password. Native-device UI evidence remains a separate acceptance gate.
 
 ## Linux Installation
 
-Installation requires an existing, reviewed, boot-owned **unprivileged** canonical
-daemon unit. The installer references its exact unit and identity; it does not
-create another daemon or relocate/copy state. A development watcher alone is
-not that boot unit. Review the existing unit's executable, state directory and
-network flags before any personal-host handover.
+Lock and login before an interactive desktop login need one administrator
+setup: the root broker plus the SDDM display hooks. They do not need the
+daemon to be owned by a system unit. The canonical daemon keeps running
+exactly as before, foreground, in tmux, or under any service the operator
+chooses, and the broker admits the configured owner account (`ownerUid`) on
+the same binary and state. An optional `ownerUnit` config value additionally
+requires the owner peer to live in that root-enrolled system unit's cgroup;
+this is the stricter process-level mode. No tmux service is installed or
+required by remote desktop.
 
 `zen desktop-host --plan --config <reviewed-config>` prints the files, modes
 and requirements and writes nothing. After independent review,
@@ -325,12 +329,28 @@ installs one reviewed desktop-capable `zen` ELF as the root-owned broker/agent
 identity. `--broker-source` and `--agent-source` remain accepted only when they
 name the same bytes as each other (and as `--binary-source` when that flag is
 also set). `--activate` additionally enables/starts only the broker after checking
-that the canonical unit is active; it does not restart SDDM or the owner. A normal
-subsequent display start uses the registered hooks. `--rollback` requires the
-broker to be stopped, removes its enablement, restores unchanged installed files
-and reloads systemd. It refuses to overwrite administrator edits made since
-installation. `zen setup` does not silently convert a user DEV watcher into this
-boot service; OS consent remains a separate, reviewed installation.
+that a configured canonical unit is active (skipped when `ownerUnit` is absent);
+it does not restart SDDM or the owner. A normal subsequent display start uses the
+registered hooks, and `zen desktop-host --register start` registers the current
+display metadata (an Xauthority file descriptor, never cookie bytes) so lock and
+login work without a reboot. `--rollback` requires the broker to be stopped,
+removes its enablement, restores unchanged installed files and reloads systemd.
+It refuses to overwrite administrator edits made since installation. `zen setup`
+does not silently convert a user DEV watcher into a boot service; OS consent
+remains a separate, reviewed installation.
+
+### Local authorization boundary
+
+The broker socket is mode `0600` owned by `ownerUid`, and the broker verifies
+kernel peer credentials, so processes from other accounts cannot connect. With
+no `ownerUnit`, processes running as the owner account are inside that
+account's trust domain: the state directory and daemon identity key are
+owner-readable, so the broker does not claim to distinguish those processes
+from one another. A one-use signed challenge, generation/session binding, host
+identity, the paired device's scope and TLS, bounded admission, and prompt
+revocation shutdown still apply. Configuring `ownerUnit` adds root-enforced
+process exclusivity through system-unit cgroup membership. The root broker is
+the only privileged process; the capture agent is UID-dropped.
 
 The transaction covers `/usr/libexec/zen/zen` (the same ELF for broker and agent
 roles), `sddm-start` and `sddm-stop` in that directory, `/etc/zen/desktop-host.json`,

@@ -70,7 +70,7 @@ WantedBy=multi-user.target
 	}, Requirements: []string{
 		"Build and audit the executable broker and UID-dropped X11 agent; rendered service files alone are not an installation.",
 		"Verify root-owned immutable binaries and all parent directories; no user-writable executable, helper path or library search path. The installed zen ELF is the only broker/agent identity.",
-		"Verify kernel peer UID and enrolled system-unit ControlGroup cgroup membership (watcher-spawned daemon children included) with fresh device/scope proof, including synchronous revocation.",
+		"Verify kernel peer UID with fresh device/scope proof, including synchronous revocation. When ownerUnit is configured, additionally require membership in that root-enrolled system unit's cgroup.",
 		"Create the broker socket mode 0600 owned by the configured owner UID inside the root-owned runtime directory; keep all other runtime state root-only.",
 		"Approve boot service ownership for the existing unprivileged Zen daemon with unchanged identity, state directory and network settings; do not start a duplicate owner.",
 		"Use the journaled installer to preserve existing SDDM X11 display hooks and register verified display metadata with an Xauthority FD, never cookies in logs or user config.",

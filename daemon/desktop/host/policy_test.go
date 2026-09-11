@@ -307,6 +307,12 @@ func TestBoundedRateAndHostConfiguration(t *testing.T) {
 	if invalidConfig.Validate() == nil {
 		t.Fatal("root desktop owner accepted")
 	}
+	if (HostConfig{Version: 1, HostID: "host", OwnerUID: 1000, Seat: "seat0"}).Validate() != nil {
+		t.Fatal("account-scope owner config rejected")
+	}
+	if (HostConfig{Version: 1, HostID: "host", OwnerUID: 1000, Seat: "seat0", OwnerUnit: "not a unit"}).Validate() == nil {
+		t.Fatal("invalid owner unit accepted")
+	}
 }
 
 type failingCloseAgent struct{ testAgent }

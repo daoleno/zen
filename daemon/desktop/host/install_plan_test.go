@@ -39,6 +39,23 @@ func TestInstallPlanHasNoDeviceTrustToggleOrCredentialStore(t *testing.T) {
 	}
 }
 
+// Account scope is the default: an empty ownerUnit must still render a valid
+// broker without a systemd owner dependency. Unit scope remains optional.
+func TestInstallPlanAccountScopeHasNoUnitDependency(t *testing.T) {
+	plan, err := PrepareLinuxInstall(HostConfig{Version: 1, HostID: "fixture", OwnerUID: 1000, Seat: "seat0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := plan.Files[1].Content
+	if strings.Contains(content, "Wants=") || strings.Contains(content, "After=zen-daemon") {
+		t.Fatalf("account-scope plan must not reference a daemon unit:\n%s", content)
+	}
+	joined := strings.Join(plan.Requirements, "\n")
+	if !strings.Contains(joined, "When ownerUnit is configured") {
+		t.Fatal("requirements must document the optional unit scope")
+	}
+}
+
 // The broker must order after the enrolled owner without being killed by its
 // restarts: Requires= propagates a stop (losing in-memory X registration),
 // Wants= only pulls the owner in at boot.
