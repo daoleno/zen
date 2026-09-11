@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -161,11 +162,30 @@ func parityEnv(home, tmuxDir string) []string {
 	return env
 }
 
+// parityOutput is safe to read from the test goroutine while the child is
+// still writing; an unsynchronised bytes.Buffer races on failure paths.
+type parityOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (o *parityOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.Write(p)
+}
+
+func (o *parityOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
+}
+
 type parityDaemon struct {
 	cmd      *exec.Cmd
 	exited   chan struct{}
 	exitErr  error
-	output   bytes.Buffer
+	output   *parityOutput
 	port     int
 	tmuxSock string
 }
@@ -174,16 +194,24 @@ type parityDaemon struct {
 // fatal path can orphan the child.
 func parityStart(t *testing.T, binary, cwd, stateDir, home, tmuxDir string, port int) *parityDaemon {
 	t.Helper()
-	cmd := exec.Command(binary, "-state-dir", stateDir, "-addr", fmt.Sprintf("127.0.0.1:%d", port))
+	return parityStartArgs(t, binary, cwd, home, tmuxDir, port, "-state-dir", stateDir, "-addr", fmt.Sprintf("127.0.0.1:%d", port))
+}
+
+// parityStartArgs starts the binary with explicit arguments and the same
+// completion/cleanup contract as parityStart.
+func parityStartArgs(t *testing.T, binary, cwd, home, tmuxDir string, port int, args ...string) *parityDaemon {
+	t.Helper()
+	cmd := exec.Command(binary, args...)
 	cmd.Dir = cwd
 	cmd.Env = parityEnv(home, tmuxDir)
 	daemon := &parityDaemon{
 		cmd:      cmd,
 		exited:   make(chan struct{}),
+		output:   &parityOutput{},
 		port:     port,
 		tmuxSock: filepath.Join(tmuxDir, fmt.Sprintf("tmux-%d", os.Getuid()), "default"),
 	}
-	cmd.Stdout, cmd.Stderr = &daemon.output, &daemon.output
+	cmd.Stdout, cmd.Stderr = daemon.output, daemon.output
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", binary, err)
 	}
@@ -450,23 +478,20 @@ func TestRuntimeParityEarlyExitCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A privileged bind failure makes the daemon exit immediately.
-	early := exec.Command(zen, "-state-dir", filepath.Join(work, "state-early"), "-addr", "127.0.0.1:1")
-	early.Dir = snapshot
-	early.Env = parityEnv(home, tmuxDir)
-	var earlyOutput bytes.Buffer
-	early.Stdout, early.Stderr = &earlyOutput, &earlyOutput
-	if err := early.Start(); err != nil {
-		t.Fatalf("start early-exit daemon: %v", err)
+	// Deterministic early exit with no socket and no privilege dependency: an
+	// unknown flag is rejected by flag parsing before any listener is opened.
+	early := parityStartArgs(t, zen, snapshot, home, tmuxDir, parityFreePort(t),
+		"-state-dir", filepath.Join(work, "state-early"), "-addr", "127.0.0.1:0", "-definitely-not-a-flag")
+	if _, err := parityHealth(early, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exited early") {
+		t.Fatalf("expected deterministic early exit, got %v (output %s)", err, early.output.String())
 	}
-	earlyDone := make(chan error, 1)
-	go func() { earlyDone <- early.Wait() }()
-	select {
-	case <-earlyDone:
-	case <-time.After(15 * time.Second):
-		_ = early.Process.Kill()
-		<-earlyDone
-		t.Fatalf("early-exit daemon did not exit; output=%q", earlyOutput.String())
+	started := time.Now()
+	parityStop(t, early)
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("parityStop did not return promptly after early exit: %s", elapsed)
+	}
+	if early.cmd.ProcessState == nil {
+		t.Fatal("early-exit child was not reaped")
 	}
 
 	// Health against a live process that never serves must time out promptly.
@@ -477,6 +502,7 @@ func TestRuntimeParityEarlyExitCleanup(t *testing.T) {
 	timeoutDaemon := &parityDaemon{
 		cmd:      sleeper,
 		exited:   make(chan struct{}),
+		output:   &parityOutput{},
 		port:     parityFreePort(t),
 		tmuxSock: filepath.Join(tmuxDir, fmt.Sprintf("tmux-%d", os.Getuid()), "default"),
 	}
@@ -488,21 +514,15 @@ func TestRuntimeParityEarlyExitCleanup(t *testing.T) {
 		_ = sleeper.Process.Kill()
 		<-timeoutDaemon.exited
 	})
-	started := time.Now()
+	started = time.Now()
 	if _, err := parityHealth(timeoutDaemon, 1*time.Second); err == nil {
 		t.Fatal("expected health timeout against non-serving process")
 	}
 	if elapsed := time.Since(started); elapsed > 6*time.Second {
 		t.Fatalf("health timeout was not bounded: %s", elapsed)
 	}
-	_ = sleeper.Process.Signal(syscall.SIGINT)
-	select {
-	case <-timeoutDaemon.exited:
-	case <-time.After(5 * time.Second):
-		_ = sleeper.Process.Kill()
-		<-timeoutDaemon.exited
-	}
-	if early.ProcessState == nil && sleeper.ProcessState == nil {
-		t.Fatal("children were not reaped")
+	parityStop(t, timeoutDaemon)
+	if sleeper.ProcessState == nil {
+		t.Fatal("timeout child was not reaped")
 	}
 }
