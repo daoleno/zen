@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,13 +79,20 @@ func TestChatWebSocketNilWatcherStaysConnected(t *testing.T) {
 		t.Fatalf("nil watcher must list zero sessions, got %d", len(list.WorkerSessions))
 	}
 	// The connection must remain usable afterwards: a follow-up read with no
-	// traffic must time out, not report a server-side close.
+	// traffic must fail with an actual network timeout, not a server-side
+	// close (a panic would have torn the socket down with an abnormal closure).
 	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	if _, _, err := conn.ReadMessage(); err == nil {
+	_, _, err = conn.ReadMessage()
+	if err == nil {
 		t.Fatal("unexpected message")
-	} else if websocket.IsCloseError(err,
+	}
+	if websocket.IsCloseError(err,
 		websocket.CloseNormalClosure, websocket.CloseGoingAway,
 		websocket.CloseAbnormalClosure, websocket.CloseTryAgainLater) {
 		t.Fatalf("chat socket closed after nil-watcher list: %v", err)
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected a network timeout on the idle socket, got: %v", err)
 	}
 }
