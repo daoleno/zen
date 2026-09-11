@@ -1442,9 +1442,10 @@ func TestBootStateLockPIDStrictPermissionIsUnknown(t *testing.T) {
 
 // TestBootStateLockPIDStrictProvenForeignIsSkipped models an undedicated host
 // where an unrelated root process shares the cgroup the unit reports (for
-// example the root cgroup on a CI runner). A process proven to belong to
-// another UID can never be the installing user's daemon, so it must be skipped
-// instead of failing the scan closed as unresolved ownership.
+// example the root cgroup on a CI runner). The unit runs as the installing
+// user, so a proven-foreign process is skipped as an observation-attribution
+// preference instead of failing the whole scan closed; an inherited-descriptor
+// caveat is documented on the production helper.
 func TestBootStateLockPIDStrictProvenForeignIsSkipped(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root owns every process; no foreign UID exists")

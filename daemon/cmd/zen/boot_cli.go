@@ -665,9 +665,13 @@ func bootLifecycleLockPath(stateDir string) (string, error) {
 // restricts the search to that systemd cgroup, which is how the installed
 // unit is bound to the state it owns. Inspection failures are returned, never
 // silently folded into "no owner"; an unknown or same-UID permission error for
-// a process already matched to the requested cgroup is unresolved ownership,
-// while a zombie or a process proven to belong to another UID is skipped
-// because neither can hold the state flock.
+// a process already matched to the requested cgroup is unresolved ownership.
+// A zombie is skipped because it holds no descriptors. A process positively
+// owned by another UID is skipped as an observation heuristic: the owner-only
+// lock file cannot be opened by that UID, but an inherited descriptor could in
+// principle still hold the flock, so this is a scan-attribution preference,
+// not proof about who may hold the lock. Ownership admission itself remains
+// bound to the unit cgroup, the held flock and the served health identity.
 func bootStateLockPID(stateDir, controlGroup string) (int, error) {
 	lockPath, err := bootLifecycleLockPath(stateDir)
 	if err != nil {
@@ -794,12 +798,13 @@ func bootFDLockRecord(path string) (bool, error) {
 // that can no longer hold any descriptor, and processes positively known to
 // belong to another UID. Only those proven cases are skippable: an unknown
 // owner (missing stat data, unsupported process info) stays unresolved, and a
-// process that is or could be this user cannot be assumed foreign.
-// Proven-foreign processes are skippable even in strict cgroup mode: the
-// installing user's unit can never run as that UID, so they cannot be the
-// state owner. This keeps an ambient root process that shares an undedicated
-// cgroup (for example the root cgroup on a CI runner) from turning the whole
-// scan into unresolved ownership.
+// process that is or could be this user cannot be assumed foreign. A
+// proven-foreign process is skippable even in strict cgroup mode as an
+// observation heuristic: the owner-only lock file cannot be opened by that
+// UID, although an inherited descriptor could in principle hold the flock.
+// This keeps an ambient process that shares an undedicated cgroup (for example
+// the root cgroup on a CI runner) from turning the whole scan into unresolved
+// ownership without changing who may actually own the state.
 func bootSkipInspectionError(pid int, err error, strict bool) bool {
 	_ = strict
 	if os.IsNotExist(err) {
