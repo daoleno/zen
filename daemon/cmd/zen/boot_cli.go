@@ -946,11 +946,23 @@ func bootVerifyOwner(config bootConfig, runner bootRunner) error {
 		snapshot := bootInspectOwner(config, runner)
 		last = snapshot.verified(config)
 		if last == nil {
-			return nil
-		}
-		// A unit systemd reports as inactive or failed cannot become the owner
-		// without external action; report the precise cause instead of waiting.
-		if snapshot.InspectErr == nil && !snapshot.Active {
+			// Confirm with a second observation: a transient process (a leftover
+			// DEV daemon that is about to lose the state lock to the new main
+			// process) must not produce a one-sample success.
+			time.Sleep(bootVerifyInterval)
+			confirm := bootInspectOwner(config, runner)
+			if err := confirm.verified(config); err == nil {
+				return nil
+			} else {
+				last = err
+			}
+			if confirm.InspectErr == nil && !confirm.Active {
+				return last
+			}
+		} else if snapshot.InspectErr == nil && !snapshot.Active {
+			// A unit systemd reports as inactive or failed cannot become the
+			// owner without external action; report the precise cause instead
+			// of waiting.
 			return last
 		}
 		if time.Now().After(deadline) {

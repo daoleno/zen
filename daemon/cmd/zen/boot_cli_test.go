@@ -116,6 +116,12 @@ func (f *fakeBootRunner) push(key, value string) {
 	f.sequences[key] = append(f.sequences[key], value)
 }
 
+func (f *fakeBootRunner) setSequence(key string, values ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sequences[key] = append([]string(nil), values...)
+}
+
 func (f *fakeBootRunner) reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -983,6 +989,23 @@ func TestBootInstallRefusesUnknownMainPID(t *testing.T) {
 	err := bootInstall(config, runner, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "did not become the verified owner") || !strings.Contains(err.Error(), "no readable main process") {
 		t.Fatalf("unknown MainPID not reported: %v", err)
+	}
+	if !runner.called(bootStop) {
+		t.Fatal("failed verification left the unit running")
+	}
+}
+
+func TestBootInstallRequiresStableOwner(t *testing.T) {
+	config, runner := bootFreshInstallEnvironment(t)
+	// Preflight inactive, first verification active, confirmation failed: the
+	// installer must not accept a one-sample success.
+	runner.setSequence(bootIsActive, "inactive", "active", "failed")
+	previousTimeout, previousInterval := bootVerifyTimeout, bootVerifyInterval
+	bootVerifyTimeout, bootVerifyInterval = 2*time.Second, 50*time.Millisecond
+	defer func() { bootVerifyTimeout, bootVerifyInterval = previousTimeout, previousInterval }()
+	err := bootInstall(config, runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "did not become the verified owner") {
+		t.Fatalf("transient owner reported as success: %v", err)
 	}
 	if !runner.called(bootStop) {
 		t.Fatal("failed verification left the unit running")
