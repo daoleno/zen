@@ -25,6 +25,10 @@ export type SessionService = {
   binds: string[];
   urls: SessionServiceURL[];
   local_only: boolean;
+  source?: "session" | "persistent" | string;
+  unit?: string;
+  state?: "active" | "inactive" | "error" | string;
+  status_detail?: string;
 };
 
 export type SessionServiceSnapshot = {

@@ -33,21 +33,28 @@ type SessionServiceURL struct {
 	Kind    string `json:"kind"`
 }
 
-// SessionService is a listening TCP port owned by a tmux pane process tree.
+// SessionService is a listening TCP port owned by a tmux pane process tree
+// (source "session") or by an explicitly registered persistent user service
+// (source "persistent"). Persistent rows never carry an invented live Worker
+// ID: WorkerID is empty once the creating Session is gone.
 type SessionService struct {
-	ID         string              `json:"id"`
-	WorkerID   string              `json:"worker_id"`
-	WorkerName string              `json:"worker_name"`
-	Project    string              `json:"project,omitempty"`
-	Cwd        string              `json:"cwd,omitempty"`
-	Command    string              `json:"command,omitempty"`
-	Process    string              `json:"process,omitempty"`
-	PID        int                 `json:"pid"`
-	Port       int                 `json:"port"`
-	Protocol   string              `json:"protocol"`
-	Binds      []string            `json:"binds"`
-	URLs       []SessionServiceURL `json:"urls"`
-	LocalOnly  bool                `json:"local_only"`
+	ID           string              `json:"id"`
+	WorkerID     string              `json:"worker_id"`
+	WorkerName   string              `json:"worker_name"`
+	Project      string              `json:"project,omitempty"`
+	Cwd          string              `json:"cwd,omitempty"`
+	Command      string              `json:"command,omitempty"`
+	Process      string              `json:"process,omitempty"`
+	PID          int                 `json:"pid"`
+	Port         int                 `json:"port"`
+	Protocol     string              `json:"protocol"`
+	Binds        []string            `json:"binds"`
+	URLs         []SessionServiceURL `json:"urls"`
+	LocalOnly    bool                `json:"local_only"`
+	Source       string              `json:"source,omitempty"`
+	Unit         string              `json:"unit,omitempty"`
+	State        string              `json:"state,omitempty"`
+	StatusDetail string              `json:"status_detail,omitempty"`
 }
 
 type servicePane struct {
@@ -145,6 +152,7 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 				PID:        socket.pid,
 				Port:       socket.port,
 				Protocol:   "tcp",
+				Source:     ServiceSourceSession,
 			}
 			servicesByKey[key] = service
 		}
@@ -152,6 +160,7 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 	}
 
 	services := make([]SessionService, 0, len(servicesByKey))
+	claimed := make(map[string]bool, len(sockets))
 	for _, service := range servicesByKey {
 		sort.Strings(service.Binds)
 		if service.Binds == nil {
@@ -163,7 +172,13 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 		}
 		service.LocalOnly = len(service.URLs) == 0
 		services = append(services, *service)
+		claimed[fmt.Sprintf("%d|%d", service.PID, service.Port)] = true
 	}
+
+	// Persistent Agent-retained services merge into the same authoritative
+	// snapshot. tmux attribution wins: a socket already claimed above is
+	// never reported twice.
+	services = append(services, w.discoverPersistentServices(claimed, interfaces)...)
 
 	sort.Slice(services, func(i, j int) bool {
 		if services[i].Project != services[j].Project {

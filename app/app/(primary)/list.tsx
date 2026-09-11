@@ -761,6 +761,9 @@ export default function InboxScreen() {
 
   const openServiceTerminal = (service: DiscoveredSessionService) => {
     if (!isCurrentServer(service.serverId)) return;
+    // Persistent services outlive their creating Session: there is no live
+    // worker target, so no terminal action exists for them.
+    if (!service.worker_id?.trim()) return;
     setServiceSheetVisible(false);
     router.push({
       pathname: "/terminal/[id]",

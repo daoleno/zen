@@ -11,6 +11,7 @@ import (
 	"github.com/daoleno/zen/daemon/lifecycle"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	telegramchannel "github.com/daoleno/zen/daemon/telegram"
+	"github.com/daoleno/zen/daemon/watcher"
 )
 
 const SocketName = "zen.sock"
@@ -64,6 +65,8 @@ type Request struct {
 	BrainWorkDisposition *brain.WorkReviewDispositionRequest    `json:"brain_work_disposition,omitempty"`
 	WorkID               string                                 `json:"work_id,omitempty"`
 	WorkFields           []string                               `json:"work_fields,omitempty"`
+	Service              *watcher.ManagedServiceDescriptor      `json:"service,omitempty"`
+	ServiceUnit          string                                 `json:"service_unit,omitempty"`
 }
 
 type PersistenceOutcome string
@@ -114,6 +117,8 @@ type Response struct {
 	Binding            *modelprofiles.WireBinding               `json:"binding,omitempty"`
 	TelegramStatus     *telegramchannel.Status                  `json:"telegram_status,omitempty"`
 	TelegramBinding    *telegramchannel.BindingChallenge        `json:"telegram_binding,omitempty"`
+	ServiceSnapshot    *watcher.SessionServiceSnapshot          `json:"service_snapshot,omitempty"`
+	Service            *watcher.ManagedServiceDescriptor        `json:"service,omitempty"`
 }
 
 type Error struct {

@@ -133,6 +133,36 @@ export function serviceWorkerLabel(
   return shortWorkerLabel(service.worker_name) || service.worker_id || "agent";
 }
 
+export function isPersistentService(
+  service: Pick<DiscoveredSessionService, "source">,
+): boolean {
+  return (service.source || "").trim().toLowerCase() === "persistent";
+}
+
+export function hasServiceTerminal(
+  service: Pick<DiscoveredSessionService, "source" | "worker_id">,
+): boolean {
+  if (isPersistentService(service)) {
+    return false;
+  }
+  return Boolean(service.worker_id?.trim());
+}
+
+export function serviceSourceLabel(
+  service: Pick<DiscoveredSessionService, "source" | "unit" | "state">,
+): string {
+  if (!isPersistentService(service)) {
+    return "Session";
+  }
+  const unit = service.unit?.trim();
+  const state = service.state?.trim().toLowerCase();
+  const stateSuffix =
+    state && state !== "active"
+      ? ` · ${state.charAt(0).toUpperCase() + state.slice(1)}`
+      : "";
+  return unit ? `Persistent · ${unit}${stateSuffix}` : `Persistent${stateSuffix}`;
+}
+
 export function serviceProcessLabel(
   service: Pick<DiscoveredSessionService, "process" | "command">,
 ): string {

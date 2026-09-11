@@ -263,8 +263,20 @@ type Watcher struct {
 	// tmuxScratchDir is the private TMUX_TMPDIR for provider panes without a
 	// per-agent resource scratch. It contains provider-internal plain tmux;
 	// it is never the host server.
-	tmuxSocketPath        string
-	tmuxScratchDir        string
+	tmuxSocketPath string
+	tmuxScratchDir string
+	// managedServicesPath is the persisted explicit registry for
+	// Agent-retained persistent services (user systemd units). Empty means
+	// persistent discovery is disabled; tmux discovery is unaffected.
+	managedServicesPath string
+	// Test-only seams for persistent service discovery; production leaves
+	// them nil and queries live user systemd, /proc cgroups and ss.
+	systemctlShowFn systemctlShowFunc
+	unitCgroupFn    unitCgroupFunc
+	listSocketsFn   func() ([]listeningSocket, error)
+	// managedDiscoveryFn replaces persistent resolution wholesale in tests
+	// (see SetManagedDiscoveryFunc). Production leaves it nil.
+	managedDiscoveryFn    func(claimed map[string]bool, interfaces []SessionServiceInterface) []SessionService
 	mu                    sync.RWMutex
 	events                chan SessionEvent
 	resources             delegatedResourceManager

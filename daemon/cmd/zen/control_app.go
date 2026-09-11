@@ -92,6 +92,12 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleWorkerProgress(req)
 	case "worker_close":
 		return a.handleWorkerClose(req)
+	case "service_list":
+		return a.handleServiceList()
+	case "service_register":
+		return a.handleServiceRegister(req)
+	case "service_unregister":
+		return a.handleServiceUnregister(req)
 	case "brain_executors":
 		return a.handleBrainExecutors()
 	case "brain_context":

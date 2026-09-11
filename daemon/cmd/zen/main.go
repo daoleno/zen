@@ -86,6 +86,8 @@ func run(args []string, stderr io.Writer) error {
 			return runUpdateCommand(args[1:], stderr)
 		case "worker":
 			return runWorkerCommand(args[1:], stderr)
+		case "service":
+			return runServiceCommand(args[1:], stderr)
 		case "brain":
 			return runBrainCommand(args[1:], stderr)
 		case "calendar":
@@ -161,6 +163,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 
 	w := watcher.New(500 * time.Millisecond)
 	w.ConfigureDelegatedResources(authManager.DaemonID())
+	w.SetManagedServicesPath(watcher.ManagedServicesPathForStateDir(authManager.StorageDir()))
 	// Bind every Zen-owned Brain and delegated Session to the server visible to
 	// the daemon's caller. When launched inside tmux this is the exact inherited
 	// server socket; otherwise empty socket semantics select the user's ordinary
@@ -1740,6 +1743,24 @@ func writeControlResponse(w io.Writer, resp control.Response, asJSON bool) error
 	}
 	for _, worker := range resp.Workers {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", worker.ID, worker.Status, worker.Name)
+	}
+	if resp.ServiceSnapshot != nil {
+		for _, service := range resp.ServiceSnapshot.Services {
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
+				serviceDisplayState(service),
+				serviceDisplaySource(service),
+				service.Port,
+				strings.Join(service.Binds, ","),
+				serviceDisplayName(service),
+			)
+		}
+		if resp.Confirmation != "" {
+			fmt.Fprintln(w, resp.Confirmation)
+		}
+		return nil
+	}
+	if resp.Service != nil {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", resp.Service.Unit, resp.Service.Name, resp.Service.Project)
 	}
 	return nil
 }
