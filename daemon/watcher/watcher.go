@@ -269,11 +269,18 @@ type Watcher struct {
 	// Agent-retained persistent services (user systemd units). Empty means
 	// persistent discovery is disabled; tmux discovery is unaffected.
 	managedServicesPath string
+	// managedMu serializes registry read-modify-write cycles. The local
+	// control server handles requests concurrently; without it two
+	// registrations can read the same file and one update silently wins.
+	// It never covers systemctl/proc IO, only the file RMW.
+	managedMu sync.Mutex
 	// Test-only seams for persistent service discovery; production leaves
 	// them nil and queries live user systemd, /proc cgroups and ss.
 	systemctlShowFn systemctlShowFunc
-	unitCgroupFn    unitCgroupFunc
+	procCgroupFn    procCgroupFunc
+	procUIDFn       procUIDFunc
 	listSocketsFn   func() ([]listeningSocket, error)
+	servicePanesFn  func() ([]servicePane, error)
 	// managedDiscoveryFn replaces persistent resolution wholesale in tests
 	// (see SetManagedDiscoveryFunc). Production leaves it nil.
 	managedDiscoveryFn    func(claimed map[string]bool, interfaces []SessionServiceInterface) []SessionService

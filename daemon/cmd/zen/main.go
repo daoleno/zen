@@ -877,6 +877,11 @@ func printWorkerUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen worker progress --status running --phase working --attention none --summary \"Reading files\" --task-class lasting_design --event-kind invariant --lease 300")
 	fmt.Fprintln(w, "  zen worker send -id zen-worker-review-docs:@1 -text \"continue\" --submit=true")
 	fmt.Fprintln(w, "  zen worker close -id zen-worker-review-docs:@1 --force")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Retained services:")
+	fmt.Fprintln(w, "  A service kept running outside tmux (for example a user systemd unit)")
+	fmt.Fprintln(w, "  stays invisible until adopted: zen service register -unit NAME.service")
+	fmt.Fprintln(w, "  -name \"Display name\" -port PORT. See zen service --help and docs/services.md.")
 }
 
 func printBrainUsage(w io.Writer) {

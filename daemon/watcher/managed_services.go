@@ -2,7 +2,9 @@ package watcher
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,6 +49,12 @@ const (
 
 	managedServicesFileVersion = 1
 )
+
+// systemdShowTimeout bounds one read-only unit query. A stuck user bus must
+// not block the whole Services request: expiry becomes a per-row error while
+// tmux rows stay intact. A var (not const) so tests can shrink it against a
+// PATH shim without touching the real bus.
+var systemdShowTimeout = 10 * time.Second
 
 // ManagedServiceDescriptor is one explicitly registered persistent service.
 // It is identity + provenance only; liveness always comes from live systemd
@@ -120,8 +128,12 @@ func (w *Watcher) ListManagedServices() ([]ManagedServiceDescriptor, error) {
 // RegisterManagedService explicitly adopts one persistent user service without
 // restarting or otherwise touching it. Registration verifies the unit is
 // visible to the caller's user systemd instance (read-only `systemctl show`)
-// so typos and foreign units fail closed at handoff time.
+// so typos and foreign units fail closed at handoff time. The read-modify-
+// write is serialized: concurrent control handlers cannot lose updates.
 func (w *Watcher) RegisterManagedService(desc ManagedServiceDescriptor) (ManagedServiceDescriptor, error) {
+	if w == nil {
+		return ManagedServiceDescriptor{}, fmt.Errorf("watcher unavailable")
+	}
 	desc.Unit = strings.TrimSpace(desc.Unit)
 	if err := ValidateManagedServiceUnit(desc.Unit); err != nil {
 		return ManagedServiceDescriptor{}, err
@@ -140,6 +152,11 @@ func (w *Watcher) RegisterManagedService(desc ManagedServiceDescriptor) (Managed
 	if runtime.GOOS != "linux" {
 		return ManagedServiceDescriptor{}, fmt.Errorf("persistent service registration requires Linux user systemd; tmux discovery remains available on this platform")
 	}
+	path := w.managedServicesFilePath()
+	if strings.TrimSpace(path) == "" {
+		return ManagedServiceDescriptor{}, fmt.Errorf("managed services registry is not configured")
+	}
+	// Slow read-only verification stays outside the registry lock.
 	if _, err := w.systemctlShow(desc.Unit); err != nil {
 		return ManagedServiceDescriptor{}, fmt.Errorf("verify unit %q: %w", desc.Unit, err)
 	}
@@ -147,10 +164,8 @@ func (w *Watcher) RegisterManagedService(desc ManagedServiceDescriptor) (Managed
 		desc.RegisteredAt = time.Now()
 	}
 
-	path := w.managedServicesFilePath()
-	if strings.TrimSpace(path) == "" {
-		return ManagedServiceDescriptor{}, fmt.Errorf("managed services registry is not configured")
-	}
+	w.managedMu.Lock()
+	defer w.managedMu.Unlock()
 	services, err := loadManagedServices(path)
 	if err != nil {
 		return ManagedServiceDescriptor{}, err
@@ -178,8 +193,12 @@ func (w *Watcher) RegisterManagedService(desc ManagedServiceDescriptor) (Managed
 }
 
 // UnregisterManagedService removes one explicit registration. The underlying
-// unit is never stopped or modified.
+// unit is never stopped or modified. The read-modify-write is serialized with
+// registration so concurrent handlers cannot resurrect or lose entries.
 func (w *Watcher) UnregisterManagedService(unit string) error {
+	if w == nil {
+		return fmt.Errorf("watcher unavailable")
+	}
 	unit = strings.TrimSpace(unit)
 	if err := ValidateManagedServiceUnit(unit); err != nil {
 		return err
@@ -188,6 +207,8 @@ func (w *Watcher) UnregisterManagedService(unit string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("managed services registry is not configured")
 	}
+	w.managedMu.Lock()
+	defer w.managedMu.Unlock()
 	services, err := loadManagedServices(path)
 	if err != nil {
 		return err
@@ -225,10 +246,22 @@ func loadManagedServices(path string) ([]ManagedServiceDescriptor, error) {
 	if err := json.Unmarshal(raw, &file); err != nil {
 		return nil, fmt.Errorf("decode managed services registry: %w", err)
 	}
+	// A version or descriptor this daemon does not understand is a
+	// recoverable read error, never silent emptiness: callers surface it
+	// and no writer path overwrites the file on this failure.
+	if file.Version != managedServicesFileVersion {
+		return nil, fmt.Errorf("unsupported managed services registry version %d (want %d)", file.Version, managedServicesFileVersion)
+	}
 	services := make([]ManagedServiceDescriptor, 0, len(file.Services))
 	for _, desc := range file.Services {
 		if err := ValidateManagedServiceUnit(desc.Unit); err != nil {
-			continue
+			return nil, fmt.Errorf("invalid managed service descriptor: %w", err)
+		}
+		if strings.TrimSpace(desc.Name) == "" {
+			return nil, fmt.Errorf("invalid managed service descriptor for unit %q: name is required", desc.Unit)
+		}
+		if desc.Port < 0 || desc.Port > 65535 {
+			return nil, fmt.Errorf("invalid managed service descriptor for unit %q: invalid port %d", desc.Unit, desc.Port)
 		}
 		services = append(services, desc)
 	}
@@ -287,12 +320,22 @@ type systemdUnitStatus struct {
 }
 
 // systemctlShowFunc queries structured unit properties. Production shells out
-// to the caller's user systemd instance (read-only show); tests inject fakes.
+// to the caller's user systemd instance (read-only show, bounded by
+// systemdShowTimeout); tests inject fakes.
 type systemctlShowFunc func(unit string) (systemdUnitStatus, error)
 
-// unitCgroupFunc reports whether pid sits in unit's cgroup. Production reads
-// /proc/<pid>/cgroup; tests inject fakes.
-type unitCgroupFunc func(pid int, unit string) (bool, error)
+// procCgroupFunc reports the cgroup-hierarchy paths of one process from
+// /proc/<pid>/cgroup. Production parses the live file; tests inject fakes.
+type procCgroupFunc func(pid int) ([]string, error)
+
+// procUIDFunc reports the owner UID of one process from /proc/<pid>/status.
+// Production parses the live file; tests inject fakes.
+type procUIDFunc func(pid int) (int, error)
+
+// errProcessGone marks a /proc lookup for a PID that no longer exists. It is
+// disappearance, not a verification failure: the socket owner is simply
+// skipped instead of producing an error row.
+var errProcessGone = errors.New("process gone")
 
 func (w *Watcher) systemctlShow(unit string) (systemdUnitStatus, error) {
 	if w == nil {
@@ -307,17 +350,30 @@ func (w *Watcher) systemctlShow(unit string) (systemdUnitStatus, error) {
 	return querySystemdUnit(unit)
 }
 
-func (w *Watcher) unitInCgroup(pid int, unit string) (bool, error) {
+func (w *Watcher) procCgroupPaths(pid int) ([]string, error) {
 	if w == nil || pid <= 0 {
-		return false, nil
+		return nil, nil
 	}
 	w.mu.RLock()
-	fn := w.unitCgroupFn
+	fn := w.procCgroupFn
 	w.mu.RUnlock()
 	if fn != nil {
-		return fn(pid, unit)
+		return fn(pid)
 	}
-	return pidInUnitCgroup(pid, unit)
+	return pidCgroupPaths(pid)
+}
+
+func (w *Watcher) procOwnerUID(pid int) (int, error) {
+	if w == nil || pid <= 0 {
+		return 0, nil
+	}
+	w.mu.RLock()
+	fn := w.procUIDFn
+	w.mu.RUnlock()
+	if fn != nil {
+		return fn(pid)
+	}
+	return pidOwnerUID(pid)
 }
 
 func (w *Watcher) listeningSocketsForServices() ([]listeningSocket, error) {
@@ -334,15 +390,26 @@ func (w *Watcher) listeningSocketsForServices() ([]listeningSocket, error) {
 }
 
 // querySystemdUnit reads structured properties for one user unit. It never
-// starts, stops or modifies the unit. Non-zero exit (unknown unit, broken
-// bus) is a hard error so callers surface it instead of guessing.
+// starts, stops or modifies the unit. The query is bounded: a stuck user bus
+// fails this unit instead of blocking the whole Services request. Non-zero
+// exit (unknown unit, broken bus) is a hard error so callers surface it
+// instead of guessing.
 func querySystemdUnit(unit string) (systemdUnitStatus, error) {
 	if err := ValidateManagedServiceUnit(unit); err != nil {
 		return systemdUnitStatus{}, err
 	}
-	out, err := exec.Command("systemctl", "--user", "show", unit,
-		"--property=LoadState,ActiveState,SubState,MainPID,FragmentPath,InvocationID,ControlGroup").CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), systemdShowTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "systemctl", "--user", "show", unit,
+		"--property=LoadState,ActiveState,SubState,MainPID,FragmentPath,InvocationID,ControlGroup")
+	// A killed query can leave grandchildren holding the output pipe; stop
+	// waiting for them on the same bound instead of hanging on I/O.
+	cmd.WaitDelay = systemdShowTimeout
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return systemdUnitStatus{}, fmt.Errorf("systemctl show %s: timed out after %s", unit, systemdShowTimeout)
+		}
 		return systemdUnitStatus{}, fmt.Errorf("systemctl show %s: %w: %s", unit, err, strings.TrimSpace(string(out)))
 	}
 	status := systemdUnitStatus{Unit: unit}
@@ -374,39 +441,83 @@ func querySystemdUnit(unit string) (systemdUnitStatus, error) {
 	return status, nil
 }
 
-// pidInUnitCgroup reports structured cgroup membership: pid belongs to unit
-// when any /proc/<pid>/cgroup line names the exact unit. Names, descriptions
-// and ports are never consulted.
-func pidInUnitCgroup(pid int, unit string) (bool, error) {
+// pidCgroupPaths parses the hierarchy paths from /proc/<pid>/cgroup. A
+// vanished PID reports errProcessGone (disappearance, not failure); any other
+// read/parse error is returned so callers surface verification failure
+// instead of guessing inactive.
+func pidCgroupPaths(pid int) ([]string, error) {
 	if pid <= 0 {
-		return false, nil
+		return nil, nil
 	}
-	file, err := os.Open(fmt.Sprintf("/proc/%d/cgroup", pid))
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
 	if err != nil {
-		return false, nil
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		for _, field := range strings.Split(scanner.Text(), ":") {
-			if cgroupPathNamesUnit(strings.TrimSpace(field), unit) {
-				return true, nil
-			}
+		if os.IsNotExist(err) {
+			return nil, errProcessGone
 		}
+		return nil, fmt.Errorf("read cgroup for pid %d: %w", pid, err)
 	}
-	return false, nil
+	var paths []string
+	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		// Format is hierarchy-ID:controllers:path; only the path binds a
+		// process to a unit scope.
+		fields := strings.SplitN(line, ":", 3)
+		if len(fields) != 3 || strings.TrimSpace(fields[2]) == "" {
+			return nil, fmt.Errorf("malformed cgroup line for pid %d: %q", pid, line)
+		}
+		paths = append(paths, strings.TrimSpace(fields[2]))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan cgroup for pid %d: %w", pid, err)
+	}
+	return paths, nil
 }
 
-func cgroupPathNamesUnit(path, unit string) bool {
-	if path == "" || unit == "" {
-		return false
+// pidOwnerUID parses the real UID from /proc/<pid>/status. A vanished PID
+// reports errProcessGone; any other error is a verification failure.
+func pidOwnerUID(pid int) (int, error) {
+	if pid <= 0 {
+		return 0, nil
 	}
-	for _, segment := range strings.Split(path, "/") {
-		if segment == unit {
-			return true
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, errProcessGone
+		}
+		return 0, fmt.Errorf("read status for pid %d: %w", pid, err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "Uid:" {
+			uid, convErr := strconv.Atoi(fields[1])
+			if convErr != nil {
+				return 0, fmt.Errorf("malformed uid for pid %d: %q", pid, line)
+			}
+			return uid, nil
 		}
 	}
-	return false
+	return 0, fmt.Errorf("no uid in status for pid %d", pid)
+}
+
+// cgroupPathAccepts reports whether a /proc cgroup path belongs to the exact
+// ControlGroup returned for the unit: the unit scope itself or a delegated
+// child scope beneath it. A different unit that merely shares the leaf name,
+// a sibling prefix (unit.service.d), or an empty group never matches. Names,
+// descriptions and ports are never consulted.
+func cgroupPathAccepts(path, controlGroup string) bool {
+	path = strings.TrimSpace(path)
+	controlGroup = strings.TrimSpace(controlGroup)
+	if path == "" || controlGroup == "" || !strings.HasPrefix(controlGroup, "/") {
+		return false
+	}
+	if path == controlGroup {
+		return true
+	}
+	return strings.HasPrefix(path, controlGroup+"/")
 }
 
 // SetManagedDiscoveryFunc installs a test-only wholesale replacement for
@@ -458,9 +569,19 @@ func (w *Watcher) discoverPersistentServices(claimed map[string]bool, interfaces
 		return nil
 	}
 	sockets, socketsErr := w.listeningSocketsForServices()
+	// One shared process snapshot per discovery, not one per unit.
+	processes := map[int]processInfo{}
+	if w != nil {
+		_, _, snapshot := w.pollReaders()
+		if snapshot != nil {
+			processes = snapshot()
+		} else {
+			processes = snapshotProcesses()
+		}
+	}
 	services := make([]SessionService, 0, len(descriptors))
 	for _, desc := range descriptors {
-		rows, rowErr := w.resolveManagedService(desc, sockets, socketsErr, claimed, interfaces)
+		rows, rowErr := w.resolveManagedService(desc, sockets, socketsErr, processes, claimed, interfaces)
 		if rowErr != nil {
 			services = append(services, SessionService{
 				ID:           "persistent:" + desc.Unit + ":error",
@@ -496,7 +617,7 @@ func (w *Watcher) discoverPersistentServices(claimed map[string]bool, interfaces
 	return services
 }
 
-func (w *Watcher) resolveManagedService(desc ManagedServiceDescriptor, sockets []listeningSocket, socketsErr error, claimed map[string]bool, interfaces []SessionServiceInterface) ([]SessionService, error) {
+func (w *Watcher) resolveManagedService(desc ManagedServiceDescriptor, sockets []listeningSocket, socketsErr error, processes map[int]processInfo, claimed map[string]bool, interfaces []SessionServiceInterface) ([]SessionService, error) {
 	status, err := w.systemctlShow(desc.Unit)
 	if err != nil {
 		return nil, err
@@ -507,17 +628,12 @@ func (w *Watcher) resolveManagedService(desc ManagedServiceDescriptor, sockets [
 	if !strings.EqualFold(strings.TrimSpace(status.ActiveState), "active") {
 		return []SessionService{inactiveManagedService(desc, status)}, nil
 	}
-	processes := map[int]processInfo{}
-	if w != nil {
-		_, _, snapshot := w.pollReaders()
-		if snapshot != nil {
-			processes = snapshot()
-		} else {
-			processes = snapshotProcesses()
-		}
+	owned, err := w.ownedManagedSockets(status, sockets)
+	if err != nil {
+		return nil, err
 	}
-	owned := ownedManagedSockets(desc, status, sockets, processes, w)
 	byPort := make(map[int]*SessionService)
+	claimedSkipped := false
 	for _, socket := range owned {
 		if socket.port <= 0 {
 			continue
@@ -526,6 +642,7 @@ func (w *Watcher) resolveManagedService(desc ManagedServiceDescriptor, sockets [
 			continue
 		}
 		if claimed[fmt.Sprintf("%d|%d", socket.pid, socket.port)] {
+			claimedSkipped = true
 			continue
 		}
 		service := byPort[socket.port]
@@ -568,37 +685,66 @@ func (w *Watcher) resolveManagedService(desc ManagedServiceDescriptor, sockets [
 		rows = append(rows, *service)
 	}
 	if len(rows) == 0 {
+		// A live owned socket that tmux already represents is omitted, not
+		// duplicated as a bogus inactive row. Only a unit with genuinely no
+		// live owned socket reports inactive.
+		if claimedSkipped {
+			return nil, nil
+		}
 		rows = append(rows, inactiveManagedService(desc, status))
 	}
 	return rows, nil
 }
 
-// ownedManagedSockets keeps only sockets whose PID is the unit's live MainPID
-// or sits in the unit's cgroup. A same-port lookalike from another cgroup is
-// never attributed.
-func ownedManagedSockets(desc ManagedServiceDescriptor, status systemdUnitStatus, sockets []listeningSocket, processes map[int]processInfo, w *Watcher) []listeningSocket {
+// ownedManagedSockets keeps only sockets whose PID provably lives in the
+// exact ControlGroup returned for this unit sample, owned by our UID. The
+// MainPID fast path is gone on purpose: a bare PID match from an earlier
+// sample can misattribute a reused PID, so every candidate — including the
+// current MainPID — passes the same cgroup+UID verification. A same-port
+// lookalike from another cgroup, another user, or a vanished PID is never
+// attributed. Genuine /proc verification failures (anything but a vanished
+// PID) abort the unit with an error, never a fake inactive row.
+func (w *Watcher) ownedManagedSockets(status systemdUnitStatus, sockets []listeningSocket) ([]listeningSocket, error) {
+	controlGroup := strings.TrimSpace(status.ControlGroup)
+	if controlGroup == "" {
+		return nil, fmt.Errorf("unit %q reports no control group", strings.TrimSpace(status.Unit))
+	}
+	selfUID := os.Geteuid()
 	var owned []listeningSocket
 	for _, socket := range sockets {
 		if socket.pid <= 0 {
 			continue
 		}
-		if status.MainPID > 0 && socket.pid == status.MainPID {
-			owned = append(owned, socket)
+		paths, err := w.procCgroupPaths(socket.pid)
+		if err != nil {
+			if errors.Is(err, errProcessGone) {
+				continue
+			}
+			return nil, err
+		}
+		matched := false
+		for _, path := range paths {
+			if cgroupPathAccepts(path, controlGroup) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
-		inCgroup := false
-		if w != nil {
-			ok, _ := w.unitInCgroup(socket.pid, desc.Unit)
-			inCgroup = ok
-		} else {
-			ok, _ := pidInUnitCgroup(socket.pid, desc.Unit)
-			inCgroup = ok
+		uid, err := w.procOwnerUID(socket.pid)
+		if err != nil {
+			if errors.Is(err, errProcessGone) {
+				continue
+			}
+			return nil, err
 		}
-		if inCgroup {
-			owned = append(owned, socket)
+		if uid != selfUID {
+			continue
 		}
+		owned = append(owned, socket)
 	}
-	return owned
+	return owned, nil
 }
 
 func inactiveManagedService(desc ManagedServiceDescriptor, status systemdUnitStatus) SessionService {

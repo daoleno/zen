@@ -83,9 +83,13 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 	}
 
 	interfaces := discoverServiceInterfaces()
-	processes := snapshotProcesses()
+	_, _, snapshotProcessesFn := w.pollReaders()
+	processes := map[int]processInfo{}
+	if snapshotProcessesFn != nil {
+		processes = snapshotProcessesFn()
+	}
 	panesByPID := panesByProcess(processes, panes)
-	sockets, err := listListeningSockets()
+	sockets, err := w.listeningSocketsForServices()
 	if err != nil {
 		return SessionServiceSnapshot{}, err
 	}
@@ -220,7 +224,11 @@ type classifierWorkerSnapshot struct {
 func (w *Watcher) listServicePanes() ([]servicePane, error) {
 	w.mu.RLock()
 	socket := w.tmuxSocketPath
+	panesFn := w.servicePanesFn
 	w.mu.RUnlock()
+	if panesFn != nil {
+		return panesFn()
+	}
 	onSocket, err := listServicePanesOn(socket)
 	if err != nil {
 		if isNoTmuxServerError(err) {
