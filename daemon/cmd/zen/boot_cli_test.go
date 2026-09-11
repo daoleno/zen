@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1281,6 +1282,115 @@ func TestBootUninstallOutsideOwnerRemovesWithNote(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "owned by a process outside zen.service") {
 		t.Fatalf("outside owner note missing: %s", out.String())
+	}
+}
+
+func TestBootStateLockPIDRequiresRealLock(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	bootHoldStateLock(t, config.StateDir)
+	lockPath, err := bootLifecycleLockPath(config.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real process in the same cgroup opens the lock file without flocking.
+	opener := exec.Command("/bin/sh", "-c", "exec 9>>\"$0\"; sleep 30", lockPath)
+	opener.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := opener.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-opener.Process.Pid, syscall.SIGKILL)
+		_, _ = opener.Process.Wait()
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Readlink("/proc/" + strconv.Itoa(opener.Process.Pid) + "/fd/9"); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	pid, err := bootStateLockPID(config.StateDir, bootCurrentCgroup(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid != os.Getpid() {
+		t.Fatalf("cgroup scan reported %d, want the flock holder %d", pid, os.Getpid())
+	}
+	all, err := bootStateLockPID(config.StateDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all != os.Getpid() {
+		t.Fatalf("global scan reported %d, want the flock holder %d", all, os.Getpid())
+	}
+	// The opener must never be reported, even though it is in the cgroup and
+	// has the lock file open.
+	openerHeld, err := bootPIDHoldsFileLock(opener.Process.Pid, lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openerHeld {
+		t.Fatal("a process that only opened the lock file was reported as the holder")
+	}
+	holderHeld, err := bootPIDHoldsFileLock(os.Getpid(), lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !holderHeld {
+		t.Fatal("the real flock holder was not detected")
+	}
+}
+
+func TestBootUninstallRetainsConfigurationWithoutMetadata(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	path, metadataPath := bootWriteInstalledUnit(t, config)
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatal(err)
+	}
+	runner := bootTestRunner()
+	err := bootUninstall(runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "unit and configuration retained") {
+		t.Fatalf("missing metadata not retained: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatal("missing metadata removed the unit")
+	}
+	if runner.called(bootStop) || runner.called(bootDisable) {
+		t.Fatalf("missing metadata touched the unit: %v", runner.calls)
+	}
+}
+
+func TestBootUninstallRetainsInvalidMetadata(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	path, metadataPath := bootWriteInstalledUnit(t, config)
+	if err := os.WriteFile(metadataPath, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := bootTestRunner()
+	err := bootUninstall(runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "unit and configuration retained") {
+		t.Fatalf("invalid metadata not retained: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatal("invalid metadata removed the unit")
+	}
+}
+
+func TestBootUninstallRetainsOnUnreadableOwnershipScan(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	path, _ := bootWriteInstalledUnit(t, config)
+	runner := bootTestRunner()
+	runner.set(bootIsActive, "inactive")
+	previous := bootProcRoot
+	bootProcRoot = filepath.Join(t.TempDir(), "missing")
+	defer func() { bootProcRoot = previous }()
+	err := bootUninstall(runner, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "unit and configuration retained") {
+		t.Fatalf("unreadable ownership scan did not retain configuration: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatal("unreadable ownership scan removed the unit")
 	}
 }
 
