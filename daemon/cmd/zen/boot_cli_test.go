@@ -1191,6 +1191,24 @@ func TestBootUninstallStopFailureRetainsConfiguration(t *testing.T) {
 	}
 }
 
+// bootUseProcFixture points the ownership scan at an owned procfs tree that
+// exposes only the listed PIDs (as symlinks to the real /proc entries). The
+// scan then cannot be perturbed by unrelated host processes whose
+// /proc/<pid>/fd is unreadable, while each exposed PID still resolves its real
+// cgroup, fd links and fdinfo lock records.
+func bootUseProcFixture(t *testing.T, pids ...int) {
+	t.Helper()
+	root := t.TempDir()
+	for _, pid := range pids {
+		if err := os.Symlink("/proc/"+strconv.Itoa(pid), filepath.Join(root, strconv.Itoa(pid))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := bootProcRoot
+	bootProcRoot = root
+	t.Cleanup(func() { bootProcRoot = previous })
+}
+
 func TestBootUninstallStillRunningRetainsConfiguration(t *testing.T) {
 	config, _ := newBootTestEnvironment(t)
 	path, _ := bootWriteInstalledUnit(t, config)
@@ -1247,6 +1265,7 @@ func TestBootUninstallRetainsOwnLeftoverDaemon(t *testing.T) {
 
 func TestBootUninstallRetainsUnknownOwner(t *testing.T) {
 	config, _ := newBootTestEnvironment(t)
+	bootUseProcFixture(t, os.Getpid())
 	path, metadataPath := bootWriteInstalledUnit(t, config)
 	bootHoldStateLock(t, config.StateDir)
 	runner := bootTestRunner()
@@ -1265,6 +1284,7 @@ func TestBootUninstallRetainsUnknownOwner(t *testing.T) {
 
 func TestBootUninstallOutsideOwnerRemovesWithNote(t *testing.T) {
 	config, _ := newBootTestEnvironment(t)
+	bootUseProcFixture(t, os.Getpid())
 	path, metadataPath := bootWriteInstalledUnit(t, config)
 	bootHoldStateLock(t, config.StateDir)
 	runner := bootTestRunner()
@@ -1309,6 +1329,7 @@ func TestBootStateLockPIDRequiresRealLock(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	bootUseProcFixture(t, os.Getpid(), opener.Process.Pid)
 
 	pid, err := bootStateLockPID(config.StateDir, bootCurrentCgroup(t))
 	if err != nil {
@@ -1428,30 +1449,19 @@ func TestBootStateLockPIDStrictProvenForeignIsSkipped(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root owns every process; no foreign UID exists")
 	}
-	data, err := os.ReadFile("/proc/1/cgroup")
-	if err != nil {
-		t.Skip("/proc/1 is unavailable")
-	}
-	group := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) == 3 && strings.TrimSpace(fields[2]) != "" {
-			group = strings.TrimSpace(fields[2])
-			break
-		}
-	}
-	if group == "" {
-		t.Skip("/proc/1 has no cgroup path")
-	}
 	previous := bootProcRoot
 	bootProcRoot = "/proc"
 	defer func() { bootProcRoot = previous }()
-	pid, err := bootStateLockPID(t.TempDir(), group)
-	if err != nil {
-		t.Fatalf("proven-foreign process in the matched cgroup must be skipped: %v", err)
+	if bootProcessOwnerKind(1) != bootProcessOwnerForeignUID {
+		t.Skip("/proc/1 is not a foreign-UID process on this host")
 	}
-	if pid != 0 {
-		t.Fatalf("no live holder exists, got pid %d", pid)
+	if !bootSkipInspectionError(1, os.ErrPermission, true) {
+		t.Fatal("proven-foreign process must be skippable in strict cgroup mode")
+	}
+	// An unknown owner stays unresolved: permission errors are not
+	// automatically foreign.
+	if bootSkipInspectionError(1<<30, os.ErrPermission, true) {
+		t.Fatal("unknown process owner must not be skipped in strict cgroup mode")
 	}
 }
 
@@ -1460,6 +1470,8 @@ func TestBootStateLockPIDStrictProvenForeignIsSkipped(t *testing.T) {
 // holds no descriptors and can never be the state lock owner, so the scan must
 // skip it instead of failing closed with an unreadable /proc/<pid>/fd.
 func TestBootStateLockPIDZombieIsSkipped(t *testing.T) {
+	config, _ := newBootTestEnvironment(t)
+	bootHoldStateLock(t, config.StateDir)
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -1480,14 +1492,16 @@ func TestBootStateLockPIDZombieIsSkipped(t *testing.T) {
 	if !bootPIDZombie(cmd.Process.Pid) {
 		t.Fatal("child did not become a zombie")
 	}
-	previous := bootProcRoot
-	bootProcRoot = "/proc"
-	defer func() { bootProcRoot = previous }()
+	bootUseProcFixture(t, os.Getpid(), cmd.Process.Pid)
 	if !bootSkipInspectionError(cmd.Process.Pid, os.ErrPermission, true) {
 		t.Fatal("zombie process must be skippable in strict cgroup mode")
 	}
-	if _, err := bootStateLockPID(t.TempDir(), bootCurrentCgroup(t)); err != nil {
-		t.Fatalf("ambient zombie turned the strict scan into unresolved ownership: %v", err)
+	pid, err := bootStateLockPID(config.StateDir, bootCurrentCgroup(t))
+	if err != nil {
+		t.Fatalf("zombie turned the strict scan into unresolved ownership: %v", err)
+	}
+	if pid != os.Getpid() {
+		t.Fatalf("scan reported %d, want the real flock holder %d", pid, os.Getpid())
 	}
 }
 
