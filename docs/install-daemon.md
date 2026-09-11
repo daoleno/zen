@@ -275,6 +275,21 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
+For an optional boot installation, one command renders and enables a standard
+systemd user unit for the same binary and state:
+
+```bash
+zen boot install                 # this executable, default state/address
+zen boot status
+zen boot uninstall
+```
+
+Lingering starts the unit before an interactive login
+(`zen boot install` reports `sudo loginctl enable-linger <user>` when it cannot
+enable it itself). `zen boot` never manages tmux, never starts a second owner
+and never touches the state directory; `uninstall` removes only its own managed
+unit. The unit is an ordinary deployment choice shared by normal and DEV use.
+
 Remote desktop lock/login before an interactive login additionally needs the
 administrator-installed desktop broker and SDDM hooks described in
 [Remote Desktop](remote-desktop.md). That installation is independent of how
