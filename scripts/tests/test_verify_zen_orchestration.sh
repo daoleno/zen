@@ -14,14 +14,21 @@ chmod 700 "$TMPDIR" "$SANDBOX/state"
 FAKE_ZEN="$SANDBOX/zen"
 OBSERVE="$SANDBOX/observe"
 DOCTOR_MARKER="$SANDBOX/doctor-called"
-export OBSERVE DOCTOR_MARKER
+CHILD_PID_FILE="$SANDBOX/child.pid"
+export OBSERVE DOCTOR_MARKER CHILD_PID_FILE
 cat >"$FAKE_ZEN" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 mode="${FAKE_MODE:-normal}"
+spawn_child() {
+  (sleep 30) &
+  child_pid=$!
+  printf '%s\n' "$child_pid" >"$CHILD_PID_FILE"
+  wait "$child_pid"
+}
 if [[ "$1 $2" == "doctor --json" ]]; then
   [[ "$mode" != "doctor-nonzero" ]] || exit 7
-  [[ "$mode" != "doctor-hang" ]] || sleep 30
+  [[ "$mode" != "doctor-hang" ]] || spawn_child
   [[ -z "${DOCTOR_MARKER:-}" ]] || printf 'called\n' >"$DOCTOR_MARKER"
   printf '%s\n' '{"ready":true,"listen":{"addr":"127.0.0.1:9876","daemon_id":"fixture-daemon","zen_running":true}}'
   exit 0
@@ -38,7 +45,7 @@ if [[ "$1 $2 $3" == "brain context --json" ]]; then
   exit 0
 fi
 if [[ "$1 $2 $3" == "worker list --json" ]]; then
-  [[ "$mode" != "worker-hang" ]] || sleep 30
+  [[ "$mode" != "worker-hang" ]] || spawn_child
   report_dir="$(find "$TMPDIR" -maxdepth 1 -type d -name 'zen-verification.*' -print -quit)"
   if [[ -n "$report_dir" ]]; then
     stat -c '%a' "$report_dir" >"$OBSERVE"
@@ -77,6 +84,18 @@ assert_contains() {
 }
 assert_not_contains() {
   [[ "$1" != *"$2"* ]] || { printf 'assertion failed: output contains %s\n%s\n' "$2" "$1" >&2; exit 1; }
+}
+
+assert_child_stopped() {
+  local child_pid state
+  child_pid="$(cat "$CHILD_PID_FILE")"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    state="$(ps -o stat= -p "$child_pid" 2>/dev/null || true)"
+    [[ -z "$state" || "$state" == Z* ]] && return 0
+    sleep 0.1
+  done
+  printf 'child process %s is still running\n' "$child_pid" >&2
+  exit 1
 }
 
 run
@@ -120,6 +139,7 @@ assert_contains "$LAST_OUTPUT" "command failed with exit 9"
 run_mode worker-hang --timeout-seconds 1
 assert_eq "$LAST_STATUS" 1
 assert_contains "$LAST_OUTPUT" "worker_list: command failed with exit 124"
+assert_child_stopped
 
 rm -f "$DOCTOR_MARKER"
 set +e
@@ -145,6 +165,7 @@ wait "$signal_pid"
 signal_status=$?
 set -e
 [[ "$signal_status" -ne 0 ]] || { echo "signal run unexpectedly passed" >&2; exit 1; }
+assert_child_stopped
 [[ -z "$(find "$TMPDIR" -maxdepth 1 -type d -name 'zen-verification.*' -print -quit)" ]] || {
   echo "signal cleanup left a private report directory" >&2
   exit 1

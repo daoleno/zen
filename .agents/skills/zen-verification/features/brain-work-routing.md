@@ -20,7 +20,7 @@ Preconditions:
 - The exact Zen daemon is running and passes `zen doctor --json`.
 - The checkout contains the source and test anchors in `features/manifest.json`.
 
-- **Context.** Run the lever. The report contains a passing `brain_context` runtime check, a separate runtime daemon identity, a host executor name, a delegated executor name, and a Worker count.
+- **Context.** Run the lever. The report contains a passing `brain_context` runtime check, a separate runtime daemon identity, a host executor ID, a delegated executor ID, and a Worker count.
 - **Playbooks.** Read the same report. The report contains a passing `brain_playbooks` preflight and the `brain-flows` catalog entry. This does not prove Skill loading.
 - **Privacy.** Inspect the report. It contains no raw `current`, transcript, or Work objective field.
 
@@ -28,4 +28,4 @@ Preconditions:
 
 - A healthy daemon with stale source is not a pass. The source and test checks must also pass.
 - The report does not prove provider quality or a mobile or desktop client flow.
-- A missing daemon is a prerequisite failure. Do not start a second server as part of this read-only check.
+- A missing daemon is a prerequisite failure. Do not start a second server as part of this bounded preflight.

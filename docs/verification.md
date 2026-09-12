@@ -17,15 +17,15 @@ The check validates the feature manifest and then runs these bounded commands ag
 - `zen brain context --json`
 - `zen worker list --json`
 
-The output is compact JSON with separate source and runtime identities, feature IDs, source and test anchor counts, check IDs, host and delegated executor names, and Worker count. Raw Brain, Work, transcript, and provider payloads are held only in an unpredictable private `0700` directory with `0600` files during the bounded run, then removed by exact-file cleanup.
+The output is compact JSON with separate source and runtime identities, feature IDs, source and test anchor counts, check IDs, host and delegated executor IDs, and Worker count. Raw Brain, Work, transcript, and provider payloads are held only in an unpredictable private `0700` directory with `0600` files during the bounded run, then removed by exact-file cleanup.
 
-To target an isolated daemon, pass its exact state directory:
+To target a daemon explicitly, pass its exact state directory:
 
 ```sh
 scripts/verify-zen-orchestration.sh --json --state-dir /absolute/path/to/zen-state
 ```
 
-The check does not start a server, call an AI provider, create a Work item, or touch desktop input. `zen doctor` is not read-only. It may write its state probe and start an ephemeral tmux probe inside the explicit state directory. The script rejects an absent or symlink state directory before invoking doctor. Do not start a second daemon to make the check pass.
+The check does not start a server, call an AI provider, create a Work item, or touch desktop input. `zen doctor` is not read-only. It may write its state probe and start an ephemeral tmux probe. Executor probes may have their own side effects. The script rejects an absent or symlink state directory before invoking doctor. The script does not claim that those tmux or executor probes are isolated by the state directory. Do not start a second daemon to make the check pass.
 
 ## Keep the map current
 
@@ -36,3 +36,11 @@ The check proves the listed source and control-plane checks at separately report
 ## Failure handling
 
 The check exits with status `1` when an anchor or check fails. It exits with status `2` for invalid arguments or an invalid root or state directory. Each subprocess has a bounded timeout. The report names each failed check and does not turn a partial result into a pass.
+
+Run the committed inert regressions before changing this lever:
+
+```sh
+scripts/tests/test_verify_zen_orchestration.sh
+```
+
+The regressions use an owned process group and assert that a child process is no longer running after timeout and signal cleanup. They do not use process-name cleanup or a global supervisor.

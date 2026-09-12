@@ -1,6 +1,6 @@
 # Zen verification map
 
-This map describes the read-only control-plane paths that a Worker can verify without invoking a provider or touching personal desktop state. Read the matching feature file before running the lever.
+This map describes the control-plane paths that a Worker can verify without invoking a provider or touching personal desktop state. The doctor preflight can write its explicit state probe and start an ephemeral tmux probe. Read the matching feature file before running the lever.
 
 ## Baseline
 
