@@ -47,7 +47,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool) 
 	switch {
 	case !scoped:
 		reason = "desktop_scope_required"
-		recovery = "This phone has terminal access only. On the computer run zen pair and scan the new link once to grant unattended desktop. Zen never grants this silently."
+		recovery = "Enable remote desktop in the Zen app on this phone."
 	case !requestTLS && !identityTLS:
 		reason = "desktop_tls_required"
 		recovery = "Unattended desktop needs this computer's identity-bound encrypted transport. The unencrypted LAN switch is only for attended assistance and cannot carry OS passwords."

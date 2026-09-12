@@ -258,6 +258,9 @@ func TestDesktopIdentityPinnedLANSessionE2E(t *testing.T) {
 	})
 
 	t.Run("revoke", func(t *testing.T) {
+		if host.InspectReadiness().Broker {
+			t.Skip("a host broker socket exists; session-only revocation cannot be isolated on this machine")
+		}
 		t.Setenv("DISPLAY", display)
 		conn := openStreamingDesktop(t, &dialer, addr, func() http.Header {
 			return http.Header{"Authorization": {desktopAuthorization(t, key, manager.DaemonID(), id, "zen-desktop")}}

@@ -392,6 +392,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/desktop", s.handleDesktop)
 	mux.HandleFunc("/desktop/capability", s.handleDesktopCapability)
+	mux.HandleFunc("/desktop/scope", s.handleDesktopScope)
 	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/devices", s.handleDevices)

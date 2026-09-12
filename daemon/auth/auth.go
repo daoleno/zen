@@ -21,6 +21,7 @@ const (
 	AuthorizationHeaderPrefix = "ZenDevice "
 	DefaultPairingTTL         = 15 * time.Minute
 	DeviceListPurpose         = "zen-device-admin:list:GET:/devices"
+	DesktopGrantPurpose       = "zen-device-admin:desktop-grant:POST:/desktop/scope"
 	DesktopScopeVersion       = 1
 )
 
@@ -327,6 +328,56 @@ func (m *Manager) HasDesktopScope(deviceID, devicePublicKeyHex string) bool {
 	defer m.mu.Unlock()
 	device := m.devices[deviceID]
 	return device != nil && device.PublicKeyHex == normalizeHex(devicePublicKeyHex) && device.DesktopScopeVersion == DesktopScopeVersion
+}
+
+// GrantDesktopScope applies explicit in-place desktop consent for one already
+// authenticated trusted device. The device ID and key must come from the
+// authenticated request, never from a request body, so a device cannot grant
+// scope to another device. The device set is reloaded under the mutation lock
+// so a concurrent revocation cannot be resurrected, and the scope is committed
+// only when the replacement file applied. Re-consent is idempotent.
+func (m *Manager) GrantDesktopScope(deviceID, devicePublicKeyHex string, scopeVersion int) (*TrustedDevice, error) {
+	deviceID = strings.TrimSpace(deviceID)
+	if scopeVersion != DesktopScopeVersion || deviceID == "" || strings.ContainsAny(deviceID, "\r\n") {
+		return nil, ErrUnauthorized
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.loadDevicesLocked(); err != nil {
+		return nil, err
+	}
+	existing, ok := m.devices[deviceID]
+	if !ok || existing == nil || existing.PublicKeyHex != normalizeHex(devicePublicKeyHex) {
+		return nil, ErrUnknownDevice
+	}
+	if existing.DesktopScopeVersion == DesktopScopeVersion {
+		copyDevice := *existing
+		return &copyDevice, nil
+	}
+	if existing.DesktopScopeVersion != 0 {
+		return nil, ErrUnauthorized
+	}
+	nextDevices := make(map[string]*TrustedDevice, len(m.devices))
+	for id, device := range m.devices {
+		if device == nil {
+			continue
+		}
+		copyDevice := *device
+		nextDevices[id] = &copyDevice
+	}
+	nextDevices[deviceID].DesktopScopeVersion = DesktopScopeVersion
+	persistence, err := m.saveDevicesSnapshotLocked(nextDevices)
+	if persistence.Applied {
+		m.devices = nextDevices
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !persistence.Applied {
+		return nil, errors.New("trusted-device persistence did not apply")
+	}
+	copyDevice := *nextDevices[deviceID]
+	return &copyDevice, nil
 }
 
 func (m *Manager) DesktopTrust(deviceID string, fingerprint [32]byte) (trusted, scoped bool) {

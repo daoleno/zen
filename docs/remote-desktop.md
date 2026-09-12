@@ -116,8 +116,19 @@ The existing canonical trusted-device record remains the only device trust
 store. Revocation removes terminal and desktop access and retires an active
 desktop connection. A legacy paired record without `desktop_scope_version: 1`
 has terminal and explicitly attended access only. It does not gain unattended
-access from a LAN acknowledgement, a reconnect, or host setup. Re-pair once
-with a fresh owner-issued `zen pair` link to upgrade that existing device.
+access from a LAN acknowledgement, a reconnect, or host setup.
+
+Instead, the phone grants that existing device in place. In the app, open
+**Remote Desktop** and choose **Enable remote desktop**: after one explicit
+confirmation naming the server and the view/control permission, the phone signs
+one versioned consent request over the identity-bound encrypted transport, the
+daemon commits `desktop_scope_version: 1` to the same canonical device record,
+and the app re-fetches the capability and connects. No new QR, `zen pair`
+token, device record, host install, or re-pair is involved; cancelling changes
+nothing. The grant endpoint authenticates the device's own signed purpose over
+real TLS and never accepts a target device from the request body, so a device
+cannot grant another device and terminal-only records stay terminal-only until
+their owner consents.
 
 Unattended desktop requires actual encrypted transport: identity-bound TLS,
 the existing pinned Zen Link, or another verified `wss` origin. The daemon's
@@ -139,7 +150,7 @@ authorization error:
 
 | State | Meaning | Action |
 | --- | --- | --- |
-| `desktop_scope_required` | Device is legacy terminal-only | Re-pair once and acknowledge the desktop scope |
+| `desktop_scope_required` | Device is legacy terminal-only | Choose **Enable remote desktop** in the app and confirm once; no re-pair or host change |
 | `desktop_tls_required` | The attempted path is not encrypted to this daemon | Use identity TLS or pinned Link; do not enable plaintext for passwords |
 | `host_setup_required` | Neither this process's current display nor the broker is available | Start Zen inside the logged-in desktop session, or complete host install |
 | `connected` | Native decoder has presented the current generation | Use desktop controls; a received sample alone is not connected proof |
@@ -222,6 +233,15 @@ access unit, which is discarded without storing or displaying pixels. The
 agent also checks XTest availability; no keyboard or pointer input is sent.
 The active session is rechecked before success. A broker socket alone is not
 sufficient. The normal SDDM hooks retain registration on future display starts.
+
+On success the default output stays brief and always English: it states that
+remote desktop is set up, points at Remote Desktop in the phone app, and
+confirms the daemon and login screen were not restarted. Add `--verbose` to
+print the verified surface/display/resolution and frame evidence, the
+device-scope note, and the rollback command. Failures still print the failing
+check and exit non-zero; `--verbose` changes presentation only. The message is
+independent of `LANG`/`LC_ALL`; there is no locale detection and no localized
+CLI copy.
 
 An unchanged installation can run the same command again without restarting
 the broker or replacing its files. A different config/binary or administrator

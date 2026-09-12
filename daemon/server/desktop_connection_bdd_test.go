@@ -86,8 +86,28 @@ func TestBDD_DesktopConnectionContract(t *testing.T) {
 
 	t.Run("legacy_scope", func(t *testing.T) {
 		// Given a device without desktop_scope_version 1
-		// When /desktop is reached over real TLS
-		// Then admission fails as desktop_scope_required, not a combined TLS error
+		// When capability and /desktop are reached over real TLS
+		// Then recovery is one re-pair action and admission fails as
+		// desktop_scope_required, not a combined TLS error
+		req, err := http.NewRequest(http.MethodGet, encrypted.URL+"/desktop/capability", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", desktopAuthorization(t, key, manager.DaemonID(), id, auth.DesktopCapabilityPurpose))
+		capability, err := encrypted.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if capability.StatusCode != 200 || json.NewDecoder(capability.Body).Decode(&payload) != nil {
+			capability.Body.Close()
+			t.Fatalf("legacy capability HTTP %d", capability.StatusCode)
+		}
+		capability.Body.Close()
+		connect, _ := payload["connect"].(map[string]any)
+		if connect["reason"] != "desktop_scope_required" || connect["recovery"] != "Enable remote desktop in the Zen app on this phone." {
+			t.Fatalf("legacy capability=%v", payload)
+		}
 		header := http.Header{"Authorization": {desktopAuthorization(t, key, manager.DaemonID(), id, "zen-desktop")}}
 		_, response, err := dialer.Dial("wss"+strings.TrimPrefix(encrypted.URL, "https")+"/desktop", header)
 		if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
@@ -457,5 +477,179 @@ func TestDesktopAttendedPlaintextStillAdmitted(t *testing.T) {
 	var status map[string]any
 	if err := conn.ReadJSON(&status); err != nil || status["state"] != "unsupported" {
 		t.Fatalf("attended plaintext status %v: %v", status, err)
+	}
+}
+
+func TestBDD_DesktopInPlaceScopeGrant(t *testing.T) {
+	manager, key, id := sessionFileAuthFixture(t)
+	s := New(manager, nil, nil, nil, nil, nil, nil)
+	defer s.shutdownAuthenticatedClients()
+	identity, err := link.LoadOrCreateTransportIdentity(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetDesktopTransport(DesktopTransport{TLSConfig: identity.ServerTLSConfig(), Pin: identity.SPKISHA256})
+	plain := httptest.NewServer(s.Handler())
+	defer plain.Close()
+	encrypted := httptest.NewTLSServer(s.Handler())
+	defer encrypted.Close()
+	publicKey := hex.EncodeToString(key.Public().(ed25519.PublicKey))
+	if manager.HasDesktopScope(id, publicKey) {
+		t.Fatal("fixture device already scoped")
+	}
+
+	capability := func() map[string]any {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, encrypted.URL+"/desktop/capability", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", desktopAuthorization(t, key, manager.DaemonID(), id, auth.DesktopCapabilityPurpose))
+		response, err := encrypted.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var payload map[string]any
+		if response.StatusCode != 200 || json.NewDecoder(response.Body).Decode(&payload) != nil {
+			t.Fatalf("capability HTTP %d", response.StatusCode)
+		}
+		return payload
+	}
+	grant := func(client *http.Client, base, header, body string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, base+"/desktop/scope", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
+		response.Body.Close()
+		return response, raw
+	}
+	grantHeader := func() string {
+		return desktopAuthorization(t, key, manager.DaemonID(), id, auth.DesktopGrantPurpose)
+	}
+
+	// Given a legacy trusted phone scope0, capability refuses media with
+	// in-place recovery copy and no pairing redirect.
+	connect0, _ := capability()["connect"].(map[string]any)
+	if connect0["unattended"] != false || connect0["reason"] != "desktop_scope_required" ||
+		connect0["recovery"] != "Enable remote desktop in the Zen app on this phone." {
+		t.Fatalf("scope0 capability=%v", connect0)
+	}
+
+	// Negatives: plaintext, wrong purpose, unsigned, malformed and wrong
+	// version requests are all refused without changing the record.
+	if response, _ := grant(plain.Client(), plain.URL, grantHeader(), `{"desktop_scope_version":1}`); response.StatusCode != http.StatusForbidden {
+		t.Fatalf("plaintext grant HTTP %d", response.StatusCode)
+	}
+	if response, _ := grant(encrypted.Client(), encrypted.URL, desktopAuthorization(t, key, manager.DaemonID(), id, "zen-probe"), `{"desktop_scope_version":1}`); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong purpose grant HTTP %d", response.StatusCode)
+	}
+	if response, _ := grant(encrypted.Client(), encrypted.URL, "", `{"desktop_scope_version":1}`); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unsigned grant HTTP %d", response.StatusCode)
+	}
+	if response, _ := grant(encrypted.Client(), encrypted.URL, grantHeader(), `{"desktop_scope_version":2}`); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wrong version grant HTTP %d", response.StatusCode)
+	}
+	if response, _ := grant(encrypted.Client(), encrypted.URL, grantHeader(), `{"desktop_scope_version":`); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed grant HTTP %d", response.StatusCode)
+	}
+	if manager.HasDesktopScope(id, publicKey) {
+		t.Fatal("failed request applied desktop scope")
+	}
+
+	// Explicit signed consent over TLS binds the authenticated device; a
+	// body-claimed other device is ignored, and no pairing token is issued.
+	response, raw := grant(encrypted.Client(), encrypted.URL, grantHeader(), `{"device_id":"someone-else","desktop_scope_version":1}`)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("in-place grant HTTP %d body=%s", response.StatusCode, raw)
+	}
+	var granted map[string]any
+	if json.Unmarshal(raw, &granted) != nil || granted["ok"] != true || granted["device_id"] != id || int(granted["desktop_scope_version"].(float64)) != 1 {
+		t.Fatalf("grant payload=%v", granted)
+	}
+	daemonKey, err := hex.DecodeString(manager.PublicKeyHex())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature, err := hex.DecodeString(fmt.Sprint(granted["assertion_signature"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion := auth.BuildServerAssertionPayload(auth.DesktopGrantPurpose, manager.DaemonID(), fmt.Sprint(granted["assertion_timestamp"]), fmt.Sprint(granted["assertion_nonce"]))
+	if !ed25519.Verify(ed25519.PublicKey(daemonKey), assertion, signature) {
+		t.Fatal("grant response assertion did not verify")
+	}
+	if !manager.HasDesktopScope(id, publicKey) {
+		t.Fatal("grant did not apply to the authenticated device")
+	}
+	devices := manager.ListDevices()
+	if len(devices) != 1 || devices[0].ID != id || devices[0].DesktopScopeVersion != 1 || devices[0].Name != "Session file test" {
+		t.Fatalf("grant changed the canonical device record: %v", devices)
+	}
+	var pairings struct {
+		Pairings []json.RawMessage `json:"pairings"`
+	}
+	pairingRaw, err := os.ReadFile(filepath.Join(manager.StorageDir(), "pairing-tokens.json"))
+	if err != nil || json.Unmarshal(pairingRaw, &pairings) != nil || len(pairings.Pairings) != 0 {
+		t.Fatalf("grant issued or left pairing tokens: %s %v", pairingRaw, err)
+	}
+
+	// Duplicate explicit consent is idempotent; a replayed signed header is not.
+	if response, _ := grant(encrypted.Client(), encrypted.URL, grantHeader(), `{"desktop_scope_version":1}`); response.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent grant HTTP %d", response.StatusCode)
+	}
+	replayHeader := grantHeader()
+	if response, _ := grant(encrypted.Client(), encrypted.URL, replayHeader, `{"desktop_scope_version":1}`); response.StatusCode != http.StatusOK {
+		t.Fatalf("first replay attempt HTTP %d", response.StatusCode)
+	}
+	if response, _ := grant(encrypted.Client(), encrypted.URL, replayHeader, `{"desktop_scope_version":1}`); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replayed grant HTTP %d", response.StatusCode)
+	}
+
+	// Capability now admits the same device, and a fresh manager reload persists it.
+	connect1, _ := capability()["connect"].(map[string]any)
+	if connect1["unattended"] != true {
+		t.Fatalf("scope1 capability=%v", connect1)
+	}
+	reloaded, err := auth.NewManager(manager.StorageDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.HasDesktopScope(id, publicKey) {
+		t.Fatal("in-place grant did not persist")
+	}
+
+	// Revocation still removes terminal and desktop, and cannot be resurrected.
+	if _, err := manager.RevokeDevice(id); err != nil {
+		t.Fatal(err)
+	}
+	if response, _ := grant(encrypted.Client(), encrypted.URL, grantHeader(), `{"desktop_scope_version":1}`); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked grant HTTP %d", response.StatusCode)
+	}
+	check, err := http.NewRequest(http.MethodGet, encrypted.URL+"/auth-check", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check.Header.Set("Authorization", desktopAuthorization(t, key, manager.DaemonID(), id, "zen-probe"))
+	checkResponse, err := encrypted.Client().Do(check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkResponse.Body.Close()
+	if checkResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked terminal auth HTTP %d", checkResponse.StatusCode)
+	}
+	if manager.HasDesktopScope(id, publicKey) {
+		t.Fatal("revoked device regained scope")
 	}
 }

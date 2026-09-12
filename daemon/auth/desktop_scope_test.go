@@ -135,6 +135,106 @@ func TestDesktopScopeProofCannotBeAddedReplayedOrRetargeted(t *testing.T) {
 	}
 }
 
+func enrollLegacyPhone(t *testing.T, m *Manager, pub string) *TrustedDevice {
+	t.Helper()
+	token, err := m.IssuePairingToken(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := m.EnrollDevice(token.Value, m.DaemonID(), m.PublicKeyHex(), "phone", "Phone", pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return device
+}
+
+func TestDesktopScopeInPlaceGrantPreservesRecordAndPersists(t *testing.T) {
+	m, key, pub := scopeFixture(t)
+	legacy := enrollLegacyPhone(t, m, pub)
+	if legacy.DesktopScopeVersion != 0 {
+		t.Fatal("legacy fixture already scoped")
+	}
+	if _, err := m.GrantDesktopScope("phone", pub, 0); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("version 0 admitted", err)
+	}
+	if _, err := m.GrantDesktopScope("phone", pub, 2); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("unknown version admitted", err)
+	}
+	if _, err := m.GrantDesktopScope("phone", strings.Repeat("0", 64), 1); !errors.Is(err, ErrUnknownDevice) {
+		t.Fatal("wrong public key admitted", err)
+	}
+	if _, err := m.GrantDesktopScope("other", pub, 1); !errors.Is(err, ErrUnknownDevice) {
+		t.Fatal("unknown device admitted", err)
+	}
+	granted, err := m.GrantDesktopScope("phone", pub, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if granted.DesktopScopeVersion != 1 || granted.ID != legacy.ID || granted.Name != legacy.Name ||
+		granted.PublicKeyHex != legacy.PublicKeyHex || !granted.AddedAt.Equal(legacy.AddedAt) {
+		t.Fatal("grant changed the canonical device record")
+	}
+	if !m.HasDesktopScope("phone", pub) || len(m.ListDevices()) != 1 {
+		t.Fatal("grant not visible on the same record")
+	}
+	again, err := m.GrantDesktopScope("phone", pub, 1)
+	if err != nil || again.DesktopScopeVersion != 1 {
+		t.Fatal("duplicate explicit consent was not idempotent", err)
+	}
+	if _, err := m.VerifyAuthorization(buildTestAuthorizationHeader(t, key, m.DaemonID(), "phone", "zen-probe"), "zen-probe", time.Minute); err != nil {
+		t.Fatal("terminal auth failed after grant", err)
+	}
+	if !m.HasDesktopScope("phone", pub) {
+		t.Fatal("terminal probe changed desktop scope")
+	}
+	reloaded, err := NewManager(m.StorageDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.HasDesktopScope("phone", pub) || !reloaded.ListDevices()[0].AddedAt.Equal(legacy.AddedAt) {
+		t.Fatal("grant did not persist on the same record")
+	}
+}
+
+func TestDesktopScopeGrantRefusesRevokedDevice(t *testing.T) {
+	m, _, pub := scopeFixture(t)
+	enrollLegacyPhone(t, m, pub)
+	if _, err := m.RevokeDevice("phone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GrantDesktopScope("phone", pub, 1); !errors.Is(err, ErrUnknownDevice) {
+		t.Fatal("revoked device granted", err)
+	}
+	if m.HasDesktopScope("phone", pub) || len(m.ListDevices()) != 0 {
+		t.Fatal("revoked device resurrected")
+	}
+}
+
+func TestDesktopScopeGrantPersistenceFailureDoesNotGrantMemoryPrivileges(t *testing.T) {
+	m, _, pub := scopeFixture(t)
+	enrollLegacyPhone(t, m, pub)
+	writer := m.writeFile
+	m.writeFile = func(path string, data []byte, mode os.FileMode) (PersistenceResult, error) {
+		if path == m.devicesPath {
+			return PersistenceResult{}, errors.New("synthetic persistence failure")
+		}
+		return writer(path, data, mode)
+	}
+	if _, err := m.GrantDesktopScope("phone", pub, 1); err == nil {
+		t.Fatal("persistence failure ignored")
+	}
+	if m.HasDesktopScope("phone", pub) {
+		t.Fatal("uncommitted desktop privilege visible in memory")
+	}
+	reloaded, err := NewManager(m.StorageDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.HasDesktopScope("phone", pub) {
+		t.Fatal("uncommitted desktop privilege on disk")
+	}
+}
+
 func TestDesktopScopePersistenceFailureDoesNotGrantMemoryPrivileges(t *testing.T) {
 	m, key, pub := scopeFixture(t)
 	token, err := m.IssuePairingToken(time.Minute)
