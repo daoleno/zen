@@ -22,6 +22,7 @@ export interface DesktopProofDependencies {
 
 export interface MoonlightHostBootstrap {
   httpPort: number;
+  admission: "verified" | "pending" | "unavailable";
   httpsPort: number;
   appId: number;
   hostKey: string;
@@ -81,6 +82,8 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
   // block is covered by a separate v2 signature: legacy servers (v1 only) are
   // accepted with Moonlight disabled, and an altered block fails v2.
   const rawMoonlight = asRecord(payload.moonlight);
+  // Seven canonical fields, exactly as the Go server signs them (admission is
+  // part of the signed block).
   const moonlightBinding = Object.keys(rawMoonlight).length === 0 ? "" : [
     String(rawMoonlight.available === true),
     String(rawMoonlight.http_port ?? ""),
@@ -88,6 +91,7 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     String(rawMoonlight.app_id ?? ""),
     typeof rawMoonlight.host_key === "string" ? rawMoonlight.host_key : "",
     typeof rawMoonlight.identity_key === "string" ? rawMoonlight.identity_key : "",
+    typeof rawMoonlight.admission === "string" ? rawMoonlight.admission : "",
   ].join("\n");
   const binding = new TextEncoder().encode([
     server.daemonId.trim().toLowerCase(),
@@ -121,6 +125,12 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     throw new Error("The desktop capability proof did not match this paired computer.");
   }
   const reason = typeof connect.reason === "string" ? connect.reason : "";
+  const admission: "verified" | "pending" | "unavailable" =
+    rawMoonlight.admission === "verified" || rawMoonlight.admission === "pending"
+      ? rawMoonlight.admission
+      : rawMoonlight.available === true
+        ? "pending"
+        : "unavailable";
   // A block without a v2 proof is ignored (legacy server), never trusted.
   const moonlight = !moonlightProven ? null : Number.isInteger(Number(rawMoonlight.http_port)) && Number(rawMoonlight.http_port) > 0 && Number(rawMoonlight.http_port) <= 65535 &&
     Number.isInteger(Number(rawMoonlight.https_port)) && Number(rawMoonlight.https_port) > 0 && Number(rawMoonlight.https_port) <= 65535 &&
@@ -133,6 +143,7 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
         hostKey: rawMoonlight.host_key,
         identityKey: rawMoonlight.identity_key,
         available: rawMoonlight.available === true,
+        admission,
       }
     : null;
   return {

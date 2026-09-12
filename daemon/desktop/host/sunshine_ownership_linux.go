@@ -53,6 +53,10 @@ type sunshineStateRoot struct {
 // certificate matching the presented client certificate yet.
 var ErrSunshineEnrollmentNotFound = errors.New("sunshine_enrollment_not_found")
 var errSunshineEnrollmentNotFound = ErrSunshineEnrollmentNotFound
+
+// ErrSunshineStateCorrupt marks unreadable or malformed Zen-owned ownership or
+// upstream state; callers must fail closed instead of treating it as unenrolled.
+var ErrSunshineStateCorrupt = errSunshineStateUnreadable
 var errSunshineStateUnreadable = errors.New("sunshine_state_unreadable")
 
 // One process-wide lock serializes every store instance sharing the file.
@@ -92,10 +96,12 @@ func (s *SunshineOwnershipStore) persistLocked(entries []sunshineOwnership) erro
 	return os.Rename(temp, s.path)
 }
 
-// Claim records the verified enrollment for one device, replacing only that
-// device's previous record.
-func (s *SunshineOwnershipStore) Claim(deviceID, uuid string) error {
-	if deviceID == "" || uuid == "" {
+// Claim records the verified enrollment for one device (UUID and certificate
+// fingerprint atomically), replacing only that device's previous record.
+func (s *SunshineOwnershipStore) Claim(deviceID, uuid, fingerprint string) error {
+	// An empty UUID is a pending intent and must still carry its verified
+	// certificate fingerprint.
+	if deviceID == "" || (uuid == "" && fingerprint == "") {
 		return errors.New("sunshine_ownership_incomplete")
 	}
 	sunshineOwnershipMu.Lock()
@@ -110,7 +116,7 @@ func (s *SunshineOwnershipStore) Claim(deviceID, uuid string) error {
 			next = append(next, entry)
 		}
 	}
-	next = append(next, sunshineOwnership{DeviceID: deviceID, UUID: uuid})
+	next = append(next, sunshineOwnership{DeviceID: deviceID, UUID: uuid, Cert: fingerprint})
 	return s.persistLocked(next)
 }
 
@@ -185,24 +191,6 @@ func SunshineEnrollmentByCert(fingerprint string) (string, bool, error) {
 	return "", false, nil
 }
 
-// BindEnrollmentCertificate records the certificate fingerprint for a device.
-func BindEnrollmentCertificate(deviceID, fingerprint string) error {
-	store := NewSunshineOwnershipStore(ZenStateDir())
-	sunshineOwnershipMu.Lock()
-	defer sunshineOwnershipMu.Unlock()
-	entries, err := store.loadLocked()
-	if err != nil {
-		return err
-	}
-	for i := range entries {
-		if entries[i].DeviceID == deviceID {
-			entries[i].Cert = fingerprint
-			return store.persistLocked(entries)
-		}
-	}
-	return errSunshineEnrollmentNotFound
-}
-
 // SunshineAdmission reports whether a device holds a verified enrollment.
 func SunshineAdmission(deviceID string) (string, error) {
 	store := NewSunshineOwnershipStore(ZenStateDir())
@@ -260,15 +248,21 @@ func SunshineOwnershipBound() bool { return true }
 
 // EnrollFromState binds an authenticated Zen device to the Sunshine-generated
 // UUID whose stored certificate exactly matches the client certificate the
-// device presented. The state file is read-only; a forged certificate is
-// rejected and malformed state fails closed.
-func EnrollFromState(deviceID, clientCertPEM string) error {
-	if deviceID == "" {
+// device presented. When pairing has not reached the owned state yet, the
+// verified certificate fingerprint is recorded as a pending ownership intent so
+// revocation can still cancel it. The state file is read-only; a forged
+// certificate is rejected and malformed state fails closed.
+func EnrollFromState(deviceID, clientCertPEM, fingerprint string) error {
+	if deviceID == "" || fingerprint == "" {
 		return errors.New("sunshine_ownership_incomplete")
 	}
 	presented, err := certificateDER([]byte(clientCertPEM))
 	if err != nil {
 		return fmt.Errorf("sunshine_enrollment_invalid_certificate: %w", err)
+	}
+	actual, err := CertFingerprint(clientCertPEM)
+	if err != nil || actual != fingerprint {
+		return fmt.Errorf("sunshine_enrollment_invalid_certificate: fingerprint mismatch")
 	}
 	stateBody, err := os.ReadFile(SunshineStateFilePath())
 	if err != nil {
@@ -284,8 +278,13 @@ func EnrollFromState(deviceID, clientCertPEM string) error {
 			continue
 		}
 		if string(stored) == string(presented) {
-			return NewSunshineOwnershipStore(ZenStateDir()).Claim(deviceID, client.UUID)
+			return NewSunshineOwnershipStore(ZenStateDir()).Claim(deviceID, client.UUID, fingerprint)
 		}
+	}
+	// No host UUID yet: persist the verified ownership intent so a revoke can
+	// still cancel this certificate before the pairing lands.
+	if err := NewSunshineOwnershipStore(ZenStateDir()).Claim(deviceID, "", fingerprint); err != nil {
+		return err
 	}
 	return errSunshineEnrollmentNotFound
 }
@@ -314,6 +313,13 @@ func RemoveSunshineEnrollment(deviceID string) error {
 	return err
 }
 
+// CancelSunshineEnrollment drops a pending or committed enrollment record for
+// the target only.
+func CancelSunshineEnrollment(deviceID string) error {
+	_, err := NewSunshineOwnershipStore(ZenStateDir()).Remove(deviceID)
+	return err
+}
+
 // RevokeSunshineTarget disables the target's client (upstream terminates its
 // sessions by certificate) and removes only its pairing. Caller context is
 // propagated, failures keep the enrollment for retry, and other devices are
@@ -335,6 +341,12 @@ func revokeSunshineTargetWith(admin *SunshineAdmin, ctx context.Context, deviceI
 	}
 	if !ok {
 		return nil
+	}
+	if uuid == "" {
+		// Pending intent: cancel it so a late pairing cannot become an
+		// independently usable credential.
+		_, err := NewSunshineOwnershipStore(ZenStateDir()).Remove(deviceID)
+		return err
 	}
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

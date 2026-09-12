@@ -198,6 +198,7 @@ function moonlightBindingOf(moonlight: Record<string, unknown>): string {
     String(moonlight.app_id ?? ""),
     typeof moonlight.host_key === "string" ? moonlight.host_key : "",
     typeof moonlight.identity_key === "string" ? moonlight.identity_key : "",
+    typeof moonlight.admission === "string" ? moonlight.admission : "",
   ].join("\n");
 }
 
@@ -224,13 +225,13 @@ function proofWithMoonlight(moonlight: Record<string, unknown>, options: { v2Bin
   };
 }
 
-const validMoonlight = { available: true, http_port: 47989, https_port: 47984, app_id: 3, host_key: "zen-host-1", identity_key: "dev-42" };
+const validMoonlight = { available: true, http_port: 47989, https_port: 47984, app_id: 3, host_key: "zen-host-1", identity_key: "dev-42", admission: "pending" };
 
 test("moonlight bootstrap is signed, typed and invalid blocks fail closed", async () => {
   const valid = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop", proofWithMoonlight(validMoonlight));
   expect(valid.moonlight).toEqual({
     httpPort: 47989, httpsPort: 47984, appId: 3,
-    hostKey: "zen-host-1", identityKey: "dev-42", available: true,
+    hostKey: "zen-host-1", identityKey: "dev-42", available: true, admission: "pending",
   });
 
   for (const invalid of [

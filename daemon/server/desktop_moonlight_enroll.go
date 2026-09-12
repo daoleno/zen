@@ -32,17 +32,19 @@ type moonlightChallenge struct {
 	Consumed  bool
 }
 
-var (
-	moonlightChallengesMu sync.Mutex
-	moonlightChallenges   = map[string]*moonlightChallenge{}
-)
-
 const moonlightChallengeTTL = 2 * time.Minute
 
-func moonlightChallengeSweepLocked(now time.Time) {
-	for attempt, challenge := range moonlightChallenges {
+func (s *Server) moonlightChallengeStore() (map[string]*moonlightChallenge, *sync.Mutex) {
+	if s.moonlightChallenges == nil {
+		s.moonlightChallenges = map[string]*moonlightChallenge{}
+	}
+	return s.moonlightChallenges, &s.moonlightChallengesMu
+}
+
+func moonlightChallengeSweepLocked(challenges map[string]*moonlightChallenge, now time.Time) {
+	for attempt, challenge := range challenges {
 		if now.After(challenge.ExpiresAt) {
-			delete(moonlightChallenges, attempt)
+			delete(challenges, attempt)
 		}
 	}
 }
@@ -83,15 +85,16 @@ func (s *Server) handleMoonlightEnrollBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	now := time.Now()
-	moonlightChallengesMu.Lock()
-	moonlightChallengeSweepLocked(now)
-	moonlightChallenges[raw.Attempt] = &moonlightChallenge{
+	challenges, mu := s.moonlightChallengeStore()
+	mu.Lock()
+	moonlightChallengeSweepLocked(challenges, now)
+	challenges[raw.Attempt] = &moonlightChallenge{
 		DeviceID:  device.ID,
 		DaemonID:  s.auth.DaemonID(),
 		Nonce:     nonce,
 		ExpiresAt: now.Add(moonlightChallengeTTL),
 	}
-	moonlightChallengesMu.Unlock()
+	mu.Unlock()
 	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, map[string]any{
 		"attempt":    raw.Attempt,
 		"nonce":      nonce,
@@ -128,65 +131,88 @@ func (s *Server) handleMoonlightEnrollComplete(w http.ResponseWriter, r *http.Re
 	}
 
 	now := time.Now()
-	moonlightChallengesMu.Lock()
-	moonlightChallengeSweepLocked(now)
-	challenge := moonlightChallenges[raw.Attempt]
+	challenges, mu := s.moonlightChallengeStore()
+	mu.Lock()
+	moonlightChallengeSweepLocked(challenges, now)
+	challenge := challenges[raw.Attempt]
 	if challenge == nil || challenge.DeviceID != device.ID || challenge.DaemonID != s.auth.DaemonID() {
-		moonlightChallengesMu.Unlock()
+		mu.Unlock()
 		http.Error(w, "unknown_enrollment_attempt", http.StatusConflict)
 		return
 	}
 	if challenge.Consumed {
-		moonlightChallengesMu.Unlock()
+		mu.Unlock()
 		http.Error(w, "enrollment_attempt_replayed", http.StatusConflict)
 		return
 	}
 	if challenge.Nonce != raw.Nonce {
-		moonlightChallengesMu.Unlock()
+		mu.Unlock()
 		http.Error(w, "enrollment_challenge_mismatch", http.StatusConflict)
 		return
 	}
 	// Verify possession of the engine private key before touching ownership.
 	if err := host.VerifyEnrollmentProof(raw.ClientCertPEM, raw.Attempt, raw.Nonce, raw.Signature); err != nil {
-		moonlightChallengesMu.Unlock()
+		mu.Unlock()
 		http.Error(w, "enrollment_proof_invalid", http.StatusForbidden)
 		return
 	}
 	fingerprint, err := host.CertFingerprint(raw.ClientCertPEM)
 	if err != nil {
-		moonlightChallengesMu.Unlock()
+		mu.Unlock()
 		http.Error(w, "enrollment_certificate_invalid", http.StatusBadRequest)
 		return
 	}
 	if owner, bound, err := host.SunshineEnrollmentByCert(fingerprint); err != nil {
-		moonlightChallengesMu.Unlock()
+		mu.Unlock()
 		http.Error(w, "enrollment_state_unavailable", http.StatusServiceUnavailable)
 		return
 	} else if bound && owner != device.ID {
 		// A must never claim a certificate already owned by B.
-		moonlightChallengesMu.Unlock()
+		mu.Unlock()
 		http.Error(w, "enrollment_certificate_claimed", http.StatusConflict)
 		return
 	}
-	if err := host.EnrollFromState(device.ID, raw.ClientCertPEM); err != nil {
-		moonlightChallengesMu.Unlock()
-		if errors.Is(err, host.ErrSunshineEnrollmentNotFound) {
-			// Pairing has not reached the owned state yet; the attempt stays
-			// valid until expiry so the client can retry after pairing.
+	// Ownership intent is durable: pending state is written before any response,
+	// including the not-yet-paired case, so revoke can always cancel it.
+	enrollErr := host.EnrollFromState(device.ID, raw.ClientCertPEM, fingerprint)
+	// Re-check authorization at the commit point: a revocation or scope removal
+	// racing this completion must not create a new authorized credential.
+	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) {
+		_ = host.CancelSunshineEnrollment(device.ID)
+		mu.Unlock()
+		http.Error(w, "desktop_scope_required", http.StatusForbidden)
+		return
+	}
+	if enrollErr != nil {
+		if errors.Is(enrollErr, host.ErrSunshineEnrollmentNotFound) {
+			// Pending intent recorded; the attempt stays valid until expiry so
+			// the client can retry after pairing completes.
+			mu.Unlock()
 			http.Error(w, "enrollment_pending", http.StatusConflict)
 			return
 		}
+		if errors.Is(enrollErr, host.ErrSunshineStateCorrupt) {
+			mu.Unlock()
+			http.Error(w, "enrollment_state_unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		mu.Unlock()
 		http.Error(w, "enrollment_state_unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	uuid, ok, err := host.SunshineEnrollment(device.ID)
-	if err != nil || !ok {
+	if err != nil {
+		mu.Unlock()
 		http.Error(w, "enrollment_state_unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	_ = host.BindEnrollmentCertificate(device.ID, fingerprint)
+	if !ok || uuid == "" {
+		mu.Unlock()
+		http.Error(w, "enrollment_pending", http.StatusConflict)
+		return
+	}
 	challenge.Consumed = true
-	moonlightChallengesMu.Unlock()
+	mu.Unlock()
 	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, map[string]any{
 		"enrolled":  true,
 		"uuid":      uuid,

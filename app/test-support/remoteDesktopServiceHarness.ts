@@ -24,12 +24,12 @@ const nonce = "d".repeat(32);
 const assertion = (purpose: string) => sign(md.buildServerAssertionPayload(purpose, daemonId, timestamp, nonce));
 const bindingOf = (block: Record<string, unknown>) => [
   String(block.available === true), String(block.http_port), String(block.https_port),
-  String(block.app_id), String(block.host_key), String(block.identity_key),
+  String(block.app_id), String(block.host_key), String(block.identity_key), String(block.admission ?? ""),
 ].join("\n");
 const signDomain = (domain: string, fields: string[]) =>
   sign(Buffer.concat([Buffer.from(domain), Buffer.from(fields.join("\n"))]));
 const v1Fields = [daemonId, publicKey, pin, "true"];
-const moonlight = { available: true, http_port: 47989, https_port: 47984, app_id: 1, host_key: "zen-host", identity_key: "device-1" };
+const moonlight = { available: true, http_port: 47989, https_port: 47984, app_id: 1, host_key: "zen-host", identity_key: "device-1", admission: "verified" };
 const v2Fields = [...v1Fields, bindingOf(moonlight)];
 
 let scenario: "moonlight" | "legacy" = "moonlight";

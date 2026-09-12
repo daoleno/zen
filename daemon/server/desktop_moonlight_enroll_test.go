@@ -94,17 +94,39 @@ func postEnroll(t *testing.T, server *httptest.Server, key ed25519.PrivateKey, d
 
 func enrollFixture(t *testing.T) (*httptest.Server, ed25519.PrivateKey, string, string) {
 	t.Helper()
+	server, keyA, deviceA, daemonID, _, _ := enrollFixtureAB(t)
+	_ = deviceA
+	return server, keyA, deviceA, daemonID
+}
+
+func enrollFixtureAB(t *testing.T) (*httptest.Server, ed25519.PrivateKey, string, string, ed25519.PrivateKey, string) {
+	t.Helper()
 	t.Setenv("ZEN_STATE_DIR", t.TempDir())
-	manager, key, deviceID := sessionFileAuthFixture(t)
-	publicHex := hex.EncodeToString(key.Public().(ed25519.PublicKey))
-	if _, err := manager.GrantDesktopScope(deviceID, publicHex, auth.DesktopScopeVersion); err != nil {
+	manager, keyA, deviceA := sessionFileAuthFixture(t)
+	publicA := hex.EncodeToString(keyA.Public().(ed25519.PublicKey))
+	if _, err := manager.GrantDesktopScope(deviceA, publicA, auth.DesktopScopeVersion); err != nil {
+		t.Fatal(err)
+	}
+	publicB, keyB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := manager.IssuePairingToken(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceB := "session-file-device-b"
+	if _, err := manager.EnrollDevice(token.Value, manager.DaemonID(), manager.PublicKeyHex(), deviceB, "Second device", hex.EncodeToString(publicB)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.GrantDesktopScope(deviceB, hex.EncodeToString(publicB), auth.DesktopScopeVersion); err != nil {
 		t.Fatal(err)
 	}
 	s := New(manager, nil, nil, nil, nil, nil, nil)
 	t.Cleanup(s.shutdownAuthenticatedClients)
 	server := httptest.NewTLSServer(s.Handler())
 	t.Cleanup(server.Close)
-	return server, key, deviceID, manager.DaemonID()
+	return server, keyA, deviceA, manager.DaemonID(), keyB, deviceB
 }
 
 func TestMoonlightEnrollmentProvesKeyPossessionAndBindsGeneratedUUID(t *testing.T) {
@@ -186,5 +208,96 @@ func TestMoonlightEnrollmentRequiresScope(t *testing.T) {
 	status, _ := postEnroll(t, server, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt})
 	if status != http.StatusForbidden {
 		t.Fatalf("unscoped enrollment status=%d", status)
+	}
+}
+
+func TestMoonlightEnrollmentRejectsRealBOwnedCertificateClaim(t *testing.T) {
+	server, keyA, deviceA, daemonID, keyB, deviceB := enrollFixtureAB(t)
+	clientB := newEnrollClient(t)
+	// B's certificate is genuinely present in the owned state under UUID-B.
+	writeEnrollState(t, os.Getenv("ZEN_STATE_DIR"), map[string]any{
+		"name": "b", "cert": clientB.certPEM, "uuid": "host-uuid-b", "enabled": true,
+	})
+	// Enroll B first through the real handshake.
+	attemptB := hex.EncodeToString(bytes.Repeat([]byte{0x11}, 16))
+	status, begin := postEnroll(t, server, keyB, daemonID, deviceB, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attemptB})
+	if status != http.StatusOK {
+		t.Fatalf("begin b status=%d", status)
+	}
+	nonceB, _ := begin["nonce"].(string)
+	status, complete := postEnroll(t, server, keyB, daemonID, deviceB, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attemptB, "nonce": nonceB, "client_cert_pem": clientB.certPEM, "signature": clientB.sign(t, attemptB, nonceB),
+	})
+	if status != http.StatusOK || complete["uuid"] != "host-uuid-b" {
+		t.Fatalf("enroll b status=%d body=%v", status, complete)
+	}
+	// Device A tries to claim B's already-owned certificate.
+	attemptA := hex.EncodeToString(bytes.Repeat([]byte{0x22}, 16))
+	status, begin = postEnroll(t, server, keyA, daemonID, deviceA, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attemptA})
+	if status != http.StatusOK {
+		t.Fatalf("begin a status=%d", status)
+	}
+	nonceA, _ := begin["nonce"].(string)
+	status, _ = postEnroll(t, server, keyA, daemonID, deviceA, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attemptA, "nonce": nonceA, "client_cert_pem": clientB.certPEM, "signature": clientB.sign(t, attemptA, nonceA),
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("cross-device claim status=%d", status)
+	}
+}
+
+func TestMoonlightEnrollmentPendingIsDurableAndRevocable(t *testing.T) {
+	server, key, deviceID, daemonID := enrollFixture(t)
+	client := newEnrollClient(t)
+	writeEnrollState(t, os.Getenv("ZEN_STATE_DIR")) // empty host state
+	attempt := hex.EncodeToString(bytes.Repeat([]byte{0x33}, 16))
+	status, begin := postEnroll(t, server, key, daemonID, deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt})
+	if status != http.StatusOK {
+		t.Fatalf("begin status=%d", status)
+	}
+	nonce, _ := begin["nonce"].(string)
+	status, _ = postEnroll(t, server, key, daemonID, deviceID, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attempt, "nonce": nonce, "client_cert_pem": client.certPEM, "signature": client.sign(t, attempt, nonce),
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("pending status=%d", status)
+	}
+	// The verified intent is durable and attributable to the device.
+	uuid, ok, err := host.SunshineEnrollment(deviceID)
+	if err != nil || !ok || uuid != "" {
+		t.Fatalf("pending enrollment = %q %v %v", uuid, ok, err)
+	}
+	if err := host.CancelSunshineEnrollment(deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := host.SunshineEnrollment(deviceID); ok {
+		t.Fatal("revoked pending intent survived")
+	}
+}
+
+func TestMoonlightEnrollmentStorageFailureDoesNotDeadlock(t *testing.T) {
+	server, key, deviceID, daemonID := enrollFixture(t)
+	client := newEnrollClient(t)
+	writeEnrollState(t, os.Getenv("ZEN_STATE_DIR"))
+	if err := os.WriteFile(filepath.Join(os.Getenv("ZEN_STATE_DIR"), "sunshine_owners.json"), []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attempt := hex.EncodeToString(bytes.Repeat([]byte{0x44}, 16))
+	status, begin := postEnroll(t, server, key, daemonID, deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt})
+	if status != http.StatusOK {
+		t.Fatalf("begin status=%d", status)
+	}
+	nonce, _ := begin["nonce"].(string)
+	status, _ = postEnroll(t, server, key, daemonID, deviceID, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attempt, "nonce": nonce, "client_cert_pem": client.certPEM, "signature": client.sign(t, attempt, nonce),
+	})
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("storage failure status=%d", status)
+	}
+	// A later begin must still answer: no lock leak.
+	attempt2 := hex.EncodeToString(bytes.Repeat([]byte{0x55}, 16))
+	status, _ = postEnroll(t, server, key, daemonID, deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt2})
+	if status != http.StatusOK {
+		t.Fatalf("post-failure begin status=%d", status)
 	}
 }

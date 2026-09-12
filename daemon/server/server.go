@@ -84,6 +84,8 @@ type notificationPusher interface {
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
 	desktop                      desktop.Manager
+	moonlightChallenges          map[string]*moonlightChallenge
+	moonlightChallengesMu        sync.Mutex
 	auth                         *auth.Manager
 	watcher                      *watcher.Watcher
 	terminal                     *terminal.Manager

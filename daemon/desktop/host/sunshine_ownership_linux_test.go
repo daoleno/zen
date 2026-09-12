@@ -13,10 +13,10 @@ func TestOwnershipResolvesEachTargetIndependently(t *testing.T) {
 	if _, ok, err := store.Get("device-a"); ok || err != nil {
 		t.Fatal("empty store reported an enrollment")
 	}
-	if err := store.Claim("device-a", "uuid-a"); err != nil {
+	if err := store.Claim("device-a", "uuid-a", "fp-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Claim("device-b", "uuid-b"); err != nil {
+	if err := store.Claim("device-b", "uuid-b", "fp-b"); err != nil {
 		t.Fatal(err)
 	}
 	// B resolves to B's UUID, not the first entry.
@@ -51,6 +51,15 @@ func TestOwnershipBindingIsImplemented(t *testing.T) {
 	}
 }
 
+func fingerprintOf(t *testing.T, certPEM string) string {
+	t.Helper()
+	fingerprint, err := CertFingerprint(certPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fingerprint
+}
+
 func writeSunshineState(t *testing.T, stateDir, certPEM, uuid string) {
 	t.Helper()
 	body := map[string]any{"root": map[string]any{"named_devices": []map[string]any{
@@ -77,10 +86,10 @@ func TestEnrollFromStateBindsCertToGeneratedUUID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stateDir, "sunshine_state.json"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollFromState("device-a", certA); err != nil {
+	if err := EnrollFromState("device-a", certA, fingerprintOf(t, certA)); err != nil {
 		t.Fatalf("enroll a: %v", err)
 	}
-	if err := EnrollFromState("device-b", certB); err != nil {
+	if err := EnrollFromState("device-b", certB, fingerprintOf(t, certB)); err != nil {
 		t.Fatalf("enroll b: %v", err)
 	}
 	if uuid, ok, err := SunshineEnrollment("device-b"); err != nil || !ok || uuid != "gen-uuid-b" {
@@ -88,11 +97,13 @@ func TestEnrollFromStateBindsCertToGeneratedUUID(t *testing.T) {
 	}
 	// A forged certificate is not present in the Zen-owned state.
 	foreign := selfSignedPEM(t, "foreign")
-	if err := EnrollFromState("device-c", foreign); !errors.Is(err, errSunshineEnrollmentNotFound) {
+	if err := EnrollFromState("device-c", foreign, fingerprintOf(t, foreign)); !errors.Is(err, errSunshineEnrollmentNotFound) {
 		t.Fatalf("forged cert = %v", err)
 	}
-	if _, ok, _ := SunshineEnrollment("device-c"); ok {
-		t.Fatal("forged certificate was enrolled")
+	// A certificate absent from the owned state keeps a pending ownership
+	// intent (no UUID) instead of silently disappearing.
+	if uuid, ok, err := SunshineEnrollment("device-c"); err != nil || !ok || uuid != "" {
+		t.Fatalf("pending intent = %q %v %v", uuid, ok, err)
 	}
 	// Corrupt ownership storage fails closed instead of appearing unenrolled.
 	if err := os.WriteFile(filepath.Join(stateDir, "sunshine_owners.json"), []byte("{not json"), 0o600); err != nil {
@@ -108,7 +119,7 @@ func TestEnrollFromStateBindsCertToGeneratedUUID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stateDir, "sunshine_state.json"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnrollFromState("device-a", certA); err == nil {
+	if err := EnrollFromState("device-a", certA, fingerprintOf(t, certA)); err == nil {
 		t.Fatal("corrupt upstream state did not fail closed")
 	}
 }

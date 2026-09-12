@@ -109,10 +109,10 @@ func TestAdminUsesBasicAuthCsrfAndTargetsExactClient(t *testing.T) {
 func TestRevokeTargetDisablesUnpairsAndKeepsOtherEnrollments(t *testing.T) {
 	t.Setenv("ZEN_STATE_DIR", t.TempDir())
 	store := NewSunshineOwnershipStore(ZenStateDir())
-	if err := store.Claim("device-a", "uuid-a"); err != nil {
+	if err := store.Claim("device-a", "uuid-a", "fp-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Claim("device-b", "uuid-b"); err != nil {
+	if err := store.Claim("device-b", "uuid-b", "fp-b"); err != nil {
 		t.Fatal(err)
 	}
 	admin, records := newTestAdmin(t, func(record recordedRequest) (int, any) {
