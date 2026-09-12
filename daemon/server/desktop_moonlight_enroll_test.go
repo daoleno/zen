@@ -301,3 +301,79 @@ func TestMoonlightEnrollmentStorageFailureDoesNotDeadlock(t *testing.T) {
 		t.Fatalf("post-failure begin status=%d", status)
 	}
 }
+
+func enrollFixturePlainHarness(t *testing.T) (*httptest.Server, ed25519.PrivateKey, string, string) {
+	t.Helper()
+	t.Setenv("ZEN_STATE_DIR", t.TempDir())
+	manager, key, deviceID := sessionFileAuthFixture(t)
+	publicHex := hex.EncodeToString(key.Public().(ed25519.PublicKey))
+	if _, err := manager.GrantDesktopScope(deviceID, publicHex, auth.DesktopScopeVersion); err != nil {
+		t.Fatal(err)
+	}
+	s := New(manager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(s.shutdownAuthenticatedClients)
+	server := httptest.NewServer(s.Handler())
+	t.Cleanup(server.Close)
+	return server, key, deviceID, manager.DaemonID()
+}
+
+func TestMoonlightEnrollmentRefusesPlaintextControlWithValidScope(t *testing.T) {
+	plain, key, deviceID, daemonID := enrollFixturePlainHarness(t)
+	client := newEnrollClient(t)
+	writeEnrollState(t, os.Getenv("ZEN_STATE_DIR"), map[string]any{
+		"name": "phone", "cert": client.certPEM, "uuid": "host-uuid-a", "enabled": true,
+	})
+	attempt := hex.EncodeToString(bytes.Repeat([]byte{0x66}, 16))
+	// HTTP begin with a fully valid scoped device/auth nonce is still refused.
+	status, _ := postEnroll(t, plain, key, daemonID, deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt})
+	if status != http.StatusForbidden {
+		t.Fatalf("plaintext begin status=%d", status)
+	}
+	// HTTP complete with a valid scoped device/auth nonce is refused too.
+	status, _ = postEnroll(t, plain, key, daemonID, deviceID, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attempt, "nonce": "00", "client_cert_pem": client.certPEM, "signature": "00",
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("plaintext complete status=%d", status)
+	}
+}
+
+func TestMoonlightEnrollmentTLSBeginThenHTTPCompleteIsRefused(t *testing.T) {
+	t.Setenv("ZEN_STATE_DIR", t.TempDir())
+	manager, key, deviceID := sessionFileAuthFixture(t)
+	publicHex := hex.EncodeToString(key.Public().(ed25519.PublicKey))
+	if _, err := manager.GrantDesktopScope(deviceID, publicHex, auth.DesktopScopeVersion); err != nil {
+		t.Fatal(err)
+	}
+	s := New(manager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(s.shutdownAuthenticatedClients)
+	tlsServer := httptest.NewTLSServer(s.Handler())
+	t.Cleanup(tlsServer.Close)
+	plainServer := httptest.NewServer(s.Handler())
+	t.Cleanup(plainServer.Close)
+
+	client := newEnrollClient(t)
+	writeEnrollState(t, os.Getenv("ZEN_STATE_DIR"), map[string]any{
+		"name": "phone", "cert": client.certPEM, "uuid": "host-uuid-a", "enabled": true,
+	})
+	attempt := hex.EncodeToString(bytes.Repeat([]byte{0x77}, 16))
+	status, begin := postEnroll(t, tlsServer, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt})
+	if status != http.StatusOK {
+		t.Fatalf("tls begin status=%d", status)
+	}
+	nonce, _ := begin["nonce"].(string)
+	// The same valid challenge/proof sent over HTTP is refused.
+	status, _ = postEnroll(t, plainServer, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attempt, "nonce": nonce, "client_cert_pem": client.certPEM, "signature": client.sign(t, attempt, nonce),
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("http complete after tls begin status=%d", status)
+	}
+	// The challenge survived and the real TLS completion still succeeds.
+	status, complete := postEnroll(t, tlsServer, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attempt, "nonce": nonce, "client_cert_pem": client.certPEM, "signature": client.sign(t, attempt, nonce),
+	})
+	if status != http.StatusOK || complete["enrolled"] != true {
+		t.Fatalf("tls complete status=%d body=%v", status, complete)
+	}
+}
