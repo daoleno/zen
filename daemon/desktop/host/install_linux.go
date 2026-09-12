@@ -38,11 +38,13 @@ func lockInstaller() (*os.File, error) {
 }
 
 type installedFile struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Before []byte `json:"before,omitempty"`
-	Mode   uint32 `json:"mode"`
-	Exists bool   `json:"existed"`
+	Path         string `json:"path"`
+	SHA256       string `json:"sha256"`
+	Before       []byte `json:"before,omitempty"`
+	BeforePath   string `json:"beforePath,omitempty"`
+	BeforeSHA256 string `json:"beforeSha256,omitempty"`
+	Mode         uint32 `json:"mode"`
+	Exists       bool   `json:"existed"`
 }
 
 type installJournal struct {
@@ -216,27 +218,26 @@ func InstallLinux(config HostConfig, binarySource string) error {
 	return installLinuxLocked(config, binarySource)
 }
 
-func installLinuxLocked(config HostConfig, binarySource string) error {
-	if _, err := os.Lstat(installJournalPath); !os.IsNotExist(err) {
-		return errors.New("installation_already_exists")
-	}
+// buildInstallPlan renders the complete file set for an install or upgrade, so
+// both transactions always write the identical reviewed plan.
+func buildInstallPlan(config HostConfig, binarySource string) (InstallPlan, error) {
 	binaryData, err := readInstallSource(binarySource)
 	if err != nil {
-		return err
+		return InstallPlan{}, err
 	}
 	sddm, start, stop, err := sddmConfiguration()
 	if err != nil {
-		return err
+		return InstallPlan{}, err
 	}
 	plan, err := PrepareLinuxInstall(config)
 	if err != nil {
-		return err
+		return InstallPlan{}, err
 	}
 	sddm.Section("X11").Key("DisplayCommand").SetValue("/usr/libexec/zen/sddm-start")
 	sddm.Section("X11").Key("DisplayStopCommand").SetValue("/usr/libexec/zen/sddm-stop")
 	var sddmData bytes.Buffer
 	if _, err := sddm.WriteTo(&sddmData); err != nil {
-		return err
+		return InstallPlan{}, err
 	}
 	plan.Files = append(plan.Files,
 		PlannedFile{Path: InstalledBinary, Mode: 0755, Content: string(binaryData)},
@@ -244,6 +245,17 @@ func installLinuxLocked(config HostConfig, binarySource string) error {
 		PlannedFile{Path: "/usr/libexec/zen/sddm-stop", Mode: 0755, Content: "#!/bin/sh\n/usr/libexec/zen/zen desktop-host --register stop || :\nexec '" + stop + "' \"$@\"\n"},
 		PlannedFile{Path: "/etc/sddm.conf", Mode: 0644, Content: sddmData.String()},
 	)
+	return plan, nil
+}
+
+func installLinuxLocked(config HostConfig, binarySource string) error {
+	if _, err := os.Lstat(installJournalPath); !os.IsNotExist(err) {
+		return errors.New("installation_already_exists")
+	}
+	plan, err := buildInstallPlan(config, binarySource)
+	if err != nil {
+		return err
+	}
 	journal := installJournal{Version: 1}
 	for _, file := range plan.Files {
 		entry := installedFile{Path: file.Path, SHA256: digest([]byte(file.Content)), Mode: file.Mode}
@@ -291,53 +303,14 @@ func RollbackLinuxInstall() error {
 }
 
 func rollbackLinuxLocked() error {
-	file, err := OpenRootFile(installJournalPath, 0600)
+	journal, err := loadInstallJournal()
 	if err != nil {
 		return err
 	}
-	data, err := io.ReadAll(io.LimitReader(file, 1<<20))
-	file.Close()
-	var journal installJournal
-	if err != nil || decodeMessage(data, &journal) != nil || journal.Version != 1 {
-		return errors.New("invalid_install_journal")
-	}
-	// Preflight the entire rollback before removing anything. Never overwrite
+	// restoreJournal preflights the whole transaction and never overwrites
 	// administrator changes made after installation, including SDDM settings.
-	for _, entry := range journal.Files {
-		if _, err := os.Lstat(entry.Path); os.IsNotExist(err) {
-			continue
-		}
-		file, err := OpenRootFile(entry.Path, entry.Mode)
-		if err != nil {
-			return err
-		}
-		current, err := io.ReadAll(io.LimitReader(file, (64<<20)+1))
-		file.Close()
-		if err != nil || (digest(current) != entry.SHA256 && !(entry.Exists && bytes.Equal(current, entry.Before))) {
-			return errors.New("installed_file_changed")
-		}
-	}
-	for i := len(journal.Files) - 1; i >= 0; i-- {
-		entry := journal.Files[i]
-		if entry.Exists {
-			if err := writeRootFile(entry.Path, entry.Before, entry.Mode); err != nil {
-				return err
-			}
-		} else {
-			if _, err := os.Lstat(entry.Path); os.IsNotExist(err) {
-				continue
-			}
-			parent, name, err := safeParent(entry.Path, false)
-			if err != nil {
-				return err
-			}
-			err = unix.Unlinkat(parent, name, 0)
-			unix.Fsync(parent)
-			unix.Close(parent)
-			if err != nil && err != unix.ENOENT {
-				return err
-			}
-		}
+	if err := restoreJournal(journal, rootUpgradeIO()); err != nil {
+		return err
 	}
 	parent, name, err := safeParent(installJournalPath, false)
 	if err != nil {

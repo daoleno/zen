@@ -9,64 +9,33 @@ import (
 	"time"
 )
 
-func verifyUnchangedInstall(config HostConfig, source string) error {
-	installed, err := LoadRootConfig("/etc/zen/desktop-host.json")
-	if err != nil || installed != config {
-		return errors.New("installed_host_config_differs; existing installation preserved")
-	}
-	data, err := readInstallSource(source)
-	if err != nil {
-		return err
-	}
-	file, err := OpenRootFile(installJournalPath, 0600)
-	if err != nil {
-		return err
-	}
-	var journal installJournal
-	bytes, err := io.ReadAll(io.LimitReader(file, 1<<20))
-	file.Close()
-	if err != nil || decodeMessage(bytes, &journal) != nil || journal.Version != 1 {
-		return errors.New("invalid_install_journal")
-	}
-	foundBinary := false
-	for _, entry := range journal.Files {
-		file, err := OpenRootFile(entry.Path, entry.Mode)
-		if err != nil {
-			return errors.New("installed_file_changed; existing installation preserved")
-		}
-		current, err := io.ReadAll(io.LimitReader(file, (64<<20)+1))
-		file.Close()
-		if err != nil || digest(current) != entry.SHA256 {
-			return errors.New("installed_file_changed; existing installation preserved")
-		}
-		if entry.Path == InstalledBinary {
-			foundBinary = true
-			if digest(data) != entry.SHA256 {
-				return errors.New("installed_binary_differs; existing installation preserved")
-			}
-		}
-	}
-	if !foundBinary {
-		return errors.New("invalid_install_journal")
-	}
-	return nil
-}
-
 type currentInstallOps struct {
 	install  func() error
 	activate func() error
 	register func() error
 	probe    func() (probeResult, error)
 	rollback func() error
+	// changed reports whether install replaced an existing installation. An
+	// unchanged existing install still skips rollback; an upgrade must not.
+	changed func() bool
 }
 
 // currentInstallSharedOps is the install/activate/rollback transaction shared
 // by the X11 SDDM registration and the Wayland dynamic-discovery registration.
 // Only the register/probe steps differ between session types.
-func currentInstallSharedOps(config HostConfig, source string, existing bool) (func() error, func() error, func() error) {
+func currentInstallSharedOps(config HostConfig, source string, existing bool) (func() error, func() error, func() error, func() bool) {
+	upgraded := false
 	install := func() error {
 		if existing {
-			return verifyUnchangedInstall(config, source)
+			matches, err := existingInstallMatches(config, source)
+			if err != nil {
+				return err
+			}
+			if matches {
+				return nil
+			}
+			upgraded = true
+			return upgradeLinuxLocked(config, source)
 		}
 		if err := installLinuxLocked(config, source); err != nil {
 			if _, statErr := os.Lstat(installJournalPath); statErr == nil {
@@ -104,7 +73,7 @@ func currentInstallSharedOps(config HostConfig, source string, existing bool) (f
 		}
 		return serviceCommand("daemon-reload")
 	}
-	return install, activate, rollback
+	return install, activate, rollback, func() bool { return upgraded }
 }
 
 // The transaction is injectable for fault tests. An unchanged existing install
@@ -113,8 +82,12 @@ func runCurrentInstall(existing bool, ops currentInstallOps) (result probeResult
 	if err = ops.install(); err != nil {
 		return result, err
 	}
+	rollbackOnFailure := !existing
+	if ops.changed != nil {
+		rollbackOnFailure = ops.changed()
+	}
 	defer func() {
-		if err == nil || existing || errors.Is(err, errDesktopProbeBusy) {
+		if err == nil || !rollbackOnFailure || errors.Is(err, errDesktopProbeBusy) {
 			return
 		}
 		if rollbackErr := ops.rollback(); rollbackErr != nil {
@@ -154,10 +127,11 @@ func installAndRegisterCurrent(config HostConfig, source string, out io.Writer, 
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	installOp, activateOp, rollbackOp := currentInstallSharedOps(config, source, existing)
+	installOp, activateOp, rollbackOp, changedOp := currentInstallSharedOps(config, source, existing)
 	result, err := runCurrentInstall(existing, currentInstallOps{
 		install:  installOp,
 		activate: activateOp,
+		changed:  changedOp,
 		register: func() error {
 			if err := display.Revalidate(context.Background(), config); err != nil {
 				return err
