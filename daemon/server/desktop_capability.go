@@ -18,6 +18,7 @@ var inspectHostReadiness = host.InspectReadiness
 var moonlightSnapshot = host.SunshineSnapshot
 var moonlightEnsure = host.EnsureSunshineRuntime
 var moonlightAvailable = host.SunshineAvailable
+var moonlightAdmission = host.SunshineAdmission
 
 func actualRequestTLS(r *http.Request) bool {
 	return r.TLS != nil && r.TLS.HandshakeComplete
@@ -106,6 +107,11 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 	moonlightBinding := ""
 	if scoped && (readiness.Broker || readiness.CurrentSession) {
 		if moonlight := moonlightBootstrap(device); moonlight != nil {
+			if admission, err := moonlightAdmission(device.ID); err == nil {
+				moonlight["admission"] = admission
+			} else {
+				moonlight["admission"] = "unavailable"
+			}
 			payload["moonlight"] = moonlight
 			moonlightBinding = moonlightBindingString(moonlight)
 		}
@@ -123,9 +129,9 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 // block. Both sides sign this exact string so an injected or altered block
 // invalidates the capability signature.
 func moonlightBindingString(block map[string]any) string {
-	return fmt.Sprintf("%v\n%v\n%v\n%v\n%v\n%v",
+	return fmt.Sprintf("%v\n%v\n%v\n%v\n%v\n%v\n%v",
 		block["available"], block["http_port"], block["https_port"],
-		block["app_id"], block["host_key"], block["identity_key"])
+		block["app_id"], block["host_key"], block["identity_key"], block["admission"])
 }
 
 func moonlightAvailabilityReason() string {

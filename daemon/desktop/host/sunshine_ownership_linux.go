@@ -2,7 +2,13 @@ package host
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -29,6 +35,7 @@ type SunshineOwnershipStore struct {
 type sunshineOwnership struct {
 	DeviceID string `json:"device_id"`
 	UUID     string `json:"uuid"`
+	Cert     string `json:"cert_sha256,omitempty"`
 }
 
 type sunshineStateRoot struct {
@@ -42,7 +49,10 @@ type sunshineStateRoot struct {
 	} `json:"root"`
 }
 
-var errSunshineEnrollmentNotFound = errors.New("sunshine_enrollment_not_found")
+// ErrSunshineEnrollmentNotFound is returned when the owned state has no
+// certificate matching the presented client certificate yet.
+var ErrSunshineEnrollmentNotFound = errors.New("sunshine_enrollment_not_found")
+var errSunshineEnrollmentNotFound = ErrSunshineEnrollmentNotFound
 var errSunshineStateUnreadable = errors.New("sunshine_state_unreadable")
 
 // One process-wide lock serializes every store instance sharing the file.
@@ -106,6 +116,106 @@ func (s *SunshineOwnershipStore) Claim(deviceID, uuid string) error {
 
 // Get resolves one device's enrollment. Corrupt ownership state fails closed
 // instead of looking like "not enrolled".
+// NewEnrollmentNonce returns a fresh 32-byte hex nonce for the handshake.
+func NewEnrollmentNonce() (string, error) {
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(nonce), nil
+}
+
+// CertFingerprint returns the SHA-256 of the certificate DER.
+func CertFingerprint(certPEM string) (string, error) {
+	der, err := certificateDER([]byte(certPEM))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// VerifyEnrollmentProof checks possession of the private key for the presented
+// client certificate over the domain-separated attempt/nonce message.
+func VerifyEnrollmentProof(certPEM, attempt, nonce, signatureHex string) error {
+	der, err := certificateDER([]byte(certPEM))
+	if err != nil {
+		return err
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		return err
+	}
+	signature, err := hex.DecodeString(signatureHex)
+	if err != nil {
+		return err
+	}
+	message := []byte("zen-moonlight-enroll-v1\x00" + attempt + "\n" + nonce)
+	digest := sha256.Sum256(message)
+	switch publicKey := certificate.PublicKey.(type) {
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature)
+	case *ecdsa.PublicKey:
+		if !ecdsa.VerifyASN1(publicKey, digest[:], signature) {
+			return errors.New("enrollment_proof_invalid")
+		}
+		return nil
+	default:
+		return errors.New("enrollment_key_unsupported")
+	}
+}
+
+// SunshineEnrollmentByCert resolves the device that owns a certificate.
+func SunshineEnrollmentByCert(fingerprint string) (string, bool, error) {
+	if fingerprint == "" {
+		return "", false, nil
+	}
+	store := NewSunshineOwnershipStore(ZenStateDir())
+	sunshineOwnershipMu.Lock()
+	defer sunshineOwnershipMu.Unlock()
+	entries, err := store.loadLocked()
+	if err != nil {
+		return "", false, err
+	}
+	for _, entry := range entries {
+		if entry.Cert == fingerprint {
+			return entry.DeviceID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// BindEnrollmentCertificate records the certificate fingerprint for a device.
+func BindEnrollmentCertificate(deviceID, fingerprint string) error {
+	store := NewSunshineOwnershipStore(ZenStateDir())
+	sunshineOwnershipMu.Lock()
+	defer sunshineOwnershipMu.Unlock()
+	entries, err := store.loadLocked()
+	if err != nil {
+		return err
+	}
+	for i := range entries {
+		if entries[i].DeviceID == deviceID {
+			entries[i].Cert = fingerprint
+			return store.persistLocked(entries)
+		}
+	}
+	return errSunshineEnrollmentNotFound
+}
+
+// SunshineAdmission reports whether a device holds a verified enrollment.
+func SunshineAdmission(deviceID string) (string, error) {
+	store := NewSunshineOwnershipStore(ZenStateDir())
+	uuid, ok, err := store.Get(deviceID)
+	if err != nil {
+		return "", err
+	}
+	if !ok || uuid == "" {
+		return "pending", nil
+	}
+	return "verified", nil
+}
+
 func (s *SunshineOwnershipStore) Get(deviceID string) (string, bool, error) {
 	sunshineOwnershipMu.Lock()
 	defer sunshineOwnershipMu.Unlock()
