@@ -17,6 +17,7 @@ var inspectHostReadiness = host.InspectReadiness
 // Moonlight host; tests stub them so no process is started.
 var moonlightSnapshot = host.SunshineSnapshot
 var moonlightEnsure = host.EnsureSunshineRuntime
+var moonlightAvailable = host.SunshineAvailable
 
 func actualRequestTLS(r *http.Request) bool {
 	return r.TLS != nil && r.TLS.HandshakeComplete
@@ -128,10 +129,10 @@ func moonlightBindingString(block map[string]any) string {
 }
 
 func moonlightAvailabilityReason() string {
-	if host.SunshineOwnershipBound() {
+	if moonlightAvailable() {
 		return ""
 	}
-	return "per_device_enrollment_unsupported"
+	return "admin_binding_unavailable"
 }
 
 // moonlightBootstrap advertises the explicitly configured Sunshine host. The
@@ -154,7 +155,7 @@ func moonlightBootstrap(device *auth.TrustedDevice) map[string]any {
 	// No host in the block: the client must use its own verified, directly
 	// reachable server endpoint; request Host/forwarded headers are not proof.
 	return map[string]any{
-		"available":    host.SunshineAvailable(),
+		"available":    moonlightAvailable(),
 		"reason":       moonlightAvailabilityReason(),
 		"http_port":    snapshot.HTTPPort,
 		"https_port":   snapshot.HTTPSPort,

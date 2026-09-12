@@ -2,9 +2,13 @@
 
 package host
 
-// The supervised Sunshine host is Linux-only; the ownership API stays present
-// for cross-platform builds and always reports closed availability.
+import "context"
+
+// The supervised Sunshine host is Linux-only; these adapters keep
+// cross-platform builds honest and report closed availability.
 
 func SunshineOwnershipBound() bool { return false }
 
-func SunshineOwner() (string, string) { return "", "" }
+func SunshineEnrollment(string) (string, bool) { return "", false }
+
+func RevokeSunshineTarget(context.Context, string) error { return nil }

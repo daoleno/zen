@@ -5,45 +5,45 @@ import (
 	"testing"
 )
 
-func TestOwnershipTargetsOnlyTheEnrolledDevice(t *testing.T) {
+func TestOwnershipResolvesEachTargetIndependently(t *testing.T) {
 	store := NewSunshineOwnershipStore(t.TempDir())
-	if _, fingerprint := store.Owner(); fingerprint != "" {
-		t.Fatal("empty store reported an owner")
+	if _, ok := store.Get("device-a"); ok {
+		t.Fatal("empty store reported an enrollment")
 	}
-	if err := store.Claim("device-a", "cert-a"); err != nil {
+	if err := store.Claim("device-a", "uuid-a"); err != nil {
 		t.Fatal(err)
 	}
-	if owner, fingerprint := store.Owner(); owner != "device-a" || fingerprint != "cert-a" {
-		t.Fatalf("owner = %s %s", owner, fingerprint)
+	if err := store.Claim("device-b", "uuid-b"); err != nil {
+		t.Fatal(err)
 	}
-	// An unrelated target removes nothing.
+	// B resolves to B's UUID, not the first entry.
+	if uuid, ok := store.Get("device-b"); !ok || uuid != "uuid-b" {
+		t.Fatalf("device-b = %q %v", uuid, ok)
+	}
+	// An unrelated target resolves to nothing.
+	if _, ok := store.Get("device-c"); ok {
+		t.Fatal("unrelated target resolved")
+	}
+	// Removing B leaves A untouched.
 	removed, err := store.Remove("device-b")
-	if err != nil || removed {
-		t.Fatalf("unrelated remove = %v %v", removed, err)
-	}
-	if owner, _ := store.Owner(); owner != "device-a" {
-		t.Fatalf("unrelated target changed the owner: %s", owner)
-	}
-	// The target device removes only its own enrollment.
-	removed, err = store.Remove("device-a")
 	if err != nil || !removed {
-		t.Fatalf("target remove = %v %v", removed, err)
+		t.Fatalf("remove b = %v %v", removed, err)
 	}
-	if owner, _ := store.Owner(); owner != "" {
-		t.Fatalf("target enrollment survived: %s", owner)
+	if uuid, ok := store.Get("device-a"); !ok || uuid != "uuid-a" {
+		t.Fatalf("device-a after removing b = %q %v", uuid, ok)
+	}
+	if _, ok := store.Get("device-b"); ok {
+		t.Fatal("device-b survived removal")
 	}
 	// Persistence across instances.
-	second := NewSunshineOwnershipStore(filepath.Dir(store.path))
-	if err := second.Claim("device-b", "cert-b"); err != nil {
-		t.Fatal(err)
-	}
-	if owner, fingerprint := NewSunshineOwnershipStore(filepath.Dir(store.path)).Owner(); owner != "device-b" || fingerprint != "cert-b" {
-		t.Fatalf("reloaded owner = %s %s", owner, fingerprint)
+	reloaded := NewSunshineOwnershipStore(filepath.Dir(store.path))
+	if uuid, ok := reloaded.Get("device-a"); !ok || uuid != "uuid-a" {
+		t.Fatalf("reloaded device-a = %q %v", uuid, ok)
 	}
 }
 
-func TestOwnershipBindingIsClosedWithoutUpstreamPerClientRemoval(t *testing.T) {
-	if SunshineOwnershipBound() {
-		t.Fatal("availability must stay closed until per-client removal is verifiable")
+func TestOwnershipBindingIsImplemented(t *testing.T) {
+	if !SunshineOwnershipBound() {
+		t.Fatal("the pinned host exposes per-client list/update/unpair APIs")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -17,12 +18,14 @@ import (
 // configured host, so existing servers keep the old route until Sunshine is
 // explicitly enabled.
 type sunshineRuntimeConfig struct {
-	BinaryPath string `json:"binary_path"`
-	StateDir   string `json:"state_dir"`
-	HostKey    string `json:"host_key"`
-	HTTPPort   int    `json:"http_port"`
-	HTTPSPort  int    `json:"https_port"`
-	AppID      int    `json:"app_id"`
+	BinaryPath    string `json:"binary_path"`
+	StateDir      string `json:"state_dir"`
+	HostKey       string `json:"host_key"`
+	HTTPPort      int    `json:"http_port"`
+	HTTPSPort     int    `json:"https_port"`
+	AppID         int    `json:"app_id"`
+	WebUIUsername string `json:"web_ui_username"`
+	WebUIPassword string `json:"web_ui_password"`
 }
 
 var (
@@ -75,16 +78,35 @@ func SunshineConfigured() bool {
 	return err == nil
 }
 
-// SunshineAvailable is true only when the host is configured, running and the
-// per-device enrollment/removal binding is enforceable. Today the upstream
-// host has no per-client removal API, so this stays false and the capability
-// keeps Moonlight closed instead of advertising a global-revoke workaround.
+// SunshineAdminFromRuntime builds the authenticated, certificate-pinned admin
+// client used for per-device enrollment and removal. The Web UI runs on
+// base+1 and uses the Zen-owned certificate.
+func SunshineAdminFromRuntime() (*SunshineAdmin, error) {
+	cfg, err := loadSunshineRuntimeConfig()
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(cfg.StateDir, "/") {
+		return nil, errors.New("invalid_sunshine_state_dir")
+	}
+	return NewSunshineAdmin(
+		fmt.Sprintf("https://127.0.0.1:%d", cfg.HTTPPort+1),
+		cfg.WebUIUsername,
+		cfg.WebUIPassword,
+		filepath.Join(cfg.StateDir, "sunshine.crt"),
+	)
+}
+
+// SunshineAvailable requires a running host and the admin credentials needed to
+// enforce per-device enrollment/removal. Availability stays closed until that
+// enforceable path exists.
 func SunshineAvailable() bool {
-	if !SunshineOwnershipBound() {
+	snapshot := SunshineSnapshot()
+	if !snapshot.Configured || !snapshot.Running {
 		return false
 	}
-	snapshot := SunshineSnapshot()
-	return snapshot.Configured && snapshot.Running
+	admin, err := SunshineAdminFromRuntime()
+	return err == nil && admin != nil
 }
 
 // EnsureSunshineRuntime is the production caller: it starts the supervised

@@ -562,18 +562,18 @@ func (s *Server) detachAuthenticatedClient(
 }
 
 // Moonlight engine hooks are injectable for tests. Revoking a device also
-var moonlightRevokeRuntime = host.RevokeSunshineRuntime
+var moonlightEnrollment = host.SunshineEnrollment
+var moonlightRevokeTarget = host.RevokeSunshineTarget
 var moonlightStopRuntime = host.StopSunshineRuntime
 
-// revokeSunshineForDeviceRevocation affects only the device that owns the
-// engine enrollment. An unrelated or non-enrolled target leaves other devices'
-// pairings untouched; a missing binding means no engine action at all.
+// revokeSunshineForDeviceRevocation affects only the device with a verified
+// upstream enrollment. An unrelated or non-enrolled target leaves other
+// devices' pairings untouched; failures keep the enrollment for retry.
 func revokeSunshineForDeviceRevocation(ctx context.Context, targetDeviceID string) error {
-	owner, _ := host.SunshineOwner()
-	if owner == "" || owner != targetDeviceID {
+	if _, ok := moonlightEnrollment(targetDeviceID); !ok {
 		return nil
 	}
-	return moonlightRevokeRuntime(ctx)
+	return moonlightRevokeTarget(ctx, targetDeviceID)
 }
 
 func (s *Server) revokeAuthenticatedDevice(deviceID string) {

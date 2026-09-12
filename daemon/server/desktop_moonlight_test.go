@@ -10,10 +10,15 @@ import (
 )
 
 func stubMoonlight(t *testing.T, snapshot host.SunshineRuntimeSnapshot, ensureErr error) *int {
+	return stubMoonlightWithAvailability(t, snapshot, ensureErr, false)
+}
+
+func stubMoonlightWithAvailability(t *testing.T, snapshot host.SunshineRuntimeSnapshot, ensureErr error, available bool) *int {
 	t.Helper()
 	calls := 0
-	previousSnapshot, previousEnsure := moonlightSnapshot, moonlightEnsure
+	previousSnapshot, previousEnsure, previousAvailable := moonlightSnapshot, moonlightEnsure, moonlightAvailable
 	moonlightSnapshot = func() host.SunshineRuntimeSnapshot { return snapshot }
+	moonlightAvailable = func() bool { return available }
 	moonlightEnsure = func(host.SunshineSpawner) (host.SunshineRuntimeSnapshot, error) {
 		calls++
 		if ensureErr != nil {
@@ -25,6 +30,7 @@ func stubMoonlight(t *testing.T, snapshot host.SunshineRuntimeSnapshot, ensureEr
 	t.Cleanup(func() {
 		moonlightSnapshot = previousSnapshot
 		moonlightEnsure = previousEnsure
+		moonlightAvailable = previousAvailable
 	})
 	return &calls
 }
@@ -40,13 +46,13 @@ func TestMoonlightBootstrapRequiresExplicitConfiguration(t *testing.T) {
 }
 
 func TestMoonlightBootstrapBindsZenIdentityAndHostKey(t *testing.T) {
-	calls := stubMoonlight(t, host.SunshineRuntimeSnapshot{
+	calls := stubMoonlightWithAvailability(t, host.SunshineRuntimeSnapshot{
 		Configured: true,
 		HostKey:    "zen-host-1",
 		HTTPPort:   47989,
 		HTTPSPort:  47984,
 		AppID:      3,
-	}, nil)
+	}, nil, true)
 	got := moonlightBootstrap(&auth.TrustedDevice{ID: "dev-42"})
 	if got == nil {
 		t.Fatal("expected bootstrap")
@@ -60,12 +66,24 @@ func TestMoonlightBootstrapBindsZenIdentityAndHostKey(t *testing.T) {
 	if got["http_port"] != 47989 || got["https_port"] != 47984 || got["app_id"] != 3 {
 		t.Fatalf("bootstrap = %+v", got)
 	}
-	// Availability stays closed until per-device enrollment/removal is binding.
-	if got["available"] != false || got["reason"] != "per_device_enrollment_unsupported" {
+	if got["available"] != true || got["reason"] != "" {
 		t.Fatalf("availability = %v reason=%v", got["available"], got["reason"])
 	}
 	if *calls != 1 {
 		t.Fatalf("ensure called %d times", *calls)
+	}
+}
+
+func TestMoonlightBootstrapStaysClosedWithoutAdminBinding(t *testing.T) {
+	stubMoonlightWithAvailability(t, host.SunshineRuntimeSnapshot{
+		Configured: true,
+		HostKey:    "zen-host-1",
+		HTTPPort:   47989,
+		HTTPSPort:  47984,
+	}, nil, false)
+	got := moonlightBootstrap(&auth.TrustedDevice{ID: "dev-42"})
+	if got == nil || got["available"] != false || got["reason"] != "admin_binding_unavailable" {
+		t.Fatalf("bootstrap = %+v", got)
 	}
 }
 
@@ -86,21 +104,29 @@ type errRuntimeUnavailable struct{}
 
 func (errRuntimeUnavailable) Error() string { return "runtime unavailable" }
 
-func TestDeviceRevocationTargetsOnlyTheEnrolledOwner(t *testing.T) {
-	t.Setenv("ZEN_STATE_DIR", t.TempDir())
-	if err := host.NewSunshineOwnershipStore(host.ZenStateDir()).Claim("device-a", "cert-a"); err != nil {
-		t.Fatal(err)
+func stubRevocationHooks(t *testing.T, enrolled map[string]bool, calls *int, err error) {
+	t.Helper()
+	previousEnrollment := moonlightEnrollment
+	previousTarget := moonlightRevokeTarget
+	moonlightEnrollment = func(deviceID string) (string, bool) {
+		return "uuid-" + deviceID, enrolled[deviceID]
 	}
-	previous := moonlightRevokeRuntime
-	calls := 0
-	moonlightRevokeRuntime = func(ctx context.Context) error {
+	moonlightRevokeTarget = func(ctx context.Context, deviceID string) error {
 		if ctx == nil || ctx.Err() != nil {
 			t.Fatal("revoke hook called without a live context")
 		}
-		calls++
-		return nil
+		*calls++
+		return err
 	}
-	t.Cleanup(func() { moonlightRevokeRuntime = previous })
+	t.Cleanup(func() {
+		moonlightEnrollment = previousEnrollment
+		moonlightRevokeTarget = previousTarget
+	})
+}
+
+func TestDeviceRevocationTargetsOnlyTheEnrolledOwner(t *testing.T) {
+	calls := 0
+	stubRevocationHooks(t, map[string]bool{"device-a": true}, &calls, nil)
 
 	// An unrelated target must not touch the owner's engine or pairing.
 	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-b"); err != nil {
@@ -108,9 +134,6 @@ func TestDeviceRevocationTargetsOnlyTheEnrolledOwner(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("unrelated target revoked the engine: calls=%d", calls)
-	}
-	if owner, _ := host.SunshineOwner(); owner != "device-a" {
-		t.Fatalf("unrelated target erased enrollment: %q", owner)
 	}
 	// The enrolled owner revokes its own engine.
 	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-a"); err != nil {
@@ -122,14 +145,8 @@ func TestDeviceRevocationTargetsOnlyTheEnrolledOwner(t *testing.T) {
 }
 
 func TestDeviceRevocationWithoutEnrollmentDoesNothing(t *testing.T) {
-	t.Setenv("ZEN_STATE_DIR", t.TempDir())
-	previous := moonlightRevokeRuntime
 	calls := 0
-	moonlightRevokeRuntime = func(context.Context) error {
-		calls++
-		return nil
-	}
-	t.Cleanup(func() { moonlightRevokeRuntime = previous })
+	stubRevocationHooks(t, map[string]bool{}, &calls, nil)
 	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-a"); err != nil {
 		t.Fatalf("un-enrolled revoke: %v", err)
 	}
@@ -139,13 +156,8 @@ func TestDeviceRevocationWithoutEnrollmentDoesNothing(t *testing.T) {
 }
 
 func TestDeviceRevocationSurfacesEngineFailure(t *testing.T) {
-	t.Setenv("ZEN_STATE_DIR", t.TempDir())
-	if err := host.NewSunshineOwnershipStore(host.ZenStateDir()).Claim("device-a", "cert-a"); err != nil {
-		t.Fatal(err)
-	}
-	previous := moonlightRevokeRuntime
-	moonlightRevokeRuntime = func(context.Context) error { return errors.New("engine busy") }
-	t.Cleanup(func() { moonlightRevokeRuntime = previous })
+	calls := 0
+	stubRevocationHooks(t, map[string]bool{"device-a": true}, &calls, errors.New("engine busy"))
 	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-a"); err == nil {
 		t.Fatal("engine revoke failure was swallowed")
 	}
