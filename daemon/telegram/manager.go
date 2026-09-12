@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daoleno/zen/daemon/attachment"
 	"github.com/daoleno/zen/daemon/brain"
 )
 
@@ -34,6 +35,7 @@ const (
 
 type brainOwner interface {
 	SubmitExternalUserInput(receipt, body string) (brain.ExternalInputDisposition, error)
+	SubmitExternalUserInputInThread(receipt, body, expectedThread string) (brain.ExternalInputDisposition, error)
 	ChatThreadID() (string, error)
 	ThreadTimeline(threadID string, limit int) ([]brain.TimelineItem, error)
 	NewChat() (brain.Snapshot, error)
@@ -45,6 +47,8 @@ type brainOwner interface {
 }
 
 type Options struct {
+	Attachments    *attachment.Store
+	MediaTimeout   time.Duration
 	API            API
 	Now            func() time.Time
 	PollTimeout    int
@@ -54,6 +58,10 @@ type Options struct {
 }
 
 type Manager struct {
+	attachments    *attachment.Store
+	mediaTimeout   time.Duration
+	mediaMu        sync.Mutex
+	mediaActive    *mediaTransfer
 	store          *store
 	api            API
 	brain          brainOwner
@@ -103,6 +111,11 @@ func NewManagerWithOptions(root string, owner brainOwner, options Options) (*Man
 	}
 	manager := &Manager{store: state, api: api, brain: owner, now: now, pollTimeout: pollTimeout, backoff: backoff,
 		wake: make(chan struct{}, 1), typingInterval: typingInterval, typingDeadline: typingDeadline}
+	manager.attachments = options.Attachments
+	manager.mediaTimeout = options.MediaTimeout
+	if manager.mediaTimeout <= 0 {
+		manager.mediaTimeout = mediaDownloadTimeout
+	}
 	if err := manager.initializeDeliveryBoundary(); err != nil {
 		return nil, err
 	}
@@ -176,8 +189,10 @@ func (m *Manager) Configure(ctx context.Context, token string) (Status, error) {
 	if err := m.store.replaceToken(token); err != nil {
 		return m.Status(), fmt.Errorf("Telegram credential store unavailable")
 	}
+	m.cancelMedia()
 	stateErr := m.store.mutate(func(state *durableState) error {
 		if state.BotID != 0 && state.BotID != bot.ID {
+			resetRichInteractionBinding(state)
 			state.OwnerID, state.ChatID, state.OwnerHint = 0, 0, ""
 			state.DeliveryStartedAt = time.Time{}
 			state.NextOffset = 0
@@ -254,6 +269,7 @@ func (m *Manager) BeginBinding() (BindingChallenge, error) {
 func (m *Manager) Disable() error {
 	m.outboundMu.Lock()
 	defer m.outboundMu.Unlock()
+	m.cancelMedia()
 	err := m.store.mutate(func(state *durableState) error {
 		state.Enabled = false
 		state.LastError = ""
@@ -291,8 +307,10 @@ func (m *Manager) Enable() error {
 func (m *Manager) RevokeOwner() error {
 	m.outboundMu.Lock()
 	defer m.outboundMu.Unlock()
+	m.cancelMedia()
 	err := m.store.mutate(func(state *durableState) error {
 		state.OwnerID, state.ChatID, state.OwnerHint = 0, 0, ""
+		resetRichInteractionBinding(state)
 		state.DeliveryStartedAt = time.Time{}
 		state.ChallengeSHA256 = ""
 		state.ChallengeExpiresAt = time.Time{}
@@ -324,6 +342,7 @@ func (m *Manager) RevokeOwner() error {
 func (m *Manager) Remove() error {
 	m.outboundMu.Lock()
 	defer m.outboundMu.Unlock()
+	m.cancelMedia()
 	m.stopTyping()
 	if err := m.store.removeToken(); err != nil {
 		return err
@@ -393,6 +412,7 @@ func (m *Manager) Status() Status {
 }
 
 func (m *Manager) Run(ctx context.Context) error {
+	defer m.stopMedia()
 	var refreshedAt time.Time
 	for {
 		if err := ctx.Err(); err != nil {
@@ -400,6 +420,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		}
 		state := m.store.snapshot()
 		if !state.Enabled || state.WebhookConflict {
+			m.cancelMedia()
 			if state.Enabled && state.WebhookConflict {
 				token, tokenErr := m.store.readToken()
 				if tokenErr == nil && token != "" {
@@ -449,7 +470,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		if state.Enabled && state.OwnerID != 0 {
 			_ = m.ensureBrainTopic()
 		}
-		updates, err := m.api.GetUpdates(ctx, token, state.NextOffset, m.pollTimeout, []string{"message", "callback_query"})
+		updates, err := m.api.GetUpdates(ctx, token, state.NextOffset, m.pollTimeout, []string{"message", "callback_query", "message_reaction"})
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -474,10 +495,17 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 			if err := m.handleUpdate(ctx, token, update); err != nil {
 				m.recordError("Telegram update could not be processed.")
+				break
 			}
 		}
 		state = m.store.snapshot()
 		if state.Enabled && state.OwnerID != 0 {
+			if err := m.advanceMedia(ctx, token); err != nil {
+				m.recordError("Telegram attachment processing is temporarily unavailable.")
+			}
+			if err := m.ensureBrainEntry(); err != nil {
+				m.recordError("Brain navigation is temporarily unavailable.")
+			}
 			if err := m.projectTimeline(); err != nil {
 				m.recordError("Brain timeline projection is temporarily unavailable.")
 			}
@@ -629,23 +657,41 @@ func (m *Manager) recordError(message string) {
 func (m *Manager) handleUpdate(ctx context.Context, token string, update Update) error {
 	state := m.store.snapshot()
 	key := fmt.Sprintf("%d", update.UpdateID)
+	disposition := "ignored"
 	if update.CallbackQuery != nil {
 		if callbackID := strings.TrimSpace(update.CallbackQuery.ID); callbackID != "" {
-			m.outboundMu.Lock()
-			_ = m.api.AnswerCallbackQuery(ctx, token, callbackID, "")
-			m.outboundMu.Unlock()
+			defer func() {
+				text := ""
+				if isFeedback(update.CallbackQuery.Data) {
+					text = "Feedback unavailable for this message."
+					if disposition == "reaction_recorded" {
+						text = "Feedback saved for this message."
+					}
+					if disposition == "reaction_recorded" && update.CallbackQuery.Data == "feedback:clear" {
+						text = "Feedback cleared for this message."
+					}
+				}
+				m.outboundMu.Lock()
+				_ = m.api.AnswerCallbackQuery(ctx, token, callbackID, text)
+				m.outboundMu.Unlock()
+			}()
 		}
 	}
 	if update.UpdateID < state.NextOffset || state.Processed[key].Disposition != "" {
 		return nil
 	}
-	disposition := "ignored"
 	message := update.Message
 	if update.CallbackQuery != nil {
 		if _, duplicate := state.CallbackIDs[update.CallbackQuery.ID]; duplicate {
 			disposition = "callback_duplicate"
 		} else {
 			disposition = m.handleCallback(ctx, token, *update.CallbackQuery, update.UpdateID)
+		}
+	} else if update.MessageReaction != nil {
+		var err error
+		disposition, err = m.handleReaction(*update.MessageReaction, update.UpdateID)
+		if err != nil {
+			return err
 		}
 	} else if message != nil && message.From != nil && !message.From.IsBot && message.SenderChat == nil && message.Chat.Type == "private" {
 		if state.OwnerID == 0 {
@@ -657,18 +703,26 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 				disposition = "binding_rejected"
 			}
 		} else if message.From.ID == state.OwnerID && message.Chat.ID == state.ChatID {
-			_, sessionTopic := topicMappingByThread(state, message.MessageThreadID)
-			if sessionTopic {
-				disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
-			} else if isGeneralThread(message.MessageThreadID) {
-				disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
-			} else if slices.Contains(state.BrainTopics, message.MessageThreadID) || (state.UsersCreateTopics && message.IsTopicMessage && message.ForumTopicCreated != nil) {
-				if err := m.bindBrainTopic(message.MessageThreadID); err != nil {
+			if message.hasMedia() {
+				var err error
+				disposition, err = m.stageMedia(*message, update.UpdateID)
+				if err != nil {
 					return err
 				}
-				disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
 			} else {
-				disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
+				_, sessionTopic := topicMappingByThread(state, message.MessageThreadID)
+				if sessionTopic {
+					disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
+				} else if isGeneralThread(message.MessageThreadID) {
+					disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
+				} else if slices.Contains(state.BrainTopics, message.MessageThreadID) || (state.UsersCreateTopics && message.IsTopicMessage && message.ForumTopicCreated != nil) {
+					if err := m.bindBrainTopic(message.MessageThreadID); err != nil {
+						return err
+					}
+					disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
+				} else {
+					disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
+				}
 			}
 		}
 	}
@@ -691,6 +745,9 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 			}
 		}
 		current.Processed[key] = record
+		if message != nil && (disposition == "accepted" || disposition == "session_accepted") {
+			recordMessageSource(current, message.MessageID, messageSource{SessionID: record.SessionID, BrainThreadID: record.BrainThreadID, MessageThreadID: message.MessageThreadID})
+		}
 		if update.CallbackQuery != nil && strings.TrimSpace(update.CallbackQuery.ID) != "" {
 			current.CallbackIDs[update.CallbackQuery.ID] = update.UpdateID
 		}
@@ -777,10 +834,6 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message 
 		}
 		return "command"
 	}
-	if message.hasUnsupportedMedia() {
-		reply(fmt.Sprintf("unsupported:%d", updateID), "This connection currently supports text and captions only. Send the content as text.")
-		return "unsupported_media"
-	}
 	body := strings.TrimSpace(message.Text)
 	if body == "" {
 		body = strings.TrimSpace(message.Caption)
@@ -788,17 +841,25 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message 
 	if body == "" {
 		return "ignored"
 	}
+	if len(message.Entities) > 0 {
+		caption := attachment.Caption{Text: message.Text, Entities: message.Entities}
+		if err := validateCaption(caption); err != nil {
+			reply(fmt.Sprintf("entities:%d", updateID), err.Error())
+			return "invalid_entities"
+		}
+		body = attachment.Input(body, nil, []attachment.Caption{caption})
+	}
 	if reply := replyContext(message.ReplyToMessage); reply != "" {
 		body = "Replying to: " + reply + "\n\n" + body
 	}
 	state := m.store.snapshot()
 	if message.ReplyToMessage != nil && message.ReplyToMessage.From != nil && message.ReplyToMessage.From.ID == state.BotID {
 		if sessionID := state.ReplySessions[message.ReplyToMessage.MessageID]; sessionID != "" {
-			return m.handleFallbackSessionMessage(ctx, token, sessionID, body, updateID, message.MessageID)
+			return m.handleFallbackSessionMessage(ctx, token, sessionID, body, updateID, message.MessageID, message.MessageThreadID)
 		}
 	}
 	if !state.TopicsAvailable && state.FallbackSessionID != "" {
-		return m.handleFallbackSessionMessage(ctx, token, state.FallbackSessionID, body, updateID, message.MessageID)
+		return m.handleFallbackSessionMessage(ctx, token, state.FallbackSessionID, body, updateID, message.MessageID, message.MessageThreadID)
 	}
 	if m.brain == nil {
 		return "not_submitted"
@@ -950,6 +1011,20 @@ func (m *Manager) handleCallback(ctx context.Context, token string, query Callba
 	state := m.store.snapshot()
 	if state.OwnerID == 0 || query.From.ID != state.OwnerID || query.Message.Chat.ID != state.ChatID {
 		return "callback_rejected"
+	}
+	if isFeedback(query.Data) {
+		var reactions []ReactionType
+		switch query.Data {
+		case "feedback:up":
+			reactions = []ReactionType{{Type: "emoji", Emoji: "\U0001f44d"}}
+		case "feedback:down":
+			reactions = []ReactionType{{Type: "emoji", Emoji: "\U0001f44e"}}
+		}
+		disposition, err := m.recordFeedback(query.Message.MessageID, updateID, reactions, false)
+		if err != nil {
+			return "reaction_unavailable"
+		}
+		return disposition
 	}
 	reply := func(text string) {
 		m.enqueueTopicText("callback:"+query.ID, text, query.Message.MessageThreadID, query.Message.MessageID)
@@ -1109,10 +1184,10 @@ func removePendingFallbackRows(state *durableState, sessionID string) {
 	state.Outbox = rows
 }
 
-func (m *Manager) handleFallbackSessionMessage(ctx context.Context, token, sessionID, body string, updateID, replyID int64) string {
+func (m *Manager) handleFallbackSessionMessage(ctx context.Context, token, sessionID, body string, updateID, replyID, threadID int64) string {
 	projection, err := m.brain.SessionProjection(sessionID)
 	if err != nil || !projection.Present {
-		m.enqueueText(fmt.Sprintf("fallback:%d", updateID), "That Session is unavailable. Choose /brain or /sessions; this message was not forwarded.", replyID)
+		m.enqueueTopicText(fmt.Sprintf("fallback:%d", updateID), "That Session is unavailable. Choose /brain or /sessions; this message was not forwarded.", threadID, replyID)
 		return "fallback_stale"
 	}
 	receipt := fmt.Sprintf("telegram:update:%d:%d", m.store.snapshot().BotID, updateID)
@@ -1122,15 +1197,15 @@ func (m *Manager) handleFallbackSessionMessage(ctx context.Context, token, sessi
 	}
 	switch result {
 	case brain.ExternalInputAccepted:
-		m.startSessionTyping(ctx, token, sessionID, 0)
+		m.startSessionTyping(ctx, token, sessionID, threadID)
 		return "session_accepted"
 	case brain.ExternalInputUncertain:
-		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Zen could not prove whether the selected Session received this message. It was not replayed.", replyID)
+		m.enqueueTopicText(fmt.Sprintf("ack:%d", updateID), "Zen could not prove whether the selected Session received this message. It was not replayed.", threadID, replyID)
 		return "session_uncertain"
 	case brain.ExternalInputPending:
 		return "session_pending"
 	default:
-		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Zen did not submit this message to the selected Session. Send it again when the Session is available.", replyID)
+		m.enqueueTopicText(fmt.Sprintf("ack:%d", updateID), "Zen did not submit this message to the selected Session. Send it again when the Session is available.", threadID, replyID)
 		return "session_not_submitted"
 	}
 }
@@ -1316,7 +1391,7 @@ func (m *Manager) projectTimeline() error {
 						kind = "edit"
 						id += ":" + digest
 					}
-					if enqueue(state, outboxRecord{ID: id, Kind: kind, MessageID: messageID, TopicKey: checkpoint, CanonicalID: item.ID, Text: chunk.Text, MessageThreadID: brainDestination(*state),
+					if enqueue(state, outboxRecord{ID: id, Kind: kind, BrainThreadID: threadID, MessageID: messageID, TopicKey: checkpoint, CanonicalID: item.ID, Text: chunk.Text, MessageThreadID: brainDestination(*state),
 						PlainText: chunk.Text, Entities: chunk.Entities, Variant: variantFor(chunk), CreatedAt: m.now().UTC()}) {
 						state.Projection[checkpoint] = digest
 					}
@@ -1415,9 +1490,19 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 	if row.Variant != formattedVariant {
 		entities = nil
 	}
-	if row.Kind == "edit" {
+	if row.Kind == "pin" {
+		if api, ok := m.api.(InteractionAPI); ok {
+			err = api.PinChatMessage(ctx, token, state.ChatID, row.MessageID)
+			sent.MessageID = row.MessageID
+		} else {
+			err = &APIError{Code: 400}
+		}
+	} else if row.Kind == "edit" {
 		sent, err = m.api.EditMessage(ctx, token, EditRequest{ChatID: state.ChatID, MessageID: row.MessageID, Text: row.Text, Entities: entities})
 	} else {
+		if row.CanonicalID != "" && row.WorkID == "" {
+			row.ReplyMarkup = feedbackKeyboard(state, row.MessageThreadID)
+		}
 		sent, err = m.api.SendMessage(ctx, token, SendRequest{ChatID: state.ChatID, MessageThreadID: row.MessageThreadID, Text: row.Text, Entities: entities, ReplyToMessageID: row.ReplyMessageID, ReplyMarkup: row.ReplyMarkup})
 	}
 	if err != nil {
@@ -1469,6 +1554,16 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 	}
 	now := m.now().UTC()
 	return m.store.mutate(func(current *durableState) error {
+		if row.ID == "brain-entry:v1" {
+			current.BrainEntryMessageID, current.BrainEntryState = sent.MessageID, "sent"
+			if !enqueue(current, outboxRecord{ID: "brain-entry:pin:v1", Kind: "pin", MessageID: sent.MessageID, CreatedAt: now}) {
+				return fmt.Errorf("Brain pin queue is full")
+			}
+		}
+		if row.ID == "brain-entry:pin:v1" {
+			current.BrainEntryState = "pinned"
+		}
+		recordMessageSource(current, sent.MessageID, messageSource{SessionID: row.SessionID, BrainThreadID: row.BrainThreadID, MessageThreadID: row.MessageThreadID})
 		if row.SessionID != "" {
 			current.ReplySessions[sent.MessageID] = row.SessionID
 		}

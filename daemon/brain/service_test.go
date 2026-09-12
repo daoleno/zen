@@ -76,6 +76,9 @@ func TestSubmitExternalUserInputUsesCanonicalAdmissionAndReceipt(t *testing.T) {
 		turnStore:        store,
 	}
 	service := NewService(store, fw, nil)
+	if disposition, err := service.SubmitExternalUserInputInThread("stale-media", body, "old-thread"); err == nil || disposition != ExternalInputNotSubmitted || len(fw.sentCalls) != 0 {
+		t.Fatal("staged input migrated from an old Brain thread")
+	}
 	disposition, err := service.SubmitExternalUserInput(receipt, body)
 	if err != nil || disposition != ExternalInputAccepted {
 		t.Fatalf("submission disposition=%q err=%v", disposition, err)

@@ -52,17 +52,21 @@ func TestTopicChooserAndBackStayLocalAndUseExactLinks(t *testing.T) {
 	}
 	a, b := topicThreadFor(t, m, "session-a"), topicThreadFor(t, m, "session-b")
 	primary := m.store.snapshot().BrainTopicID
+	choicesByRow := map[string][]string{}
 	for _, update := range []Update{topicUpdate(2, a, "/sessions"), navigationCallback(3, a, "sessions"), topicUpdate(4, b, "/brain"), navigationCallback(5, a, "brain")} {
 		if err := m.handleUpdate(t.Context(), "fixture-token", update); err != nil {
 			t.Fatal(err)
 		}
+		choicesByRow[fmt.Sprintf("command:%d:0", update.UpdateID)] = m.store.snapshot().SessionChoices
 	}
 	for _, id := range []string{"command:2:0", "command:3:0"} {
 		row := navigationRow(t, m, id)
 		if row.MessageThreadID != a || row.ReplyMessageID == 0 {
 			t.Fatalf("chooser escaped source topic: %+v", row)
 		}
-		choices := m.store.snapshot().SessionChoices
+		// Each message owns the chooser order captured when it was rendered.
+		// A later inventory can legitimately have a different display order.
+		choices := choicesByRow[id]
 		for i, sessionID := range choices {
 			assertTopicButton(t, row.ReplyMarkup.InlineKeyboard[i][0], topicThreadFor(t, m, sessionID))
 		}

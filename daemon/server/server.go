@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/daoleno/zen/daemon/attachment"
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
@@ -114,9 +115,7 @@ type Server struct {
 	codexLiveDial              func(ctx context.Context, socketPath string) (codexctl.LiveControl, error)
 	brainSnapshotBroadcastHook func(payload map[string]any)
 	uploadDir                  string
-	uploadMu                   sync.Mutex
-	uploadActive               int
-	uploadReservedBytes        int64
+	uploadStore                *attachment.Store
 	sessionFileWorkerLoader    func(workerID string) *classifier.Worker
 	sessionFileCapabilityClock func() time.Time
 	authRevocationUnsubscribe  func()
@@ -279,6 +278,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		execs:              execs,
 		brain:              brainService,
 		uploadDir:          uploadDir,
+		uploadStore:        &attachment.Store{Dir: uploadDir},
 		clients:            make(map[*websocket.Conn]*authenticatedClient),
 		active:             make(map[*websocket.Conn]string),
 		writes:             make(map[*websocket.Conn]*sync.Mutex),
@@ -3349,191 +3349,53 @@ func (s *Server) handleUploadWithLimits(w http.ResponseWriter, r *http.Request, 
 		writeUploadTooLarge(w, limits)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, limits.fileBytes)
-	if strings.TrimSpace(s.uploadDir) == "" {
+	if s.uploadDir == "" {
 		http.Error(w, "upload storage unavailable", http.StatusServiceUnavailable)
 		return
 	}
-
-	s.uploadMu.Lock()
-	if err := os.MkdirAll(s.uploadDir, 0o700); err != nil {
-		s.uploadMu.Unlock()
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	storedBytes, err := inspectUploadStore(s.uploadDir, time.Now(), limits, s.uploadActive == 0)
+	r.Body = http.MaxBytesReader(w, r.Body, limits.fileBytes)
+	started := time.Now()
+	log.Printf("upload start remote=%q content_length=%d transport=%q user_agent=%q name=%q",
+		r.RemoteAddr, r.ContentLength, r.Header.Get("X-Zen-Upload-Transport"), r.UserAgent(), originalName)
+	file, err := s.uploadStore.Save(r.Context(), r.Body, attachment.File{
+		Name: originalName, ContentType: r.Header.Get("Content-Type"), Size: r.ContentLength,
+	}, attachment.Limits{FileBytes: limits.fileBytes, StoreBytes: limits.storeBytes, Retention: limits.retention})
 	if err != nil {
-		s.uploadMu.Unlock()
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	remainingStore := limits.storeBytes - storedBytes - s.uploadReservedBytes
-	if remainingStore <= 0 {
-		s.uploadMu.Unlock()
-		http.Error(w, "upload storage capacity reached; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
-		return
-	}
-	if r.ContentLength >= 0 && r.ContentLength > remainingStore {
-		s.uploadMu.Unlock()
-		http.Error(w, "upload exceeds remaining storage capacity; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
-		return
-	}
-	reservation := min(limits.fileBytes, remainingStore)
-	if r.ContentLength >= 0 {
-		reservation = r.ContentLength
-	}
-	copyLimit := min(limits.fileBytes, reservation)
-	name := uuid.New().String() + safeUploadExtension(originalName)
-	path := filepath.Join(s.uploadDir, name)
-	dst, createErr := os.CreateTemp(s.uploadDir, ".upload-*.partial")
-	if createErr != nil {
-		s.uploadMu.Unlock()
-		http.Error(w, createErr.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.uploadActive++
-	s.uploadReservedBytes += reservation
-	s.uploadMu.Unlock()
-
-	partialPath := dst.Name()
-	keepPartial := true
-	reservationReleased := false
-	releaseReservation := func() {
-		if reservationReleased {
-			return
+		switch {
+		case errors.Is(err, attachment.ErrCapacity):
+			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		case errors.Is(err, attachment.ErrTooLarge):
+			writeUploadTooLarge(w, limits)
+		default:
+			var pathErr *os.PathError
+			if errors.As(err, &pathErr) {
+				http.Error(w, "upload storage unavailable", http.StatusInternalServerError)
+				return
+			}
+			writeUploadReadError(w, err, limits)
 		}
-		s.uploadMu.Lock()
-		s.uploadActive--
-		s.uploadReservedBytes -= reservation
-		s.uploadMu.Unlock()
-		reservationReleased = true
-	}
-	defer releaseReservation()
-	defer func() {
-		if keepPartial {
-			_ = os.Remove(partialPath)
-		}
-	}()
-	startedAt := time.Now()
-	log.Printf(
-		"upload start remote=%q content_length=%d transport=%q user_agent=%q name=%q",
-		r.RemoteAddr,
-		r.ContentLength,
-		r.Header.Get("X-Zen-Upload-Transport"),
-		r.UserAgent(),
-		originalName,
-	)
-	written, copyErr := io.Copy(dst, io.LimitReader(r.Body, copyLimit+1))
-	closeErr := dst.Close()
-	if copyErr != nil {
-		writeUploadReadError(w, copyErr, limits)
 		return
 	}
-	if closeErr != nil {
-		http.Error(w, closeErr.Error(), http.StatusInternalServerError)
-		return
-	}
-	if written > copyLimit {
-		if remainingStore < limits.fileBytes {
-			http.Error(w, "upload exceeds remaining storage capacity; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
-			return
-		}
-		writeUploadTooLarge(w, limits)
-		return
-	}
-	if r.ContentLength >= 0 && written != r.ContentLength {
-		http.Error(w, "upload body does not match Content-Length", http.StatusBadRequest)
-		return
-	}
-	if contextErr := r.Context().Err(); contextErr != nil {
-		writeUploadReadError(w, contextErr, limits)
-		return
-	}
-	s.uploadMu.Lock()
-	renameErr := os.Rename(partialPath, path)
-	s.uploadActive--
-	s.uploadReservedBytes -= reservation
-	s.uploadMu.Unlock()
-	reservationReleased = true
-	if renameErr != nil {
-		http.Error(w, renameErr.Error(), http.StatusInternalServerError)
-		return
-	}
-	keepPartial = false
-	duration := time.Since(startedAt)
+	duration := time.Since(started)
 	rateMiB := 0.0
 	if duration > 0 {
-		rateMiB = float64(written) / (1024 * 1024) / duration.Seconds()
+		rateMiB = float64(file.Size) / (1024 * 1024) / duration.Seconds()
 	}
-	log.Printf(
-		"upload complete remote=%q bytes=%d duration_ms=%d rate_mib_s=%.2f transport=%q",
-		r.RemoteAddr,
-		written,
-		duration.Milliseconds(),
-		rateMiB,
-		r.Header.Get("X-Zen-Upload-Transport"),
-	)
-
+	log.Printf("upload complete remote=%q bytes=%d duration_ms=%d rate_mib_s=%.2f transport=%q",
+		r.RemoteAddr, file.Size, duration.Milliseconds(), rateMiB, r.Header.Get("X-Zen-Upload-Transport"))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"path": path, "name": originalName})
+	_ = json.NewEncoder(w).Encode(map[string]string{"path": file.Path, "name": originalName})
 }
+
+// AttachmentStore is shared with verified channel adapters. Network handlers
+// still authenticate before accessing it; it exposes no unauthenticated route.
+func (s *Server) AttachmentStore() *attachment.Store { return s.uploadStore }
 
 func cleanupUploadStore(dir string, now time.Time, limits uploadLimits) (int64, error) {
-	return inspectUploadStore(dir, now, limits, true)
+	return attachment.Inspect(dir, now, attachment.Limits{FileBytes: limits.fileBytes, StoreBytes: limits.storeBytes, Retention: limits.retention}, true)
 }
 
-func inspectUploadStore(dir string, now time.Time, limits uploadLimits, removePartials bool) (int64, error) {
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("inspect upload storage: %w", err)
-	}
-	var total int64
-	for _, entry := range entries {
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return 0, fmt.Errorf("inspect upload %s: %w", entry.Name(), infoErr)
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		if strings.HasPrefix(entry.Name(), ".upload-") && strings.HasSuffix(entry.Name(), ".partial") {
-			if removePartials {
-				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-					return 0, fmt.Errorf("remove partial upload %s: %w", entry.Name(), err)
-				}
-			}
-			continue
-		}
-		if now.Sub(info.ModTime()) >= limits.retention {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return 0, fmt.Errorf("remove expired upload %s: %w", entry.Name(), err)
-			}
-			continue
-		}
-		if info.Size() > 0 && total > limits.storeBytes-info.Size() {
-			return limits.storeBytes, nil
-		}
-		total += max(info.Size(), 0)
-	}
-	return total, nil
-}
-
-func safeUploadExtension(name string) string {
-	ext := filepath.Ext(filepath.Base(strings.TrimSpace(name)))
-	if len(ext) < 2 || len(ext) > 11 || ext[0] != '.' {
-		return ""
-	}
-	for _, char := range ext[1:] {
-		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
-			return ""
-		}
-	}
-	return strings.ToLower(ext)
-}
+func safeUploadExtension(name string) string { return attachment.SafeExtension(name) }
 
 func decodeUploadNameHeader(values []string) (string, error) {
 	if len(values) == 0 {

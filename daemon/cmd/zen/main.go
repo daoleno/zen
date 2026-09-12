@@ -331,7 +331,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		InputReadyBudget: work.DefaultScheduledInputReadyBudget,
 	}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
-	telegramManager, err := telegramchannel.NewManager(authManager.StorageDir(), brainService)
+	telegramManager, err := telegramchannel.NewManagerWithOptions(authManager.StorageDir(), brainService, telegramchannel.Options{Attachments: srv.AttachmentStore()})
 	if err != nil {
 		return fmt.Errorf("initialize Telegram connection: %w", err)
 	}

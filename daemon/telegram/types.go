@@ -3,7 +3,10 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
+
+	"github.com/daoleno/zen/daemon/attachment"
 )
 
 type User struct {
@@ -33,12 +36,48 @@ type Message struct {
 	Text              string             `json:"text,omitempty"`
 	Caption           string             `json:"caption,omitempty"`
 	ReplyToMessage    *Message           `json:"reply_to_message,omitempty"`
-	Photo             []any              `json:"photo,omitempty"`
-	Document          any                `json:"document,omitempty"`
-	Audio             any                `json:"audio,omitempty"`
-	Video             any                `json:"video,omitempty"`
-	Voice             any                `json:"voice,omitempty"`
-	Sticker           any                `json:"sticker,omitempty"`
+	Entities          []MessageEntity    `json:"entities,omitempty"`
+	CaptionEntities   []MessageEntity    `json:"caption_entities,omitempty"`
+	MediaGroupID      string             `json:"media_group_id,omitempty"`
+	Photo             []PhotoSize        `json:"photo,omitempty"`
+	Document          *MediaFile         `json:"document,omitempty"`
+	Audio             *MediaFile         `json:"audio,omitempty"`
+	Video             *MediaFile         `json:"video,omitempty"`
+	Voice             *MediaFile         `json:"voice,omitempty"`
+	Animation         *MediaFile         `json:"animation,omitempty"`
+	VideoNote         *MediaFile         `json:"video_note,omitempty"`
+	Sticker           *Sticker           `json:"sticker,omitempty"`
+}
+
+type File struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	FilePath     string `json:"file_path,omitempty"`
+}
+
+type PhotoSize struct {
+	File
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type MediaFile struct {
+	File
+	FileName string `json:"file_name,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+}
+
+type Sticker struct {
+	File
+	IsAnimated bool   `json:"is_animated,omitempty"`
+	IsVideo    bool   `json:"is_video,omitempty"`
+	Emoji      string `json:"emoji,omitempty"`
+}
+
+type FileAPI interface {
+	GetFile(context.Context, string, string) (File, error)
+	DownloadFile(context.Context, string, File) (io.ReadCloser, error)
 }
 
 type ForumTopicCreated struct {
@@ -59,16 +98,44 @@ type ForumTopic struct {
 	IconCustomEmojiID string `json:"icon_custom_emoji_id,omitempty"`
 }
 
-func (m Message) hasUnsupportedMedia() bool {
+func (m Message) hasMedia() bool {
 	return len(m.Photo) > 0 || m.Document != nil || m.Audio != nil || m.Video != nil ||
-		m.Voice != nil || m.Sticker != nil
+		m.Voice != nil || m.Sticker != nil || m.Animation != nil || m.VideoNote != nil
 }
 
 type Update struct {
-	UpdateID      int64          `json:"update_id"`
-	Message       *Message       `json:"message,omitempty"`
-	EditedMessage *Message       `json:"edited_message,omitempty"`
-	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+	UpdateID        int64                   `json:"update_id"`
+	Message         *Message                `json:"message,omitempty"`
+	EditedMessage   *Message                `json:"edited_message,omitempty"`
+	CallbackQuery   *CallbackQuery          `json:"callback_query,omitempty"`
+	MessageReaction *MessageReactionUpdated `json:"message_reaction,omitempty"`
+}
+
+type ReactionType struct {
+	Type          string `json:"type"`
+	Emoji         string `json:"emoji,omitempty"`
+	CustomEmojiID string `json:"custom_emoji_id,omitempty"`
+}
+
+type MessageReactionUpdated struct {
+	Chat        Chat           `json:"chat"`
+	MessageID   int64          `json:"message_id"`
+	User        *User          `json:"user,omitempty"`
+	ActorChat   *Chat          `json:"actor_chat,omitempty"`
+	Date        int64          `json:"date"`
+	OldReaction []ReactionType `json:"old_reaction"`
+	NewReaction []ReactionType `json:"new_reaction"`
+}
+
+type ReactionRequest struct {
+	ChatID    int64          `json:"chat_id"`
+	MessageID int64          `json:"message_id"`
+	Reaction  []ReactionType `json:"reaction"`
+}
+
+type InteractionAPI interface {
+	SetMessageReaction(context.Context, string, ReactionRequest) error
+	PinChatMessage(context.Context, string, int64, int64) error
 }
 
 type CallbackQuery struct {
@@ -125,13 +192,7 @@ type ForumTopicIDRequest struct {
 	MessageThreadID int64 `json:"message_thread_id"`
 }
 
-type MessageEntity struct {
-	Type     string `json:"type"`
-	Offset   int    `json:"offset"`
-	Length   int    `json:"length"`
-	URL      string `json:"url,omitempty"`
-	Language string `json:"language,omitempty"`
-}
+type MessageEntity = attachment.Entity
 
 type ChatActionRequest struct {
 	ChatID          int64  `json:"chat_id"`

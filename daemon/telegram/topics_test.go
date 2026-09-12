@@ -224,7 +224,7 @@ func TestSessionTopicFailClosedCases(t *testing.T) {
 	// Unsupported media in a topic.
 	if err := manager.handleUpdate(context.Background(), "token", Update{UpdateID: 43, Message: &Message{
 		MessageID: 43, MessageThreadID: threadID, IsTopicMessage: true,
-		From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Photo: []any{map[string]any{"file_id": "x"}},
+		From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Photo: []PhotoSize{{File: File{FileID: "x"}}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestSessionTopicFailClosedCases(t *testing.T) {
 		}
 	}
 	if dispositions["40"] != "topic_unknown" || dispositions["41"] != "session_not_submitted" ||
-		dispositions["42"] != "session_uncertain" || dispositions["43"] != "unsupported_media" ||
+		dispositions["42"] != "session_uncertain" || dispositions["43"] != "media_rejected" ||
 		dispositions["44"] != "topic_stale" {
 		t.Fatalf("dispositions=%v", dispositions)
 	}

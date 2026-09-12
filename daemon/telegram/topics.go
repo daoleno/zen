@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daoleno/zen/daemon/attachment"
 	"github.com/daoleno/zen/daemon/brain"
 )
 
@@ -607,16 +608,20 @@ func (m *Manager) handleSessionTopicMessage(ctx context.Context, token string, m
 		m.enqueueTopicText(fmt.Sprintf("topic-command:%d", updateID), sessionNewResponseText, message.MessageThreadID, message.MessageID)
 		return "command"
 	}
-	if message.hasUnsupportedMedia() {
-		m.enqueueTopicText(fmt.Sprintf("unsupported:%d", updateID), unsupportedMediaText, message.MessageThreadID, message.MessageID)
-		return "unsupported_media"
-	}
 	body := strings.TrimSpace(message.Text)
 	if body == "" {
 		body = strings.TrimSpace(message.Caption)
 	}
 	if body == "" {
 		return "ignored"
+	}
+	if len(message.Entities) > 0 {
+		caption := attachment.Caption{Text: message.Text, Entities: message.Entities}
+		if err := validateCaption(caption); err != nil {
+			m.enqueueTopicText(fmt.Sprintf("entities:%d", updateID), err.Error(), message.MessageThreadID, message.MessageID)
+			return "invalid_entities"
+		}
+		body = attachment.Input(body, nil, []attachment.Caption{caption})
 	}
 	if reply := replyContext(message.ReplyToMessage); reply != "" {
 		body = "Replying to: " + reply + "\n\n" + body
@@ -645,7 +650,6 @@ const (
 	unknownTopicText       = "This topic is not mapped to Zen. Open Brain or choose /sessions. This message was not forwarded."
 	sessionHelpText        = "Session conversation. /status shows its state. /brain returns to Brain; /sessions opens the Session list."
 	sessionNewResponseText = "New Chat belongs to Brain. Open /brain first; this Session was not changed."
-	unsupportedMediaText   = "This connection supports text and captions only. Send the content as text."
 )
 
 func sessionUncertainText(label string) string {

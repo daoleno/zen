@@ -46,6 +46,13 @@ func (f *fakeBrain) SubmitExternalUserInput(receipt, body string) (brain.Externa
 	return f.disposition, nil
 }
 
+func (f *fakeBrain) SubmitExternalUserInputInThread(receipt, body, expectedThread string) (brain.ExternalInputDisposition, error) {
+	if f.threadID != expectedThread {
+		return brain.ExternalInputNotSubmitted, fmt.Errorf("thread changed")
+	}
+	return f.SubmitExternalUserInput(receipt, body)
+}
+
 func (f *fakeBrain) DelegatedSessions() ([]brain.WorkerRef, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -619,7 +626,7 @@ func TestUnsupportedMediaCommandsAndNewChat(t *testing.T) {
 	manager, owner, _, _ := configuredManager(t)
 	bindOwner(t, manager, 1, 10, 10)
 	updates := []Update{
-		{UpdateID: 2, Message: &Message{MessageID: 2, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Photo: []any{map[string]any{"file_id": "fixture"}}}},
+		{UpdateID: 2, Message: &Message{MessageID: 2, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Photo: []PhotoSize{{File: File{FileID: "fixture"}}}}},
 		{UpdateID: 3, Message: &Message{MessageID: 3, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "/status"}},
 		{UpdateID: 4, Message: &Message{MessageID: 4, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "/new"}},
 	}

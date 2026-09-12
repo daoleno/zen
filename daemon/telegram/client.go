@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -30,7 +31,52 @@ func NewClient(baseURL string, client *http.Client) *Client {
 		transport.IdleConnTimeout = 60 * time.Second
 		client = &http.Client{Transport: transport, Timeout: 45 * time.Second}
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: client}
+	privateClient := *client
+	// Redirects must never carry a bot credential to a different endpoint.
+	privateClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &privateClient}
+}
+
+func (c *Client) GetFile(ctx context.Context, token, fileID string) (File, error) {
+	var file File
+	err := c.call(ctx, token, "getFile", map[string]string{"file_id": fileID}, &file)
+	return file, err
+}
+
+func (c *Client) DownloadFile(ctx context.Context, token string, file File) (io.ReadCloser, error) {
+	p := file.FilePath
+	if token == "" || p == "" || len(p) > 1024 || path.Clean(p) != p || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\%:?#\x00\r\n") {
+		return nil, fmt.Errorf("Telegram file path is invalid")
+	}
+	for _, segment := range strings.Split(p, "/") {
+		if segment == ".." || segment == "." || segment == "" {
+			return nil, fmt.Errorf("Telegram file path is invalid")
+		}
+	}
+	if file.FileSize < 0 || file.FileSize > maxTelegramFileBytes {
+		return nil, fmt.Errorf("Telegram file exceeds the 20 MiB download limit")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/file/bot"+url.PathEscape(token)+"/"+p, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Telegram file request is invalid")
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("Telegram file download unavailable")
+	}
+	if response.StatusCode != http.StatusOK || response.ContentLength > maxTelegramFileBytes {
+		_ = response.Body.Close()
+		return nil, fmt.Errorf("Telegram file download rejected or too large")
+	}
+	return response.Body, nil
+}
+
+func (c *Client) SetMessageReaction(ctx context.Context, token string, request ReactionRequest) error {
+	return c.call(ctx, token, "setMessageReaction", request, nil)
+}
+
+func (c *Client) PinChatMessage(ctx context.Context, token string, chatID, messageID int64) error {
+	return c.call(ctx, token, "pinChatMessage", map[string]any{"chat_id": chatID, "message_id": messageID, "disable_notification": true}, nil)
 }
 
 type apiEnvelope struct {

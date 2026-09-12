@@ -2215,6 +2215,13 @@ func (s *Service) AdmitHostUserInput(prepared BrainInputAdmission) error {
 // their canonical owners; callers cannot select a provider transcript or
 // manufacture a Session.
 func (s *Service) SubmitExternalUserInput(receipt, body string) (ExternalInputDisposition, error) {
+	return s.SubmitExternalUserInputInThread(receipt, body, "")
+}
+
+// SubmitExternalUserInputInThread keeps staged channel attachments on the
+// original canonical conversation. A changed current thread fails closed;
+// explicit admission scope prevents a later switch from retargeting the input.
+func (s *Service) SubmitExternalUserInputInThread(receipt, body, expectedThread string) (ExternalInputDisposition, error) {
 	receipt = strings.TrimSpace(receipt)
 	body = strings.TrimSpace(body)
 	if s == nil || s.store == nil || s.watcher == nil {
@@ -2231,6 +2238,14 @@ func (s *Service) SubmitExternalUserInput(receipt, body string) (ExternalInputDi
 	if hostID == "" {
 		return ExternalInputNotSubmitted, fmt.Errorf("brain host is unavailable")
 	}
+	scope := ""
+	if expectedThread != "" {
+		current, err := s.store.ChatThreadID()
+		if err != nil || current != expectedThread {
+			return ExternalInputNotSubmitted, fmt.Errorf("original Brain conversation is no longer current")
+		}
+		scope = "brain-thread:" + expectedThread
+	}
 	steering, err := s.NoteUserSteering(hostID)
 	if err != nil || !steering {
 		if err != nil {
@@ -2238,7 +2253,7 @@ func (s *Service) SubmitExternalUserInput(receipt, body string) (ExternalInputDi
 		}
 		return ExternalInputNotSubmitted, fmt.Errorf("brain host is unavailable")
 	}
-	prepared, created, err := s.PrepareHostUserInput(hostID, receipt, body, "")
+	prepared, created, err := s.PrepareHostUserInput(hostID, receipt, body, scope)
 	if err != nil {
 		s.CancelUserSteering(hostID)
 		return ExternalInputNotSubmitted, err

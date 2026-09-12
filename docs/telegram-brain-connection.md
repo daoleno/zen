@@ -128,6 +128,9 @@ are durable in the real Brain Store. The Telegram cursor advances only after
 the outcome is recorded. Callback IDs are separately deduplicated in a bounded
 journal; duplicates are still answered to clear Telegram's spinner.
 `allowed_updates` includes both messages and callback queries.
+It also explicitly requests `message_reaction`. Telegram documents administrator
+status as a prerequisite for those updates, so native owner-reaction delivery is
+not promised in private bot chats. Inline feedback is the supported counterpart.
 
 Outbound rows persist pending, then dispatching, then sent/failed/ambiguous.
 Definite flood waits honor `retry_after` across the private chat, including other
@@ -141,7 +144,10 @@ A short receive wait bounds reply latency; bot/webhook capabilities refresh on
 a slower cadence. All outbound mutations use the same serialization owner.
 
 Markdown uses Goldmark and explicit Telegram entities, not ad hoc MarkdownV2.
-Messages are chunked at 4096 UTF-16 units without splitting astral characters.
+Messages are chunked at 4096 UTF-16 units using Unicode grapheme boundaries, so
+emoji variation selectors, skin tones, flags and ZWJ sequences stay together.
+An exceptional single grapheme longer than the entire Telegram message limit is
+left intact for explicit rejection, not split or silently corrupted.
 Local-file and relative Markdown links remain readable text with their paths;
 they are not sent as invalid Telegram HTTP link entities. A definitely rejected
 invalid-link row from the current delivery interval may be re-rendered once under
@@ -160,10 +166,113 @@ chat bodies belong in logs. The connection checks `getWebhookInfo` and refuses
 to poll when a webhook exists. It never steals a webhook or enables paid broadcasts.
 One joined daemon runtime owns the bot.
 
-Media transfer remains outside this adapter; unsupported media produces a
-concise response without provider input. iOS and Android share the Settings
-contract. Native iOS runtime proof still requires an actual supported simulator
-or device; an Expo export is only a bundle check.
+## Files And Captions
+
+Photos and documents enter the same current Brain or exact selected Session as
+text. Native topic mapping takes precedence. In private-chat fallback, replying
+to a recorded Session output preserves that exact Session. A missing recipient
+never falls through to Brain. A batch captures its recipient before downloading;
+changing the selected Session does not retarget it. Changing the current Brain
+conversation rejects an older staged batch, including at canonical admission.
+
+The largest photo variant is selected. Safe original document names, content
+types, byte sizes, captions and their UTF-16/custom-emoji entities are preserved.
+Files use the existing `zen_attachments` envelope with local `name`/`path`
+references, extended with size/type/description and caption metadata. This is
+the same provider input mechanism as mobile uploads, not a Telegram-specific
+prompt, native-vision request, or separate conversation. Actual image/file
+interpretation depends on the selected executor's tools and capabilities.
+
+The authenticated mobile upload handler and Telegram share one upload store and
+reservation owner: random local names, 0600 files, 8 GiB aggregate capacity and
+seven-day retention. Telegram adds a 20 MiB per-file and total-batch limit, a
+30-second download-attempt deadline and at most three attempts. `getFile` is
+refreshed on retry. Tokens/download URLs are never stored in attachment metadata
+or returned in errors. Only the fixed API origin is contacted; redirects,
+traversal, unsafe display names, invalid entity offsets and oversized bodies
+are rejected. The adapter never executes files or extracts archives.
+
+One cancellable download worker belongs to the existing Telegram manager. It
+performs file IO and durable checkpoints only, without holding the outbound
+send mutex during HTTP requests. Polling, text input, callbacks and output keep
+running while a file is pending. The polling owner admits at most one completed
+media batch per pass and rechecks the captured recipient before provider input.
+Media batches retain FIFO order, including album collection and retry waits;
+ordinary text and navigation do not wait on that queue. Disable, token/bot
+rotation, owner revocation and shutdown cancel active IO. Shutdown joins the
+worker; a replacement download cannot overlap an older cancelled worker.
+
+Completed-file rename and reservation release share one upload-store critical
+section, so concurrent mobile/channel uploads do not temporarily count both
+committed bytes and the same reservation against capacity.
+
+Albums are durably collected for two quiet seconds, capped at ten seconds from
+the first item, ten files and 20 MiB total. Telegram supplies no album-end event.
+The sealed batch produces one provider input containing every received caption;
+late items get explicit resend feedback and do not start another turn. Partial
+download success survives restart without redownloading already stored bytes.
+No caption-only turn is submitted when a file fails. Terminal batch errors ask
+for the whole batch to be resent. Receipt metadata is bounded to 128 batches and
+expires after 24 hours; file retention is owned by the shared store.
+
+Static stickers carry the actual WebP file plus their emoji descriptor. Animated
+and video stickers carry a file reference and an explicit "animation not
+interpreted" descriptor. Audio, voice, video, animation and video notes remain
+file references with honest no-transcription/no-motion-interpretation labels.
+There is no transcoder, transcription service or extra paid model call.
+
+After a durable accepted admission, Zen replies "Files received by Zen" in the
+source topic. This acknowledges input receipt, not Work completion. Uncertain
+provider outcomes are not replayed. A crash at the admission boundary likewise
+produces uncertainty rather than a duplicate turn.
+
+The canonical channel output projection currently supplies text, not an
+attachment-output contract. Generated local file links remain readable paths;
+automatic Telegram `sendDocument`/`sendPhoto` replies are not advertised.
+
+## Reactions
+
+Ordinary reactions are message-scoped feedback only. Owner validation, exact
+message-to-Session/Brain attribution, update deduplication and reaction removal
+apply without calling a provider, creating a conversation or issuing commands.
+The bounded journal retains sources for the latest 512 attributable messages;
+unavailable or older messages fail closed.
+
+Assistant replies offer thumbs-up, thumbs-down and Clear feedback buttons.
+These persist feedback on that exact message and acknowledge via a callback
+toast. They are not a claim that Telegram delivered a native reaction update.
+The native `message_reaction` handler is defensive and uses the same journal;
+private-chat inbound delivery remains unverified and administrator-gated in the
+official Bot API documentation.
+
+`setMessageReaction` can set/change/remove a bot reaction in the current private
+topic mode (verified with an owned QA message). This does not imply that owner
+reaction updates are available. Automatic input/status reactions are not used;
+ordinary concise receipt feedback and canonical Work/Turn status remain in use.
+
+## Stable Brain Entry
+
+Zen reuses the persisted primary Brain topic. It creates one navigation message
+with the exact primary-topic link and pins that **message** using
+`pinChatMessage`. The send/pin operations use the existing durable, serialized
+outbox. Restart does not create another entry. A failed or ambiguous pin does
+not imply success or trigger a replacement topic. Assistant messages also
+retain a Brain navigation button.
+
+Telegram's **All / View as messages / General** navigation is client-owned.
+The Bot API cannot replace, hide or reorder All, and has no topic-pin method.
+MTProto's `messages.updatePinnedForumTopic` and
+`messages.reorderPinnedForumTopics` are distinct client API methods, not Bot API
+capabilities. Pinning a message does not pin its topic in the left topic list.
+
+To keep Brain high in the topic list, open the bot's topic list, long-press
+**Brain** on mobile (right-click on Desktop), and choose **Pin** when that
+client exposes it. All remains client-owned. No Threaded-mode/BotFather change,
+new bot, group conversion, renamed substitute for All or topic deletion is used.
+
+Android and iOS share the channel behavior and Settings contract. Actual
+signed-in client UI proof requires a user-owned Telegram client session; an
+API receipt or bundle export is not a client screenshot.
 
 ## Official References
 
@@ -171,6 +280,8 @@ or device; an Expo export is only a bundle check.
 - [Forum topic links](https://core.telegram.org/api/links#forum-topic-links)
 - [Inline URL buttons](https://core.telegram.org/bots/api#inlinekeyboardbutton)
 - [Bot API](https://core.telegram.org/bots/api), especially getMe, Message,
-  CallbackQuery, sendMessage, createForumTopic, editForumTopic and closeForumTopic
+  CallbackQuery, getFile, Sticker, MessageReactionUpdated, Update,
+  setMessageReaction, pinChatMessage, sendMessage, createForumTopic,
+  editForumTopic and closeForumTopic
 - [Bot FAQ and flood control](https://core.telegram.org/bots/faq)
 - [Telegram Privacy Policy](https://telegram.org/privacy)

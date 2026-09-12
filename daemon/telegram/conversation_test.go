@@ -372,7 +372,7 @@ func TestBotRotationRejectsOldPollWithoutAdvancingNewCursor(t *testing.T) {
 	if len(owner.bodies) != 0 || m.store.snapshot().NextOffset != 0 {
 		t.Fatal("old bot update entered new binding")
 	}
-	if strings.Join(poller.allowed, ",") != "message,callback_query" {
+	if strings.Join(poller.allowed, ",") != "message,callback_query,message_reaction" {
 		t.Fatalf("callback updates not requested: %v", poller.allowed)
 	}
 }

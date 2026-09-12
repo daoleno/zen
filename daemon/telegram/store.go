@@ -46,6 +46,7 @@ type updateRecord struct {
 }
 
 type outboxRecord struct {
+	BrainThreadID   string                `json:"brain_thread_id,omitempty"`
 	ID              string                `json:"id"`
 	Kind            string                `json:"kind"`
 	CanonicalID     string                `json:"canonical_id,omitempty"`
@@ -92,43 +93,48 @@ type topicOpRecord struct {
 }
 
 type durableState struct {
-	Schema             int                     `json:"schema"`
-	Enabled            bool                    `json:"enabled"`
-	BotID              int64                   `json:"bot_id,omitempty"`
-	BotName            string                  `json:"bot_name,omitempty"`
-	BotUsername        string                  `json:"bot_username,omitempty"`
-	TopicsAvailable    bool                    `json:"topics_available,omitempty"`
-	UsersCreateTopics  bool                    `json:"users_create_topics,omitempty"`
-	BrainTopicID       int64                   `json:"brain_topic_id,omitempty"`
-	BrainReplyTopicID  int64                   `json:"brain_reply_topic_id,omitempty"`
-	BrainTopics        []int64                 `json:"brain_topics,omitempty"`
-	OwnerID            int64                   `json:"owner_id,omitempty"`
-	OwnerHint          string                  `json:"owner_hint,omitempty"`
-	ChatID             int64                   `json:"chat_id,omitempty"`
-	ChallengeSHA256    string                  `json:"challenge_sha256,omitempty"`
-	ChallengeExpiresAt time.Time               `json:"challenge_expires_at,omitempty"`
-	NextOffset         int64                   `json:"next_offset,omitempty"`
-	Processed          map[string]updateRecord `json:"processed,omitempty"`
-	Outbox             []outboxRecord          `json:"outbox,omitempty"`
-	Projection         map[string]string       `json:"projection,omitempty"`
-	WorkMessages       map[string]int64        `json:"work_messages,omitempty"`
-	Topics             []topicMapping          `json:"topics,omitempty"`
-	TopicOps           []topicOpRecord         `json:"topic_ops,omitempty"`
-	TopicProjection    map[string]string       `json:"topic_projection,omitempty"`
-	TopicMessages      map[string]int64        `json:"topic_messages,omitempty"`
-	FallbackSessionID  string                  `json:"fallback_session_id,omitempty"`
-	FallbackStartedAt  time.Time               `json:"fallback_started_at,omitempty"`
-	TopicNotice        string                  `json:"topic_notice,omitempty"`
-	CallbackRoutes     map[string]string       `json:"callback_routes,omitempty"`
-	SessionChoices     []string                `json:"session_choices,omitempty"`
-	CallbackIDs        map[string]int64        `json:"callback_ids,omitempty"`
-	ReplySessions      map[int64]string        `json:"reply_sessions,omitempty"`
-	RetryAt            time.Time               `json:"retry_at,omitempty"`
-	DeliveryStartedAt  time.Time               `json:"delivery_started_at,omitempty"`
-	LastReceiveAt      *time.Time              `json:"last_receive_at,omitempty"`
-	LastSendAt         *time.Time              `json:"last_send_at,omitempty"`
-	LastError          string                  `json:"last_error,omitempty"`
-	WebhookConflict    bool                    `json:"webhook_conflict,omitempty"`
+	MediaInputs         map[string]mediaInput    `json:"media_inputs,omitempty"`
+	Feedback            map[int64]feedbackRecord `json:"feedback,omitempty"`
+	MessageSources      map[int64]messageSource  `json:"message_sources,omitempty"`
+	BrainEntryState     string                   `json:"brain_entry_state,omitempty"`
+	BrainEntryMessageID int64                    `json:"brain_entry_message_id,omitempty"`
+	Schema              int                      `json:"schema"`
+	Enabled             bool                     `json:"enabled"`
+	BotID               int64                    `json:"bot_id,omitempty"`
+	BotName             string                   `json:"bot_name,omitempty"`
+	BotUsername         string                   `json:"bot_username,omitempty"`
+	TopicsAvailable     bool                     `json:"topics_available,omitempty"`
+	UsersCreateTopics   bool                     `json:"users_create_topics,omitempty"`
+	BrainTopicID        int64                    `json:"brain_topic_id,omitempty"`
+	BrainReplyTopicID   int64                    `json:"brain_reply_topic_id,omitempty"`
+	BrainTopics         []int64                  `json:"brain_topics,omitempty"`
+	OwnerID             int64                    `json:"owner_id,omitempty"`
+	OwnerHint           string                   `json:"owner_hint,omitempty"`
+	ChatID              int64                    `json:"chat_id,omitempty"`
+	ChallengeSHA256     string                   `json:"challenge_sha256,omitempty"`
+	ChallengeExpiresAt  time.Time                `json:"challenge_expires_at,omitempty"`
+	NextOffset          int64                    `json:"next_offset,omitempty"`
+	Processed           map[string]updateRecord  `json:"processed,omitempty"`
+	Outbox              []outboxRecord           `json:"outbox,omitempty"`
+	Projection          map[string]string        `json:"projection,omitempty"`
+	WorkMessages        map[string]int64         `json:"work_messages,omitempty"`
+	Topics              []topicMapping           `json:"topics,omitempty"`
+	TopicOps            []topicOpRecord          `json:"topic_ops,omitempty"`
+	TopicProjection     map[string]string        `json:"topic_projection,omitempty"`
+	TopicMessages       map[string]int64         `json:"topic_messages,omitempty"`
+	FallbackSessionID   string                   `json:"fallback_session_id,omitempty"`
+	FallbackStartedAt   time.Time                `json:"fallback_started_at,omitempty"`
+	TopicNotice         string                   `json:"topic_notice,omitempty"`
+	CallbackRoutes      map[string]string        `json:"callback_routes,omitempty"`
+	SessionChoices      []string                 `json:"session_choices,omitempty"`
+	CallbackIDs         map[string]int64         `json:"callback_ids,omitempty"`
+	ReplySessions       map[int64]string         `json:"reply_sessions,omitempty"`
+	RetryAt             time.Time                `json:"retry_at,omitempty"`
+	DeliveryStartedAt   time.Time                `json:"delivery_started_at,omitempty"`
+	LastReceiveAt       *time.Time               `json:"last_receive_at,omitempty"`
+	LastSendAt          *time.Time               `json:"last_send_at,omitempty"`
+	LastError           string                   `json:"last_error,omitempty"`
+	WebhookConflict     bool                     `json:"webhook_conflict,omitempty"`
 }
 
 type store struct {
@@ -247,6 +253,15 @@ func (s *store) mutate(fn func(*durableState) error) error {
 }
 
 func ensureDurableMaps(state *durableState) {
+	if state.MediaInputs == nil {
+		state.MediaInputs = map[string]mediaInput{}
+	}
+	if state.Feedback == nil {
+		state.Feedback = map[int64]feedbackRecord{}
+	}
+	if state.MessageSources == nil {
+		state.MessageSources = map[int64]messageSource{}
+	}
 	if state.Processed == nil {
 		state.Processed = map[string]updateRecord{}
 	}

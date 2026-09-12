@@ -5,9 +5,9 @@ import (
 	stdhtml "html"
 	"net/url"
 	"strings"
-	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/rivo/uniseg"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -252,17 +252,15 @@ func chunkRichText(value richText, maximum int) []richText {
 	type boundary struct {
 		byteIndex int
 		units     int
-		r         rune
 	}
 	boundaries := []boundary{{}}
 	units := 0
-	for index, r := range value.Text {
-		if index != 0 {
-			boundaries = append(boundaries, boundary{byteIndex: index, units: units, r: r})
-		}
-		units += len(utf16.Encode([]rune{r}))
+	graphemes := uniseg.NewGraphemes(value.Text)
+	for graphemes.Next() {
+		_, end := graphemes.Positions()
+		units += utf16Len(graphemes.Str())
+		boundaries = append(boundaries, boundary{byteIndex: end, units: units})
 	}
-	boundaries = append(boundaries, boundary{byteIndex: len(value.Text), units: units})
 
 	var chunks []richText
 	start := 0
@@ -272,6 +270,12 @@ func chunkRichText(value richText, maximum int) []richText {
 			end++
 		}
 		end--
+		// A pathological cluster larger than Telegram's entire message limit
+		// cannot be represented intact. Keep it intact and let the API reject
+		// it explicitly rather than silently corrupting emoji or looping.
+		if end == start {
+			end++
+		}
 		preferred := end
 		for i := end; end < len(boundaries)-1 && i > start; i-- {
 			previous := runeBefore(value.Text, boundaries[i].byteIndex)

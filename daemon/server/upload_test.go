@@ -357,10 +357,8 @@ func TestConcurrentKnownLengthUploadsDoNotSerializeBodyReads(t *testing.T) {
 	if firstResponse.Code != http.StatusOK {
 		t.Fatalf("first upload status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
 	}
-	server.uploadMu.Lock()
-	defer server.uploadMu.Unlock()
-	if server.uploadActive != 0 || server.uploadReservedBytes != 0 {
-		t.Fatalf("upload reservations leaked: active=%d bytes=%d", server.uploadActive, server.uploadReservedBytes)
+	if active, reserved := server.uploadStore.Usage(); active != 0 || reserved != 0 {
+		t.Fatalf("upload reservations leaked: active=%d bytes=%d", active, reserved)
 	}
 }
 
@@ -426,10 +424,8 @@ func TestConcurrentUploadReservationsProtectCapacityAndActivePartial(t *testing.
 	if firstResponse.Code != http.StatusOK {
 		t.Fatalf("first upload status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
 	}
-	server.uploadMu.Lock()
-	defer server.uploadMu.Unlock()
-	if server.uploadActive != 0 || server.uploadReservedBytes != 0 {
-		t.Fatalf("upload reservations leaked: active=%d bytes=%d", server.uploadActive, server.uploadReservedBytes)
+	if active, reserved := server.uploadStore.Usage(); active != 0 || reserved != 0 {
+		t.Fatalf("upload reservations leaked: active=%d bytes=%d", active, reserved)
 	}
 }
 
@@ -525,6 +521,9 @@ func decodeUploadResponse(t *testing.T, response *httptest.ResponseRecorder) map
 func assertUploadDirEntries(t *testing.T, dir string, want []string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) && len(want) == 0 {
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
