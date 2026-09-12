@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,7 +87,7 @@ func NewManagerWithOptions(root string, owner brainOwner, options Options) (*Man
 	}
 	pollTimeout := options.PollTimeout
 	if pollTimeout <= 0 {
-		pollTimeout = 30
+		pollTimeout = 2
 	}
 	backoff := options.Backoff
 	if backoff <= 0 {
@@ -104,6 +105,18 @@ func NewManagerWithOptions(root string, owner brainOwner, options Options) (*Man
 		wake: make(chan struct{}, 1), typingInterval: typingInterval, typingDeadline: typingDeadline}
 	if err := manager.initializeDeliveryBoundary(); err != nil {
 		return nil, err
+	}
+	stateSnapshot := state.snapshot()
+	for _, row := range stateSnapshot.Outbox {
+		if row.State == "failed" && row.TopicKey != "" && row.CreatedAt.After(stateSnapshot.DeliveryStartedAt) && invalidTelegramLink(row.Entities) {
+			if err := state.mutate(func(current *durableState) error {
+				delete(current.TopicProjection, row.TopicKey)
+				delete(current.Projection, row.TopicKey)
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return manager, nil
 }
@@ -142,6 +155,8 @@ func (m *Manager) signal() {
 }
 
 func (m *Manager) Configure(ctx context.Context, token string) (Status, error) {
+	m.outboundMu.Lock()
+	defer m.outboundMu.Unlock()
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return m.Status(), fmt.Errorf("Telegram token is required")
@@ -177,12 +192,24 @@ func (m *Manager) Configure(ctx context.Context, token string) (Status, error) {
 			state.FallbackSessionID = ""
 			state.FallbackStartedAt = time.Time{}
 			state.CallbackRoutes = map[string]string{}
+			state.CallbackIDs = map[string]int64{}
+			state.ReplySessions = map[int64]string{}
+			state.SessionChoices = nil
+			state.RetryAt = time.Time{}
+			state.ChallengeSHA256 = ""
+			state.ChallengeExpiresAt = time.Time{}
+			state.BrainTopicID, state.BrainTopics = 0, nil
+			state.BrainReplyTopicID = 0
+		}
+		if !state.Enabled {
+			resetDeliveryBoundary(state, m.now().UTC())
 		}
 		state.Enabled = true
 		state.BotID = bot.ID
 		state.BotName = displayName(bot)
 		state.BotUsername = strings.TrimSpace(bot.Username)
 		state.TopicsAvailable = bot.Topics
+		state.UsersCreateTopics = bot.UserTopics
 		state.WebhookConflict = strings.TrimSpace(webhook.URL) != ""
 		state.LastError = ""
 		if state.WebhookConflict {
@@ -225,6 +252,8 @@ func (m *Manager) BeginBinding() (BindingChallenge, error) {
 }
 
 func (m *Manager) Disable() error {
+	m.outboundMu.Lock()
+	defer m.outboundMu.Unlock()
 	err := m.store.mutate(func(state *durableState) error {
 		state.Enabled = false
 		state.LastError = ""
@@ -238,6 +267,8 @@ func (m *Manager) Disable() error {
 }
 
 func (m *Manager) Enable() error {
+	m.outboundMu.Lock()
+	defer m.outboundMu.Unlock()
 	token, err := m.store.readToken()
 	if err != nil || strings.TrimSpace(token) == "" {
 		return fmt.Errorf("Telegram bot must be configured first")
@@ -245,6 +276,9 @@ func (m *Manager) Enable() error {
 	err = m.store.mutate(func(state *durableState) error {
 		if state.BotID == 0 {
 			return fmt.Errorf("Telegram bot must be configured first")
+		}
+		if !state.Enabled {
+			resetDeliveryBoundary(state, m.now().UTC())
 		}
 		state.Enabled = true
 		state.LastError = ""
@@ -255,6 +289,8 @@ func (m *Manager) Enable() error {
 }
 
 func (m *Manager) RevokeOwner() error {
+	m.outboundMu.Lock()
+	defer m.outboundMu.Unlock()
 	err := m.store.mutate(func(state *durableState) error {
 		state.OwnerID, state.ChatID, state.OwnerHint = 0, 0, ""
 		state.DeliveryStartedAt = time.Time{}
@@ -270,6 +306,12 @@ func (m *Manager) RevokeOwner() error {
 		state.FallbackSessionID = ""
 		state.FallbackStartedAt = time.Time{}
 		state.CallbackRoutes = map[string]string{}
+		state.CallbackIDs = map[string]int64{}
+		state.ReplySessions = map[int64]string{}
+		state.SessionChoices = nil
+		state.RetryAt = time.Time{}
+		state.BrainTopicID, state.BrainTopics = 0, nil
+		state.BrainReplyTopicID = 0
 		return nil
 	})
 	if err == nil {
@@ -280,6 +322,8 @@ func (m *Manager) RevokeOwner() error {
 }
 
 func (m *Manager) Remove() error {
+	m.outboundMu.Lock()
+	defer m.outboundMu.Unlock()
 	m.stopTyping()
 	if err := m.store.removeToken(); err != nil {
 		return err
@@ -297,10 +341,14 @@ func (m *Manager) Remove() error {
 func (m *Manager) Status() Status {
 	state := m.store.snapshot()
 	status := Status{Enabled: state.Enabled, BotName: state.BotName, BotUsername: state.BotUsername,
+		UsersCreateTopics: state.UsersCreateTopics, BrainTopicID: state.BrainTopicID,
 		OwnerHint: state.OwnerHint, TopicsAvailable: state.TopicsAvailable, TopicNotice: state.TopicNotice,
 		RecipientID: state.FallbackSessionID, LastReceiveAt: state.LastReceiveAt,
 		LastSendAt: state.LastSendAt, LastError: state.LastError, WebhookConflict: state.WebhookConflict,
 		BindingPending: state.Enabled && state.OwnerID == 0 && state.ChallengeSHA256 != "" && m.now().Before(state.ChallengeExpiresAt)}
+	if m.brain != nil {
+		status.BrainThreadID, _ = m.brain.ChatThreadID()
+	}
 	if state.FallbackSessionID != "" && m.brain != nil {
 		if projection, err := m.brain.SessionProjection(state.FallbackSessionID); err == nil {
 			status.RecipientLabel = projection.Label
@@ -340,6 +388,7 @@ func (m *Manager) Status() Status {
 }
 
 func (m *Manager) Run(ctx context.Context) error {
+	var refreshedAt time.Time
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -365,31 +414,37 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := m.refreshWebhookState(ctx, token); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+		if m.now().Sub(refreshedAt) >= time.Minute {
+			if err := m.refreshWebhookState(ctx, token); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				m.recordError("Telegram webhook status is temporarily unavailable.")
+				if !m.wait(ctx, m.jitteredBackoff()) {
+					return ctx.Err()
+				}
+				continue
 			}
-			m.recordError("Telegram webhook status is temporarily unavailable.")
-			if !m.wait(ctx, m.jitteredBackoff()) {
-				return ctx.Err()
+			if err := m.refreshTopicCapability(ctx, token); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				m.recordError("Telegram topic capability is temporarily unavailable.")
+				if !m.wait(ctx, m.jitteredBackoff()) {
+					return ctx.Err()
+				}
+				continue
 			}
-			continue
-		}
-		if err := m.refreshTopicCapability(ctx, token); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			m.recordError("Telegram topic capability is temporarily unavailable.")
-			if !m.wait(ctx, m.jitteredBackoff()) {
-				return ctx.Err()
-			}
-			continue
+			refreshedAt = m.now()
 		}
 		state = m.store.snapshot()
 		if state.WebhookConflict {
 			continue
 		}
-		updates, err := m.api.GetUpdates(ctx, token, state.NextOffset, m.pollTimeout, []string{"message"})
+		if state.Enabled && state.OwnerID != 0 {
+			_ = m.ensureBrainTopic()
+		}
+		updates, err := m.api.GetUpdates(ctx, token, state.NextOffset, m.pollTimeout, []string{"message", "callback_query"})
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -404,12 +459,20 @@ func (m *Manager) Run(ctx context.Context) error {
 			}
 			continue
 		}
+		current := m.store.snapshot()
+		if !current.Enabled || current.BotID != state.BotID {
+			continue
+		}
 		for _, update := range updates {
+			if !m.store.snapshot().Enabled {
+				break
+			}
 			if err := m.handleUpdate(ctx, token, update); err != nil {
 				m.recordError("Telegram update could not be processed.")
 			}
 		}
-		if state.OwnerID != 0 {
+		state = m.store.snapshot()
+		if state.Enabled && state.OwnerID != 0 {
 			if err := m.projectTimeline(); err != nil {
 				m.recordError("Brain timeline projection is temporarily unavailable.")
 			}
@@ -444,11 +507,15 @@ func (m *Manager) refreshTopicCapability(ctx context.Context, token string) erro
 	if !available {
 		message = "Threaded mode is unavailable; use /sessions in the private chat to choose a Session."
 	}
-	if current.TopicsAvailable == available && (available || current.TopicNotice == message) {
+	if current.TopicsAvailable == available && current.UsersCreateTopics == bot.UserTopics && current.TopicNotice == message {
 		return nil
 	}
 	return m.store.mutate(func(state *durableState) error {
 		state.TopicsAvailable = available
+		state.UsersCreateTopics = bot.UserTopics
+		if state.LastError == "Telegram topic mode is disabled; enable Threaded mode in @BotFather to create Session topics." {
+			state.LastError = ""
+		}
 		if !available {
 			state.TopicNotice = message
 		} else {
@@ -511,6 +578,9 @@ func (m *Manager) deliverPending(ctx context.Context, token string, limit int) e
 
 func (m *Manager) hasDeliverableOutbox() bool {
 	state := m.store.snapshot()
+	if !state.Enabled || m.now().Before(state.RetryAt) {
+		return false
+	}
 	for _, row := range state.Outbox {
 		if row.State == "pending" &&
 			(row.AttemptAt.IsZero() || !m.now().Before(row.AttemptAt)) {
@@ -559,9 +629,6 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 			m.outboundMu.Lock()
 			_ = m.api.AnswerCallbackQuery(ctx, token, callbackID, "")
 			m.outboundMu.Unlock()
-			if state.Processed["callback:"+callbackID].Disposition != "" {
-				return nil
-			}
 		}
 	}
 	if update.UpdateID < state.NextOffset || state.Processed[key].Disposition != "" {
@@ -570,10 +637,14 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 	disposition := "ignored"
 	message := update.Message
 	if update.CallbackQuery != nil {
-		disposition = m.handleCallback(ctx, token, *update.CallbackQuery, update.UpdateID)
+		if _, duplicate := state.CallbackIDs[update.CallbackQuery.ID]; duplicate {
+			disposition = "callback_duplicate"
+		} else {
+			disposition = m.handleCallback(ctx, token, *update.CallbackQuery, update.UpdateID)
+		}
 	} else if message != nil && message.From != nil && !message.From.IsBot && message.SenderChat == nil && message.Chat.Type == "private" {
 		if state.OwnerID == 0 {
-			if isGeneralThread(message.MessageThreadID) {
+			if isGeneralThread(message.MessageThreadID) || state.UsersCreateTopics {
 				disposition = m.tryBind(*message, state)
 			} else {
 				// Binding is a General-topic contract; a topic-scoped /start can
@@ -581,7 +652,15 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 				disposition = "binding_rejected"
 			}
 		} else if message.From.ID == state.OwnerID && message.Chat.ID == state.ChatID {
-			if isGeneralThread(message.MessageThreadID) {
+			_, sessionTopic := topicMappingByThread(state, message.MessageThreadID)
+			if sessionTopic {
+				disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
+			} else if isGeneralThread(message.MessageThreadID) {
+				disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
+			} else if slices.Contains(state.BrainTopics, message.MessageThreadID) || (state.UsersCreateTopics && message.IsTopicMessage && message.ForumTopicCreated != nil) {
+				if err := m.bindBrainTopic(message.MessageThreadID); err != nil {
+					return err
+				}
 				disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
 			} else {
 				disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
@@ -590,9 +669,25 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 	}
 	now := m.now().UTC()
 	return m.store.mutate(func(current *durableState) error {
-		current.Processed[key] = updateRecord{Disposition: disposition, HandledAt: now}
+		record := updateRecord{Disposition: disposition, HandledAt: now}
+		if message != nil {
+			record.MessageThreadID = message.MessageThreadID
+			if mapping, found := topicMappingByThread(*current, message.MessageThreadID); found {
+				record.SessionID = mapping.SessionID
+			}
+			if record.SessionID == "" && strings.HasPrefix(disposition, "session_") {
+				record.SessionID = current.FallbackSessionID
+				if message.ReplyToMessage != nil && current.ReplySessions[message.ReplyToMessage.MessageID] != "" {
+					record.SessionID = current.ReplySessions[message.ReplyToMessage.MessageID]
+				}
+			}
+			if record.SessionID == "" && m.brain != nil && (disposition == "accepted" || disposition == "pending" || disposition == "uncertain") {
+				record.BrainThreadID, _ = m.brain.ChatThreadID()
+			}
+		}
+		current.Processed[key] = record
 		if update.CallbackQuery != nil && strings.TrimSpace(update.CallbackQuery.ID) != "" {
-			current.Processed["callback:"+strings.TrimSpace(update.CallbackQuery.ID)] = updateRecord{Disposition: disposition, HandledAt: now}
+			current.CallbackIDs[update.CallbackQuery.ID] = update.UpdateID
 		}
 		if update.UpdateID >= current.NextOffset {
 			current.NextOffset = update.UpdateID + 1
@@ -622,7 +717,11 @@ func (m *Manager) tryBind(message Message, state durableState) string {
 		current.DeliveryStartedAt = m.now().UTC()
 		current.ChallengeSHA256 = ""
 		current.ChallengeExpiresAt = time.Time{}
-		enqueue(current, outboxRecord{ID: "binding:connected", Kind: "send", Text: "Zen Brain connected. Use /help for commands.", CreatedAt: m.now().UTC()})
+		if !isGeneralThread(message.MessageThreadID) {
+			current.BrainTopicID = message.MessageThreadID
+			current.BrainTopics = append(current.BrainTopics, message.MessageThreadID)
+		}
+		enqueue(current, outboxRecord{ID: "binding:connected", Kind: "send", MessageThreadID: message.MessageThreadID, Text: "Brain connected.", ReplyMarkup: navigationKeyboard(), CreatedAt: m.now().UTC()})
 		return nil
 	})
 	if err != nil {
@@ -652,6 +751,7 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message 
 		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Started a fresh Brain chat.", message.MessageID)
 		return "command"
 	case "/brain":
+		_ = m.store.mutate(func(s *durableState) error { s.BrainReplyTopicID = 0; return nil })
 		if m.clearFallbackRecipient() {
 			m.enqueueText(fmt.Sprintf("command:%d", updateID), "You are back in Zen Brain. Send a message to continue the current Brain chat.", message.MessageID)
 		} else {
@@ -685,6 +785,11 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message 
 		body = "Replying to: " + reply + "\n\n" + body
 	}
 	state := m.store.snapshot()
+	if message.ReplyToMessage != nil && message.ReplyToMessage.From != nil && message.ReplyToMessage.From.ID == state.BotID {
+		if sessionID := state.ReplySessions[message.ReplyToMessage.MessageID]; sessionID != "" {
+			return m.handleFallbackSessionMessage(ctx, token, sessionID, body, updateID, message.MessageID)
+		}
+	}
 	if !state.TopicsAvailable && state.FallbackSessionID != "" {
 		return m.handleFallbackSessionMessage(ctx, token, state.FallbackSessionID, body, updateID, message.MessageID)
 	}
@@ -711,7 +816,7 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message 
 	}
 }
 
-const ownerHelpText = "Send text to Zen Brain. /new starts a fresh Brain chat. /sessions lists delegated Sessions; /use <number> selects one when Threaded mode is unavailable. /brain returns here."
+const ownerHelpText = "Brain\n/sessions - Sessions\n/brain - Back to Brain\n/new - New Chat\n/status - Current recipient"
 
 func parseCommandArgument(value string) string {
 	fields := strings.Fields(strings.TrimSpace(value))
@@ -731,7 +836,7 @@ func (m *Manager) ownerStatusText() string {
 	if !state.TopicsAvailable {
 		return "Telegram is connected to Zen Brain. Threaded mode is unavailable; use /sessions to choose a Session."
 	}
-	return "Telegram is connected to Zen Brain. General is Brain; delegated Sessions appear as native topics."
+	return "Recipient: Brain. Session conversations are in their own topics."
 }
 
 func sessionStatusLabel(projection brain.SessionProjection) string {
@@ -745,12 +850,8 @@ func sessionStatusLabel(projection brain.SessionProjection) string {
 	return label
 }
 
-func (m *Manager) sessionListText() string {
-	if m.brain == nil {
-		return "Sessions are currently unavailable."
-	}
-	sessions, err := m.brain.DelegatedSessions()
-	if err != nil || len(sessions) == 0 {
+func sessionListText(sessions []brain.WorkerRef, topicMode bool) string {
+	if len(sessions) == 0 {
 		return "No delegated Sessions are available right now."
 	}
 	lines := []string{"Delegated Sessions:"}
@@ -765,8 +866,8 @@ func (m *Manager) sessionListText() string {
 		}
 		lines = append(lines, fmt.Sprintf("%d. %s [%s]", index+1, label, status))
 	}
-	if m.store.snapshot().TopicsAvailable {
-		lines = append(lines, "Open a Session by selecting its native Telegram topic. General is Brain.")
+	if topicMode {
+		lines = append(lines, "Choose a Session topic. /brain returns to Brain.")
 	} else {
 		lines = append(lines, "Open one with /use <number>. Return to Brain with /brain.")
 	}
@@ -776,7 +877,7 @@ func (m *Manager) sessionListText() string {
 func (m *Manager) selectFallbackRecipient(argument string, updateID, replyID int64) {
 	state := m.store.snapshot()
 	if state.TopicsAvailable {
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Threaded mode is enabled. Open the Session's native Telegram topic; General remains Brain.", replyID)
+		m.enqueueSessionList(updateID, replyID)
 		return
 	}
 	if m.brain == nil {
@@ -789,8 +890,13 @@ func (m *Manager) selectFallbackRecipient(argument string, updateID, replyID int
 		return
 	}
 	selected := ""
-	if number, scanErr := strconv.Atoi(argument); scanErr == nil && number >= 1 && number <= len(sessions) {
-		selected = sessions[number-1].ID
+	if number, scanErr := strconv.Atoi(argument); scanErr == nil && number >= 1 && number <= len(state.SessionChoices) {
+		for _, session := range sessions {
+			if session.ID == state.SessionChoices[number-1] {
+				selected = session.ID
+				break
+			}
+		}
 	} else {
 		for _, session := range sessions {
 			if session.ID == argument {
@@ -828,15 +934,35 @@ func (m *Manager) setFallbackRecipient(selected string, updateID, replyID int64,
 }
 
 func (m *Manager) handleCallback(ctx context.Context, token string, query CallbackQuery, updateID int64) string {
-	if query.From == nil || query.From.IsBot || query.Message == nil || query.Message.Chat.Type != "private" {
+	if query.ID == "" || query.From == nil || query.From.IsBot || query.Message == nil || query.Message.Chat.Type != "private" {
 		return "callback_rejected"
 	}
 	state := m.store.snapshot()
-	if query.From.ID != state.OwnerID || query.Message.Chat.ID != state.ChatID {
+	if state.OwnerID == 0 || query.From.ID != state.OwnerID || query.Message.Chat.ID != state.ChatID {
 		return "callback_rejected"
 	}
-	if state.TopicsAvailable {
-		m.enqueueText("callback:"+query.ID, "Threaded mode is enabled. Open the Session's native Telegram topic.", query.Message.MessageID)
+	switch query.Data {
+	case "brain":
+		_ = m.store.mutate(func(s *durableState) error { s.BrainReplyTopicID = 0; return nil })
+		m.clearFallbackRecipient()
+		m.enqueueText("callback:"+query.ID, "Brain", 0)
+		return "callback_brain"
+	case "sessions":
+		m.enqueueSessionList(updateID, 0)
+		return "callback_sessions"
+	case "new":
+		_ = m.store.mutate(func(current *durableState) error {
+			enqueue(current, outboxRecord{ID: "callback:" + query.ID, Kind: "send", Text: "Start a new Brain conversation?", MessageThreadID: brainDestination(*current), ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{{Text: "New Chat", CallbackData: "new_confirm"}, {Text: "Cancel", CallbackData: "brain"}}}}, CreatedAt: m.now().UTC()})
+			return nil
+		})
+		return "callback_confirm"
+	case "new_confirm":
+		if _, sessionTopic := topicMappingByThread(state, query.Message.MessageThreadID); sessionTopic {
+			return "callback_rejected"
+		}
+		return m.handleOwnerMessage(ctx, token, Message{Text: "/new"}, updateID)
+	}
+	if state.TopicsAvailable && !strings.HasPrefix(query.Data, "session:") {
 		return "callback_topic_mode"
 	}
 	const prefix = "session:"
@@ -855,6 +981,16 @@ func (m *Manager) handleCallback(ctx context.Context, token string, query Callba
 	}
 	for _, session := range sessions {
 		if session.ID == sessionID {
+			if state.TopicsAvailable {
+				for _, mapping := range state.Topics {
+					if mapping.SessionID == sessionID && mapping.State != topicStateStale {
+						m.enqueueTopicText("callback:"+query.ID, sessionStatusText(brain.SessionProjection{SessionID: sessionID, Label: session.Name, Status: session.Status}), mapping.MessageThreadID, 0)
+						return "callback_opened"
+					}
+				}
+				_ = m.ensureSessionTopic(session, m.now().UTC())
+				return "callback_topic_pending"
+			}
 			m.setFallbackRecipient(sessionID, updateID, query.Message.MessageID, sessions)
 			return "callback_selected"
 		}
@@ -864,16 +1000,19 @@ func (m *Manager) handleCallback(ctx context.Context, token string, query Callba
 }
 
 func (m *Manager) enqueueSessionList(updateID, replyID int64) {
-	text := m.sessionListText()
 	if m.brain == nil {
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), text, replyID)
+		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Sessions are currently unavailable.", replyID)
 		return
 	}
 	sessions, err := m.brain.DelegatedSessions()
-	if err != nil || len(sessions) == 0 || m.store.snapshot().TopicsAvailable {
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), text, replyID)
+	if err != nil {
+		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Sessions are currently unavailable.", replyID)
 		return
 	}
+	if len(sessions) > maxCallbackRoutes {
+		sessions = sessions[:maxCallbackRoutes]
+	}
+	text := sessionListText(sessions, m.store.snapshot().TopicsAvailable)
 	routes := make(map[string]string, len(sessions))
 	rows := make([][]InlineKeyboardButton, 0, len(sessions))
 	for _, session := range sessions {
@@ -884,16 +1023,21 @@ func (m *Manager) enqueueSessionList(updateID, replyID int64) {
 		routes[key] = session.ID
 		rows = append(rows, []InlineKeyboardButton{{Text: topicLabel(session), CallbackData: "session:" + key}})
 	}
-	if err := m.store.mutate(func(state *durableState) error {
-		state.CallbackRoutes = routes
-		return nil
-	}); err != nil {
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), text, replyID)
-		return
-	}
 	_ = m.store.mutate(func(state *durableState) error {
-		enqueue(state, outboxRecord{ID: fmt.Sprintf("command:%d", updateID), Kind: "send", Text: text,
-			ReplyMessageID: replyID, ReplyMarkup: InlineKeyboardMarkup{InlineKeyboard: rows}, CreatedAt: m.now().UTC()})
+		state.CallbackRoutes = routes
+		state.SessionChoices = nil
+		for _, session := range sessions {
+			state.SessionChoices = append(state.SessionChoices, session.ID)
+		}
+		chunks := chunkRichText(richText{Text: text}, maxMessageText)
+		for i, chunk := range chunks {
+			var keyboard *InlineKeyboardMarkup
+			if i == len(chunks)-1 && len(rows) > 0 {
+				keyboard = &InlineKeyboardMarkup{InlineKeyboard: rows}
+			}
+			enqueue(state, outboxRecord{ID: fmt.Sprintf("command:%d:%d", updateID, i), Kind: "send", Text: chunk.Text,
+				MessageThreadID: brainDestination(*state), ReplyMessageID: replyID, ReplyMarkup: keyboard, CreatedAt: m.now().UTC()})
+		}
 		return nil
 	})
 }
@@ -916,7 +1060,7 @@ func removePendingFallbackRows(state *durableState, sessionID string) {
 	if strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	prefix := "topic:msg:" + sessionID + ":"
+	prefix := "private:msg:" + sessionID + ":"
 	rows := state.Outbox[:0]
 	for _, row := range state.Outbox {
 		if row.State == "pending" && strings.HasPrefix(row.TopicKey, prefix) {
@@ -930,8 +1074,7 @@ func removePendingFallbackRows(state *durableState, sessionID string) {
 func (m *Manager) handleFallbackSessionMessage(ctx context.Context, token, sessionID, body string, updateID, replyID int64) string {
 	projection, err := m.brain.SessionProjection(sessionID)
 	if err != nil || !projection.Present {
-		m.clearFallbackRecipient()
-		m.enqueueText(fmt.Sprintf("fallback:%d", updateID), "That Session is no longer available. You are back in Zen Brain; run /sessions to choose another.", replyID)
+		m.enqueueText(fmt.Sprintf("fallback:%d", updateID), "That Session is unavailable. Choose /brain or /sessions; this message was not forwarded.", replyID)
 		return "fallback_stale"
 	}
 	receipt := fmt.Sprintf("telegram:update:%d:%d", m.store.snapshot().BotID, updateID)
@@ -946,6 +1089,8 @@ func (m *Manager) handleFallbackSessionMessage(ctx context.Context, token, sessi
 	case brain.ExternalInputUncertain:
 		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Zen could not prove whether the selected Session received this message. It was not replayed.", replyID)
 		return "session_uncertain"
+	case brain.ExternalInputPending:
+		return "session_pending"
 	default:
 		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Zen did not submit this message to the selected Session. Send it again when the Session is available.", replyID)
 		return "session_not_submitted"
@@ -962,16 +1107,6 @@ func (m *Manager) projectFallbackSession() error {
 		return err
 	}
 	if !projection.Present {
-		_ = m.store.mutate(func(current *durableState) error {
-			if current.FallbackSessionID == state.FallbackSessionID {
-				current.FallbackSessionID = ""
-				current.FallbackStartedAt = time.Time{}
-				enqueue(current, outboxRecord{ID: "fallback:stale:" + state.FallbackSessionID, Kind: "send",
-					Text:      "The selected Session is no longer available. You are back in Zen Brain; use /sessions to choose another.",
-					CreatedAt: m.now().UTC()})
-			}
-			return nil
-		})
 		return nil
 	}
 	return m.projectSessionOutput(topicMapping{SessionID: projection.SessionID, Label: projection.Label, MessageThreadID: 0, CreatedAt: state.FallbackStartedAt}, projection, m.now().UTC())
@@ -1043,7 +1178,7 @@ func (m *Manager) stopTyping() {
 func (m *Manager) enqueueText(id, text string, reply int64) {
 	_ = m.store.mutate(func(state *durableState) error {
 		for index, chunk := range chunkRichText(richText{Text: strings.TrimSpace(text)}, maxMessageText) {
-			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk.Text, ReplyMessageID: reply, CreatedAt: m.now().UTC()})
+			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk.Text, MessageThreadID: brainDestination(*state), ReplyMessageID: reply, ReplyMarkup: navigationKeyboard(), CreatedAt: m.now().UTC()})
 		}
 		return nil
 	})
@@ -1095,10 +1230,19 @@ func trimProcessedUpdates(state *durableState) {
 			delete(state.Processed, key)
 		}
 	}
+	for id, updateID := range state.CallbackIDs {
+		if updateID < minimum {
+			delete(state.CallbackIDs, id)
+		}
+	}
 }
 
 func (m *Manager) projectTimeline() error {
 	if m.brain == nil {
+		return nil
+	}
+	connection := m.store.snapshot()
+	if connection.UsersCreateTopics && connection.BrainTopicID == 0 {
 		return nil
 	}
 	threadID, err := m.brain.ChatThreadID()
@@ -1124,7 +1268,17 @@ func (m *Manager) projectTimeline() error {
 					if state.Projection[checkpoint] == digest {
 						continue
 					}
-					if enqueue(state, outboxRecord{ID: id, Kind: "send", CanonicalID: item.ID, Text: chunk.Text,
+					candidate := sessionOutputCandidate{Key: checkpoint, CanonicalID: item.ID, Content: chunk, Digest: digest}
+					if coalesceTopicRow(state, candidate, brainDestination(*state), m.now().UTC()) {
+						state.Projection[checkpoint] = digest
+						continue
+					}
+					kind, messageID := "send", state.TopicMessages[checkpoint]
+					if messageID != 0 {
+						kind = "edit"
+						id += ":" + digest
+					}
+					if enqueue(state, outboxRecord{ID: id, Kind: kind, MessageID: messageID, TopicKey: checkpoint, CanonicalID: item.ID, Text: chunk.Text, MessageThreadID: brainDestination(*state),
 						PlainText: chunk.Text, Entities: chunk.Entities, Variant: variantFor(chunk), CreatedAt: m.now().UTC()}) {
 						state.Projection[checkpoint] = digest
 					}
@@ -1149,7 +1303,7 @@ func (m *Manager) projectTimeline() error {
 					kind = "edit"
 				}
 				enqueue(state, outboxRecord{ID: "work:" + item.WorkID + ":" + digest, Kind: kind, CanonicalID: item.ID,
-					WorkID: item.WorkID, MessageID: messageID, Text: formatted.Text, PlainText: formatted.Text,
+					WorkID: item.WorkID, MessageID: messageID, MessageThreadID: brainDestination(*state), Text: formatted.Text, PlainText: formatted.Text,
 					Entities: formatted.Entities, Variant: variantFor(formatted), CreatedAt: m.now().UTC()})
 			}
 		}
@@ -1174,7 +1328,6 @@ func coalescePendingWork(state *durableState, item brain.TimelineItem, content r
 			row.PlainText = content.Text
 			row.Entities = content.Entities
 			row.Variant = variantFor(content)
-			row.AttemptAt = time.Time{}
 			return true
 		case "dispatching", "ambiguous":
 			return true
@@ -1184,7 +1337,17 @@ func coalescePendingWork(state *durableState, item brain.TimelineItem, content r
 }
 
 func (m *Manager) deliverOne(ctx context.Context, token string) error {
+	m.outboundMu.Lock()
+	defer m.outboundMu.Unlock()
 	state := m.store.snapshot()
+	if !state.Enabled || state.ChatID == 0 || m.now().Before(state.RetryAt) {
+		return nil
+	}
+	currentToken, tokenErr := m.store.readToken()
+	if tokenErr != nil || currentToken == "" {
+		return fmt.Errorf("Telegram credential is unavailable")
+	}
+	token = currentToken
 	index := -1
 	for i, row := range state.Outbox {
 		if row.State == "pending" && (row.AttemptAt.IsZero() || !m.now().Before(row.AttemptAt)) {
@@ -1214,13 +1377,11 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 	if row.Variant != formattedVariant {
 		entities = nil
 	}
-	m.outboundMu.Lock()
 	if row.Kind == "edit" {
 		sent, err = m.api.EditMessage(ctx, token, EditRequest{ChatID: state.ChatID, MessageID: row.MessageID, Text: row.Text, Entities: entities})
 	} else {
 		sent, err = m.api.SendMessage(ctx, token, SendRequest{ChatID: state.ChatID, MessageThreadID: row.MessageThreadID, Text: row.Text, Entities: entities, ReplyToMessageID: row.ReplyMessageID, ReplyMarkup: row.ReplyMarkup})
 	}
-	m.outboundMu.Unlock()
 	if err != nil {
 		if row.Variant == formattedVariant && formattingRejected(err) {
 			return m.store.mutate(func(current *durableState) error {
@@ -1241,6 +1402,7 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 				delay = m.backoff
 			}
 			return m.store.mutate(func(current *durableState) error {
+				current.RetryAt = m.now().Add(delay)
 				for i := range current.Outbox {
 					if current.Outbox[i].ID == row.ID {
 						current.Outbox[i].State = "pending"
@@ -1269,6 +1431,18 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 	}
 	now := m.now().UTC()
 	return m.store.mutate(func(current *durableState) error {
+		if row.SessionID != "" {
+			current.ReplySessions[sent.MessageID] = row.SessionID
+		}
+		for len(current.ReplySessions) > maxOutboxRows {
+			var oldest int64
+			for id := range current.ReplySessions {
+				if oldest == 0 || id < oldest {
+					oldest = id
+				}
+			}
+			delete(current.ReplySessions, oldest)
+		}
 		for i := range current.Outbox {
 			if current.Outbox[i].ID != row.ID {
 				continue

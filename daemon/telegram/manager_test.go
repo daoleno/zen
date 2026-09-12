@@ -83,6 +83,9 @@ func (f *fakeBrain) SessionProjection(sessionID string) (brain.SessionProjection
 		return brain.SessionProjection{SessionID: sessionID, Present: true, Label: sessionID}, nil
 	}
 	if projection, ok := f.projections[sessionID]; ok {
+		if !projection.Present {
+			projection.AbsenceConfirmed = true
+		}
 		return projection, nil
 	}
 	return brain.SessionProjection{SessionID: sessionID, Present: true, Label: sessionID}, nil
@@ -862,6 +865,35 @@ func TestWebhookConflictRotationRevokeAndRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "telegram", "token")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("token remains: %v", err)
+	}
+}
+
+func TestEnableStartsFreshDeliveryBoundaryWithoutDroppingDirectOrAmbiguousRows(t *testing.T) {
+	manager, _, _, _ := configuredManager(t)
+	if err := manager.store.mutate(func(state *durableState) error {
+		state.OwnerID, state.ChatID = 10, 10
+		state.DeliveryStartedAt = time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+		state.Outbox = []outboxRecord{
+			{ID: "old-canonical", CanonicalID: "old", State: "pending"},
+			{ID: "direct-reply", Text: "keep", State: "pending"},
+			{ID: "uncertain", CanonicalID: "maybe", State: "ambiguous"},
+		}
+		state.Enabled = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return before.Add(time.Hour) }
+	if err := manager.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.store.snapshot()
+	if !state.DeliveryStartedAt.After(before) || len(state.Outbox) != 2 {
+		t.Fatalf("enable boundary/outbox=%+v before=%v", state, before)
+	}
+	if state.Outbox[0].ID != "direct-reply" || state.Outbox[1].ID != "uncertain" {
+		t.Fatalf("enable removed wrong rows: %+v", state.Outbox)
 	}
 }
 

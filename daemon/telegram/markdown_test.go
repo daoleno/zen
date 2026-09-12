@@ -43,6 +43,25 @@ func TestRenderMarkdownTelegramRichText(t *testing.T) {
 	}
 }
 
+func TestLocalFileLinksRemainReadableWithoutInvalidTelegramEntities(t *testing.T) {
+	rendered := renderMarkdown("[source](/workspace/app.ts:12) and [relative](docs/setup.md), [web](https://example.com/path), [unsafe](javascript:alert(1))")
+	if !strings.Contains(rendered.Text, "source (/workspace/app.ts:12)") || !strings.Contains(rendered.Text, "relative (docs/setup.md)") {
+		t.Fatalf("local paths lost: %q", rendered.Text)
+	}
+	links := 0
+	for _, entity := range rendered.Entities {
+		if entity.Type == "text_link" {
+			links++
+			if entity.URL != "https://example.com/path" {
+				t.Fatalf("invalid link entity: %+v", entity)
+			}
+		}
+	}
+	if links != 1 || strings.Contains(rendered.Text, "javascript:") {
+		t.Fatalf("link rendering=%+v", rendered)
+	}
+}
+
 func TestRenderMarkdownMalformedIsReadable(t *testing.T) {
 	rendered := renderMarkdown("Unclosed **bold and [link](\n\n<broken")
 	if strings.TrimSpace(rendered.Text) == "" || !strings.Contains(rendered.Text, "Unclosed") || !strings.Contains(rendered.Text, "broken") {

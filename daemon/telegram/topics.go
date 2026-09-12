@@ -96,8 +96,8 @@ func (m *Manager) projectSessionTopics(ctx context.Context, token string) error 
 		}
 	}
 
-	// Retirement is authoritative over the current inventory: a mapped Session
-	// that is no longer user-visible is dead/removed and fails closed.
+	// A missing Session fails closed for input; no presentation cleanup may
+	// delete its Telegram history or terminate the local task.
 	// A stale mapping whose exact Session identity is user-visible again is
 	// revived (same durable session id, same surface), so a still-viable
 	// Session always owns an exact reopen path.
@@ -110,17 +110,24 @@ func (m *Manager) projectSessionTopics(ctx context.Context, token string) error 
 			}
 			continue
 		}
-		// Always ensure the deterministic delete operation exists. Schema 2 and
-		// older runtime revisions could persist a stale mapping without a delete
-		// op; skipping it here would leave the remote Topic orphaned forever.
+		projection, err := m.brain.SessionProjection(mapping.SessionID)
+		if err != nil {
+			return err
+		}
+		if !projection.AbsenceConfirmed {
+			continue
+		}
 		if err := m.retireTopicMapping(mapping, now); err != nil {
 			return err
 		}
 	}
 
 	// Projection only for mapped Topics; stale mappings are presentation-dead.
-	for _, mapping := range state.Topics {
+	for _, mapping := range m.store.snapshot().Topics {
 		if mapping.State == topicStateStale {
+			continue
+		}
+		if !state.TopicsAvailable && state.FallbackSessionID == mapping.SessionID {
 			continue
 		}
 		projection, err := m.brain.SessionProjection(mapping.SessionID)
@@ -220,14 +227,27 @@ func (m *Manager) reviveTopicMapping(mapping topicMapping, now time.Time) error 
 	})
 }
 
-// retireTopicMapping fails inbound routing closed and durably queues deletion
-// of the Telegram Topic. A successful delete removes the local mapping. An
-// indeterminate delete retains the stale mapping and is never replayed.
+// Private topics cannot be closed through the Bot API. Keep a tombstone and
+// rename our exact topic; deleteForumTopic would erase the user's history.
 func (m *Manager) retireTopicMapping(mapping topicMapping, now time.Time) error {
 	return m.store.mutate(func(state *durableState) error {
-		opID := fmt.Sprintf("topic:delete:%s:%d", mapping.SessionID, mapping.MessageThreadID)
-		if !enqueueTopicOp(state, topicOpRecord{ID: opID, Kind: topicOpDelete, SessionID: mapping.SessionID,
-			MessageThreadID: mapping.MessageThreadID, CreatedAt: now}) {
+		for i := range state.TopicOps {
+			if state.TopicOps[i].SessionID == mapping.SessionID && state.TopicOps[i].Kind == topicOpDelete && state.TopicOps[i].State == "pending" {
+				state.TopicOps[i].State = "cancelled"
+			}
+		}
+		rows := state.Outbox[:0]
+		for _, row := range state.Outbox {
+			if row.State == "pending" && row.MessageThreadID == mapping.MessageThreadID && row.TopicKey != "" {
+				continue
+			}
+			rows = append(rows, row)
+		}
+		state.Outbox = rows
+		label := topicLabel(brain.WorkerRef{Name: "Closed - " + strings.TrimPrefix(mapping.Label, "Closed - ")})
+		opID := fmt.Sprintf("topic:retire:%s:%d", mapping.SessionID, mapping.MessageThreadID)
+		if !enqueueTopicOp(state, topicOpRecord{ID: opID, Kind: topicOpRename, SessionID: mapping.SessionID,
+			MessageThreadID: mapping.MessageThreadID, Label: label, CreatedAt: now}) {
 			return fmt.Errorf("Telegram topic operation queue is full")
 		}
 		for index := range state.Topics {
@@ -250,12 +270,16 @@ func (m *Manager) retireTopicMapping(mapping topicMapping, now time.Time) error 
 // in-flight or ambiguous row blocks later revisions, matching the Work-card
 // no-replay contract.
 func (m *Manager) projectSessionOutput(mapping topicMapping, projection brain.SessionProjection, now time.Time) error {
+	boundary := m.store.snapshot().DeliveryStartedAt
+	if boundary.After(mapping.CreatedAt) {
+		mapping.CreatedAt = boundary
+	}
 	candidates := make([]sessionOutputCandidate, 0, len(projection.Assistant)*2)
 	for _, item := range projection.Assistant {
 		if strings.TrimSpace(item.ID) == "" {
 			continue
 		}
-		if !mapping.CreatedAt.IsZero() && !item.CreatedAt.IsZero() && !item.CreatedAt.After(mapping.CreatedAt) {
+		if !mapping.CreatedAt.IsZero() && !item.CreatedAt.After(mapping.CreatedAt) {
 			continue
 		}
 		rendered := renderMarkdown(item.Body)
@@ -263,7 +287,11 @@ func (m *Manager) projectSessionOutput(mapping topicMapping, projection brain.Se
 			rendered = renderMarkdown("[" + strings.TrimSpace(mapping.Label) + "]\n\n" + item.Body)
 		}
 		for index, chunk := range chunkRichText(rendered, maxMessageText) {
-			key := fmt.Sprintf("topic:msg:%s:%s:%d", mapping.SessionID, item.ID, index)
+			prefix := "topic:msg:"
+			if mapping.MessageThreadID == 0 {
+				prefix = "private:msg:"
+			}
+			key := fmt.Sprintf("%s%s:%s:%d", prefix, mapping.SessionID, item.ID, index)
 			candidates = append(candidates, sessionOutputCandidate{
 				Key: key, CanonicalID: "session:" + mapping.SessionID + ":" + item.ID,
 				Content: chunk, Digest: digestRichText(chunk),
@@ -291,7 +319,7 @@ func (m *Manager) projectSessionOutput(mapping topicMapping, projection brain.Se
 				rowID = candidate.Key + ":" + candidate.Digest
 			}
 			if enqueue(state, outboxRecord{
-				ID: rowID, Kind: kind, CanonicalID: candidate.CanonicalID, TopicKey: candidate.Key,
+				ID: rowID, Kind: kind, SessionID: mapping.SessionID, CanonicalID: candidate.CanonicalID, TopicKey: candidate.Key,
 				Text: candidate.Content.Text, PlainText: candidate.Content.Text, Entities: candidate.Content.Entities,
 				Variant: variantFor(candidate.Content), MessageThreadID: mapping.MessageThreadID, MessageID: messageID,
 				CreatedAt: now,
@@ -320,19 +348,27 @@ func coalesceTopicRow(state *durableState, candidate sessionOutputCandidate, thr
 			continue
 		}
 		switch row.State {
+		case "failed":
+			if !invalidTelegramLink(row.Entities) || candidate.Digest == state.TopicProjection[candidate.Key] {
+				return true
+			}
+			// A definite API rejection with a now-corrected invalid URL is safe
+			// to retry once under the same row. Unknown deliveries never enter here.
+			row.State = "pending"
+			fallthrough
 		case "pending":
 			row.Text = candidate.Content.Text
 			row.PlainText = candidate.Content.Text
 			row.Entities = candidate.Content.Entities
 			row.Variant = variantFor(candidate.Content)
 			row.MessageThreadID = threadID
-			row.AttemptAt = time.Time{}
 			row.CreatedAt = now
 			if row.Kind == "send" {
 				row.ID = candidate.Key
 			} else {
 				row.ID = candidate.Key + ":" + candidate.Digest
 			}
+			state.TopicProjection[candidate.Key] = candidate.Digest
 			return true
 		case "dispatching", "ambiguous":
 			return true
@@ -376,10 +412,10 @@ func (m *Manager) projectSessionLifecycle(mapping topicMapping, projection brain
 				continue
 			}
 			next := current.State
-			if sessionTurnTerminal(projection.TurnStatus) || sessionWorkTerminal(projection.WorkStatus) {
-				next = topicStateCompleted
-			} else if sessionTurnActive(projection.TurnStatus) {
+			if sessionTurnActive(projection.TurnStatus) {
 				next = topicStateActive
+			} else if sessionTurnTerminal(projection.TurnStatus) || sessionWorkTerminal(projection.WorkStatus) {
+				next = topicStateCompleted
 			}
 			if next != current.State {
 				current.State = next
@@ -441,7 +477,7 @@ func sessionTurnActive(status string) bool {
 }
 
 func staleTopicText(label string) string {
-	return "This Session" + sessionLabelSuffix(label) + " is no longer available. Start a fresh Brain chat in General or use the app."
+	return "This Session" + sessionLabelSuffix(label) + " is no longer available. Open Brain or choose another Session with /sessions. This message was not forwarded."
 }
 
 func revivedTopicText(label string) string {
@@ -485,6 +521,15 @@ func sessionStatusText(projection brain.SessionProjection) string {
 func (m *Manager) enqueueTopicText(id, text string, threadID, reply int64) {
 	_ = m.store.mutate(func(state *durableState) error {
 		enqueueTopicTextLocked(state, id, threadID, text, m.now().UTC())
+		for i := range state.Outbox {
+			if state.Outbox[i].ID == id+":0" {
+				state.Outbox[i].ReplyMessageID = reply
+				state.Outbox[i].ReplyMarkup = navigationKeyboard()
+				if mapping, ok := topicMappingByThread(*state, threadID); ok {
+					state.Outbox[i].SessionID = mapping.SessionID
+				}
+			}
+		}
 		return nil
 	})
 }
@@ -493,8 +538,12 @@ func enqueueTopicTextLocked(state *durableState, id string, threadID int64, text
 	all := true
 	for index, chunk := range chunkRichText(richText{Text: strings.TrimSpace(text)}, maxMessageText) {
 		rowID := fmt.Sprintf("%s:%d", id, index)
+		key := ""
+		if strings.HasPrefix(id, "topic:mark:") || strings.HasPrefix(id, "topic:life:") {
+			key = id
+		}
 		if !enqueue(state, outboxRecord{ID: rowID, Kind: "send", Text: chunk.Text,
-			MessageThreadID: threadID, CreatedAt: now}) {
+			TopicKey: key, MessageThreadID: threadID, CreatedAt: now}) {
 			all = false
 		}
 	}
@@ -506,6 +555,16 @@ func enqueueTopicTextLocked(state *durableState, id string, threadID int64, text
 // reply in the same Topic. It never falls back to Brain or another Session.
 func (m *Manager) handleSessionTopicMessage(ctx context.Context, token string, message Message, updateID int64) string {
 	state := m.store.snapshot()
+	command, _ := parseCommand(message.Text)
+	if command == "/brain" {
+		_ = m.store.mutate(func(s *durableState) error { s.BrainReplyTopicID = 0; return nil })
+		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Brain", 0)
+		return "command"
+	}
+	if command == "/sessions" {
+		m.enqueueSessionList(updateID, 0)
+		return "command"
+	}
 	if m.brain == nil {
 		return "not_submitted"
 	}
@@ -532,7 +591,6 @@ func (m *Manager) handleSessionTopicMessage(ctx context.Context, token string, m
 		m.enqueueTopicText(fmt.Sprintf("topic-ack:%d:stale", updateID), staleTopicText(mapping.Label), message.MessageThreadID, message.MessageID)
 		return "topic_stale"
 	}
-	command, _ := parseCommand(message.Text)
 	switch command {
 	case "/help", "/start":
 		m.enqueueTopicText(fmt.Sprintf("topic-command:%d", updateID), sessionHelpText, message.MessageThreadID, message.MessageID)
@@ -581,9 +639,9 @@ func (m *Manager) handleSessionTopicMessage(ctx context.Context, token string, m
 }
 
 const (
-	unknownTopicText       = "This topic is not mapped to a Zen Session. Send messages to a mapped Session topic or to the General topic for Zen Brain."
-	sessionHelpText        = "Send text to this Session. /status shows its state. Use /new in the General topic to start a fresh Brain chat."
-	sessionNewResponseText = "/new is available in the General topic; it starts a fresh Brain chat and cannot be used from a Session topic."
+	unknownTopicText       = "This topic is not mapped to Zen. Open Brain or choose /sessions. This message was not forwarded."
+	sessionHelpText        = "Session conversation. /status shows its state. /brain returns to Brain; /sessions opens the Session list."
+	sessionNewResponseText = "New Chat belongs to Brain. Open /brain first; this Session was not changed."
 	unsupportedMediaText   = "This connection supports text and captions only. Send the content as text."
 )
 
@@ -729,6 +787,9 @@ func (m *Manager) hasDeliverableTopicOp() bool {
 }
 
 func (m *Manager) deliverableTopicOpIndex(state durableState) int {
+	if !state.Enabled || m.now().Before(state.RetryAt) {
+		return -1
+	}
 	for index, op := range state.TopicOps {
 		if op.State == "pending" && (op.AttemptAt.IsZero() || !m.now().Before(op.AttemptAt)) {
 			return index
@@ -767,12 +828,48 @@ func (m *Manager) deliverTopicOps(ctx context.Context, token string, limit int) 
 // transport-indeterminate outcome becomes durable ambiguous and is never
 // retried automatically.
 func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
+	m.outboundMu.Lock()
+	defer m.outboundMu.Unlock()
 	state := m.store.snapshot()
+	if !state.Enabled || state.ChatID == 0 {
+		return nil
+	}
+	currentToken, tokenErr := m.store.readToken()
+	if tokenErr != nil || currentToken == "" {
+		return fmt.Errorf("Telegram credential is unavailable")
+	}
+	token = currentToken
 	index := m.deliverableTopicOpIndex(state)
 	if index < 0 {
 		return nil
 	}
 	op := state.TopicOps[index]
+	if op.Kind == topicOpCreate && op.SessionID != "" && m.brain != nil {
+		projection, err := m.brain.SessionProjection(op.SessionID)
+		if err != nil {
+			return err
+		}
+		if !projection.Present {
+			return m.store.mutate(func(current *durableState) error {
+				for i := range current.TopicOps {
+					if current.TopicOps[i].ID == op.ID {
+						current.TopicOps[i].State = "cancelled"
+					}
+				}
+				return nil
+			})
+		}
+	}
+	if op.Kind == topicOpDelete || op.Kind == topicOpClose || op.Kind == topicOpReopen {
+		return m.store.mutate(func(current *durableState) error {
+			for i := range current.TopicOps {
+				if current.TopicOps[i].ID == op.ID {
+					current.TopicOps[i].State = "cancelled"
+				}
+			}
+			return nil
+		})
+	}
 	if err := m.store.mutate(func(current *durableState) error {
 		for i := range current.TopicOps {
 			if current.TopicOps[i].ID == op.ID && current.TopicOps[i].State == "pending" {
@@ -786,7 +883,6 @@ func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
 	}
 
 	var err error
-	m.outboundMu.Lock()
 	switch op.Kind {
 	case topicOpCreate:
 		var topic ForumTopic
@@ -824,7 +920,6 @@ func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
 	default:
 		err = fmt.Errorf("unknown topic operation")
 	}
-	m.outboundMu.Unlock()
 	if err == nil {
 		if op.Kind != topicOpCreate {
 			return m.store.mutate(func(current *durableState) error {
@@ -866,6 +961,7 @@ func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
 			delay = m.backoff
 		}
 		return m.store.mutate(func(current *durableState) error {
+			current.RetryAt = m.now().Add(delay)
 			for i := range current.TopicOps {
 				if current.TopicOps[i].ID == op.ID {
 					current.TopicOps[i].State = "pending"
@@ -959,6 +1055,14 @@ func (m *Manager) applyCreateTopicResult(state *durableState, op topicOpRecord, 
 			state.TopicOps[i].State = "sent"
 			state.TopicOps[i].AttemptAt = time.Time{}
 		}
+	}
+	if op.ID == "topic:brain" {
+		if state.BrainTopicID == 0 {
+			state.BrainTopicID = topic.MessageThreadID
+		}
+		state.BrainTopics = append(state.BrainTopics, topic.MessageThreadID)
+		enqueue(state, outboxRecord{ID: "topic:brain:welcome", Kind: "send", MessageThreadID: topic.MessageThreadID, Text: "Brain", ReplyMarkup: navigationKeyboard(), CreatedAt: now})
+		return nil
 	}
 	for index := range state.Topics {
 		if state.Topics[index].SessionID == op.SessionID {

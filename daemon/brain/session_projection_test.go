@@ -209,3 +209,21 @@ func TestSessionProjectionReadsNothingForCustomExecutorWithoutTranscript(t *test
 		t.Fatalf("custom projection=%+v", projection)
 	}
 }
+
+func TestSessionProjectionDoesNotInferAbsenceFromUnreadableInventory(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{probeErr: errors.New("tmux inventory temporarily unavailable")}
+	service := NewService(store, fw, nil)
+	projection, err := service.SessionProjection("missing-from-snapshot")
+	if err != nil || projection.Present || projection.AbsenceConfirmed {
+		t.Fatalf("observation gap became absence: %+v %v", projection, err)
+	}
+	fw.probeErr = nil
+	projection, err = service.SessionProjection("missing-from-snapshot")
+	if err != nil || !projection.AbsenceConfirmed {
+		t.Fatalf("authoritative absence not exposed: %+v %v", projection, err)
+	}
+}

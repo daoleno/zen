@@ -9,6 +9,7 @@ const settingsSource = readFileSync(
   join(import.meta.dir, "../../app/settings.tsx"),
   "utf8",
 );
+const panelSource = readFileSync(join(import.meta.dir,"TelegramConnectionPanel.tsx"),"utf8");
 
 function sourceBlock(start: string, end: string): string {
   const startIndex = settingsSource.indexOf(start);
@@ -24,8 +25,8 @@ describe("Settings connection information architecture", () => {
     const telegram = sourceBlock("function TelegramConnectionRow", "function ConnectionAction");
     expect(telegram).toContain('visible={expanded} onClose={closeDetails} layout="fullscreen"');
     expect(telegram).toContain('accessibilityLabel="Back to Settings"');
-    expect(telegram).toContain("ScrollView contentContainerStyle={styles.telegramExpandedContent}");
-    expect(telegram).toContain('label="Retry"');
+    expect(telegram).toContain("<TelegramConnectionPanel");
+    expect(panelSource).toContain('action("Retry"');
     expect(telegram).toContain("if (!ownerActive.current) return;");
   });
   test("Servers, Channels and Providers have separate entry points", () => {
@@ -67,17 +68,9 @@ describe("Settings connection information architecture", () => {
       "function TelegramConnectionRow",
       "function ConnectionAction",
     );
-    expect(telegram).toContain("On the machine running Zen");
-    expect(telegram).toContain("zen telegram setup");
-    expect(telegram).toContain('label="Open BotFather"');
-
-    const localSetup = sourceBlock(
-      "const renderLocalTelegramSetup",
-      "const stateLabel",
-    );
-    expect(localSetup).not.toContain("secureTextEntry");
-    expect(localSetup).not.toContain("setToken");
-    expect(localSetup).not.toContain("configureTelegramConnection");
+    expect(telegram).toContain("Server offline");
+    expect(telegram).not.toContain("zen telegram setup");
+    expect(panelSource).toContain("Reconnect the current server in Settings.");
     expect(telegram).toContain(
       'const activeServerId = setupMode === "direct" && serverId ? serverId : null',
     );
@@ -120,7 +113,7 @@ describe("Settings connection information architecture", () => {
     expect(settingsSource).toContain("setStatus(null)");
   });
 
-  test("Telegram setup is ordered, action-led, and uses official links", () => {
+  test("Telegram setup uses compact secure input and keeps advanced actions on demand", () => {
     const telegram = sourceBlock(
       "function TelegramConnectionRow",
       "function ConnectionAction",
@@ -129,17 +122,13 @@ describe("Settings connection information architecture", () => {
       'const TELEGRAM_BOTFATHER_URL = "https://t.me/BotFather"',
     );
     expect(telegram).toContain("Linking.openURL(TELEGRAM_BOTFATHER_URL)");
-    expect(telegram).toContain('label="Open BotFather"');
-    expect(telegram).toContain(
-      'accessibilityLabel="Open official BotFather chat in Telegram"',
-    );
-    expect(telegram).toContain("Create or select a bot");
-    expect(telegram).toContain("Verify the bot token");
-    expect(telegram).toContain("Connect your bot");
-    expect(telegram).toContain('label="Connect Telegram"');
-    expect(telegram).toContain('icon="open-outline"');
+    expect(panelSource).toContain('action("BotFather"');
+    expect(panelSource).toContain('"Verify token"');
+    expect(panelSource).toContain('"Connect Telegram"');
+    expect(panelSource).toContain('accessibilityLabel="Advanced"');
+    expect(telegram).not.toContain("telegramStepMarker");
     expect(telegram).not.toContain("Bind Owner");
-    expect(telegram).not.toContain('label="Open Telegram"');
+    expect(panelSource).toContain('action("Open Telegram"');
   });
 
   test("token input is secure, explicitly pasted, and cleared on every exit", () => {
@@ -147,9 +136,9 @@ describe("Settings connection information architecture", () => {
       "function TelegramConnectionRow",
       "function ConnectionAction",
     );
-    expect(telegram).toContain("secureTextEntry");
+    expect(panelSource).toContain("secureTextEntry");
     expect(telegram).toContain("await Clipboard.getStringAsync()");
-    expect(telegram).toContain(
+    expect(panelSource).toContain(
       'accessibilityLabel="Paste Telegram bot token from clipboard"',
     );
     expect(telegram).toContain('setToken("")');
@@ -192,10 +181,8 @@ describe("Settings connection information architecture", () => {
     expect(settingsSource).toContain(
       "accessibilityState={{ disabled, busy: disabled }}",
     );
-    expect(settingsSource).toContain('accessibilityLabel="Telegram bot token"');
-    expect(settingsSource).toContain(
-      'accessibilityLabel="Connect Telegram using the one-time binding link"',
-    );
+    expect(panelSource).toContain('accessibilityLabel="Telegram bot token"');
+    expect(panelSource).toContain('accessibilityState={{ disabled: unavailable, busy }}');
   });
 
   test("Telegram keeps its backend operations and separates destructive actions", () => {

@@ -264,6 +264,12 @@ export interface TelegramConnectionStatus {
   topic_mappings?: number;
   recipient_id?: string;
   recipient_label?: string;
+  brain_thread_id?: string;
+  brain_topic_id?: number;
+  users_create_topics?: boolean;
+  topic_ambiguous_ops_count?: number;
+  topic_failed_ops_count?: number;
+  topic_failed_messages_count?: number;
   last_receive_at?: string;
   last_send_at?: string;
   last_error?: string;

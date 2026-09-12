@@ -70,6 +70,9 @@ type controlApp struct {
 type telegramControlManager interface {
 	Configure(context.Context, string) (telegramchannel.Status, error)
 	BeginBinding() (telegramchannel.BindingChallenge, error)
+	Enable() error
+	Disable() error
+	Status() telegramchannel.Status
 }
 
 const delegatedInitialReadinessBudget = 45 * time.Second
@@ -152,6 +155,27 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handlePair()
 	case "telegram_setup":
 		return a.handleTelegramSetup(req)
+	case "telegram_status":
+		if a == nil || a.telegram == nil {
+			return control.ErrorResponse("telegram_unavailable", "Telegram is not configured.")
+		}
+		status := a.telegram.Status()
+		return control.Response{OK: true, TelegramStatus: &status}
+	case "telegram_enable", "telegram_disable":
+		if a == nil || a.telegram == nil {
+			return control.ErrorResponse("telegram_unavailable", "Telegram is not configured.")
+		}
+		var err error
+		if req.Type == "telegram_enable" {
+			err = a.telegram.Enable()
+		} else {
+			err = a.telegram.Disable()
+		}
+		if err != nil {
+			return control.ErrorResponse("telegram_mutation_failed", "Telegram connection could not be updated.")
+		}
+		status := a.telegram.Status()
+		return control.Response{OK: true, TelegramStatus: &status}
 	case "provider_list":
 		return a.handleProviderList()
 	case "provider_upsert":

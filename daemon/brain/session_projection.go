@@ -27,18 +27,19 @@ type SessionAssistantItem struct {
 // mirrors the canonical Turn ledger and the owning Work; `Present` reports
 // whether the watcher currently sees the Session.
 type SessionProjection struct {
-	SessionID   string                 `json:"session_id"`
-	Present     bool                   `json:"present"`
-	Label       string                 `json:"label,omitempty"`
-	Status      string                 `json:"status,omitempty"`
-	TurnID      string                 `json:"turn_id,omitempty"`
-	TurnStatus  string                 `json:"turn_status,omitempty"`
-	TurnSummary string                 `json:"turn_summary,omitempty"`
-	WorkID      string                 `json:"work_id,omitempty"`
-	WorkStatus  string                 `json:"work_status,omitempty"`
-	WorkTitle   string                 `json:"work_title,omitempty"`
-	ThreadID    string                 `json:"thread_id,omitempty"`
-	Assistant   []SessionAssistantItem `json:"assistant,omitempty"`
+	SessionID        string                 `json:"session_id"`
+	Present          bool                   `json:"present"`
+	AbsenceConfirmed bool                   `json:"absence_confirmed,omitempty"`
+	Label            string                 `json:"label,omitempty"`
+	Status           string                 `json:"status,omitempty"`
+	TurnID           string                 `json:"turn_id,omitempty"`
+	TurnStatus       string                 `json:"turn_status,omitempty"`
+	TurnSummary      string                 `json:"turn_summary,omitempty"`
+	WorkID           string                 `json:"work_id,omitempty"`
+	WorkStatus       string                 `json:"work_status,omitempty"`
+	WorkTitle        string                 `json:"work_title,omitempty"`
+	ThreadID         string                 `json:"thread_id,omitempty"`
+	Assistant        []SessionAssistantItem `json:"assistant,omitempty"`
 }
 
 // DelegatedSessions returns the current user-visible delegated Sessions in
@@ -170,6 +171,8 @@ func (s *Service) SessionProjection(sessionID string) (SessionProjection, error)
 		}
 		projection.Assistant = s.sessionAssistantItems(worker, s.nowUTC())
 	} else {
+		gone, probeErr := s.watcher.ResolveDelegatedAbsence(projection.SessionID)
+		projection.AbsenceConfirmed = probeErr == nil && gone
 		// The Session is absent/not visible: retain Turn/Work so an adapter can
 		// mark completion/staleness without having to guess.
 		if turn, hasTurn, turnErr := s.store.Turn(projection.SessionID); turnErr == nil && hasTurn {

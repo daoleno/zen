@@ -84,12 +84,12 @@ type WebhookInfo struct {
 }
 
 type SendRequest struct {
-	ChatID           int64           `json:"chat_id"`
-	MessageThreadID  int64           `json:"message_thread_id,omitempty"`
-	Text             string          `json:"text"`
-	Entities         []MessageEntity `json:"entities,omitempty"`
-	ReplyToMessageID int64           `json:"-"`
-	ReplyMarkup      any             `json:"reply_markup,omitempty"`
+	ChatID           int64                 `json:"chat_id"`
+	MessageThreadID  int64                 `json:"message_thread_id,omitempty"`
+	Text             string                `json:"text"`
+	Entities         []MessageEntity       `json:"entities,omitempty"`
+	ReplyToMessageID int64                 `json:"-"`
+	ReplyMarkup      *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
 
 type InlineKeyboardButton struct {
@@ -185,6 +185,9 @@ type Status struct {
 	OwnerHint           string          `json:"owner_hint,omitempty"`
 	BindingPending      bool            `json:"binding_pending"`
 	TopicsAvailable     bool            `json:"topics_available,omitempty"`
+	UsersCreateTopics   bool            `json:"users_create_topics,omitempty"`
+	BrainTopicID        int64           `json:"brain_topic_id,omitempty"`
+	BrainThreadID       string          `json:"brain_thread_id,omitempty"`
 	TopicNotice         string          `json:"topic_notice,omitempty"`
 	TopicMappings       int             `json:"topic_mappings,omitempty"`
 	RecipientID         string          `json:"recipient_id,omitempty"`

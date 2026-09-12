@@ -188,6 +188,12 @@ type fakeTelegramControlManager struct {
 	binding        telegramchannel.BindingChallenge
 }
 
+func (m *fakeTelegramControlManager) Enable() error  { return nil }
+func (m *fakeTelegramControlManager) Disable() error { return nil }
+func (m *fakeTelegramControlManager) Status() telegramchannel.Status {
+	return telegramchannel.Status{State: telegramchannel.StateConnected, Enabled: true}
+}
+
 func (m *fakeTelegramControlManager) Configure(_ context.Context, token string) (telegramchannel.Status, error) {
 	m.configureToken = token
 	return telegramchannel.Status{State: telegramchannel.StateSetupPending, Enabled: true, BotUsername: "fixture_bot"}, m.configureErr
@@ -236,5 +242,23 @@ func TestTelegramCLIHelpAndStatusContainNoCredentialExamples(t *testing.T) {
 	raw, _ := json.Marshal(status)
 	if bytes.Contains(raw, []byte("token")) || bytes.Contains(raw, []byte(telegramCLITestSecret)) {
 		t.Fatalf("status exposes credential material: %s", raw)
+	}
+}
+
+func TestTelegramRecoveryCommandsUseExistingManagerWithoutTokenOrRebind(t *testing.T) {
+	for _, command := range []string{"status", "enable", "disable"} {
+		t.Run(command, func(t *testing.T) {
+			var out bytes.Buffer
+			err := runTelegramCommandWithDeps([]string{command, "--json"}, &out, &out, func(io.Writer) (string, error) { t.Fatal("recovery requested token"); return "", nil }, func(_ cliConfig, request control.Request) (control.Response, error) {
+				if request.Type != "telegram_"+command || request.Credential != "" {
+					t.Fatalf("request=%+v", request)
+				}
+				status := telegramchannel.Status{State: telegramchannel.StateConnected, Enabled: true, OwnerHint: "@owner"}
+				return control.Response{OK: true, TelegramStatus: &status}, nil
+			})
+			if err != nil || !strings.Contains(out.String(), "owner") {
+				t.Fatalf("recovery output=%s err=%v", out.String(), err)
+			}
+		})
 	}
 }

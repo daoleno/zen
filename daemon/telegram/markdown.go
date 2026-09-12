@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	stdhtml "html"
+	"net/url"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -78,14 +79,21 @@ func (b *richTextBuilder) render(node ast.Node) {
 	case *ast.CodeSpan:
 		b.withEntity(MessageEntity{Type: "code"}, func() { b.renderChildren(n) })
 	case *ast.Link:
-		if goldmarkhtml.IsDangerousURL(n.Destination) {
+		if !telegramLink(string(n.Destination)) {
 			b.renderChildren(n)
+			if !goldmarkhtml.IsDangerousURL(n.Destination) {
+				b.write(" (" + string(n.Destination) + ")")
+			}
 		} else {
 			b.withEntity(MessageEntity{Type: "text_link", URL: string(n.Destination)}, func() { b.renderChildren(n) })
 		}
 	case *ast.AutoLink:
 		value := string(n.URL(b.source))
-		b.withEntity(MessageEntity{Type: "text_link", URL: value}, func() { b.write(string(n.Label(b.source))) })
+		if telegramLink(value) {
+			b.withEntity(MessageEntity{Type: "text_link", URL: value}, func() { b.write(string(n.Label(b.source))) })
+		} else {
+			b.write(string(n.Label(b.source)))
+		}
 	case *ast.RawHTML:
 		b.write(stdhtml.UnescapeString(string(n.Segments.Value(b.source))))
 	case *ast.HTMLBlock:
@@ -156,6 +164,32 @@ func (b *richTextBuilder) render(node ast.Node) {
 	default:
 		b.renderChildren(node)
 	}
+}
+
+func telegramLink(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return parsed.Hostname() != ""
+	case "mailto":
+		return parsed.Opaque != ""
+	case "tg":
+		return parsed.Host != ""
+	default:
+		return false
+	}
+}
+
+func invalidTelegramLink(entities []MessageEntity) bool {
+	for _, entity := range entities {
+		if entity.Type == "text_link" && !telegramLink(entity.URL) {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *richTextBuilder) renderCodeBlock(value []byte, language string) {

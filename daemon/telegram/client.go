@@ -200,6 +200,8 @@ func formattingRejected(err error) bool {
 		"entity bounds",
 		"entity length",
 		"entities are too long",
+		"wrong http url",
+		"unsupported url protocol",
 	} {
 		if strings.Contains(description, phrase) {
 			return true

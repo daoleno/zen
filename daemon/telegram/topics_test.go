@@ -117,9 +117,9 @@ func TestTwoMappedSessionsRemainIsolatedBothDirections(t *testing.T) {
 	// Output projection: each session's assistant text goes only to its own topic.
 	owner.mu.Lock()
 	owner.projections["sess-a"] = brain.SessionProjection{SessionID: "sess-a", Present: true, Label: "Session A", Status: "running", TurnStatus: "running",
-		Assistant: []brain.SessionAssistantItem{{ID: "e-a1", Body: "answer for A", Partial: false}}}
+		Assistant: []brain.SessionAssistantItem{{ID: "e-a1", Body: "answer for A", CreatedAt: manager.now().Add(time.Second), Partial: false}}}
 	owner.projections["sess-b"] = brain.SessionProjection{SessionID: "sess-b", Present: true, Label: "Session B", Status: "running", TurnStatus: "running",
-		Assistant: []brain.SessionAssistantItem{{ID: "e-b1", Body: "answer for B", Partial: false}}}
+		Assistant: []brain.SessionAssistantItem{{ID: "e-b1", Body: "answer for B", CreatedAt: manager.now().Add(time.Second), Partial: false}}}
 	owner.mu.Unlock()
 	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
 		t.Fatal(err)
@@ -503,60 +503,35 @@ func TestTopicLabelMatchesSessionListTitle(t *testing.T) {
 	}
 }
 
-func TestTopicCloseReopenDeleteOperationMachine(t *testing.T) {
-	root := t.TempDir()
-	owner := &fakeBrain{threadID: "thread-1"}
-	api := &fakeAPI{bot: User{ID: 7001, IsBot: true, Username: "zen_test_bot", Topics: true}}
-	manager := newTestManager(t, root, owner, api)
-	if _, err := manager.Configure(context.Background(), "token"); err != nil {
-		t.Fatal(err)
-	}
-	bindOwner(t, manager, 1, 10, 10)
+func TestPrivateTopicLegacyDestructiveOperationsAreCancelled(t *testing.T) {
+	manager, _, api, _ := topicFixture(t)
+	createTopicFor(t, manager)
+	thread := topicThreadFor(t, manager, "sess-a")
 	if err := manager.store.mutate(func(state *durableState) error {
-		state.Topics = []topicMapping{{SessionID: "sess-a", ThreadID: "thread-1", ChatID: 10,
-			MessageThreadID: 42, Label: "Session A", State: topicStateActive, CreatedAt: manager.now(), UpdatedAt: manager.now()}}
-		enqueueTopicOp(state, topicOpRecord{ID: "op:close", Kind: topicOpClose, SessionID: "sess-a", MessageThreadID: 42, CreatedAt: manager.now()})
-		enqueueTopicOp(state, topicOpRecord{ID: "op:reopen", Kind: topicOpReopen, SessionID: "sess-a", MessageThreadID: 42, CreatedAt: manager.now()})
-		enqueueTopicOp(state, topicOpRecord{ID: "op:delete", Kind: topicOpDelete, SessionID: "sess-a", MessageThreadID: 42, CreatedAt: manager.now()})
+		for _, kind := range []string{topicOpClose, topicOpReopen, topicOpDelete} {
+			enqueueTopicOp(state, topicOpRecord{ID: "legacy:" + kind, Kind: kind, SessionID: "sess-a", MessageThreadID: thread})
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
-		t.Fatal(err)
-	}
-	if len(api.closingTopics) != 1 || len(api.reopenedTopics) != 1 || len(api.deletedTopics) != 1 {
-		t.Fatalf("topic ops not delivered: %+v %+v %+v", api.closingTopics, api.reopenedTopics, api.deletedTopics)
-	}
-	state := manager.store.snapshot()
-	for _, op := range state.TopicOps {
-		if op.State != "sent" {
-			t.Fatalf("op not sent: %+v", op)
+	for manager.hasDeliverableTopicOp() {
+		if err := manager.deliverTopicOpOne(t.Context(), "token"); err != nil {
+			t.Fatal(err)
 		}
 	}
-	// A transport-indeterminate close becomes ambiguous.
-	api.topicOpErrs = map[string]error{"close": errors.New("connection closed after request write")}
-	if err := manager.store.mutate(func(state *durableState) error {
-		enqueueTopicOp(state, topicOpRecord{ID: "op:close2", Kind: topicOpClose, SessionID: "sess-a", MessageThreadID: 42, CreatedAt: manager.now()})
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	if len(api.closingTopics)+len(api.reopenedTopics)+len(api.deletedTopics) != 0 {
+		t.Fatal("private chat used destructive or unsupported APIs")
 	}
-	if err := manager.deliverTopicOpOne(context.Background(), "token"); err == nil {
-		t.Fatal("ambiguous close succeeded")
-	}
-	state = manager.store.snapshot()
-	found := false
-	for _, op := range state.TopicOps {
-		if op.ID == "op:close2" && op.State == "ambiguous" {
-			found = true
+	for _, op := range manager.store.snapshot().TopicOps {
+		if strings.HasPrefix(op.ID, "legacy:") && op.State != "cancelled" {
+			t.Fatalf("legacy op=%+v", op)
 		}
 	}
-	if !found {
-		t.Fatalf("ambiguous close not recorded: %+v", state.TopicOps)
+	if got := topicThreadFor(t, manager, "sess-a"); got != thread {
+		t.Fatal("topic identity lost")
 	}
 }
-
 func TestDisabledAndRevokedConnectionStopsTopicDeliveryAndInput(t *testing.T) {
 	manager, _, api, _ := topicFixture(t)
 	createTopicFor(t, manager)
@@ -757,7 +732,7 @@ func TestSessionTopicStaleMappingSurvivesRestartAndFailsClosed(t *testing.T) {
 	}
 }
 
-func TestReapedSessionDeletesTopicAndLocalProjectionState(t *testing.T) {
+func TestReapedSessionPreservesHistoryAndTombstonesExactTopic(t *testing.T) {
 	manager, owner, api, _ := topicFixture(t)
 	createTopicFor(t, manager)
 	threadID := manager.store.snapshot().Topics[0].MessageThreadID
@@ -786,24 +761,24 @@ func TestReapedSessionDeletesTopicAndLocalProjectionState(t *testing.T) {
 	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.deletedTopics) != 1 || api.deletedTopics[0].MessageThreadID != threadID {
+	if len(api.deletedTopics) != 0 || len(api.editedTopics) != 1 || api.editedTopics[0].MessageThreadID != threadID {
 		t.Fatalf("delete operations=%+v", api.deletedTopics)
 	}
 	state = manager.store.snapshot()
-	if len(state.Topics) != 0 || len(state.TopicOps) != 0 {
-		t.Fatalf("deleted topic retained routing state: topics=%+v ops=%+v", state.Topics, state.TopicOps)
+	if len(state.Topics) != 1 || state.Topics[0].State != topicStateStale || state.Topics[0].SessionID != "sess-a" {
+		t.Fatalf("topic lost its exact tombstone: topics=%+v", state.Topics)
 	}
 	for _, row := range state.Outbox {
 		if row.MessageThreadID == threadID {
 			t.Fatalf("deleted topic retained outbox row: %+v", row)
 		}
 	}
-	if len(state.TopicProjection) != 0 || len(state.TopicMessages) != 0 {
-		t.Fatalf("deleted topic retained checkpoints: projection=%+v messages=%+v", state.TopicProjection, state.TopicMessages)
+	if len(state.TopicProjection) != 2 || state.TopicMessages["topic:msg:sess-a:event-1:0"] != 99 {
+		t.Fatalf("topic history checkpoints lost: projection=%+v messages=%+v", state.TopicProjection, state.TopicMessages)
 	}
 }
 
-func TestHistoricalStaleMappingWithoutDeleteOpIsReconciled(t *testing.T) {
+func TestHistoricalStaleMappingGetsNonDestructiveRetirement(t *testing.T) {
 	manager, owner, api, _ := topicFixture(t)
 	createTopicFor(t, manager)
 	threadID := manager.store.snapshot().Topics[0].MessageThreadID
@@ -829,7 +804,7 @@ func TestHistoricalStaleMappingWithoutDeleteOpIsReconciled(t *testing.T) {
 	state := manager.store.snapshot()
 	foundDelete := false
 	for _, op := range state.TopicOps {
-		if op.Kind == topicOpDelete && op.SessionID == "sess-a" && op.MessageThreadID == threadID && op.State == "pending" {
+		if op.Kind == topicOpRename && op.SessionID == "sess-a" && op.MessageThreadID == threadID && op.State == "pending" {
 			foundDelete = true
 		}
 	}
@@ -839,11 +814,11 @@ func TestHistoricalStaleMappingWithoutDeleteOpIsReconciled(t *testing.T) {
 	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.deletedTopics) != 1 || api.deletedTopics[0].MessageThreadID != threadID {
+	if len(api.deletedTopics) != 0 || len(api.editedTopics) != 1 || api.editedTopics[0].MessageThreadID != threadID {
 		t.Fatalf("delete operations=%+v", api.deletedTopics)
 	}
-	if state := manager.store.snapshot(); len(state.Topics) != 0 {
-		t.Fatalf("deleted historical mapping remained local: %+v", state.Topics)
+	if state := manager.store.snapshot(); len(state.Topics) != 1 || state.Topics[0].State != topicStateStale {
+		t.Fatalf("historical topic tombstone lost: %+v", state.Topics)
 	}
 }
 
@@ -871,7 +846,7 @@ func TestTopicMappingLimitDegradesWithoutAbortingProjection(t *testing.T) {
 	owner.sessionWork["sess-over"] = brain.Work{ID: "work-over", SourceThreadID: "thread-1"}
 	owner.projections["sess-over"] = brain.SessionProjection{SessionID: "sess-over", Present: true, Label: "Over", Status: "running"}
 	owner.projections["sess-a"] = brain.SessionProjection{SessionID: "sess-a", Present: true, Label: "Session A", Status: "running",
-		TurnStatus: "running", Assistant: []brain.SessionAssistantItem{{ID: "e-x", Body: "still projected"}}}
+		TurnStatus: "running", Assistant: []brain.SessionAssistantItem{{ID: "e-x", Body: "still projected", CreatedAt: manager.now().Add(time.Second)}}}
 	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
 		t.Fatal(err)
 	}
@@ -940,9 +915,9 @@ func TestSessionTopicCommandsAreRouteLocal(t *testing.T) {
 		switch {
 		case strings.Contains(sent.Text, "Turn: running") && strings.Contains(sent.Text, "Work: running"):
 			statusSent = true
-		case strings.Contains(sent.Text, "Send text to this Session"):
+		case strings.Contains(sent.Text, "Session conversation."):
 			helpSent = true
-		case strings.Contains(sent.Text, "General topic"):
+		case strings.Contains(sent.Text, "New Chat belongs to Brain"):
 			newSent = true
 		}
 	}
@@ -1092,7 +1067,7 @@ func TestPrivateChatFallbackRecipientKeepsBrainAndSessionRoutesSeparate(t *testi
 	}
 }
 
-func TestPrivateChatFallbackSelectionClearsWhenSessionDisappears(t *testing.T) {
+func TestPrivateChatFallbackSelectionFailsClosedWhenSessionDisappears(t *testing.T) {
 	manager, owner, _, _ := configuredManager(t)
 	bindOwner(t, manager, 1, 10, 10)
 	if err := manager.store.mutate(func(state *durableState) error {
@@ -1108,8 +1083,8 @@ func TestPrivateChatFallbackSelectionClearsWhenSessionDisappears(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := manager.store.snapshot()
-	if state.FallbackSessionID != "" || len(state.Outbox) == 0 {
-		t.Fatalf("stale fallback not cleared: %+v", state)
+	if state.FallbackSessionID != "gone" {
+		t.Fatalf("stale fallback silently changed recipient: %+v", state)
 	}
 }
 

@@ -32,10 +32,24 @@ func runTelegramCommandWithDeps(
 	call telegramControlCaller,
 ) error {
 	if len(args) == 0 || isHelpArg(args[0]) {
-		fmt.Fprintln(stderr, "Usage: zen telegram setup [flags]")
+		fmt.Fprintln(stderr, "Usage: zen telegram <setup|status|enable|disable> [flags]")
 		fmt.Fprintln(stderr, "")
 		fmt.Fprintln(stderr, "Configures the running local Zen daemon and returns a one-time owner-binding URL.")
 		return flag.ErrHelp
+	}
+	if args[0] == "status" || args[0] == "enable" || args[0] == "disable" {
+		cfg, err := parseCLIConfig("zen telegram "+args[0], args[1:], stderr)
+		if err != nil {
+			return err
+		}
+		if call == nil {
+			return fmt.Errorf("Telegram control is unavailable")
+		}
+		response, err := call(cfg, control.Request{Type: "telegram_" + args[0]})
+		if err != nil {
+			return err
+		}
+		return writeControlResponse(stdout, response, cfg.json)
 	}
 	if args[0] != "setup" {
 		return fmt.Errorf("unknown telegram command: %s", args[0])

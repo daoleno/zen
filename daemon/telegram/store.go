@@ -38,27 +38,31 @@ const (
 )
 
 type updateRecord struct {
-	Disposition string    `json:"disposition"`
-	HandledAt   time.Time `json:"handled_at"`
+	Disposition     string    `json:"disposition"`
+	HandledAt       time.Time `json:"handled_at"`
+	SessionID       string    `json:"session_id,omitempty"`
+	BrainThreadID   string    `json:"brain_thread_id,omitempty"`
+	MessageThreadID int64     `json:"message_thread_id,omitempty"`
 }
 
 type outboxRecord struct {
-	ID              string          `json:"id"`
-	Kind            string          `json:"kind"`
-	CanonicalID     string          `json:"canonical_id,omitempty"`
-	WorkID          string          `json:"work_id,omitempty"`
-	TopicKey        string          `json:"topic_key,omitempty"`
-	Text            string          `json:"text"`
-	PlainText       string          `json:"plain_text,omitempty"`
-	Entities        []MessageEntity `json:"entities,omitempty"`
-	Variant         string          `json:"variant,omitempty"`
-	ReplyMessageID  int64           `json:"reply_message_id,omitempty"`
-	ReplyMarkup     any             `json:"reply_markup,omitempty"`
-	MessageThreadID int64           `json:"message_thread_id,omitempty"`
-	MessageID       int64           `json:"message_id,omitempty"`
-	State           string          `json:"state"`
-	AttemptAt       time.Time       `json:"attempt_at,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
+	ID              string                `json:"id"`
+	Kind            string                `json:"kind"`
+	CanonicalID     string                `json:"canonical_id,omitempty"`
+	WorkID          string                `json:"work_id,omitempty"`
+	SessionID       string                `json:"session_id,omitempty"`
+	TopicKey        string                `json:"topic_key,omitempty"`
+	Text            string                `json:"text"`
+	PlainText       string                `json:"plain_text,omitempty"`
+	Entities        []MessageEntity       `json:"entities,omitempty"`
+	Variant         string                `json:"variant,omitempty"`
+	ReplyMessageID  int64                 `json:"reply_message_id,omitempty"`
+	ReplyMarkup     *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	MessageThreadID int64                 `json:"message_thread_id,omitempty"`
+	MessageID       int64                 `json:"message_id,omitempty"`
+	State           string                `json:"state"`
+	AttemptAt       time.Time             `json:"attempt_at,omitempty"`
+	CreatedAt       time.Time             `json:"created_at"`
 }
 
 type topicMapping struct {
@@ -94,6 +98,10 @@ type durableState struct {
 	BotName            string                  `json:"bot_name,omitempty"`
 	BotUsername        string                  `json:"bot_username,omitempty"`
 	TopicsAvailable    bool                    `json:"topics_available,omitempty"`
+	UsersCreateTopics  bool                    `json:"users_create_topics,omitempty"`
+	BrainTopicID       int64                   `json:"brain_topic_id,omitempty"`
+	BrainReplyTopicID  int64                   `json:"brain_reply_topic_id,omitempty"`
+	BrainTopics        []int64                 `json:"brain_topics,omitempty"`
 	OwnerID            int64                   `json:"owner_id,omitempty"`
 	OwnerHint          string                  `json:"owner_hint,omitempty"`
 	ChatID             int64                   `json:"chat_id,omitempty"`
@@ -112,6 +120,10 @@ type durableState struct {
 	FallbackStartedAt  time.Time               `json:"fallback_started_at,omitempty"`
 	TopicNotice        string                  `json:"topic_notice,omitempty"`
 	CallbackRoutes     map[string]string       `json:"callback_routes,omitempty"`
+	SessionChoices     []string                `json:"session_choices,omitempty"`
+	CallbackIDs        map[string]int64        `json:"callback_ids,omitempty"`
+	ReplySessions      map[int64]string        `json:"reply_sessions,omitempty"`
+	RetryAt            time.Time               `json:"retry_at,omitempty"`
 	DeliveryStartedAt  time.Time               `json:"delivery_started_at,omitempty"`
 	LastReceiveAt      *time.Time              `json:"last_receive_at,omitempty"`
 	LastSendAt         *time.Time              `json:"last_send_at,omitempty"`
@@ -210,11 +222,28 @@ func (s *store) snapshot() durableState {
 func (s *store) mutate(fn func(*durableState) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := fn(&s.state); err != nil {
+	raw, err := json.Marshal(s.state)
+	if err != nil {
 		return err
 	}
-	s.ensureMapsLocked()
-	return s.saveLocked()
+	var next durableState
+	if err := json.Unmarshal(raw, &next); err != nil {
+		return err
+	}
+	ensureDurableMaps(&next)
+	if err := fn(&next); err != nil {
+		return err
+	}
+	ensureDurableMaps(&next)
+	data, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := atomicPrivateWrite(s.statePath, append(data, '\n')); err != nil {
+		return err
+	}
+	s.state = next
+	return nil
 }
 
 func ensureDurableMaps(state *durableState) {
@@ -235,6 +264,12 @@ func ensureDurableMaps(state *durableState) {
 	}
 	if state.CallbackRoutes == nil {
 		state.CallbackRoutes = map[string]string{}
+	}
+	if state.CallbackIDs == nil {
+		state.CallbackIDs = map[string]int64{}
+	}
+	if state.ReplySessions == nil {
+		state.ReplySessions = map[int64]string{}
 	}
 }
 
