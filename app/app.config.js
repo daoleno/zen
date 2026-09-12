@@ -67,6 +67,8 @@ module.exports = () => {
       ],
       // Package Ghostty MIT notice into Android assets + env-based release signing.
       "./plugins/withZenAndroidRelease",
+      // Resolve duplicate BouncyCastle metadata in the Android resource merge.
+      "./plugins/withZenAndroidPackaging",
     ],
     extra,
   };
