@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "features": [
+    {
+      "id": "brain-work-routing",
+      "runtime_check": "brain_context",
+      "source_paths": ["daemon/brain/service.go", "daemon/brain/playbooks.go", "daemon/cmd/zen/main.go"],
+      "test_paths": ["daemon/brain/service_test.go", "daemon/brain/playbooks_test.go", "daemon/cmd/zen/control_app_test.go"]
+    },
+    {
+      "id": "worker-control",
+      "runtime_check": "worker_list",
+      "source_paths": ["daemon/cmd/zen/main.go", "daemon/cmd/zen/control_app.go", "daemon/brain/session_projection.go"],
+      "test_paths": ["daemon/cmd/zen/control_app_test.go", "daemon/brain/session_projection_test.go", "daemon/brain/worker_authority_test.go"]
+    },
+    {
+      "id": "project-skill-discovery",
+      "runtime_check": "brain_playbooks",
+      "source_paths": ["daemon/skills/adapters.go", "daemon/skills/inventory.go", ".agents/skills/zen-verification/SKILL.md", ".agents/skills/zen-verification/features/README.md"],
+      "test_paths": ["daemon/skills/inventory_test.go", "daemon/skills/operations_test.go", "scripts/verify-zen-orchestration.sh"]
+    }
+  ]
+}
