@@ -33,17 +33,6 @@ import (
 // and Revoke removes only the Zen-owned state file after the process is gone.
 const defaultSunshineStopGrace = 5 * time.Second
 
-type SunshineProcess interface {
-	Signal(signal syscall.Signal) error
-	// Wait blocks until the process exits and returns its wait result.
-	Wait() error
-	PID() int
-}
-
-// SunshineSpawner starts the supervised host process. The default spawner uses
-// exec with a private process group; tests inject a fake.
-type SunshineSpawner func(binary string, args []string, dir string) (SunshineProcess, error)
-
 type SunshineHostOptions struct {
 	// BinaryPath is the reviewed Sunshine executable; must be absolute.
 	BinaryPath string

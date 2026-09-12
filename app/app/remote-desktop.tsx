@@ -62,6 +62,9 @@ function DesktopSession() {
   const moonlightButtons = useRef(new Set<number>());
   const moonlightFrame = useRef({ width: 1280, height: 720 });
   const moonlightKey = useRef("");
+  // Monotonic attempt identity: repeated identical configs (including a
+  // colliding random PIN) still mount a fresh view and reject stale callbacks.
+  const moonlightAttempt = useRef(0);
   const [moonlightPin, setMoonlightPin] = useState("");
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
     generation.current++;
@@ -83,6 +86,9 @@ function DesktopSession() {
   const send = (value: object) => commands.send(value);
   // Moonlight route: pointer deltas, buttons and committed text go to the
   // native view on the connection that produced the state event.
+  const noteInputResult = (result: Promise<boolean> | undefined) => {
+    void result?.then((ok) => { if (!ok) setInputNotice("Input rejected by the host."); }).catch(() => setInputNotice("Input failed."));
+  };
   const moonlightInput = (events: DesktopInput[]) => {
     const view = moonlight.current;
     const session = moonlightSession.current;
@@ -95,16 +101,23 @@ function DesktopSession() {
         const px = Math.round(event.x * frame.width);
         const py = Math.round(event.y * frame.height);
         moonlightPoint.current = { x: event.x, y: event.y };
-        void view.sendPointerPosition(session.generation, px, py, frame.width, frame.height).catch(() => undefined);
+        noteInputResult(view.sendPointerPosition(session.generation, px, py, frame.width, frame.height));
       } else if (event.type === "scroll") {
-        void view.sendScroll(session.generation, event.delta).catch(() => undefined);
+        noteInputResult(view.sendScroll(session.generation, event.delta));
       } else if (event.type === "button") {
         if (event.down) moonlightButtons.current.add(event.code);
         else moonlightButtons.current.delete(event.code);
-        void view.sendPointerButton(session.generation, event.code, event.down ? 7 : 8).catch(() => undefined);
+        noteInputResult(view.sendPointerButton(session.generation, event.code, event.down ? 7 : 8));
       } else if (event.type === "release") {
-        for (const code of moonlightButtons.current) void view.sendPointerButton(session.generation, code, 8).catch(() => undefined);
+        for (const code of moonlightButtons.current) noteInputResult(view.sendPointerButton(session.generation, code, 8));
         moonlightButtons.current.clear();
+      } else if (event.type === "text") {
+        // Fallback TextInput path emits per-character text events.
+        noteInputResult(view.sendText(session.generation, String.fromCharCode(event.code)));
+      } else if (event.type === "key" && event.down) {
+        // X keysyms from the fallback keyboard map to named edit keys.
+        const named = event.code === 0xff08 ? "Backspace" : event.code === 0xff0d ? "Enter" : event.code === 0xffff ? "Delete" : null;
+        if (named) sendNamedKey(named);
       }
     }
   };
@@ -115,7 +128,7 @@ function DesktopSession() {
   const sendCommittedText = (value: string) => {
     const session = moonlightSession.current;
     if (moonlight.current) {
-      if (session && !session.ended) void moonlight.current.sendText(session.generation, value).catch(() => undefined);
+      if (session && !session.ended) noteInputResult(moonlight.current.sendText(session.generation, value));
       return;
     }
     // The daemon rejects batches above 64 events, so a paste or IME commit is
@@ -127,7 +140,7 @@ function DesktopSession() {
     const session = moonlightSession.current;
     if (!view || !session || session.ended) return;
     const code = key === "Backspace" ? 8 : key === "Delete" ? 46 : 13;
-    void view.sendKey(session.generation, code, down ? 3 : 4, 0, 0).catch(() => undefined);
+    noteInputResult(view.sendKey(session.generation, code, down ? 3 : 4, 0, 0));
   };
   const sendNamedKey = (key: DesktopNamedKey) => {
     if (moonlight.current) {
@@ -233,7 +246,7 @@ function DesktopSession() {
           // The client generates the pairing PIN; the host operator enters it
           // in Sunshine's Web UI for the matching request.
           const pin = String(Math.floor(1000 + Math.random() * 9000));
-          const doc = JSON.stringify({ ...parsed.moonlight, pin });
+          const doc = JSON.stringify({ ...parsed.moonlight, pin, attemptId: ++moonlightAttempt.current });
           moonlightSession.current = null;
           moonlightKey.current = doc;
           setMoonlightPin(pin);
@@ -372,8 +385,13 @@ function DesktopSession() {
                 moonlightSession.current = { generation: generationValue, ended: false };
               }
             }
-            if (event.state === "connected") { reconnectAttempts.current = 0; setControl(true); }
-            if (event.state === "rejected" || event.state === "failed") setInputNotice(event.reason ?? "");
+            if (event.state === "connected") { reconnectAttempts.current = 0; setControl(true); setMoonlightPin(""); }
+            if (event.state === "rejected" || event.state === "failed") {
+              setInputNotice(event.reason ?? "");
+              setControl(false);
+              setStatus({ state: "disconnected", reason: event.reason || "The host rejected the stream." });
+              return;
+            }
             if (event.state === "disconnected" || event.state === "revoked") {
               const current = moonlightSession.current;
               if (current) current.ended = true;

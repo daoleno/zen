@@ -10,6 +10,8 @@ import "context"
 
 func SunshineConfigured() bool { return false }
 
+func SunshineAvailable() bool { return false }
+
 func SunshineSnapshot() SunshineRuntimeSnapshot { return SunshineRuntimeSnapshot{} }
 
 func EnsureSunshineRuntime(SunshineSpawner) (SunshineRuntimeSnapshot, error) {

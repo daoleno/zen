@@ -1,5 +1,5 @@
 import type { DaemonAssertionInput } from "./auth";
-import { normalizeFixedHex, verifyDesktopCapabilitySignature } from "./protocolCrypto";
+import { normalizeFixedHex, verifyDesktopCapabilitySignature, verifyDesktopCapabilitySignatureV2 } from "./protocolCrypto";
 import type { StoredServer } from "./storedServerContract";
 
 export class DesktopConnectionUnavailable extends Error {
@@ -77,8 +77,9 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
   const connect = asRecord(payload.connect);
   const pin = typeof transport.transport_pin === "string" ? transport.transport_pin.toLowerCase() : "";
   const identityTls = transport.identity_tls === true;
-  // The Moonlight block is part of the signed binding: an injected or altered
-  // block keeps the domain signature valid but fails this verification.
+  // v1 binding stays byte-identical to the installed release. The Moonlight
+  // block is covered by a separate v2 signature: legacy servers (v1 only) are
+  // accepted with Moonlight disabled, and an altered block fails v2.
   const rawMoonlight = asRecord(payload.moonlight);
   const moonlightBinding = Object.keys(rawMoonlight).length === 0 ? "" : [
     String(rawMoonlight.available === true),
@@ -93,7 +94,6 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     server.daemonPublicKey.trim().toLowerCase(),
     identityTls ? pin : "",
     identityTls ? "true" : "false",
-    moonlightBinding,
   ].join("\n"));
   if (!verifyDesktopCapabilitySignature({
     daemonPublicKey: server.daemonPublicKey,
@@ -105,8 +105,24 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
   if (identityTls && !/^[0-9a-f]{64}$/.test(pin)) {
     throw new Error("The desktop identity pin is invalid.");
   }
+  const v2Signature = typeof payload.capability_signature_v2 === "string" ? payload.capability_signature_v2 : "";
+  const moonlightProven = moonlightBinding !== "" && v2Signature !== "" &&
+    verifyDesktopCapabilitySignatureV2({
+      daemonPublicKey: server.daemonPublicKey,
+      bindingPayload: new TextEncoder().encode([...[
+        server.daemonId.trim().toLowerCase(),
+        server.daemonPublicKey.trim().toLowerCase(),
+        identityTls ? pin : "",
+        identityTls ? "true" : "false",
+      ], moonlightBinding].join("\n")),
+      signatureHex: v2Signature,
+    });
+  if (moonlightBinding !== "" && v2Signature !== "" && !moonlightProven) {
+    throw new Error("The desktop capability proof did not match this paired computer.");
+  }
   const reason = typeof connect.reason === "string" ? connect.reason : "";
-  const moonlight = Number.isInteger(Number(rawMoonlight.http_port)) && Number(rawMoonlight.http_port) > 0 && Number(rawMoonlight.http_port) <= 65535 &&
+  // A block without a v2 proof is ignored (legacy server), never trusted.
+  const moonlight = !moonlightProven ? null : Number.isInteger(Number(rawMoonlight.http_port)) && Number(rawMoonlight.http_port) > 0 && Number(rawMoonlight.http_port) <= 65535 &&
     Number.isInteger(Number(rawMoonlight.https_port)) && Number(rawMoonlight.https_port) > 0 && Number(rawMoonlight.https_port) <= 65535 &&
     typeof rawMoonlight.host_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(rawMoonlight.host_key) &&
     typeof rawMoonlight.identity_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(rawMoonlight.identity_key)

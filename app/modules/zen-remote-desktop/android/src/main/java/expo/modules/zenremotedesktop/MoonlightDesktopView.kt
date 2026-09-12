@@ -491,24 +491,28 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
       throw error
     }
     created.setOnFrameRenderedListener({ _, _, _ ->
-      if (!alive(conn)) return@setOnFrameRenderedListener
+      // Only the current decoder for this connection may reveal the surface;
+      // listeners from a replaced decoder are ignored.
+      if (!alive(conn) || codec !== created) return@setOnFrameRenderedListener
       conn.presented++
-      if (conn.presented == 1) {
-        post { if (alive(conn)) cover.visibility = GONE }
+      conn.framesSinceCodecStart++
+      if (conn.framesSinceCodecStart == 1) {
+        post { if (alive(conn) && codec === created) cover.visibility = GONE }
         publish(conn, "frame", "first")
       }
     }, decoder)
+    conn.framesSinceCodecStart = 0
+    codec = created
     try {
       created.start()
     } catch (error: Exception) {
+      codec = null
       try {
         created.release()
       } catch (_: Exception) {
       }
       throw error
     }
-    codec = created
-    conn.framesSinceCodecStart = 0
     conn.waitingIdr = true
     conn.surfaceReady = target.isValid
     return created

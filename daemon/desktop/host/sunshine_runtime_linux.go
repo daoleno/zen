@@ -75,6 +75,18 @@ func SunshineConfigured() bool {
 	return err == nil
 }
 
+// SunshineAvailable is true only when the host is configured, running and the
+// per-device enrollment/removal binding is enforceable. Today the upstream
+// host has no per-client removal API, so this stays false and the capability
+// keeps Moonlight closed instead of advertising a global-revoke workaround.
+func SunshineAvailable() bool {
+	if !SunshineOwnershipBound() {
+		return false
+	}
+	snapshot := SunshineSnapshot()
+	return snapshot.Configured && snapshot.Running
+}
+
 // EnsureSunshineRuntime is the production caller: it starts the supervised
 // Sunshine host once when explicit configuration exists. The spawner is
 // injectable for tests; production passes nil for the default spawner.

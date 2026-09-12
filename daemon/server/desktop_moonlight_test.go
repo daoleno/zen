@@ -60,8 +60,9 @@ func TestMoonlightBootstrapBindsZenIdentityAndHostKey(t *testing.T) {
 	if got["http_port"] != 47989 || got["https_port"] != 47984 || got["app_id"] != 3 {
 		t.Fatalf("bootstrap = %+v", got)
 	}
-	if got["available"] != true {
-		t.Fatalf("available = %v", got["available"])
+	// Availability stays closed until per-device enrollment/removal is binding.
+	if got["available"] != false || got["reason"] != "per_device_enrollment_unsupported" {
+		t.Fatalf("availability = %v reason=%v", got["available"], got["reason"])
 	}
 	if *calls != 1 {
 		t.Fatalf("ensure called %d times", *calls)
@@ -85,7 +86,11 @@ type errRuntimeUnavailable struct{}
 
 func (errRuntimeUnavailable) Error() string { return "runtime unavailable" }
 
-func TestDeviceRevocationRevokesTheMoonlightEngine(t *testing.T) {
+func TestDeviceRevocationTargetsOnlyTheEnrolledOwner(t *testing.T) {
+	t.Setenv("ZEN_STATE_DIR", t.TempDir())
+	if err := host.NewSunshineOwnershipStore(host.ZenStateDir()).Claim("device-a", "cert-a"); err != nil {
+		t.Fatal(err)
+	}
 	previous := moonlightRevokeRuntime
 	calls := 0
 	moonlightRevokeRuntime = func(ctx context.Context) error {
@@ -97,19 +102,51 @@ func TestDeviceRevocationRevokesTheMoonlightEngine(t *testing.T) {
 	}
 	t.Cleanup(func() { moonlightRevokeRuntime = previous })
 
-	if err := revokeSunshineForDeviceRevocation(context.Background()); err != nil {
-		t.Fatalf("revoke hook: %v", err)
+	// An unrelated target must not touch the owner's engine or pairing.
+	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-b"); err != nil {
+		t.Fatalf("unrelated revoke: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("unrelated target revoked the engine: calls=%d", calls)
+	}
+	if owner, _ := host.SunshineOwner(); owner != "device-a" {
+		t.Fatalf("unrelated target erased enrollment: %q", owner)
+	}
+	// The enrolled owner revokes its own engine.
+	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-a"); err != nil {
+		t.Fatalf("owner revoke: %v", err)
 	}
 	if calls != 1 {
-		t.Fatalf("revoke hook calls = %d", calls)
+		t.Fatalf("owner revoke hook calls = %d", calls)
+	}
+}
+
+func TestDeviceRevocationWithoutEnrollmentDoesNothing(t *testing.T) {
+	t.Setenv("ZEN_STATE_DIR", t.TempDir())
+	previous := moonlightRevokeRuntime
+	calls := 0
+	moonlightRevokeRuntime = func(context.Context) error {
+		calls++
+		return nil
+	}
+	t.Cleanup(func() { moonlightRevokeRuntime = previous })
+	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-a"); err != nil {
+		t.Fatalf("un-enrolled revoke: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("un-enrolled target revoked the engine: calls=%d", calls)
 	}
 }
 
 func TestDeviceRevocationSurfacesEngineFailure(t *testing.T) {
+	t.Setenv("ZEN_STATE_DIR", t.TempDir())
+	if err := host.NewSunshineOwnershipStore(host.ZenStateDir()).Claim("device-a", "cert-a"); err != nil {
+		t.Fatal(err)
+	}
 	previous := moonlightRevokeRuntime
 	moonlightRevokeRuntime = func(context.Context) error { return errors.New("engine busy") }
 	t.Cleanup(func() { moonlightRevokeRuntime = previous })
-	if err := revokeSunshineForDeviceRevocation(context.Background()); err == nil {
+	if err := revokeSunshineForDeviceRevocation(context.Background(), "device-a"); err == nil {
 		t.Fatal("engine revoke failure was swallowed")
 	}
 }

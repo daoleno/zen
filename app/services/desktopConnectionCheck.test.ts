@@ -16,7 +16,21 @@ const pair = nacl.sign.keyPair.fromSeed(seed);
 const server = { daemonId: "a".repeat(64), daemonPublicKey: bytesToHex(pair.publicKey) };
 const pin = "ab".repeat(32);
 
-function signCapability(identityTls: boolean, transportPin = pin, moonlightBinding = "") {
+function signCapability(identityTls: boolean, transportPin = pin) {
+  const payload = new TextEncoder().encode([
+    server.daemonId,
+    server.daemonPublicKey,
+    identityTls ? transportPin : "",
+    identityTls ? "true" : "false",
+  ].join("\n"));
+  const domain = new TextEncoder().encode("zen-desktop-capability-v1\u0000");
+  const signed = new Uint8Array(domain.length + payload.length);
+  signed.set(domain);
+  signed.set(payload, domain.length);
+  return bytesToHex(nacl.sign.detached(signed, pair.secretKey));
+}
+
+function signCapabilityV2(identityTls: boolean, transportPin: string, moonlightBinding: string) {
   const payload = new TextEncoder().encode([
     server.daemonId,
     server.daemonPublicKey,
@@ -24,7 +38,7 @@ function signCapability(identityTls: boolean, transportPin = pin, moonlightBindi
     identityTls ? "true" : "false",
     moonlightBinding,
   ].join("\n"));
-  const domain = new TextEncoder().encode("zen-desktop-capability-v1\u0000");
+  const domain = new TextEncoder().encode("zen-desktop-capability-v2\u0000");
   const signed = new Uint8Array(domain.length + payload.length);
   signed.set(domain);
   signed.set(payload, domain.length);
@@ -187,11 +201,12 @@ function moonlightBindingOf(moonlight: Record<string, unknown>): string {
   ].join("\n");
 }
 
-function proofWithMoonlight(moonlight: Record<string, unknown>, signedBinding?: string): DesktopProofDependencies {
+function proofWithMoonlight(moonlight: Record<string, unknown>, options: { v2Binding?: string; includeV2?: boolean } = {}): DesktopProofDependencies {
   return {
     authorization: async () => "token",
     verify: (input) => input.signatureHex === input.purpose && input.nonceHex === "c".repeat(32),
     fetch: async (url: string) => {
+      const includeV2 = options.includeV2 !== false;
       const body = {
         ...server, daemon_id: server.daemonId, daemon_public_key: server.daemonPublicKey,
         assertion_timestamp: new Date().toISOString(), assertion_nonce: "c".repeat(32),
@@ -201,7 +216,8 @@ function proofWithMoonlight(moonlight: Record<string, unknown>, signedBinding?: 
         host: { status: "ready", broker: true },
         connect: { unattended: true },
         moonlight,
-        capability_signature: signCapability(true, pin, signedBinding ?? moonlightBindingOf(moonlight)),
+        capability_signature: signCapability(true),
+        ...(includeV2 ? { capability_signature_v2: signCapabilityV2(true, pin, options.v2Binding ?? moonlightBindingOf(moonlight)) } : {}),
       };
       return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify(body)).body };
     },
@@ -227,12 +243,22 @@ test("moonlight bootstrap is signed, typed and invalid blocks fail closed", asyn
   }
 });
 
-test("an injected or altered moonlight block fails the capability signature", async () => {
-  // Signature made over the no-moonlight binding, then a block is injected.
+test("an injected or altered moonlight block fails the v2 proof", async () => {
+  // v2 signature made over the no-moonlight binding, then a block is injected.
   await expect(fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
-    proofWithMoonlight(validMoonlight, ""))).rejects.toThrow("capability proof");
-  // Signature valid for one block, fields altered.
+    proofWithMoonlight(validMoonlight, { v2Binding: "" }))).rejects.toThrow("capability proof");
+  // v2 signature valid for one block, fields altered.
   const altered = { ...validMoonlight, host_key: "injected-host", identity_key: "different-device" };
   await expect(fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
-    proofWithMoonlight(altered, moonlightBindingOf(validMoonlight)))).rejects.toThrow("capability proof");
+    proofWithMoonlight(altered, { v2Binding: moonlightBindingOf(validMoonlight) }))).rejects.toThrow("capability proof");
+});
+
+test("legacy v1 servers are accepted with Moonlight disabled", async () => {
+  // Installed clients only know v1: a block without v2 must be ignored, not
+  // trusted, and the ordinary desktop capability must still verify.
+  const legacy = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
+    proofWithMoonlight(validMoonlight, { includeV2: false }));
+  expect(legacy.moonlight).toBeNull();
+  expect(legacy.scopeVersion).toBe(1);
+  expect(legacy.transportPin).toBe(pin);
 });

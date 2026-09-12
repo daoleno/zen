@@ -22,6 +22,23 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
   const blocking = desktopPreflightError(capability);
   const identityLan = capability.identityTls && !!desktopLanOrigin(server) && server.transportKind !== "link"
     && capability.scopeVersion === 1 && capability.unattended;
+  const authorization = await buildAuthorizationHeader({ daemonId: server.daemonId, purpose: "zen-desktop" });
+  // The control channel may go through a local pinned tunnel while the native
+  // engine needs its own directly reachable computer IP. Prefer Moonlight when
+  // the engine endpoint is direct, before selecting the pinned-link control plan.
+  const lanOrigin = desktopLanOrigin(server);
+  const engineHost = lanOrigin ? new URL(lanOrigin).hostname : new URL(server.url).hostname;
+  const engineDirect = server.transportKind !== "link" &&
+    !/^(127\.|localhost$|\[?::1)/i.test(engineHost);
+  if (capability.moonlight?.available && capability.scopeVersion > 0 && engineDirect) {
+    if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+    return JSON.stringify({
+      transport: "moonlight",
+      authorization,
+      inputGeneration,
+      moonlight: { ...capability.moonlight, host: engineHost },
+    });
+  }
   if (blocking && !identityLan) throw blocking;
   if (signal?.aborted) throw new Error("Desktop connection cancelled.");
   let plan;
@@ -35,24 +52,6 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
     plan = desktopTransportPlan(server, resolved);
     if (plan.transport === "trusted-lan") {
       throw new Error("Unattended desktop cannot use unencrypted LAN transport.");
-    }
-  }
-  const authorization = await buildAuthorizationHeader({ daemonId: server.daemonId, purpose: "zen-desktop" });
-  if (capability.moonlight?.available && capability.scopeVersion > 0) {
-    const directHost = new URL(server.url).hostname;
-    // The native engine speaks RTSP/UDP directly; a pinned link/tunnel or a
-    // loopback relay cannot carry it, so keep the existing WS route there
-    // instead of advertising native transport through an unreachable path.
-    const direct = !identityLan && server.transportKind !== "link" &&
-      !/^(127\.|10\.0\.2\.2$|localhost$|\[?::1)/i.test(directHost);
-    if (direct) {
-      if (signal?.aborted) throw new Error("Desktop connection cancelled.");
-      return JSON.stringify({
-        transport: "moonlight",
-        authorization,
-        inputGeneration,
-        moonlight: { ...capability.moonlight, host: directHost },
-      });
     }
   }
   return JSON.stringify({ ...plan, authorization, inputGeneration, mode: "unattended" });

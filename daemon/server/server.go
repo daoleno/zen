@@ -562,26 +562,31 @@ func (s *Server) detachAuthenticatedClient(
 }
 
 // Moonlight engine hooks are injectable for tests. Revoking a device also
-// terminates the Zen-owned single-session Sunshine host and removes its pairing
-// state, so a revoked device cannot keep an independent engine pairing.
 var moonlightRevokeRuntime = host.RevokeSunshineRuntime
 var moonlightStopRuntime = host.StopSunshineRuntime
 
-func revokeSunshineForDeviceRevocation(ctx context.Context) error {
+// revokeSunshineForDeviceRevocation affects only the device that owns the
+// engine enrollment. An unrelated or non-enrolled target leaves other devices'
+// pairings untouched; a missing binding means no engine action at all.
+func revokeSunshineForDeviceRevocation(ctx context.Context, targetDeviceID string) error {
+	owner, _ := host.SunshineOwner()
+	if owner == "" || owner != targetDeviceID {
+		return nil
+	}
 	return moonlightRevokeRuntime(ctx)
 }
 
 func (s *Server) revokeAuthenticatedDevice(deviceID string) {
-	s.desktop.Revoke(deviceID)
-	revokeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := revokeSunshineForDeviceRevocation(revokeCtx); err != nil {
-		log.Printf("moonlight revoke after device revocation: %v", err)
-	}
-	cancel()
 	normalizedID := strings.TrimSpace(deviceID)
 	if normalizedID == "" {
 		return
 	}
+	s.desktop.Revoke(deviceID)
+	revokeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := revokeSunshineForDeviceRevocation(revokeCtx, normalizedID); err != nil {
+		log.Printf("moonlight revoke after device revocation: %v", err)
+	}
+	cancel()
 	var revoked []clientDetachWork
 	s.mu.Lock()
 	for conn, owner := range s.clients {

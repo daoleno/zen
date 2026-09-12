@@ -109,7 +109,12 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 			moonlightBinding = moonlightBindingString(moonlight)
 		}
 	}
-	payload["capability_signature"] = s.auth.SignDesktopCapability(pin, identityTLS, moonlightBinding)
+	// v1 stays byte-identical for installed clients; the Moonlight bootstrap is
+	// covered by a separate v2 signature so old clients keep working.
+	payload["capability_signature"] = s.auth.SignDesktopCapability(pin, identityTLS)
+	if moonlightBinding != "" {
+		payload["capability_signature_v2"] = s.auth.SignDesktopCapabilityV2(pin, identityTLS, moonlightBinding)
+	}
 	return payload
 }
 
@@ -120,6 +125,13 @@ func moonlightBindingString(block map[string]any) string {
 	return fmt.Sprintf("%v\n%v\n%v\n%v\n%v\n%v",
 		block["available"], block["http_port"], block["https_port"],
 		block["app_id"], block["host_key"], block["identity_key"])
+}
+
+func moonlightAvailabilityReason() string {
+	if host.SunshineOwnershipBound() {
+		return ""
+	}
+	return "per_device_enrollment_unsupported"
 }
 
 // moonlightBootstrap advertises the explicitly configured Sunshine host. The
@@ -142,7 +154,8 @@ func moonlightBootstrap(device *auth.TrustedDevice) map[string]any {
 	// No host in the block: the client must use its own verified, directly
 	// reachable server endpoint; request Host/forwarded headers are not proof.
 	return map[string]any{
-		"available":    snapshot.Running,
+		"available":    host.SunshineAvailable(),
+		"reason":       moonlightAvailabilityReason(),
 		"http_port":    snapshot.HTTPPort,
 		"https_port":   snapshot.HTTPSPort,
 		"app_id":       snapshot.AppID,
