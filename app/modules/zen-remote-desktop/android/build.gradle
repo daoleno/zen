@@ -4,10 +4,59 @@ apply plugin: 'org.jetbrains.kotlin.android'
 group = 'expo.modules.zenremotedesktop'
 version = '0.1.0'
 
+/**
+ * ABIs supported by the pinned moonlight-common-c core, intersected with the
+ * React Native architectures property. Sources are compiled from
+ * third_party/moonlight-common-c (scripts/fetch-moonlight-common-c.sh); the
+ * only prebuilt dependency is the pinned OpenSSL prefix built by
+ * scripts/build-openssl-android.sh.
+ */
+List<String> zenRemoteDesktopAbis() {
+  final List<String> supported = ['arm64-v8a', 'x86_64'].asImmutable()
+  def raw = project.findProperty('reactNativeArchitectures')
+  if (raw == null || raw.toString().trim().isEmpty()) {
+    return new ArrayList<>(supported)
+  }
+  def requested = raw.toString().split(',').collect { it.trim() }.findAll { it }
+  List<String> selected = requested.findAll { supported.contains(it) }
+  if (selected.isEmpty()) {
+    throw new GradleException(
+      "zen-remote-desktop: reactNativeArchitectures=${raw} selects no supported ABIs. " +
+        "Supported: ${supported}."
+    )
+  }
+  return selected
+}
+
+def resolvedAbis = zenRemoteDesktopAbis()
+logger.lifecycle("zen-remote-desktop: ndk abiFilters=${resolvedAbis}")
+
 android {
   namespace 'expo.modules.zenremotedesktop'
   compileSdk rootProject.ext.has('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 35
-  defaultConfig { minSdk rootProject.ext.has('minSdkVersion') ? rootProject.ext.minSdkVersion : 24 }
+  ndkVersion rootProject.ext.has('ndkVersion') ? rootProject.ext.ndkVersion : '27.1.12297006'
+
+  defaultConfig {
+    minSdk rootProject.ext.has('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+
+    externalNativeBuild {
+      cmake {
+        arguments '-DANDROID_STL=none'
+      }
+    }
+
+    ndk {
+      abiFilters(*resolvedAbis)
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path 'CMakeLists.txt'
+      version '3.22.1'
+    }
+  }
+
   sourceSets.main.assets.srcDirs += file('../notices')
 }
 

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "description": "Pinned native contract for the Sunshine host + moonlight-common-c embedded client prototype. Sources are fetched and hash-verified by scripts/fetch-moonlight-common-c.sh; nothing is downloaded as an opaque prebuilt binary.",
+  "moonlight_common_c": {
+    "component": "moonlight-common-c",
+    "api": "C",
+    "repository": "https://github.com/moonlight-stream/moonlight-common-c",
+    "commit": "62e066388f1a1b133e0bee947b9a374311a3354b",
+    "archive": "https://codeload.github.com/moonlight-stream/moonlight-common-c/tar.gz/62e066388f1a1b133e0bee947b9a374311a3354b",
+    "archive_sha256": "2486d3dfac30ae6bc68d362dac916fdb91294a12f82be649ebc00fba932cb8ed",
+    "archive_root": "moonlight-common-c-62e066388f1a1b133e0bee947b9a374311a3354b",
+    "license": "GPL-3.0",
+    "license_path": "LICENSE.txt",
+    "license_url": "https://raw.githubusercontent.com/moonlight-stream/moonlight-common-c/62e066388f1a1b133e0bee947b9a374311a3354b/LICENSE.txt",
+    "license_sha256": "589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2"
+  },
+  "enet": {
+    "component": "enet",
+    "repository": "https://github.com/cgutman/enet",
+    "commit": "aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+    "archive": "https://codeload.github.com/cgutman/enet/tar.gz/aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+    "archive_sha256": "6bb1a151e6d21e1756baeff5a95eaf85a5b6731aeda6d0bc255651192ba4a32d",
+    "archive_root": "enet-aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+    "license": "MIT",
+    "license_path": "LICENSE",
+    "license_sha256": "77f94e3be39938801163844b8bf9a4f12badcc0da136e9886e7da14a816d74d3",
+    "submodule_path": "enet"
+  },
+  "nanors": {
+    "component": "nanors",
+    "repository": "https://github.com/sleepybishop/nanors",
+    "commit": "b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+    "archive": "https://codeload.github.com/sleepybishop/nanors/tar.gz/b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+    "archive_sha256": "41edc0309b255b0eeb5e8eb1ad79f7c7e9e6c31db1bd79a16d73271c62867003",
+    "archive_root": "nanors-b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+    "license": "MIT",
+    "license_path": "LICENSE",
+    "license_sha256": "3fdda5f011d8490331950398e86427d67dfae05e048681476c2c6b8c34bdd033",
+    "submodule_path": "nanors"
+  },
+  "crypto": {
+    "note": "moonlight-common-c@62e06638 PlatformCrypto.c requires OpenSSL EVP or PSA Crypto. The Android prototype links OpenSSL; host smoke builds may use the system OpenSSL. No custom crypto is implemented in the Zen bridge.",
+    "openssl_android": {
+      "version": "3.0.16",
+      "archive": "https://www.openssl.org/source/openssl-3.0.16.tar.gz",
+      "archive_sha256": "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86",
+      "build_script": "scripts/build-openssl-android.sh",
+      "prefix": "app/modules/zen-remote-desktop/third_party/openssl/<abi>",
+      "abi": ["arm64-v8a", "x86_64"],
+      "android_api": 29
+    }
+  },
+  "host": {
+    "component": "Sunshine",
+    "repository": "https://github.com/LizardByte/Sunshine",
+    "commit": "dd7a1f796e69283a42663630ecd49b174b070778",
+    "license": "GPL-3.0",
+    "note": "Independent supervised host process; Linux capture path includes kwingrab.cpp/portalgrab.cpp; macOS build at this revision uses AVFoundation (av_video.m) despite the README ScreenCaptureKit claim."
+  }
+}
