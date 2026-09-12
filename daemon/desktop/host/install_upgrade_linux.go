@@ -15,10 +15,14 @@ import (
 // files (the ELF) are copied to a sidecar before the upgrade overwrites them.
 const inlineBackupLimit = 65536
 
-// previousJournalPath holds a durable copy of the previous transaction journal
-// across an upgrade, so a crash or a metadata-write failure can always restore
-// the old managed installation instead of relying on process memory.
-const previousJournalPath = installJournalPath + ".zen-previous"
+// previousJournalPrefix names the durable per-generation copy of the previous
+// transaction journal. A unique suffix keeps each upgrade's retained rollback
+// metadata intact instead of overwriting it on the next upgrade.
+const previousJournalPrefix = installJournalPath + ".zen-previous."
+
+func previousJournalBackup(previousBytes []byte) string {
+	return previousJournalPrefix + digest(previousBytes)[:12]
+}
 
 // upgradeIO isolates the in-place upgrade and rollback file operations so fault
 // tests can inject write/backup failures without root or a real /etc tree.
@@ -58,14 +62,17 @@ func rootUpgradeIO() upgradeIO {
 
 // loadInstallJournal reads and validates the recorded installation state.
 func loadInstallJournal() (installJournal, error) {
-	file, err := OpenRootFile(installJournalPath, 0600)
+	return loadJournalWithIO(rootUpgradeIO())
+}
+
+// loadJournalWithIO is the injectable form used by the rollback tests.
+func loadJournalWithIO(upgrade upgradeIO) (installJournal, error) {
+	data, err := upgrade.read(installJournalPath, 0600)
 	if err != nil {
 		return installJournal{}, err
 	}
-	data, err := io.ReadAll(io.LimitReader(file, 1<<20))
-	file.Close()
 	var journal installJournal
-	if err != nil || decodeMessage(data, &journal) != nil || journal.Version != 1 {
+	if decodeMessage(data, &journal) != nil || journal.Version != 1 {
 		return installJournal{}, errors.New("invalid_install_journal")
 	}
 	return journal, nil
@@ -248,7 +255,10 @@ func restoreJournalWithBackups(journal installJournal, io upgradeIO) ([]string, 
 // metadata from its durable backup, and only then consumes the backups. A
 // metadata-write failure before that point stays retryable.
 func restorePreviousInstall(current installJournal, io upgradeIO) error {
-	previous, err := io.read(previousJournalPath, 0600)
+	if current.Previous == "" {
+		return errors.New("previous_install_journal_missing")
+	}
+	previous, err := io.read(current.Previous, 0600)
 	if err != nil {
 		return errors.New("previous_install_journal_missing")
 	}
@@ -268,58 +278,67 @@ func restorePreviousInstall(current installJournal, io upgradeIO) error {
 			return err
 		}
 	}
-	return io.remove(previousJournalPath)
+	return io.remove(current.Previous)
 }
 
 // upgradeWithIO runs the whole upgrade file transaction: the previous journal
-// is made durable first, the new journal is written before any file changes,
-// and an apply failure restores both the previous files and the previous
-// journal before returning. The returned paths are the superseded journal's
-// sidecars; they are removed by commitUpgrade only after activation and the
-// health probe have succeeded.
-func upgradeWithIO(previousBytes []byte, plan []PlannedFile, io upgradeIO) ([]string, error) {
+// is made durable first, the new journal (with a Previous reference) is
+// written before any file changes, and an apply failure restores both the
+// previous files and the previous journal before returning. The returned
+// journal is the retained previous installation state; commitUpgrade keeps it
+// (and its sidecars) for one explicit rollback step.
+func upgradeWithIO(previousBytes []byte, plan []PlannedFile, io upgradeIO) (installJournal, error) {
 	var previous installJournal
 	if decodeMessage(previousBytes, &previous) != nil || previous.Version != 1 {
-		return nil, errors.New("invalid_install_journal")
+		return installJournal{}, errors.New("invalid_install_journal")
 	}
-	if err := io.write(previousJournalPath, previousBytes, 0600); err != nil {
-		return nil, err
+	backup := previousJournalBackup(previousBytes)
+	if err := io.write(backup, previousBytes, 0600); err != nil {
+		return installJournal{}, err
 	}
 	journal, sidecars, err := upgradeTransaction(plan, io)
 	if err != nil {
-		return nil, err
+		return installJournal{}, err
 	}
+	journal.Previous = backup
 	data, _ := json.Marshal(journal)
 	if err := io.write(installJournalPath, data, 0600); err != nil {
 		for _, sidecar := range sidecars {
 			_ = io.remove(sidecar)
 		}
-		return nil, err
+		return installJournal{}, err
 	}
 	if err := applyPlan(plan, io); err != nil {
 		if rollbackErr := restorePreviousInstall(journal, io); rollbackErr != nil {
-			return nil, fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
+			return installJournal{}, fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
 		}
-		return nil, err
+		return installJournal{}, err
 	}
-	var superseded []string
-	for _, entry := range previous.Files {
-		if entry.BeforePath != "" {
-			superseded = append(superseded, entry.BeforePath)
-		}
-	}
-	return superseded, nil
+	return previous, nil
 }
 
-// commitUpgrade removes the resources of the superseded installation and the
-// temporary previous journal only after the whole transaction is verified.
-func commitUpgrade(superseded []string, io upgradeIO) error {
-	for _, path := range superseded {
-		if err := io.remove(path); err != nil {
-			return err
+// commitUpgrade keeps the immediately previous journal and its sidecar
+// backups so an explicit rollback can restore a coherent managed installation,
+// and prunes only the older generation that the previous journal references.
+// It runs even when the previous generation has no sidecars (first upgrade).
+func commitUpgrade(previous installJournal, io upgradeIO) error {
+	if previous.Previous == "" {
+		return nil
+	}
+	olderBytes, err := io.read(previous.Previous, 0600)
+	if err != nil {
+		return nil
+	}
+	var older installJournal
+	if decodeMessage(olderBytes, &older) != nil {
+		return nil
+	}
+	for _, entry := range older.Files {
+		if entry.BeforePath != "" {
+			_ = io.remove(entry.BeforePath)
 		}
 	}
-	return io.remove(previousJournalPath)
+	return io.remove(previous.Previous)
 }
 
 // readInstallJournalBytes returns the raw previous journal so an upgrade can
@@ -337,14 +356,14 @@ func readInstallJournalBytes() ([]byte, error) {
 // installation while preserving its exact config. Nothing of the superseded
 // installation (journal metadata or sidecar backups) is removed until the
 // caller commits after activation and the health probe.
-func upgradeLinuxLocked(config HostConfig, binarySource string) ([]string, error) {
+func upgradeLinuxLocked(config HostConfig, binarySource string) (installJournal, error) {
 	previousBytes, err := readInstallJournalBytes()
 	if err != nil {
-		return nil, err
+		return installJournal{}, err
 	}
 	plan, err := buildInstallPlan(config, binarySource)
 	if err != nil {
-		return nil, err
+		return installJournal{}, err
 	}
 	return upgradeWithIO(previousBytes, plan.Files, rootUpgradeIO())
 }

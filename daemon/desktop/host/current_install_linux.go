@@ -16,7 +16,8 @@ type currentInstallOps struct {
 	register func() error
 	probe    func() (probeResult, error)
 	rollback func() error
-	// commit discards superseded backups after the whole transaction is
+	// commit retains the previous installation state for one explicit
+	// rollback and prunes only older snapshots after the whole transaction is
 	// verified. It is best-effort and never rolls back a healthy broker.
 	commit func() error
 	// changed reports whether install wrote files (a fresh install or an
@@ -66,7 +67,7 @@ func verifyBrokerExecutable(output func(args ...string) (string, error)) error {
 type installSteps struct {
 	matches      func(config HostConfig, source string) (bool, error)
 	freshInstall func(config HostConfig, source string) error
-	upgrade      func(config HostConfig, source string) ([]string, error)
+	upgrade      func(config HostConfig, source string) (installJournal, error)
 	readJournal  func() ([]byte, error)
 	loadJournal  func() (installJournal, error)
 	rollbackNew  func() error
@@ -123,7 +124,7 @@ func currentInstallSharedOps(config HostConfig, source string, existing bool) (f
 
 func currentInstallSharedOpsWith(config HostConfig, source string, existing bool, steps installSteps) (func() error, func() error, func() error, func() error, func() bool) {
 	outcome := &installOutcome{}
-	var superseded []string
+	var previous installJournal
 	var previousEnabled, previousActive bool
 	install := func() error {
 		if existing {
@@ -135,11 +136,11 @@ func currentInstallSharedOpsWith(config HostConfig, source string, existing bool
 				return nil
 			}
 			previousEnabled, previousActive = readServiceState(steps.output)
-			cleanup, err := steps.upgrade(config, source)
+			retained, err := steps.upgrade(config, source)
 			if err != nil {
 				return err
 			}
-			superseded = cleanup
+			previous = retained
 			outcome.markUpgraded()
 			return nil
 		}
@@ -213,10 +214,12 @@ func currentInstallSharedOpsWith(config HostConfig, source string, existing bool
 		return steps.command("daemon-reload")
 	}
 	commit := func() error {
-		if !outcome.upgraded || len(superseded) == 0 {
+		if !outcome.upgraded {
 			return nil
 		}
-		return commitUpgrade(superseded, steps.io)
+		// Runs for the first upgrade too, when the previous generation has no
+		// sidecars (zero-superseded); retention must not depend on that.
+		return commitUpgrade(previous, steps.io)
 	}
 	return install, activate, rollback, commit, outcome.changed
 }

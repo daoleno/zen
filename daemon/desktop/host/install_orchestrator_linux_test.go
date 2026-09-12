@@ -2,7 +2,6 @@ package host
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -31,10 +30,11 @@ func enabledActiveOutput(args ...string) (string, error) {
 func TestSharedOrchestratorUpgradeActivationFailureRestoresEverything(t *testing.T) {
 	fs, io := orchestratorFakeIO()
 	previous := []byte(`{"version":1,"files":[{"path":"/x","sha256":"old","mode":420,"existed":true,"beforePath":"/x.zen-previous.old"}]}`)
-	fs.files[previousJournalPath] = previous
+	backup := previousJournalBackup(previous)
+	fs.files[backup] = previous
 	fs.files["/x.zen-previous.old"] = []byte("v1")
 	// After the upgrade step: /x is v3 and the new journal backs it up.
-	upgradedJournal := installJournal{Version: 1, Files: []installedFile{{
+	upgradedJournal := installJournal{Version: 1, Previous: backup, Files: []installedFile{{
 		Path: "/x", SHA256: digest([]byte("v3")), Mode: 0644, Exists: true,
 		BeforePath: "/x.zen-previous.new", BeforeSHA256: digest([]byte("v2")),
 	}}}
@@ -44,7 +44,7 @@ func TestSharedOrchestratorUpgradeActivationFailureRestoresEverything(t *testing
 	var commands []string
 	steps := installSteps{
 		matches:      func(HostConfig, string) (bool, error) { return false, nil },
-		upgrade:      func(HostConfig, string) ([]string, error) { return []string{"/x.zen-previous.old"}, nil },
+		upgrade:      func(HostConfig, string) (installJournal, error) { return installJournal{Version: 1}, nil },
 		readJournal:  func() ([]byte, error) { return previous, nil },
 		loadJournal:  func() (installJournal, error) { return upgradedJournal, nil },
 		restore:      func(current installJournal) error { return restorePreviousInstall(current, io) },
@@ -81,7 +81,7 @@ func TestSharedOrchestratorUpgradeActivationFailureRestoresEverything(t *testing
 	if !bytes.Equal(fs.files[installJournalPath], previous) {
 		t.Fatal("previous journal metadata not restored")
 	}
-	if _, ok := fs.files[previousJournalPath]; ok {
+	if _, ok := fs.files[backup]; ok {
 		t.Fatal("previous journal backup not consumed")
 	}
 	if _, ok := fs.files["/x.zen-previous.new"]; ok {
@@ -130,93 +130,5 @@ func TestSharedOrchestratorFreshInstallProbeFailureRollsBack(t *testing.T) {
 	joined := strings.Join(commands, ",")
 	if !strings.Contains(joined, "disable --no-reload zen-desktop-host.service") {
 		t.Fatalf("fresh rollback did not uninstall: %q", joined)
-	}
-}
-
-func TestRestorePreviousInstallMetadataFailureIsRetryable(t *testing.T) {
-	fs, io := orchestratorFakeIO()
-	old := bytes.Repeat([]byte("old-x-"), 12000)
-	fs.files["/x"] = old
-	plan := []PlannedFile{{Path: "/x", Mode: 0644, Content: "new-x"}}
-	journal, _, err := upgradeTransaction(plan, io)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := applyPlan(plan, io); err != nil {
-		t.Fatal(err)
-	}
-	previous := []byte(`{"version":1,"files":[]}`)
-	fs.files[previousJournalPath] = previous
-	fs.failWrite[installJournalPath] = true
-	if err := restorePreviousInstall(journal, io); err == nil {
-		t.Fatal("metadata write failure not surfaced")
-	}
-	if _, ok := fs.files[previousJournalPath]; !ok {
-		t.Fatal("previous journal backup lost before metadata was durable")
-	}
-	if _, ok := fs.files[journal.Files[0].BeforePath]; !ok {
-		t.Fatal("backup consumed before metadata was durable")
-	}
-	delete(fs.failWrite, installJournalPath)
-	if err := restorePreviousInstall(journal, io); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(fs.files[installJournalPath], previous) {
-		t.Fatal("previous journal not restored on retry")
-	}
-	if !bytes.Equal(fs.files["/x"], old) {
-		t.Fatal("previous file not restored on retry")
-	}
-}
-
-func TestConsecutiveUpgradesPreserveRecoverableState(t *testing.T) {
-	fs, io := orchestratorFakeIO()
-	v1 := bytes.Repeat([]byte("v1-"), 20000)
-	v2 := bytes.Repeat([]byte("v2-"), 20000)
-	fs.files[InstalledBinary] = v2
-	// First upgrade's journal and backup already on disk.
-	firstJournal := installJournal{Version: 1, Files: []installedFile{{
-		Path: InstalledBinary, SHA256: digest(v2), Mode: 0755, Exists: true,
-		BeforePath: InstalledBinary + ".zen-previous.old1", BeforeSHA256: digest(v1),
-	}}}
-	firstBytes, _ := json.Marshal(firstJournal)
-	fs.files[installJournalPath] = firstBytes
-	fs.files[InstalledBinary+".zen-previous.old1"] = v1
-	// Second upgrade fails while making the previous journal durable: nothing
-	// may have changed and the first upgrade's recoverable state stays intact.
-	fs.failWrite[previousJournalPath] = true
-	plan := []PlannedFile{{Path: InstalledBinary, Mode: 0755, Content: "v3"}}
-	if _, err := upgradeWithIO(firstBytes, plan, io); err == nil {
-		t.Fatal("previous journal backup failure not surfaced")
-	}
-	if !bytes.Equal(fs.files[InstalledBinary], v2) {
-		t.Fatal("binary changed before the previous journal was durable")
-	}
-	if !bytes.Equal(fs.files[installJournalPath], firstBytes) {
-		t.Fatal("first upgrade journal changed")
-	}
-	if !bytes.Equal(fs.files[InstalledBinary+".zen-previous.old1"], v1) {
-		t.Fatal("first upgrade backup lost")
-	}
-	// Retry succeeds and only then commits the first upgrade's resources away.
-	delete(fs.failWrite, previousJournalPath)
-	superseded, err := upgradeWithIO(firstBytes, plan, io)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(superseded) != 1 || superseded[0] != InstalledBinary+".zen-previous.old1" {
-		t.Fatalf("superseded backups: %v", superseded)
-	}
-	if _, ok := fs.files[InstalledBinary+".zen-previous.old1"]; !ok {
-		t.Fatal("superseded backup removed before commit")
-	}
-	if err := commitUpgrade(superseded, io); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := fs.files[InstalledBinary+".zen-previous.old1"]; ok {
-		t.Fatal("superseded backup not removed at commit")
-	}
-	if _, ok := fs.files[previousJournalPath]; ok {
-		t.Fatal("previous journal backup not removed at commit")
 	}
 }

@@ -48,8 +48,13 @@ type installedFile struct {
 }
 
 type installJournal struct {
-	Version int             `json:"version"`
-	Files   []installedFile `json:"files"`
+	Version int `json:"version"`
+	// Previous points at the durable copy of the journal that this upgrade
+	// replaced. It is retained until an explicit rollback restores that
+	// installation, so a successful upgrade always leaves one coherent
+	// rollback step.
+	Previous string          `json:"previous,omitempty"`
+	Files    []installedFile `json:"files"`
 }
 
 func digest(data []byte) string {
@@ -303,14 +308,51 @@ func RollbackLinuxInstall() error {
 }
 
 func rollbackLinuxLocked() error {
-	journal, err := loadInstallJournal()
+	return rollbackWithIO(rootUpgradeIO())
+}
+
+// rollbackWithIO restores the installation recorded by the journal and then
+// either reinstates the retained previous journal (one-step rollback of a
+// successful upgrade) or removes the journal for a fresh-install uninstall.
+// The previous-install metadata is written before any backup is consumed, so a
+// metadata failure stays retryable; administrator changes still refuse.
+func rollbackWithIO(io upgradeIO) error {
+	journal, err := loadJournalWithIO(io)
 	if err != nil {
 		return err
 	}
-	// restoreJournal preflights the whole transaction and never overwrites
-	// administrator changes made after installation, including SDDM settings.
-	if err := restoreJournal(journal, rootUpgradeIO()); err != nil {
+	restored, err := restoreJournalWithBackups(journal, io)
+	if err != nil {
 		return err
+	}
+	if journal.Previous != "" {
+		previousBytes, err := io.read(journal.Previous, 0600)
+		if err != nil {
+			return err
+		}
+		var previous installJournal
+		if decodeMessage(previousBytes, &previous) != nil || previous.Version != 1 {
+			return errors.New("invalid_previous_install_journal")
+		}
+		// Older history referenced by that journal was pruned when this
+		// upgrade committed; the restored install is the current management
+		// state and must not point at removed backups.
+		previous.Previous = ""
+		data, _ := json.Marshal(previous)
+		if err := io.write(installJournalPath, data, 0600); err != nil {
+			return err
+		}
+		for _, backup := range restored {
+			if err := io.remove(backup); err != nil {
+				return err
+			}
+		}
+		return io.remove(journal.Previous)
+	}
+	for _, backup := range restored {
+		if err := io.remove(backup); err != nil {
+			return err
+		}
 	}
 	parent, name, err := safeParent(installJournalPath, false)
 	if err != nil {

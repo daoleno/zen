@@ -335,11 +335,13 @@ func TestRestorePreviousInstallWritesPreviousJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := []byte(`{"version":1,"files":[]}`)
-	fs.files[previousJournalPath] = previous
+	backup := previousJournalBackup(previous)
+	journal.Previous = backup
+	fs.files[backup] = previous
 	if err := restorePreviousInstall(journal, io); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := fs.files[previousJournalPath]; ok {
+	if _, ok := fs.files[backup]; ok {
 		t.Fatal("previous journal backup not consumed after restore")
 	}
 	if !bytes.Equal(fs.files["/x"], old) {
