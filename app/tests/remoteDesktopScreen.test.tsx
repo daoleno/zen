@@ -4,11 +4,15 @@ import TestRenderer, { act } from "react-test-renderer";
 
 if (!process.env.ZEN_DESKTOP_SCREEN_CHILD) {
   test("mounted desktop route admission and native event lifecycle", () => {
-    const result = Bun.spawnSync([process.execPath, "test", import.meta.filename], {
-      env: { ...process.env, ZEN_DESKTOP_SCREEN_CHILD: "1" },
-    });
-    if (result.exitCode) throw new Error(new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr));
-    expect(result.exitCode).toBe(0);
+    // The route is exercised twice: once with the pre-native fallback shell and
+    // once with the commit-aware native keyboard present.
+    for (const native of ["0", "1"]) {
+      const result = Bun.spawnSync([process.execPath, "test", import.meta.filename], {
+        env: { ...process.env, ZEN_DESKTOP_SCREEN_CHILD: "1", ZEN_DESKTOP_SCREEN_NATIVE: native },
+      });
+      if (result.exitCode) throw new Error(new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr));
+      expect(result.exitCode).toBe(0);
+    }
   });
 } else {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -27,11 +31,13 @@ if (!process.env.ZEN_DESKTOP_SCREEN_CHILD) {
     Alert: { alert() {} }, AppState: { addEventListener: (_: string, callback: typeof background) => {
       background = callback; return { remove() {} };
     } },
+    Keyboard: { addListener: () => ({ remove() {} }), dismiss() {} },
     KeyboardAvoidingView: host("keyboard-avoid"), PanResponder: { create: () => ({ panHandlers: {} }) },
     Platform: { OS: "android" }, Pressable: host("button"), Text: host("text"), TextInput: host("input"), View: host("view"),
     StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1, absoluteFill: {} },
+    useWindowDimensions: () => ({ width: 400, height: 800, scale: 2, fontScale: 1 }),
   }));
-  mock.module("@expo/vector-icons", () => ({ Ionicons: host("icon") }));
+  mock.module("@expo/vector-icons", () => ({ Ionicons: host("icon"), MaterialIcons: host("icon") }));
   mock.module("expo-router", () => ({ Stack: { Screen: host("screen") }, router: { push: (value: unknown) => { pushes.push(value); } },
     useFocusEffect: (effect: () => (() => void)) => React.useEffect(effect, [effect]),
   }));
@@ -42,6 +48,12 @@ if (!process.env.ZEN_DESKTOP_SCREEN_CHILD) {
   mock.module("../services/desktopScopeGrant", () => ({ enableDesktopScope: (server: unknown, signal?: AbortSignal) => enable(server, signal) }));
   mock.module("../services/confirmDesktopEnable", () => ({ confirmDesktopEnable: () => confirmImpl ? confirmImpl() : Promise.resolve(confirmResult) }));
   mock.module("../modules/zen-remote-desktop/src", () => ({
+    NativeDesktopKeyboard: process.env.ZEN_DESKTOP_SCREEN_NATIVE === "1"
+      ? React.forwardRef((props: any, ref) => {
+        React.useImperativeHandle(ref, () => ({ focus: async () => {}, clear: async () => {} }));
+        return React.createElement("native-keyboard", props);
+      })
+      : null,
     NativeDesktopView: React.forwardRef((props: any, ref) => {
       React.useImperativeHandle(ref, () => ({
         sendCommand: async (_: string, __: number, payload: string) => { calls.push(JSON.parse(payload)); return true; },
@@ -214,4 +226,41 @@ if (!process.env.ZEN_DESKTOP_SCREEN_CHILD) {
     expect(calls).toEqual([]);
     await act(async () => tree.unmount());
   });
+
+  if (process.env.ZEN_DESKTOP_SCREEN_NATIVE === "1") {
+    test("native-present keyboard commits bounded batches, names keys, and shows input errors", async () => {
+      const tree = await mount();
+      await connect(tree);
+      const callback = event(tree);
+      await act(async () => callback({ nativeEvent: { state: "streaming", control: true, surface: "desktop" } }));
+      await act(async () => callback({ nativeEvent: { state: "connected", control: true, sensitiveInput: true } }));
+      await act(async () => tool(tree, "Keyboard").props.onPress());
+      // Native-present must not render the fallback TextInput.
+      expect(tree.root.findAllByType("input" as any)).toHaveLength(0);
+      const keyboard = tree.root.findByType("native-keyboard" as any);
+      await act(async () => keyboard.props.onDesktopText({ nativeEvent: { value: "你好\n" } }));
+      const first = calls.filter((call: any) => call.type === "batch");
+      expect(first).toHaveLength(1);
+      expect(first[0]).toEqual({ type: "batch", events: [
+        { type: "text", code: 0x4f60 }, { type: "text", code: 0x597d },
+        { type: "key", code: 0xff0d, down: true }, { type: "key", code: 0xff0d, down: false },
+      ] });
+      await act(async () => keyboard.props.onDesktopKey({ nativeEvent: { key: "Backspace" } }));
+      expect(calls.at(-1)).toEqual({ type: "batch", events: [
+        { type: "key", code: 0xff08, down: true }, { type: "key", code: 0xff08, down: false },
+      ] });
+      calls.length = 0;
+      await act(async () => keyboard.props.onDesktopText({ nativeEvent: { value: "x".repeat(200) } }));
+      const long = calls.filter((call: any) => call.type === "batch");
+      expect(long.length).toBeGreaterThanOrEqual(4);
+      expect(long.every((call: any) => call.events.length <= 64)).toBe(true);
+      expect(long.flatMap((call: any) => call.events).filter((input: any) => input.type === "text")).toHaveLength(200);
+      await act(async () => callback({ nativeEvent: { state: "streaming", control: true, surface: "desktop", inputError: "The computer rejected this character." } }));
+      expect(JSON.stringify(tree.toJSON())).toContain("The computer rejected this character.");
+      await act(async () => callback({ nativeEvent: { state: "connected", control: true, surface: "locked", inputError: "" } }));
+      expect(tree.root.findAllByType("native-keyboard" as any)).toHaveLength(0);
+      expect(tool(tree, "Keyboard").props.disabled).toBe(true);
+      await act(async () => tree.unmount());
+    });
+  }
 }

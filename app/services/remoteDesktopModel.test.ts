@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { desktopPoint, desktopKey, desktopText, desktopTextEdits, beginDesktopPan, advanceDesktopPan } from "./remoteDesktopModel";
+import { desktopPoint, desktopKey, desktopNamedKey, desktopText, desktopTextEdits, desktopCommittedText, beginDesktopPan, advanceDesktopPan, MAX_DESKTOP_BATCH_EVENTS } from "./remoteDesktopModel";
 
 describe("Remote desktop transport and input", () => {
   test("cumulative and repeated keyboard values emit each character once", () => {
@@ -12,17 +12,17 @@ describe("Remote desktop transport and input", () => {
     expect(events).toEqual(desktopText("abc"));
   });
   test("keyboard deletion and replacement preserve ordered key pairs", () => {
-    expect(desktopTextEdits("abc", "ab")).toEqual([desktopKey(0xff08)]);
+    expect(desktopTextEdits("abc", "ab")).toEqual([desktopNamedKey("Backspace")]);
     expect(desktopTextEdits("abc", "axc").flat()).toEqual([
-      ...desktopKey(0xff08), ...desktopKey(0xff08), ...desktopText("xc"),
+      ...desktopNamedKey("Backspace"), ...desktopNamedKey("Backspace"), ...desktopText("xc"),
     ]);
     expect(desktopTextEdits("", "")).toEqual([]);
+    expect(desktopTextEdits("ab", "ab")).toEqual([]);
   });
   test("pasted text is not truncated and every batch respects the host bound", () => {
     const batches = desktopTextEdits("a".repeat(65), "A".repeat(65));
     expect(batches.every((events) => events.length <= 64)).toBe(true);
-    expect(batches.flat().filter((event) => event.type === "key" && event.code === 65 && event.down)).toHaveLength(65);
-    for (const events of batches) expect(events.at(-1)).toMatchObject({ type: "key", down: false });
+    expect(batches.flat().filter((event) => event.type === "text" && event.code === 65)).toHaveLength(65);
   });
   test("maps the video rectangle and rejects letterboxing", () => {
     expect(desktopPoint(200, 400, 400, 800, 1280, 720)).toEqual({ x: 0.5, y: 0.5 });
@@ -30,12 +30,48 @@ describe("Remote desktop transport and input", () => {
     expect(desktopPoint(NaN, 0, 400, 800, 1280, 720)).toBeNull();
     expect(desktopPoint(0, 0, 0, 0, 1280, 720)).toBeNull();
   });
-  test("keeps key down and up together, including shifted text", () => {
+  test("atomic text events carry Unicode and named keys stay keysyms", () => {
     expect(desktopKey(97)).toEqual([{ type: "key", code: 97, down: true }, { type: "key", code: 97, down: false }]);
-    const events = desktopText("A!");
-    expect(events).toHaveLength(8);
-    expect(events.at(-1)).toEqual({ type: "key", code: 0xffe1, down: false });
-    expect(desktopText("a".repeat(100))).toHaveLength(32);
+    expect(desktopNamedKey("Backspace")).toEqual(desktopKey(0xff08));
+    expect(desktopNamedKey("Enter")).toEqual(desktopKey(0xff0d));
+    expect(desktopNamedKey("Delete")).toEqual(desktopKey(0xffff));
+    // Press-then-release is the host's job for atomic characters; the phone
+    // sends one event per scalar and lets the host map it to the keymap.
+    expect(desktopText("Ab!")).toEqual([
+      { type: "text", code: 0x41 }, { type: "text", code: 0x62 }, { type: "text", code: 0x21 },
+    ]);
+    expect(desktopText("你好😀")).toEqual([
+      { type: "text", code: 0x4f60 }, { type: "text", code: 0x597d }, { type: "text", code: 0x1f600 },
+    ]);
+    expect(desktopText("a\nb\tc")).toEqual([{ type: "text", code: 0x61 }, { type: "text", code: 0x62 }, { type: "text", code: 0x63 }]);
+    expect(desktopText("")).toEqual([]);
+  });
+  test("no batch exceeds the wire bound", () => {
+    const batches = desktopTextEdits("", "x".repeat(100));
+    expect(batches.every((events) => events.length <= 64)).toBe(true);
+    expect(batches.flat().length).toBe(100);
+  });
+  test("committed text splits into bounded batches with newlines as Enter", () => {
+    expect(desktopCommittedText("a\nb")).toEqual([
+      [...desktopText("a"), ...desktopNamedKey("Enter"), ...desktopText("b")],
+    ]);
+    // One Enter pair per newline; CRLF counts once.
+    expect(desktopCommittedText("\r\n").flat()).toEqual(desktopNamedKey("Enter"));
+    expect(desktopCommittedText("\n").flat()).toEqual(desktopNamedKey("Enter"));
+    expect(desktopCommittedText("a\r\nb")[0].map((event) => event.type)).toEqual(["text", "key", "key", "text"]);
+    // Control characters that named keys own are dropped, not sent as text.
+    expect(desktopCommittedText("a\u0000\u0007b").flat()).toEqual(desktopText("ab"));
+    expect(desktopCommittedText("")).toEqual([]);
+    const long = desktopCommittedText("x".repeat(200));
+    expect(long.every((batch) => batch.length <= MAX_DESKTOP_BATCH_EVENTS)).toBe(true);
+    expect(long.flat().filter((event) => event.type === "text")).toHaveLength(200);
+    expect(long.flat().length).toBe(200);
+    // A press/release pair is never split across a batch boundary.
+    const pairAtBoundary = desktopCommittedText("x".repeat(63) + "\n");
+    expect(pairAtBoundary[0]).toHaveLength(63);
+    expect(pairAtBoundary[1]).toEqual(desktopNamedKey("Enter"));
+    // Astral-plane scalars stay one event each and never split a surrogate.
+    expect(desktopCommittedText("你好😀")[0]).toEqual(desktopText("你好😀"));
   });
 });
 

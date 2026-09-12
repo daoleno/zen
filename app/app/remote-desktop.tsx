@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { AppState, Keyboard, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import { Stack, router, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
@@ -8,8 +8,8 @@ import { useAppColors } from "../constants/tokens";
 import { prepareDesktopConnection } from "../services/remoteDesktop";
 import { enableDesktopScope } from "../services/desktopScopeGrant";
 import { confirmDesktopEnable } from "../services/confirmDesktopEnable";
-import { desktopKey, desktopPoint, desktopTextEdits, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopPanState } from "../services/remoteDesktopModel";
-import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
+import { desktopNamedKey, desktopPoint, desktopCommittedText, desktopTextEdits, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopNamedKey, type DesktopPanState } from "../services/remoteDesktopModel";
+import { NativeDesktopView, NativeDesktopKeyboard, type DesktopKeyboardApi, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 import { DesktopConnectionUnavailable, DesktopPreflightError } from "../services/desktopConnectionCheck";
 
@@ -33,11 +33,21 @@ function DesktopSession() {
   const [panMode, setPanMode] = useState(false);
   const [dragMode, setDragMode] = useState(false);
   const [keyboard, setKeyboard] = useState(false);
+  const [inputNotice, setInputNotice] = useState("");
   const [text, setText] = useState("");
   const textRef = useRef("");
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [size, setSize] = useState({ width: 1, height: 1 });
+  const nativeKeyboard = useRef<DesktopKeyboardApi>(null);
+  const textInput = useRef<TextInput>(null);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const landscape = windowWidth > windowHeight;
+  // In landscape the soft keyboard is tall (about 63% of the screen). The stack
+  // header and server row would leave the remote video a few pixels, so the
+  // route hides them while the keyboard is open and keeps the toolbar plus the
+  // video above the docked keyboard.
+  const compactLandscape = landscape && keyboard;
   const generation = useRef(0);
   const pending = useRef<AbortController | null>(null);
   const grantPending = useRef<AbortController | null>(null);
@@ -62,10 +72,17 @@ function DesktopSession() {
     offset: { x: number; y: number }; pan: DesktopPanState | null;
   }>({ x: 0, y: 0, time: 0, pinch: 0, zoom: 1, offset: { x: 0, y: 0 }, pan: null });
   const connected = status.state === "connected";
+  const textInputAllowed = connected && control && status.surface !== "greeter" && status.surface !== "locked";
   const send = (value: object) => commands.send(value);
   const input = (events: DesktopInput[]) => {
     if (connected && control && events.length) send({ type: "batch", events });
   };
+  const sendCommittedText = (value: string) => {
+    // The daemon rejects batches above 64 events, so a paste or IME commit is
+    // split here and a key press always travels with its release.
+    for (const batch of desktopCommittedText(value)) input(batch);
+  };
+  const sendNamedKey = (key: DesktopNamedKey) => input(desktopNamedKey(key));
   const stop = useCallback((keepReconnect = false) => {
     reconnectAllowed.current = keepReconnect;
     if (!keepReconnect) reconnectAttempts.current = 0;
@@ -76,7 +93,7 @@ function DesktopSession() {
     commands.stop();
     setTransport("");
     setConnection(""); setPreparing(false); setControl(false);
-    setStatus({ state: "disconnected" }); setKeyboard(false);
+    setStatus({ state: "disconnected" }); setKeyboard(false); setInputNotice("");
     textRef.current = ""; setText("");
     setDragMode(false); setPanMode(false); setZoom(1); setOffset({ x: 0, y: 0 });
     setPreflightCode("");
@@ -88,6 +105,23 @@ function DesktopSession() {
     const subscription = AppState.addEventListener("change", (state) => { if (state !== "active") stop(); });
     return () => { stop(); subscription.remove(); };
   }, [commands, stop]);
+  // Opening the input bar focuses the commit-aware native field when present;
+  // otherwise the plain TextInput keeps the pre-native shell working. The OS
+  // keyboard dismiss (back gesture) closes the bar instead of leaving it open.
+  useEffect(() => {
+    if (!keyboard) return;
+    const focus = setTimeout(() => {
+      if (NativeDesktopKeyboard) void nativeKeyboard.current?.focus?.().catch(() => undefined);
+      else textInput.current?.focus();
+    }, 50);
+    const hidden = Keyboard.addListener("keyboardDidHide", () => setKeyboard(false));
+    return () => { clearTimeout(focus); hidden.remove(); };
+  }, [keyboard]);
+  useEffect(() => {
+    if (!inputNotice) return;
+    const timer = setTimeout(() => setInputNotice(""), 5000);
+    return () => clearTimeout(timer);
+  }, [inputNotice]);
   const scheduleReconnect = () => {
     if (!reconnectAllowed.current || reconnectAttempts.current >= 6) return;
     const epoch = generation.current;
@@ -207,20 +241,22 @@ function DesktopSession() {
     },
     onPanResponderTerminate: () => { gestureStart.current.pan = null; input([{ type: "release" }]); },
   });
-  const tool = (icon: React.ComponentProps<typeof Ionicons>["name"], label: string, action: () => void, selected = false, disabled = false) => (
-    <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected, disabled }}
+  const toolNode = (graphic: React.ReactNode, label: string, action: () => void, selected = false, disabled = false, hint?: string) => (
+    <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} accessibilityHint={hint} accessibilityState={{ selected, disabled }}
       disabled={disabled} onPress={action} style={[styles.tool, { backgroundColor: selected ? colors.surfacePressed : "transparent", opacity: disabled ? 0.35 : 1 }]}>
-      <Ionicons name={icon} size={22} color={colors.textPrimary} />
+      {graphic}
     </Pressable>
   );
+  const tool = (icon: React.ComponentProps<typeof Ionicons>["name"], label: string, action: () => void, selected = false, disabled = false, hint?: string) =>
+    toolNode(<Ionicons name={icon} size={22} color={colors.textPrimary} />, label, action, selected, disabled, hint);
   return <SafeAreaView ref={root} onLayout={() => root.current?.measureInWindow((_x, y) => setHeaderHeight(y))}
     edges={["bottom"]} style={[styles.root, { backgroundColor: colors.surfaceSubtle }]}>
-    <Stack.Screen options={{ title: "Remote Desktop", headerShown: true }} />
+    <Stack.Screen options={{ title: "Remote Desktop", headerShown: !compactLandscape }} />
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight}>
-    <View style={styles.header}>
-      <Text numberOfLines={1} style={[styles.host, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
-      <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : enabling ? "Enabling remote desktop" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
-    </View>
+    {compactLandscape ? null : <View style={[styles.header, landscape && styles.headerLandscape]}>
+      <Text numberOfLines={1} style={[styles.host, landscape && styles.hostLandscape, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
+      <Text numberOfLines={1} style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : enabling ? "Enabling remote desktop" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
+    </View>}
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
         <NativeDesktopView ref={native} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
@@ -240,6 +276,8 @@ function DesktopSession() {
           if (nativeEvent.surface === "greeter" || nativeEvent.surface === "locked") {
             textRef.current = ""; setText(""); setKeyboard(false);
           }
+          if (nativeEvent.inputError) setInputNotice(nativeEvent.inputError);
+          else if (nativeEvent.state !== "streaming") setInputNotice("");
           setStatus(nativeEvent);
         }} />
       </View> : null}
@@ -259,7 +297,8 @@ function DesktopSession() {
       {tool("move-outline", "Drag pointer", () => { setDragMode(!dragMode); setPanMode(false); }, dragMode, !connected || !control)}
       {tool("contract-outline", "Reset zoom", () => { setZoom(1); setOffset({ x: 0, y: 0 }); }, false, !connected)}
       {size.width < 360 ? <View style={styles.toolbarBreak} /> : null}
-      {tool("keypad-outline", "Keyboard", () => { textRef.current = ""; setText(""); setKeyboard(!keyboard); }, keyboard, !connected || !control || status.surface === "greeter" || status.surface === "locked")}
+      {toolNode(<MaterialIcons name="keyboard" size={22} color={colors.textPrimary} />, "Keyboard", () => { setKeyboard(!keyboard); }, keyboard, !textInputAllowed,
+        status.surface === "greeter" ? "The login screen uses the OS password action." : status.surface === "locked" ? "The lock screen uses the OS password action." : "Opens the phone keyboard for the focused remote text field.")}
       {tool("lock-closed-outline", "OS password", () => {
         textRef.current = ""; setText(""); setKeyboard(false);
         void native.current?.showSensitiveInput?.(commands.currentGeneration).catch(() => undefined);
@@ -267,17 +306,26 @@ function DesktopSession() {
       {tool("chevron-up-outline", "Scroll up", () => input([{ type: "scroll", delta: -3 }]), false, !connected || !control)}
       {tool("chevron-down-outline", "Scroll down", () => input([{ type: "scroll", delta: 3 }]), false, !connected || !control)}
     </View>
-    {keyboard ? <View style={styles.keyboard}>
-      <TextInput autoFocus value={text} maxLength={1024} onChangeText={(value) => {
-        const batches = desktopTextEdits(textRef.current, value);
-        textRef.current = value; setText(value);
-        for (const events of batches) input(events);
-      }}
-        onSubmitEditing={() => input(desktopKey(0xff0d))} autoCorrect={false} autoCapitalize="none" placeholder="Type" accessibilityLabel="Desktop keyboard"
-        style={[styles.textInput, { color: colors.textPrimary, borderColor: colors.borderSubtle }]} />
-      {tool("return-down-back-outline", "Enter", () => input(desktopKey(0xff0d)))}
-      {tool("arrow-back-outline", "Backspace", () => input(desktopKey(0xff08)))}
+    {keyboard ? <View style={[styles.keyboard, compactLandscape && styles.keyboardCompact]}>
+      {NativeDesktopKeyboard ? (
+        <NativeDesktopKeyboard ref={nativeKeyboard}
+          style={[styles.textInput, compactLandscape && styles.textInputCompact, { borderColor: colors.borderSubtle }]}
+          onDesktopText={({ nativeEvent }) => sendCommittedText(nativeEvent.value)}
+          onDesktopKey={({ nativeEvent }) => sendNamedKey(nativeEvent.key)} />
+      ) : (
+        <TextInput ref={textInput} autoFocus value={text} maxLength={1024} onChangeText={(value) => {
+          const batches = desktopTextEdits(textRef.current, value);
+          textRef.current = value; setText(value);
+          for (const events of batches) input(events);
+        }}
+          onSubmitEditing={() => sendNamedKey("Enter")} autoCorrect={false} autoCapitalize="none" placeholder="Type" accessibilityLabel="Desktop keyboard"
+          style={[styles.textInput, compactLandscape && styles.textInputCompact, { color: colors.textPrimary, borderColor: colors.borderSubtle }]} />
+      )}
+      {tool("return-down-back-outline", "Enter", () => sendNamedKey("Enter"))}
+      {tool("arrow-back-outline", "Backspace", () => sendNamedKey("Backspace"))}
+      {tool("chevron-down-outline", "Hide keyboard", () => { Keyboard.dismiss(); setKeyboard(false); })}
     </View> : null}
+    {inputNotice ? <Text accessibilityRole="alert" style={styles.inputNotice}>{inputNotice}</Text> : null}
     </KeyboardAvoidingView>
   </SafeAreaView>;
 }
@@ -285,6 +333,10 @@ function DesktopSession() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   header: { paddingHorizontal: 16, paddingVertical: 10, gap: 4 },
+  // Short landscape heights keep the header on one compact line so the video
+  // viewport and the toolbar stay reachable.
+  headerLandscape: { flexDirection: "row", alignItems: "baseline", gap: 12, paddingHorizontal: 12, paddingVertical: 4 },
+  hostLandscape: { flexShrink: 1 },
   host: { fontSize: 14, fontWeight: "600" },
   viewport: { flex: 1, backgroundColor: "#000000", overflow: "hidden" },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 16 },
@@ -295,5 +347,12 @@ const styles = StyleSheet.create({
   toolbarBreak: { width: "100%" },
   tool: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 6 },
   keyboard: { flexDirection: "row", padding: 8, alignItems: "center" },
+  // Landscape + keyboard open: the docked IME provides the keys (including its
+  // own hide control), so the native capture field is clipped to one pixel
+  // while staying mounted and focused. The remote video keeps the height above
+  // the toolbar and the IME instead of a thin strip.
+  keyboardCompact: { height: 1, paddingVertical: 0, paddingHorizontal: 0, overflow: "hidden" },
+  textInputCompact: { height: 1, borderWidth: 0, paddingHorizontal: 0 },
+  inputNotice: { paddingHorizontal: 12, paddingBottom: 6, fontSize: 12, color: "#e3ba76" },
   textInput: { flex: 1, minWidth: 0, height: 44, borderWidth: 1, borderRadius: 6, paddingHorizontal: 12 },
 });

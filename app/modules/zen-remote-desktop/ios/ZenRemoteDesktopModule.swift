@@ -16,6 +16,62 @@ public final class ZenRemoteDesktopModule: Module {
       AsyncFunction("disconnect") { (view: DesktopView, generation: String) in view.disconnect(generation) }
       AsyncFunction("showSensitiveInput") { (view: DesktopView, generation: String) -> Bool in view.showSensitiveInput(generation) }
     }
+    View(DesktopKeyboardView.self) {
+      Events("onDesktopText", "onDesktopKey")
+      AsyncFunction("focus") { (view: DesktopKeyboardView) in view.focusInput() }
+      AsyncFunction("clear") { (view: DesktopKeyboardView) in view.clearInput() }
+    }
+  }
+}
+
+final class DesktopKeyboardView: ExpoView, UITextFieldDelegate {
+  let onDesktopText = EventDispatcher()
+  let onDesktopKey = EventDispatcher()
+  private let field = UITextField()
+
+  required init(appContext: AppContext? = nil) {
+    super.init(appContext: appContext)
+    backgroundColor = .clear
+    field.delegate = self
+    field.autocorrectionType = .no
+    field.autocapitalizationType = .none
+    field.spellCheckingType = .no
+    field.smartQuotesType = .no
+    field.smartDashesType = .no
+    field.returnKeyType = .default
+    addSubview(field)
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    field.frame = bounds
+  }
+
+  func focusInput() {
+    if !field.isFirstResponder { field.becomeFirstResponder() }
+  }
+
+  func clearInput() {
+    field.text = ""
+  }
+
+  // Multi-stage input (CJK, autocorrect) is delivered once it is committed;
+  // marked text stays local and never reaches the remote window.
+  func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+    if string.isEmpty {
+      onDesktopKey(["key": "Backspace"])
+    } else {
+      // Commit the raw replacement; JS converts embedded newlines to Enter
+      // and splits oversized commits into bounded batches.
+      onDesktopText(["value": string])
+    }
+    // The field is a capture surface, not a mirror of the remote text buffer.
+    return false
+  }
+
+  func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+    onDesktopKey(["key": "Enter"])
+    return false
   }
 }
 
@@ -33,6 +89,7 @@ final class DesktopView: ExpoView {
   private var hostControl = false
   private var sensitiveReady = false
   private var hostSurface = ""
+  private var inputError = ""
   private var sensitiveDialog: UIAlertController?
   private var format: CMVideoFormatDescription?
   private var needIDR = true
@@ -115,7 +172,7 @@ final class DesktopView: ExpoView {
 
   private func state(_ value: String, _ reason: String = "") {
     onState(["state": value, "reason": reason, "source": selectedSource, "width": width, "height": height,
-             "submitted": submitted, "dropped": dropped, "control": hostControl,
+             "submitted": submitted, "dropped": dropped, "control": hostControl, "inputError": inputError,
              "sensitiveInput": sensitiveReady && encryptedTransport(), "surface": hostSurface])
   }
 
@@ -191,6 +248,7 @@ final class DesktopView: ExpoView {
               self.hostSurface = status["surface"] as? String ?? "desktop"
               self.hostControl = status["control"] as? Bool ?? false
               self.sensitiveReady = (status["sensitiveInput"] as? Bool ?? false) && self.hostControl
+              self.inputError = status["inputError"] as? String ?? ""
               self.lastVideo = ProcessInfo.processInfo.systemUptime
             }
             self.state(state, status["reason"] as? String ?? "")

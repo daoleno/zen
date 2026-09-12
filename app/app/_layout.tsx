@@ -36,6 +36,7 @@ import { syncCalendarNotifications } from "../services/calendarNotifications";
 import { useAppTheme } from "../constants/tokens";
 import { ThemeProvider } from "../theme";
 import { MermaidEngineHost } from "../components/markdown/MermaidEngineHost";
+import { OrientationPolicy } from "../components/OrientationPolicy";
 import { wsClient } from "../services/websocket";
 import {
   createConnectedReadRefreshHandler,
@@ -781,6 +782,7 @@ export default function RootLayout() {
                       <SafeAreaProvider>
                         <ThemedStatusBar />
                         <MermaidEngineHost />
+                        <OrientationPolicy />
                         <AppRuntime />
                       </SafeAreaProvider>
                     </CalendarProvider>

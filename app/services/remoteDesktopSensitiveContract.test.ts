@@ -29,8 +29,12 @@ test("sensitive transport needs live native pin ownership or completed TLS", () 
 });
 
 test("lock and greeter surfaces cannot open the JS history keyboard", () => {
-  expect(route).toContain('status.surface === "greeter" || status.surface === "locked"');
+  // The keyboard action is gated on the live surface, and a lock/greeter
+  // transition closes an open input bar instead of leaving it armed.
+  expect(route).toContain('status.surface !== "greeter" && status.surface !== "locked"');
+  expect(route).toContain('!textInputAllowed');
   expect(route).toContain('nativeEvent.surface === "greeter" || nativeEvent.surface === "locked"');
+  expect(route).toContain('textRef.current = ""; setText(""); setKeyboard(false);');
   expect(android).toContain('.put("submit", true)');
   expect(ios).toContain('"submit": true');
 });

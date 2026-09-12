@@ -40,6 +40,11 @@ class ZenRemoteDesktopModule : Module() {
       AsyncFunction("showSensitiveInput") { view: DesktopView, generation: String -> view.showSensitiveInput(generation) }
       OnViewDestroys { view: DesktopView -> view.destroy() }
     }
+    View(DesktopKeyboardView::class) {
+      Events("onDesktopText", "onDesktopKey")
+      AsyncFunction("focus") { view: DesktopKeyboardView -> view.focusInput() }
+      AsyncFunction("clear") { view: DesktopKeyboardView -> view.clearInput() }
+    }
   }
 }
 
@@ -63,6 +68,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
   @Volatile private var sensitiveReady = false
   @Volatile private var tlsConnected = false
   @Volatile private var hostSurface = ""
+  @Volatile private var inputError = ""
   private var sensitiveDialog: AlertDialog? = null
   private var sensitiveEditor: EditText? = null
   private var codec: MediaCodec? = null
@@ -105,7 +111,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
       Log.d("ZenDesktop", "state=$value generation=$epoch presented=$presented dropped=$dropped size=${width}x$height reason=$reason")
     }
-    val event = mapOf("state" to value, "reason" to reason, "source" to selectedSource, "width" to width, "height" to height, "presented" to presented, "dropped" to dropped, "control" to hostControl, "surface" to hostSurface, "sensitiveInput" to (sensitiveReady && encryptedTransport()))
+    val event = mapOf("state" to value, "reason" to reason, "source" to selectedSource, "width" to width, "height" to height, "presented" to presented, "dropped" to dropped, "control" to hostControl, "surface" to hostSurface, "inputError" to inputError, "sensitiveInput" to (sensitiveReady && encryptedTransport()))
     if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
       if (epoch == generation.get() && !destroyed) onState(event)
     } else post { if (epoch == generation.get() && !destroyed) onState(event) }
@@ -185,6 +191,7 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
                     hostSurface = status.optString("surface", "desktop")
                     hostControl = status.optBoolean("control", false)
                     sensitiveReady = status.optBoolean("sensitiveInput", false) && hostControl
+                    inputError = status.optString("inputError", "")
                   }
                   requestLayout()
                   terminalState = value in listOf("denied", "unsupported", "disconnected")
