@@ -197,9 +197,18 @@ performs file IO and durable checkpoints only, without holding the outbound
 send mutex during HTTP requests. Polling, text input, callbacks and output keep
 running while a file is pending. The polling owner admits at most one completed
 media batch per pass and rechecks the captured recipient before provider input.
-Media batches retain FIFO order, including album collection and retry waits;
-ordinary text and navigation do not wait on that queue. Disable, token/bot
-rotation, owner revocation and shutdown cancel active IO. Shutdown joins the
+Media batches retain FIFO order, including album collection and retry waits.
+An ordinary prompt following pending media to the same exact Brain thread or
+Session waits for confirmed attachment admission, so a separate "please analyze
+this" message cannot overtake its file. These follow-ups reuse the bounded
+durable receipt journal, capture the original recipient and survive restart
+without duplicate provider turns. If the earlier input fails, becomes uncertain,
+expires or loses its recipient, the follow-up is explicitly not submitted with
+retry feedback; it does not run without the file or migrate to another recipient.
+Ready follow-ups do not wait for unrelated recipients' pending media. Control
+commands, callback acknowledgements, other-recipient text and outgoing output
+remain responsive. Disable, token/bot rotation, owner revocation and shutdown
+cancel active IO. Shutdown joins the
 worker; a replacement download cannot overlap an older cancelled worker.
 
 Completed-file rename and reservation release share one upload-store critical
@@ -212,7 +221,8 @@ The sealed batch produces one provider input containing every received caption;
 late items get explicit resend feedback and do not start another turn. Partial
 download success survives restart without redownloading already stored bytes.
 No caption-only turn is submitted when a file fails. Terminal batch errors ask
-for the whole batch to be resent. Receipt metadata is bounded to 128 batches and
+for the whole batch to be resent. Receipt metadata is bounded to 128 entries
+(media batches and dependent follow-ups combined) and
 expires after 24 hours; file retention is owned by the shared store.
 
 Static stickers carry the actual WebP file plus their emoji descriptor. Animated

@@ -23,10 +23,11 @@ type providerReceipt struct{ SessionID, Body string }
 // Work/FSM persistence below are production code on isolated on-disk Stores.
 type conversationProvider struct {
 	brain.Watcher
-	mu      sync.Mutex
-	workers map[string]*classifier.Worker
-	path    string
-	created int
+	mu         sync.Mutex
+	workers    map[string]*classifier.Worker
+	path       string
+	created    int
+	inputCalls []string
 }
 
 func (p *conversationProvider) Workers() []*classifier.Worker {
@@ -92,6 +93,7 @@ func (p *conversationProvider) receipts() map[string]providerReceipt {
 func (p *conversationProvider) SendInputWithReceiptResult(id, body, receipt string) (watcher.InputResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.inputCalls = append(p.inputCalls, receipt)
 	rows := p.receipts()
 	if existing, found := rows[receipt]; found && existing != (providerReceipt{id, body}) {
 		return watcher.InputResult{Outcome: watcher.InputNotSubmitted}, fmt.Errorf("receipt identity mismatch")

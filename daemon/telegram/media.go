@@ -37,6 +37,8 @@ type mediaPart struct {
 // Media inputs are channel delivery receipts, not a second media database.
 // Their bytes live in the same bounded upload store as mobile attachments.
 type mediaInput struct {
+	TextOnly        bool        `json:"text_only,omitempty"`
+	DependsOn       []string    `json:"depends_on,omitempty"`
 	ID              string      `json:"id"`
 	Receipt         string      `json:"receipt"`
 	SessionID       string      `json:"session_id,omitempty"`
@@ -203,24 +205,11 @@ func (m *Manager) stageMedia(message Message, updateID int64) (string, error) {
 		return reject(err.Error())
 	}
 	part.UpdateID = updateID
-	input := mediaInput{ID: id, Receipt: fmt.Sprintf("telegram:update:%d:%d", state.BotID, updateID),
-		MessageThreadID: message.MessageThreadID, OwnerID: state.OwnerID, ChatID: state.ChatID, BotID: state.BotID,
-		Album: message.MediaGroupID != "", State: "collecting", CreatedAt: m.now().UTC(), Reply: replyContext(message.ReplyToMessage)}
-	if mapping, ok := topicMappingByThread(state, message.MessageThreadID); ok {
-		input.SessionID = mapping.SessionID
-	} else if !isGeneralThread(message.MessageThreadID) && !slices.Contains(state.BrainTopics, message.MessageThreadID) {
-		return reject("This topic is not mapped to Zen.")
-	} else if message.ReplyToMessage != nil && message.ReplyToMessage.From != nil && message.ReplyToMessage.From.ID == state.BotID && state.ReplySessions[message.ReplyToMessage.MessageID] != "" {
-		input.SessionID = state.ReplySessions[message.ReplyToMessage.MessageID]
-	} else if !state.TopicsAvailable {
-		input.SessionID = state.FallbackSessionID
+	input, err := m.mediaRecipient(state, message, updateID)
+	if err != nil {
+		return reject(err.Error())
 	}
-	if input.SessionID == "" {
-		input.BrainThreadID, err = m.brain.ChatThreadID()
-		if err != nil || input.BrainThreadID == "" {
-			return reject("Brain is unavailable.")
-		}
-	}
+	input.ID, input.Album = id, message.MediaGroupID != ""
 	if !m.mediaRecipientAvailable(input) {
 		return reject("The exact recipient is unavailable; choose Brain or a current Session.")
 	}
@@ -298,8 +287,21 @@ func (m *Manager) failMedia(id, reason string) error {
 			return nil
 		}
 		input.State = "failed"
+		if input.TextOnly {
+			input.State = "not_submitted"
+			for _, part := range input.Parts {
+				key := fmt.Sprint(part.UpdateID)
+				record := state.Processed[key]
+				record.Disposition, record.SessionID, record.BrainThreadID, record.MessageThreadID = "deferred_not_submitted", input.SessionID, input.BrainThreadID, input.MessageThreadID
+				state.Processed[key] = record
+			}
+		}
 		state.MediaInputs[id] = input
-		if !enqueue(state, outboxRecord{ID: "media-error:" + id, Kind: "send", Text: reason + " Nothing was forwarded. Resend the whole batch to retry.",
+		text := reason + " Nothing was forwarded. Resend the whole batch to retry."
+		if input.TextOnly {
+			text = reason + " This follow-up was not submitted. Resend the file and prompt together to retry."
+		}
+		if !enqueue(state, outboxRecord{ID: "media-error:" + id, Kind: "send", Text: text,
 			SessionID: input.SessionID, BrainThreadID: input.BrainThreadID, MessageThreadID: input.MessageThreadID, ReplyMessageID: input.Parts[0].MessageID, CreatedAt: m.now().UTC(), ReplyMarkup: navigationKeyboard(*state, input.MessageThreadID)}) {
 			return fmt.Errorf("media feedback queue is full")
 		}
@@ -312,6 +314,20 @@ func (m *Manager) failMedia(id, reason string) error {
 func (m *Manager) advanceMedia(ctx context.Context, token string) error {
 	m.outboundMu.Lock()
 	defer m.outboundMu.Unlock()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	state := m.store.snapshot()
+	if !state.Enabled || state.WebhookConflict {
+		return nil
+	}
+	currentToken, err := m.store.readToken()
+	if err != nil || currentToken != token {
+		return nil
+	}
+	if followup := readyMediaFollowup(state); followup != nil {
+		return m.admitMedia(*followup)
+	}
 	m.mediaMu.Lock()
 	active := m.mediaActive
 	if active != nil {
@@ -339,22 +355,12 @@ func (m *Manager) advanceMedia(ctx context.Context, token string) error {
 			}
 		}
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	state := m.store.snapshot()
-	if !state.Enabled || state.WebhookConflict {
-		return nil
-	}
-	currentToken, err := m.store.readToken()
-	if err != nil || currentToken != token {
-		return nil
-	}
 	// FIFO media ordering includes collecting albums and retry backoffs.
-	// Ordinary text, callbacks and projections do not wait on this queue.
+	// Ready follow-ups above depend only on their own recipient, not on an
+	// unrelated recipient's slower file transfer.
 	var next *mediaInput
 	for _, input := range state.MediaInputs {
-		if mediaTerminal(input.State) {
+		if mediaTerminal(input.State) || input.TextOnly {
 			continue
 		}
 		if next == nil || input.CreatedAt.Before(next.CreatedAt) ||
@@ -390,8 +396,34 @@ func (m *Manager) advanceMedia(ctx context.Context, token string) error {
 		}()
 		return nil
 	}
+	return m.admitMedia(input)
+}
+
+// Provider admission stays on Run under outboundMu for both files and their
+// dependent prompts. Download workers never call this method.
+func (m *Manager) admitMedia(input mediaInput) error {
+	if input.State == "admitting" {
+		return m.finishMedia(input, brain.ExternalInputUncertain)
+	}
+	state := m.store.snapshot()
+	pendingDependency := false
+	for _, id := range input.DependsOn {
+		dependency, found := state.MediaInputs[id]
+		if !found || (mediaTerminal(dependency.State) && dependency.State != "accepted") {
+			return m.failMedia(input.ID, "The earlier attachment or message was not confirmed as received.")
+		}
+		if dependency.State != "accepted" {
+			pendingDependency = true
+		}
+	}
+	if pendingDependency {
+		return nil
+	}
+	if !m.mediaRecipientAvailable(input) || m.now().Sub(input.CreatedAt) > 30*time.Minute {
+		return m.failMedia(input.ID, "The original recipient is unavailable or this pending input expired.")
+	}
 	for _, part := range input.Parts {
-		if !m.attachments.Exists(part.File) {
+		if !input.TextOnly && !m.attachments.Exists(part.File) {
 			return m.failMedia(input.ID, "A staged file is no longer available.")
 		}
 	}
@@ -561,6 +593,16 @@ func (m *Manager) finishMedia(input mediaInput, result brain.ExternalInputDispos
 		input.State = "not_submitted"
 		text = "These files were not submitted. Resend the whole batch when the recipient is available."
 	}
+	if input.TextOnly {
+		switch input.State {
+		case "accepted":
+			text = ""
+		case "uncertain":
+			text = "Zen could not prove whether the recipient received this follow-up. It was not replayed."
+		default:
+			text = "This follow-up was not submitted. Resend the file and prompt together when the recipient is available."
+		}
+	}
 	return m.store.mutate(func(state *durableState) error {
 		state.MediaInputs[input.ID] = input
 		for _, part := range input.Parts {
@@ -570,7 +612,13 @@ func (m *Manager) finishMedia(input mediaInput, result brain.ExternalInputDispos
 			key := fmt.Sprint(part.UpdateID)
 			row := state.Processed[key]
 			row.Disposition, row.SessionID, row.BrainThreadID, row.MessageThreadID = "media_"+input.State, input.SessionID, input.BrainThreadID, input.MessageThreadID
+			if input.TextOnly {
+				row.Disposition = "deferred_" + input.State
+			}
 			state.Processed[key] = row
+		}
+		if text == "" {
+			return nil
 		}
 		if !enqueue(state, outboxRecord{ID: "media-ack:" + input.ID, Kind: "send", Text: text, MessageThreadID: input.MessageThreadID,
 			SessionID: input.SessionID, BrainThreadID: input.BrainThreadID, ReplyMessageID: input.Parts[0].MessageID, CreatedAt: m.now().UTC(), ReplyMarkup: navigationKeyboard(*state, input.MessageThreadID)}) {

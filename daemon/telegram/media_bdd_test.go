@@ -130,6 +130,7 @@ func (f *mediaFixture) advance(t *testing.T, by time.Duration) {
 func (f *mediaFixture) drain(t *testing.T) {
 	t.Helper()
 	for range maxMediaInputs * 2 {
+		before := f.m.store.snapshot()
 		if err := f.m.advanceMedia(t.Context(), "fixture-token"); err != nil {
 			t.Fatal(err)
 		}
@@ -144,13 +145,7 @@ func (f *mediaFixture) drain(t *testing.T) {
 			}
 			continue
 		}
-		pending := false
-		for _, row := range f.m.store.snapshot().MediaInputs {
-			if !mediaTerminal(row.State) && !f.now.Before(row.ReadyAt) {
-				pending = true
-			}
-		}
-		if !pending {
+		if reflect.DeepEqual(before.MediaInputs, f.m.store.snapshot().MediaInputs) {
 			return
 		}
 	}

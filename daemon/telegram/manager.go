@@ -710,18 +710,25 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 					return err
 				}
 			} else {
-				_, sessionTopic := topicMappingByThread(state, message.MessageThreadID)
-				if sessionTopic {
-					disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
-				} else if isGeneralThread(message.MessageThreadID) {
-					disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
-				} else if slices.Contains(state.BrainTopics, message.MessageThreadID) || (state.UsersCreateTopics && message.IsTopicMessage && message.ForumTopicCreated != nil) {
-					if err := m.bindBrainTopic(message.MessageThreadID); err != nil {
-						return err
+				var err error
+				disposition, err = m.deferTextAfterMedia(*message, update.UpdateID)
+				if err != nil {
+					return err
+				}
+				if disposition == "" {
+					_, sessionTopic := topicMappingByThread(state, message.MessageThreadID)
+					if sessionTopic {
+						disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
+					} else if isGeneralThread(message.MessageThreadID) {
+						disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
+					} else if slices.Contains(state.BrainTopics, message.MessageThreadID) || (state.UsersCreateTopics && message.IsTopicMessage && message.ForumTopicCreated != nil) {
+						if err := m.bindBrainTopic(message.MessageThreadID); err != nil {
+							return err
+						}
+						disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
+					} else {
+						disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
 					}
-					disposition = m.handleOwnerMessage(ctx, token, *message, update.UpdateID)
-				} else {
-					disposition = m.handleSessionTopicMessage(ctx, token, *message, update.UpdateID)
 				}
 			}
 		}
@@ -743,6 +750,10 @@ func (m *Manager) handleUpdate(ctx context.Context, token string, update Update)
 			if record.SessionID == "" && m.brain != nil && (disposition == "accepted" || disposition == "pending" || disposition == "uncertain") {
 				record.BrainThreadID, _ = m.brain.ChatThreadID()
 			}
+		}
+		if disposition == "deferred_queued" {
+			input := current.MediaInputs["update:"+key]
+			record.SessionID, record.BrainThreadID, record.MessageThreadID = input.SessionID, input.BrainThreadID, input.MessageThreadID
 		}
 		current.Processed[key] = record
 		if message != nil && (disposition == "accepted" || disposition == "session_accepted") {
