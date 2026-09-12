@@ -10,7 +10,7 @@ in the Zen remote-desktop native library (`libzen_moonlight.so`).
 | moonlight-common-c | `62e066388f1a1b133e0bee947b9a374311a3354b` | GPL-3.0 | `notices/GPL-3.0-moonlight-common-c.txt` |
 | enet (cgutman fork) | `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1` | MIT | `notices/ENET-MIT.txt` |
 | nanors | `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a` | MIT | `notices/NANORS-MIT.txt` |
-| OpenSSL (Android prefix) | `3.0.16` | Apache-2.0 | `notices/` OpenSSL notice is installed under the build prefix |
+| OpenSSL (Android prefix) | `3.5.4` (maintained LTS; 3.0.x EOL 2026-09) | Apache-2.0 | `notices/OPENSSL-APACHE-2.0.txt` |
 | Sunshine (host, separate process) | `dd7a1f796e69283a42663630ecd49b174b070778` | GPL-3.0 | distributed with the host package, not embedded in the app |
 
 Exact archive URLs and sha256 digests live in `native.lock.json`. Nothing is
@@ -43,12 +43,24 @@ files in this directory.
 scripts/fetch-moonlight-common-c.sh
 
 # 2. Android: build the pinned OpenSSL prefix for each ABI (once per ABI).
+#    API level follows the module minSdk (default 24).
 scripts/build-openssl-android.sh --abi arm64-v8a
 scripts/build-openssl-android.sh --abi x86_64
 
 # 3. Build the module (CMake 3.22.1 + NDK 27.1.12297006).
 cd app/android && ./gradlew :zen-remote-desktop:assembleDebug -PreactNativeArchitectures=arm64-v8a
 ```
+
+Bridge lifecycle tests (host JVM, inert core, no network/host):
+
+```sh
+ZEN_MOONLIGHT_BRIDGE_TEST=1 ./gradlew :zen-remote-desktop:testDebugUnitTest
+# or directly:
+scripts/build-moonlight-bridge-test.sh
+```
+
+A clean checkout has no `third_party/`; CMake fails with the exact fetch
+command instead of building against stale local state.
 
 Host compile check (no device, no Android SDK required):
 

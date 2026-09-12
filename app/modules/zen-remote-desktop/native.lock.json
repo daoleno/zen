@@ -41,13 +41,22 @@
   "crypto": {
     "note": "moonlight-common-c@62e06638 PlatformCrypto.c requires OpenSSL EVP or PSA Crypto. The Android prototype links OpenSSL; host smoke builds may use the system OpenSSL. No custom crypto is implemented in the Zen bridge.",
     "openssl_android": {
-      "version": "3.0.16",
-      "archive": "https://www.openssl.org/source/openssl-3.0.16.tar.gz",
-      "archive_sha256": "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86",
+      "version": "3.5.4",
+      "version_rationale": "Maintained LTS line (support into 2030); the pinned 3.0.x series reaches end of life in September 2026.",
+      "archive": "https://www.openssl.org/source/openssl-3.5.4.tar.gz",
+      "archive_sha256": "967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99",
+      "license": "Apache-2.0",
+      "license_url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.5.4/LICENSE.txt",
+      "license_sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
       "build_script": "scripts/build-openssl-android.sh",
       "prefix": "app/modules/zen-remote-desktop/third_party/openssl/<abi>",
       "abi": ["arm64-v8a", "x86_64"],
-      "android_api": 29
+      "android_api": 24,
+      "api_note": "Matches the module minSdk fallback and the NDK android-24 platform used by AGP.",
+      "verified_libcrypto_sha256": {
+        "arm64-v8a": "c86ead7d22269dbac3f0c4b2c7ee7c23f9a1ea9f994e128e186c3b211a46e169",
+        "x86_64": "aafcf62ceda90cd86175914eee524bf112a12921d6e3e2ad1457310d4449edf9"
+      }
     }
   },
   "host": {

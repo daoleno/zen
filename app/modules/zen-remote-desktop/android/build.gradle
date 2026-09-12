@@ -31,6 +31,30 @@ List<String> zenRemoteDesktopAbis() {
 def resolvedAbis = zenRemoteDesktopAbis()
 logger.lifecycle("zen-remote-desktop: ndk abiFilters=${resolvedAbis}")
 
+// Host JVM lifecycle tests link the real bridge against the inert core.
+// Enabled only when explicitly requested so normal app builds never depend on
+// a host toolchain: ZEN_MOONLIGHT_BRIDGE_TEST=1 ./gradlew :zen-remote-desktop:testDebugUnitTest
+def zenBridgeTestEnabled = project.hasProperty('zenMoonlightBridgeTest') ||
+  System.getenv('ZEN_MOONLIGHT_BRIDGE_TEST') == '1'
+def zenRepoRoot = file("${rootProject.projectDir}/../..")
+def zenBridgeTestLib = new File(project.buildDir, 'moonlight-test/libzen_moonlight_test.so')
+
+tasks.register('buildMoonlightBridgeTestLib', Exec) {
+  group = 'verification'
+  description = 'Builds libzen_moonlight_test.so for host JVM bridge lifecycle tests.'
+  onlyIf { zenBridgeTestEnabled }
+  workingDir zenRepoRoot
+  commandLine 'bash', new File(zenRepoRoot, 'scripts/build-moonlight-bridge-test.sh').absolutePath, zenBridgeTestLib.parentFile.absolutePath
+  inputs.files(
+    new File(zenRepoRoot, 'scripts/build-moonlight-bridge-test.sh'),
+    new File(zenRepoRoot, 'scripts/fetch-moonlight-common-c.sh'),
+    new File(project.projectDir, 'CMakeLists.txt'),
+    new File(project.projectDir, 'src/main/cpp/moonlight_bridge.c'),
+    new File(project.projectDir, 'src/test/cpp/moonlight_fake_core.c'),
+  )
+  outputs.file zenBridgeTestLib
+}
+
 android {
   namespace 'expo.modules.zenremotedesktop'
   compileSdk rootProject.ext.has('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 35
@@ -54,6 +78,13 @@ android {
     cmake {
       path 'CMakeLists.txt'
       version '3.22.1'
+    }
+  }
+
+  testOptions {
+    unitTests.all { unitTest ->
+      unitTest.systemProperty 'zen.moonlight.bridge.test.lib', zenBridgeTestLib.absolutePath
+      unitTest.dependsOn tasks.named('buildMoonlightBridgeTestLib')
     }
   }
 

@@ -11,8 +11,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODULE="$ROOT/app/modules/zen-remote-desktop"
 CACHE="${ZEN_BUILD_TMPDIR:-${TMPDIR:-/tmp}}/zen-openssl-cache"
-OPENSSL_VERSION="3.0.16"
-OPENSSL_SHA256="57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86"
+OPENSSL_VERSION="3.5.4"
+OPENSSL_SHA256="967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99"
 OPENSSL_URL="https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
 
 fail() {
@@ -21,10 +21,12 @@ fail() {
 }
 
 ABIS=()
+ANDROID_API=24
 while [ $# -gt 0 ]; do
   case "$1" in
     --abi) ABIS+=("$2"); shift 2 ;;
     --abis) IFS=',' read -r -a extra <<< "$2"; ABIS+=("${extra[@]}"); shift 2 ;;
+    --api) ANDROID_API="$2"; shift 2 ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
@@ -70,7 +72,7 @@ for abi in "${ABIS[@]}"; do
     cd "$work"
     export PATH="$TOOLCHAIN/bin:$PATH"
     export ANDROID_NDK_ROOT="$NDK"
-    perl Configure "$target" -D__ANDROID_API__=29 \
+    perl Configure "$target" -D__ANDROID_API__=$ANDROID_API \
       --prefix="$prefix" --openssldir="$prefix/ssl" \
       no-shared no-tests no-ui-console >/dev/null
     make -j2 build_libs >/dev/null

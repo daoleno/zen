@@ -1,44 +1,43 @@
 package expo.modules.zenremotedesktop
 
+import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Thin Kotlin contract over the pinned moonlight-common-c core
  * (app/modules/zen-remote-desktop/native.lock.json).
  *
- * The C core owns the stream/control protocol. This class owns only the
- * upstream lifecycle rules:
- *
- *  - `LiStartConnection` blocks until the session ends, so it runs on a
- *    dedicated thread created here.
- *  - to end a live session callers use [stop], which first interrupts
- *    (thread-safe) and then joins the start thread before re-arming.
- *  - decode units are delivered on core threads and must be consumed
- *    synchronously; the byte array is copied by the C bridge and remains
- *    owned by this process afterwards.
+ * The C bridge owns the session state machine. `LiStartConnection` returns as
+ * soon as the stream is established (the pinned Connection.c calls
+ * connectionStarted and returns), so a successful [start] is followed by live
+ * callbacks until termination or [stop]. [stop] asks the bridge for the single
+ * real `LiStopConnection` teardown; it is safe to call while a start is in
+ * flight (the bridge interrupts and waits) and from any callback.
  */
 open class MoonlightCore {
 
   data class Config(
     val address: String,
-    val appVersion: String = "",
-    val gfeVersion: String = "",
-    val rtspSessionUrl: String = "",
+    val appVersion: String,
+    val gfeVersion: String,
+    val rtspSessionUrl: String,
     val serverCodecModeSupport: Int,
     val width: Int,
     val height: Int,
     val fps: Int,
     val bitrateKbps: Int,
-    val packetSize: Int = 1024,
+    val packetSize: Int,
     val audioConfiguration: Int,
     val supportedVideoFormats: Int,
-    val clientRefreshRateX100: Int = 0,
-    val streamingRemotely: Int = -1,
-    val remoteInputAesKey: ByteArray? = null,
-    val remoteInputAesIv: ByteArray? = null,
+    val clientRefreshRateX100: Int,
+    val streamingRemotely: Int,
+    /** Client-generated RI key. Exactly 16 bytes; never logged. */
+    val remoteInputAesKey: ByteArray,
+    /** Client-generated RI IV. Exactly 16 bytes; never logged. */
+    val remoteInputAesIv: ByteArray,
   )
 
-  private val running = AtomicBoolean(false)
+  private val startThreadLock = Any()
 
   @Volatile
   private var startThread: Thread? = null
@@ -49,28 +48,46 @@ open class MoonlightCore {
   /** Progress for the current connection stage. */
   open fun onConnectionStage(stage: Int) {}
 
+  open fun onConnectionStageComplete(stage: Int) {}
+
   open fun onConnectionStageFailed(stage: Int, errorCode: Int) {}
 
   open fun onConnectionStarted() {}
+
+  /** CONN_STATUS_OKAY (0) or CONN_STATUS_POOR (1). */
+  open fun onConnectionStatusUpdate(connectionStatus: Int) {}
 
   open fun onConnectionTerminated(errorCode: Int) {}
 
   /**
    * Annex B access unit. Return 0 to accept or -1 to request a keyframe.
-   * The array is only valid for the duration of this call.
+   * The array is copied by the bridge from core-owned buffers and is only valid
+   * for the duration of this call.
    */
   open fun onDecodeUnit(data: ByteArray, frameType: Int, presentationTimeUs: Long): Int = 0
 
   /**
-   * Starts a session. Returns 0 when the start thread was launched, -2 when a
-   * session is already running, -3 on a bridge state error.
+   * Starts a session. Returns 0 when the start call was accepted, -2 when a
+   * session is already running, -3 on a bridge state error and -4 when the
+   * negotiated key material is missing or not exactly 16 bytes per key/IV.
    */
   fun start(config: Config): Int {
-    if (!running.compareAndSet(false, true)) {
+    // Fail fast before any thread or native session exists; the bridge repeats
+    // every check authoritatively before it touches the core.
+    if (!MoonlightKeyMaterial.isValid(config.remoteInputAesKey, config.remoteInputAesIv)) {
+      return -4
+    }
+    if (!validStreamArguments(config)) {
+      return -5
+    }
+    if (sessionState() and 0x0F != SESSION_IDLE) {
       return -2
     }
-    val thread = Thread({
-      try {
+    synchronized(startThreadLock) {
+      if (startThread?.isAlive == true) {
+        return -2
+      }
+      val thread = Thread({
         nativeStartConnection(
           address = config.address,
           appVersion = config.appVersion,
@@ -89,34 +106,41 @@ open class MoonlightCore {
           remoteInputAesKey = config.remoteInputAesKey,
           remoteInputAesIv = config.remoteInputAesIv,
         )
-      } finally {
-        running.set(false)
-      }
-    }, "zen-moonlight-start")
-    startThread = thread
-    thread.start()
-    return 0
+      }, "zen-moonlight-start")
+      startThread = thread
+      thread.start()
+      return 0
+    }
   }
 
-  /** Interrupts and joins the start thread. Safe to call when idle. */
-  fun stop() {
-    nativeInterruptConnection()
-    startThread?.let { thread ->
-      thread.join(5_000)
-      if (thread.isAlive) {
-        return
-      }
-    }
-    startThread = null
-    nativeStopConnection()
-  }
+  /**
+   * Requests the single bridge-managed teardown. Returns 0 on success, -3 when
+   * this instance does not own the live session. Safe while starting or idle.
+   */
+  fun stop(): Int = nativeStopConnection()
+
+  /** Bridge session state plus termination/callback-failure flags. */
+  fun sessionState(): Int = nativeSessionState()
+
+  /** Last connectionTerminated error code, 0 when none was observed. */
+  fun lastError(): Int = nativeLastError()
 
   fun isActive(): Boolean = nativeIsActive()
 
   fun sendKeyboardEvent(keyCode: Short, keyAction: Byte, modifiers: Byte, flags: Byte = 0): Int =
     nativeSendKeyboardEvent(keyCode, keyAction, modifiers, flags)
 
-  fun sendUtf8TextEvent(text: String): Int = nativeSendUtf8TextEvent(text)
+  /**
+   * Sends a text event as standard UTF-8 bytes. The bridge rejects empty,
+   * oversized or non-owner sends; text is never logged.
+   */
+  fun sendUtf8TextEvent(text: String): Int {
+    val bytes = text.toByteArray(Charsets.UTF_8)
+    if (bytes.isEmpty()) {
+      return -5
+    }
+    return nativeSendUtf8TextEvent(bytes)
+  }
 
   fun sendMouseMove(deltaX: Short, deltaY: Short): Int = nativeSendMouseMove(deltaX, deltaY)
 
@@ -145,19 +169,23 @@ open class MoonlightCore {
     supportedVideoFormats: Int,
     clientRefreshRateX100: Int,
     streamingRemotely: Int,
-    remoteInputAesKey: ByteArray?,
-    remoteInputAesIv: ByteArray?,
+    remoteInputAesKey: ByteArray,
+    remoteInputAesIv: ByteArray,
   ): Int
 
-  private external fun nativeStopConnection()
+  private external fun nativeStopConnection(): Int
 
   private external fun nativeInterruptConnection()
 
   private external fun nativeIsActive(): Boolean
 
+  private external fun nativeSessionState(): Int
+
+  private external fun nativeLastError(): Int
+
   private external fun nativeSendKeyboardEvent(keyCode: Short, keyAction: Byte, modifiers: Byte, flags: Byte): Int
 
-  private external fun nativeSendUtf8TextEvent(text: String): Int
+  private external fun nativeSendUtf8TextEvent(utf8: ByteArray): Int
 
   private external fun nativeSendMouseMove(deltaX: Short, deltaY: Short): Int
 
@@ -170,9 +198,22 @@ open class MoonlightCore {
   private external fun nativeSendHighResScroll(scrollAmount: Short): Int
 
   companion object {
-    init {
-      System.loadLibrary("zen_moonlight")
-    }
+    private fun validStreamArguments(config: Config): Boolean =
+      config.address.isNotEmpty() &&
+        config.serverCodecModeSupport != 0 &&
+        config.width in 16..8192 &&
+        config.height in 16..8192 &&
+        config.fps in 1..240 &&
+        config.bitrateKbps in 100..200_000 &&
+        config.packetSize in 64..65_536
+
+    /** Session states reported by the bridge. */
+    const val SESSION_IDLE = 0
+    const val SESSION_STARTING = 1
+    const val SESSION_ACTIVE = 2
+    const val SESSION_STOPPING = 3
+    const val STATE_FLAG_TERMINATED = 0x10
+    const val STATE_FLAG_CALLBACK_FAILED = 0x20
 
     // Upstream constants used by callers; kept in sync with src/Limelight.h.
     const val VIDEO_FORMAT_H264 = 0x0001
@@ -194,5 +235,31 @@ open class MoonlightCore {
 
     const val SERVER_CODEC_MODE_H264 = 0x00000001
     const val SERVER_CODEC_MODE_HEVC = 0x00000100
+
+    /** Non-null when the production native library could not be loaded upfront. */
+    @Volatile
+    var nativeLoadFailure: Throwable? = null
+      private set
+
+    init {
+      try {
+        System.loadLibrary("zen_moonlight")
+      } catch (error: UnsatisfiedLinkError) {
+        // Unit tests load a host-built bridge explicitly before first use.
+        nativeLoadFailure = error
+      }
+    }
   }
+}
+
+/** Client-side RI key material. Keys are never persisted or logged here. */
+object MoonlightKeyMaterial {
+  private val random = SecureRandom()
+
+  fun generateKey(): ByteArray = ByteArray(16).also(random::nextBytes)
+
+  fun generateIv(): ByteArray = ByteArray(16).also(random::nextBytes)
+
+  fun isValid(key: ByteArray?, iv: ByteArray?): Boolean =
+    key != null && iv != null && key.size == 16 && iv.size == 16 && key.any { it != 0.toByte() }
 }

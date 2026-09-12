@@ -75,18 +75,26 @@ describe("Moonlight client core integration contract", () => {
   });
 
   test("non-thread-safe lifecycle is serialized and interrupt-first", () => {
-    expect(bridge).toContain("pthread_mutex_t g_session_lock");
-    expect(core).toContain("nativeInterruptConnection()");
-    expect(core).toContain("thread.join(5_000)");
-    expect(core).toContain("AtomicBoolean(false)");
-    expect(core).toContain('Thread({');
-    expect(core).toContain("System.loadLibrary(\"zen_moonlight\")");
+    // The bridge owns one live session: start may return while streams keep
+    // running, and stop runs the single real LiStopConnection.
+    expect(bridge).toContain("pthread_mutex_t g_lock");
+    expect(bridge).toContain("pthread_cond_t g_state_cond");
+    expect(bridge).toContain("bridge_stop_owned_session");
+    expect(bridge).toContain("bridge_release_session_ref");
+    expect(bridge).toContain("LiStopConnection()");
+    expect(bridge).toContain("LiInterruptConnection()");
+    expect(core).toContain("nativeStopConnection()");
+    expect(core).toContain("nativeSessionState()");
+    expect(core).toContain("Charsets.UTF_8");
+    expect(core).toContain('System.loadLibrary("zen_moonlight")');
     // Native method names must match the Kotlin declarations exactly.
     for (const name of [
       "nativeStartConnection",
       "nativeStopConnection",
       "nativeInterruptConnection",
       "nativeIsActive",
+      "nativeSessionState",
+      "nativeLastError",
       "nativeSendKeyboardEvent",
       "nativeSendUtf8TextEvent",
       "nativeSendMouseMove",

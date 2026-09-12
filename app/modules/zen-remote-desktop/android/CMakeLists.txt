@@ -6,12 +6,38 @@ project(zen_moonlight C)
 # scripts/fetch-moonlight-common-c.sh and hash-pinned in ../native.lock.json.
 #
 # Android: wired from android/build.gradle externalNativeBuild.
-# Host smoke build: cmake -S app/modules/zen-remote-desktop/android -B <build> -DZEN_HOST_BUILD=ON
+# Host compile check: -DZEN_HOST_BUILD=ON
+# Host JNI test bridge: -DZEN_BRIDGE_TEST=ON (inert core, no OpenSSL/network)
 
 option(ZEN_HOST_BUILD "Build the bridge against the host toolchain for compile verification" OFF)
+option(ZEN_BRIDGE_TEST "Build the JNI bridge against the inert test core for host JVM tests" OFF)
 
 set(ZEN_MOONLIGHT_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/moonlight-common-c"
     CACHE PATH "Path to the pinned moonlight-common-c checkout")
+
+if(ZEN_BRIDGE_TEST)
+  if(ANDROID)
+    message(FATAL_ERROR "ZEN_BRIDGE_TEST is only supported for host JVM tests.")
+  endif()
+  if(NOT EXISTS "${ZEN_MOONLIGHT_THIRD_PARTY}/src/Limelight.h")
+    message(FATAL_ERROR
+      "Pinned moonlight-common-c headers are missing (${ZEN_MOONLIGHT_THIRD_PARTY}/src/Limelight.h). "
+      "Run scripts/fetch-moonlight-common-c.sh first; see ../../THIRD_PARTY.md.")
+  endif()
+
+  # The inert core stands in for moonlight-common-c so lifecycle/keys/UTF-8 can
+  # be exercised with no network, host or crypto dependency.
+  add_library(zen_moonlight_test SHARED
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp/moonlight_bridge.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/test/cpp/moonlight_fake_core.c")
+  target_include_directories(zen_moonlight_test PRIVATE "${ZEN_MOONLIGHT_THIRD_PARTY}/src")
+  find_package(JNI REQUIRED)
+  target_include_directories(zen_moonlight_test PRIVATE ${JNI_INCLUDE_DIRS})
+  target_link_libraries(zen_moonlight_test PRIVATE pthread)
+  set_target_properties(zen_moonlight_test PROPERTIES
+    OUTPUT_NAME "zen_moonlight_test"
+    POSITION_INDEPENDENT_CODE ON)
+else()
 
 foreach(required_file
     "${ZEN_MOONLIGHT_THIRD_PARTY}/CMakeLists.txt"
@@ -88,3 +114,5 @@ endif()
 set_target_properties(zen_moonlight PROPERTIES
   OUTPUT_NAME "zen_moonlight"
   POSITION_INDEPENDENT_CODE ON)
+
+endif()
