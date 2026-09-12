@@ -3,9 +3,11 @@ package host
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +35,8 @@ type SunshineAdmin struct {
 	password string
 	client   *http.Client
 
+	pinnedLeafDER []byte
+
 	csrfMu    sync.Mutex
 	csrfToken string
 }
@@ -50,24 +54,39 @@ func NewSunshineAdmin(baseURL, username, password, caCertPath string) (*Sunshine
 	if username == "" || password == "" {
 		return nil, errors.New("sunshine_admin_missing_credentials")
 	}
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if caCertPath != "" {
-		pem, err := os.ReadFile(caCertPath)
-		if err != nil {
-			return nil, fmt.Errorf("read sunshine web ui certificate: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, errors.New("sunshine_admin_invalid_certificate")
-		}
-		tlsConfig.RootCAs = pool
+	// Sunshine's default Web UI certificate is CN-only (crypto.cpp gen_creds),
+	// so standard IP hostname verification rejects the exact saved cert. Pin the
+	// exact leaf instead: verification compares the presented leaf bytes with
+	// the Zen-owned certificate and nothing else.
+	pinnedLeafDER, err := loadPinnedLeafDER(caCertPath)
+	if err != nil {
+		return nil, err
+	}
+	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true, // verification is the exact leaf pin below
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return errors.New("sunshine_admin_no_peer_certificate")
+			}
+			if subtle.ConstantTimeCompare(rawCerts[0], pinnedLeafDER) != 1 {
+				return errors.New("sunshine_admin_certificate_mismatch")
+			}
+			return nil
+		},
 	}
 	return &SunshineAdmin{
-		baseURL:  strings.TrimSuffix(baseURL, "/"),
-		username: username,
-		password: password,
+		baseURL:       strings.TrimSuffix(baseURL, "/"),
+		username:      username,
+		password:      password,
+		pinnedLeafDER: pinnedLeafDER,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
+			// Never follow redirects: a redirected admin call would leave the
+			// pinned endpoint.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			Transport: &http.Transport{
 				TLSClientConfig:     tlsConfig,
 				DisableKeepAlives:   true,
@@ -75,6 +94,25 @@ func NewSunshineAdmin(baseURL, username, password, caCertPath string) (*Sunshine
 			},
 		},
 	}, nil
+}
+
+func loadPinnedLeafDER(caCertPath string) ([]byte, error) {
+	if caCertPath == "" {
+		return nil, errors.New("sunshine_admin_missing_certificate")
+	}
+	pemBytes, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read sunshine web ui certificate: %w", err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("sunshine_admin_invalid_certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, errors.New("sunshine_admin_invalid_certificate")
+	}
+	return certificate.Raw, nil
 }
 
 func (a *SunshineAdmin) do(ctx context.Context, method, path string, body any, csrf bool) (map[string]any, error) {
@@ -104,6 +142,35 @@ func (a *SunshineAdmin) do(ctx context.Context, method, path string, body any, c
 	response, err := a.client.Do(request)
 	if err != nil {
 		return nil, err
+	}
+	if csrf && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusForbidden) {
+		// The upstream CSRF token may have expired: refresh exactly once and
+		// retry only this bounded invalid-token response.
+		response.Body.Close()
+		a.csrfMu.Lock()
+		a.csrfToken = ""
+		a.csrfMu.Unlock()
+		refreshed, refreshErr := a.token(ctx)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		request2, err := http.NewRequestWithContext(ctx, method, a.baseURL+path, func() io.Reader {
+			if body == nil {
+				return nil
+			}
+			encoded, _ := json.Marshal(body)
+			return bytes.NewReader(encoded)
+		}())
+		if err != nil {
+			return nil, err
+		}
+		request2.SetBasicAuth(a.username, a.password)
+		request2.Header.Set("Content-Type", "application/json")
+		request2.Header.Set("X-CSRF-Token", refreshed)
+		response, err = a.client.Do(request2)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))

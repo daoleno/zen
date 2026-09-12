@@ -2,21 +2,28 @@ package host
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 )
 
-// SunshineOwnershipStore maps verified Zen device identities to the upstream
-// Sunshine client UUID they enrolled with. The UUID is the client uniqueid the
-// Zen app sends during pairing (the Zen device id), so enrollment is verified
-// against GET /api/clients/list rather than guessed.
+// SunshineOwnershipStore maps authenticated Zen device identities to the
+// authoritative Sunshine client UUID. Sunshine generates that UUID itself
+// (nvhttp.cpp add_authorized_client) and the public list API does not expose
+// the client certificate, so the missing correlation comes from a structured,
+// read-only validation of the Zen-owned Sunshine state file:
+//
+//	{"root":{"named_devices":[{"name","cert","uuid","enabled"}]}}
+//
+// Zen never writes upstream state and never matches friendly names.
 type SunshineOwnershipStore struct {
 	path string
-	mu   sync.Mutex
 }
 
 type sunshineOwnership struct {
@@ -24,7 +31,22 @@ type sunshineOwnership struct {
 	UUID     string `json:"uuid"`
 }
 
+type sunshineStateRoot struct {
+	Root struct {
+		NamedDevices []struct {
+			Name    string `json:"name"`
+			Cert    string `json:"cert"`
+			UUID    string `json:"uuid"`
+			Enabled bool   `json:"enabled"`
+		} `json:"named_devices"`
+	} `json:"root"`
+}
+
 var errSunshineEnrollmentNotFound = errors.New("sunshine_enrollment_not_found")
+var errSunshineStateUnreadable = errors.New("sunshine_state_unreadable")
+
+// One process-wide lock serializes every store instance sharing the file.
+var sunshineOwnershipMu sync.Mutex
 
 func NewSunshineOwnershipStore(stateDir string) *SunshineOwnershipStore {
 	return &SunshineOwnershipStore{path: filepath.Join(stateDir, "sunshine_owners.json")}
@@ -40,7 +62,7 @@ func (s *SunshineOwnershipStore) loadLocked() ([]sunshineOwnership, error) {
 	}
 	var entries []sunshineOwnership
 	if err := json.Unmarshal(body, &entries); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errSunshineStateUnreadable, err)
 	}
 	return entries, nil
 }
@@ -60,14 +82,14 @@ func (s *SunshineOwnershipStore) persistLocked(entries []sunshineOwnership) erro
 	return os.Rename(temp, s.path)
 }
 
-// Claim records the verified enrollment for one device, replacing any previous
-// record for that device only.
+// Claim records the verified enrollment for one device, replacing only that
+// device's previous record.
 func (s *SunshineOwnershipStore) Claim(deviceID, uuid string) error {
 	if deviceID == "" || uuid == "" {
 		return errors.New("sunshine_ownership_incomplete")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sunshineOwnershipMu.Lock()
+	defer sunshineOwnershipMu.Unlock()
 	entries, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -82,27 +104,27 @@ func (s *SunshineOwnershipStore) Claim(deviceID, uuid string) error {
 	return s.persistLocked(next)
 }
 
-// Get returns the enrollment for a specific device; it never falls back to the
-// first entry, so target B resolves correctly when A and B are both enrolled.
-func (s *SunshineOwnershipStore) Get(deviceID string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Get resolves one device's enrollment. Corrupt ownership state fails closed
+// instead of looking like "not enrolled".
+func (s *SunshineOwnershipStore) Get(deviceID string) (string, bool, error) {
+	sunshineOwnershipMu.Lock()
+	defer sunshineOwnershipMu.Unlock()
 	entries, err := s.loadLocked()
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
 	for _, entry := range entries {
 		if entry.DeviceID == deviceID {
-			return entry.UUID, true
+			return entry.UUID, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // Remove drops only the target device's enrollment.
 func (s *SunshineOwnershipStore) Remove(deviceID string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sunshineOwnershipMu.Lock()
+	defer sunshineOwnershipMu.Unlock()
 	entries, err := s.loadLocked()
 	if err != nil {
 		return false, err
@@ -122,68 +144,96 @@ func (s *SunshineOwnershipStore) Remove(deviceID string) (bool, error) {
 	return true, s.persistLocked(next)
 }
 
-// SunshineOwnershipBound reports that the pinned host has real per-client APIs
-// (list/update/unpair) usable through SunshineAdmin.
+// SunshineOwnershipBound reports that the pinned host exposes the per-client
+// admin APIs and the Zen-owned state correlation needed for target removal.
 func SunshineOwnershipBound() bool { return true }
 
-// EnrollSunshineDevice verifies the device's UUID exists in the host client
-// list and records the verified enrollment.
-func EnrollSunshineDevice(admin *SunshineAdmin, deviceID string) error {
-	if admin == nil {
-		return errors.New("sunshine_admin_unavailable")
+// EnrollFromState binds an authenticated Zen device to the Sunshine-generated
+// UUID whose stored certificate exactly matches the client certificate the
+// device presented. The state file is read-only; a forged certificate is
+// rejected and malformed state fails closed.
+func EnrollFromState(deviceID, clientCertPEM string) error {
+	if deviceID == "" {
+		return errors.New("sunshine_ownership_incomplete")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	clients, err := admin.ListClients(ctx)
+	presented, err := certificateDER([]byte(clientCertPEM))
 	if err != nil {
-		return err
+		return fmt.Errorf("sunshine_enrollment_invalid_certificate: %w", err)
 	}
-	for _, client := range clients {
-		if client.UUID == deviceID {
+	stateBody, err := os.ReadFile(SunshineStateFilePath())
+	if err != nil {
+		return fmt.Errorf("%w: %v", errSunshineStateUnreadable, err)
+	}
+	var state sunshineStateRoot
+	if err := json.Unmarshal(stateBody, &state); err != nil {
+		return fmt.Errorf("%w: %v", errSunshineStateUnreadable, err)
+	}
+	for _, client := range state.Root.NamedDevices {
+		stored, err := certificateDER([]byte(client.Cert))
+		if err != nil || client.UUID == "" {
+			continue
+		}
+		if string(stored) == string(presented) {
 			return NewSunshineOwnershipStore(ZenStateDir()).Claim(deviceID, client.UUID)
 		}
 	}
 	return errSunshineEnrollmentNotFound
 }
 
+func certificateDER(pemBytes []byte) ([]byte, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("not_a_certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	return certificate.Raw, nil
+}
+
 // SunshineEnrollment returns the verified upstream UUID for a device.
-func SunshineEnrollment(deviceID string) (string, bool) {
+func SunshineEnrollment(deviceID string) (string, bool, error) {
 	return NewSunshineOwnershipStore(ZenStateDir()).Get(deviceID)
 }
 
-// RemoveSunshineEnrollment drops the target device's enrollment record after a
-// successful upstream revoke; unrelated enrollments stay untouched.
+// RemoveSunshineEnrollment drops the target's record after a successful
+// upstream revoke; unrelated enrollments stay untouched.
 func RemoveSunshineEnrollment(deviceID string) error {
 	_, err := NewSunshineOwnershipStore(ZenStateDir()).Remove(deviceID)
 	return err
 }
 
 // RevokeSunshineTarget disables the target's client (upstream terminates its
-// sessions by certificate) and removes only its pairing, then drops the local
-// enrollment. Failures leave the enrollment for a retry and never touch other
-// devices.
+// sessions by certificate) and removes only its pairing. Caller context is
+// propagated, failures keep the enrollment for retry, and other devices are
+// never touched.
 func RevokeSunshineTarget(ctx context.Context, deviceID string) error {
 	admin, err := SunshineAdminFromRuntime()
 	if err != nil {
 		return err
 	}
-	return revokeSunshineTargetWith(admin, deviceID)
+	return revokeSunshineTargetWith(admin, ctx, deviceID)
 }
 
-// revokeSunshineTargetWith is the bounded target-removal step used by the
-// production wrapper and by tests with an inert admin server.
-func revokeSunshineTargetWith(admin *SunshineAdmin, deviceID string) error {
-	uuid, ok := SunshineEnrollment(deviceID)
+// revokeSunshineTargetWith performs the bounded target removal with an
+// explicit admin client (used by the production wrapper and inert tests).
+func revokeSunshineTargetWith(admin *SunshineAdmin, ctx context.Context, deviceID string) error {
+	uuid, ok, err := SunshineEnrollment(deviceID)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := admin.SetClientEnabled(ctx, uuid, false); err != nil {
+	if err := admin.SetClientEnabled(bounded, uuid, false); err != nil {
 		return err
 	}
-	if err := admin.UnpairClient(ctx, uuid); err != nil {
+	if err := admin.UnpairClient(bounded, uuid); err != nil {
 		return err
 	}
-	return RemoveSunshineEnrollment(deviceID)
+	_, err = NewSunshineOwnershipStore(ZenStateDir()).Remove(deviceID)
+	return err
 }

@@ -79,12 +79,21 @@ func SunshineConfigured() bool {
 }
 
 // SunshineAdminFromRuntime builds the authenticated, certificate-pinned admin
-// client used for per-device enrollment and removal. The Web UI runs on
-// base+1 and uses the Zen-owned certificate.
+// client used for per-device enrollment and removal. While a host is running,
+// the immutable started configuration is used instead of a newer disk config.
 func SunshineAdminFromRuntime() (*SunshineAdmin, error) {
-	cfg, err := loadSunshineRuntimeConfig()
-	if err != nil {
-		return nil, err
+	sunshineRuntimeMu.Lock()
+	cfg := sunshineRuntimeCfg
+	if sunshineRuntimeHost != nil && sunshineRuntimeHost.Running() {
+		cfg = sunshineRuntimeActiveCfg
+	}
+	sunshineRuntimeMu.Unlock()
+	if cfg.BinaryPath == "" {
+		var err error
+		cfg, err = loadSunshineRuntimeConfig()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !strings.HasPrefix(cfg.StateDir, "/") {
 		return nil, errors.New("invalid_sunshine_state_dir")
@@ -97,16 +106,41 @@ func SunshineAdminFromRuntime() (*SunshineAdmin, error) {
 	)
 }
 
-// SunshineAvailable requires a running host and the admin credentials needed to
-// enforce per-device enrollment/removal. Availability stays closed until that
-// enforceable path exists.
+// SunshineStateFilePath is the Zen-owned upstream state file (file_state).
+func SunshineStateFilePath() string {
+	sunshineRuntimeMu.Lock()
+	stateDir := sunshineRuntimeCfg.StateDir
+	if sunshineRuntimeHost != nil && sunshineRuntimeHost.Running() {
+		stateDir = sunshineRuntimeActiveCfg.StateDir
+	}
+	sunshineRuntimeMu.Unlock()
+	if stateDir == "" {
+		if cfg, err := loadSunshineRuntimeConfig(); err == nil && cfg.StateDir != "" {
+			stateDir = cfg.StateDir
+		}
+	}
+	if stateDir == "" {
+		stateDir = ZenStateDir()
+	}
+	return filepath.Join(stateDir, "sunshine_state.json")
+}
+
+// SunshineAvailable requires a running host, a constructible pinned admin
+// client and a readable Zen-owned state file. Enrollment readiness is reported
+// separately so availability never implies a verified per-device enrollment.
 func SunshineAvailable() bool {
 	snapshot := SunshineSnapshot()
 	if !snapshot.Configured || !snapshot.Running {
 		return false
 	}
 	admin, err := SunshineAdminFromRuntime()
-	return err == nil && admin != nil
+	if err != nil || admin == nil {
+		return false
+	}
+	if _, err := os.Stat(SunshineStateFilePath()); err != nil {
+		return false
+	}
+	return true
 }
 
 // EnsureSunshineRuntime is the production caller: it starts the supervised

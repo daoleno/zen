@@ -9,6 +9,8 @@ import "context"
 
 func SunshineOwnershipBound() bool { return false }
 
-func SunshineEnrollment(string) (string, bool) { return "", false }
+func SunshineEnrollment(string) (string, bool, error) { return "", false, nil }
+
+func EnrollFromState(string, string) error { return nil }
 
 func RevokeSunshineTarget(context.Context, string) error { return nil }

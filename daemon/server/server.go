@@ -568,9 +568,14 @@ var moonlightStopRuntime = host.StopSunshineRuntime
 
 // revokeSunshineForDeviceRevocation affects only the device with a verified
 // upstream enrollment. An unrelated or non-enrolled target leaves other
-// devices' pairings untouched; failures keep the enrollment for retry.
+// devices' pairings untouched; a corrupt ownership store fails closed instead
+// of looking unenrolled, and failures keep the enrollment for retry.
 func revokeSunshineForDeviceRevocation(ctx context.Context, targetDeviceID string) error {
-	if _, ok := moonlightEnrollment(targetDeviceID); !ok {
+	_, ok, err := moonlightEnrollment(targetDeviceID)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
 	return moonlightRevokeTarget(ctx, targetDeviceID)

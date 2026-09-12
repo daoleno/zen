@@ -108,8 +108,8 @@ func stubRevocationHooks(t *testing.T, enrolled map[string]bool, calls *int, err
 	t.Helper()
 	previousEnrollment := moonlightEnrollment
 	previousTarget := moonlightRevokeTarget
-	moonlightEnrollment = func(deviceID string) (string, bool) {
-		return "uuid-" + deviceID, enrolled[deviceID]
+	moonlightEnrollment = func(deviceID string) (string, bool, error) {
+		return "uuid-" + deviceID, enrolled[deviceID], nil
 	}
 	moonlightRevokeTarget = func(ctx context.Context, deviceID string) error {
 		if ctx == nil || ctx.Err() != nil {
