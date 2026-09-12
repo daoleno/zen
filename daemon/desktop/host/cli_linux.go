@@ -248,3 +248,11 @@ func serviceCommand(args ...string) error {
 	defer cancel()
 	return exec.CommandContext(ctx, "/usr/bin/systemctl", args...).Run()
 }
+
+// serviceOutput reads a single systemctl property value for verification.
+func serviceOutput(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/usr/bin/systemctl", args...).Output()
+	return strings.TrimSpace(string(out)), err
+}

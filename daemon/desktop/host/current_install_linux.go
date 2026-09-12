@@ -15,16 +15,47 @@ type currentInstallOps struct {
 	register func() error
 	probe    func() (probeResult, error)
 	rollback func() error
-	// changed reports whether install replaced an existing installation. An
-	// unchanged existing install still skips rollback; an upgrade must not.
+	// changed reports whether install wrote files (a fresh install or an
+	// upgrade). An unchanged existing install still skips rollback.
 	changed func() bool
+}
+
+// rollbackRequired is the shared transaction policy: a fresh install always
+// restores on failure, an upgrade restores because it changed files, and an
+// unchanged existing install is never touched.
+func rollbackRequired(existing, changed bool) bool { return !existing || changed }
+
+// installOutcome is the single source of truth for what the install step did.
+type installOutcome struct{ installed, upgraded bool }
+
+func (o *installOutcome) markInstalled() { o.installed = true }
+func (o *installOutcome) markUpgraded()  { o.upgraded = true }
+func (o *installOutcome) changed() bool  { return o.installed || o.upgraded }
+
+// verifyBrokerExecutable proves the active unit runs the installed broker file,
+// so a fresh install or upgrade cannot report success while the previous
+// PID/ELF is still serving.
+func verifyBrokerExecutable() error {
+	pid, err := serviceOutput("show", "-p", "MainPID", "--value", "zen-desktop-host.service")
+	if err != nil || pid == "" || pid == "0" {
+		return errors.New("broker_not_running")
+	}
+	target, err := os.Readlink("/proc/" + pid + "/exe")
+	if err != nil {
+		return errors.New("broker_executable_unreadable")
+	}
+	if target != InstalledBinary {
+		return errors.New("broker_executable_mismatch")
+	}
+	return nil
 }
 
 // currentInstallSharedOps is the install/activate/rollback transaction shared
 // by the X11 SDDM registration and the Wayland dynamic-discovery registration.
 // Only the register/probe steps differ between session types.
 func currentInstallSharedOps(config HostConfig, source string, existing bool) (func() error, func() error, func() error, func() bool) {
-	upgraded := false
+	outcome := &installOutcome{}
+	var previousJournal []byte
 	install := func() error {
 		if existing {
 			matches, err := existingInstallMatches(config, source)
@@ -34,8 +65,16 @@ func currentInstallSharedOps(config HostConfig, source string, existing bool) (f
 			if matches {
 				return nil
 			}
-			upgraded = true
-			return upgradeLinuxLocked(config, source)
+			data, err := readInstallJournalBytes()
+			if err != nil {
+				return err
+			}
+			if err := upgradeLinuxLocked(config, source); err != nil {
+				return err
+			}
+			previousJournal = data
+			outcome.markUpgraded()
+			return nil
 		}
 		if err := installLinuxLocked(config, source); err != nil {
 			if _, statErr := os.Lstat(installJournalPath); statErr == nil {
@@ -45,6 +84,7 @@ func currentInstallSharedOps(config HostConfig, source string, existing bool) (f
 			}
 			return err
 		}
+		outcome.markInstalled()
 		return nil
 	}
 	activate := func() error {
@@ -59,9 +99,41 @@ func currentInstallSharedOps(config HostConfig, source string, existing bool) (f
 		if err := serviceCommand("enable", "--now", "zen-desktop-host.service"); err != nil {
 			return errors.New("broker_activation_failed")
 		}
+		if outcome.changed() {
+			// The unit may already be active with the previous ELF: enable
+			// --now does not replace it. Switch the broker explicitly and prove
+			// the running executable is the installed file.
+			if err := serviceCommand("restart", "zen-desktop-host.service"); err != nil {
+				return errors.New("broker_restart_failed")
+			}
+			if err := verifyBrokerExecutable(); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	rollback := func() error {
+		if !outcome.changed() {
+			return nil
+		}
+		if outcome.upgraded {
+			// Restore the previous files, its journal metadata and its running
+			// service instead of uninstalling the old installation.
+			if err := serviceCommand("stop", "zen-desktop-host.service"); err != nil {
+				return err
+			}
+			current, err := loadInstallJournal()
+			if err != nil {
+				return err
+			}
+			if err := restorePreviousInstall(current, previousJournal, rootUpgradeIO()); err != nil {
+				return err
+			}
+			if err := serviceCommand("daemon-reload"); err != nil {
+				return err
+			}
+			return serviceCommand("enable", "--now", "zen-desktop-host.service")
+		}
 		if err := serviceCommand("stop", "zen-desktop-host.service"); err != nil {
 			return err
 		}
@@ -73,7 +145,7 @@ func currentInstallSharedOps(config HostConfig, source string, existing bool) (f
 		}
 		return serviceCommand("daemon-reload")
 	}
-	return install, activate, rollback, func() bool { return upgraded }
+	return install, activate, rollback, outcome.changed
 }
 
 // The transaction is injectable for fault tests. An unchanged existing install
@@ -82,10 +154,7 @@ func runCurrentInstall(existing bool, ops currentInstallOps) (result probeResult
 	if err = ops.install(); err != nil {
 		return result, err
 	}
-	rollbackOnFailure := !existing
-	if ops.changed != nil {
-		rollbackOnFailure = ops.changed()
-	}
+	rollbackOnFailure := rollbackRequired(existing, ops.changed != nil && ops.changed())
 	defer func() {
 		if err == nil || !rollbackOnFailure || errors.Is(err, errDesktopProbeBusy) {
 			return
