@@ -213,6 +213,10 @@ func InstallLinux(config HostConfig, binarySource string) error {
 		return err
 	}
 	defer lock.Close()
+	return installLinuxLocked(config, binarySource)
+}
+
+func installLinuxLocked(config HostConfig, binarySource string) error {
 	if _, err := os.Lstat(installJournalPath); !os.IsNotExist(err) {
 		return errors.New("installation_already_exists")
 	}
@@ -283,6 +287,10 @@ func RollbackLinuxInstall() error {
 		return err
 	}
 	defer lock.Close()
+	return rollbackLinuxLocked()
+}
+
+func rollbackLinuxLocked() error {
 	file, err := OpenRootFile(installJournalPath, 0600)
 	if err != nil {
 		return err

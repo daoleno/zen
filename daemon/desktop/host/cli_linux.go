@@ -28,6 +28,7 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 	stateDir := fs.String("state-dir", "", "Zen state directory used to read the canonical daemon identity")
 	ownerUnit := fs.String("owner-unit", "", "Optional root-enrolled systemd unit that owns the canonical daemon")
 	register := fs.String("register", "", "SDDM registration action: start or stop")
+	registerCurrent := fs.Bool("register-current", false, "With --install --activate: register and verify the current SDDM X11 display without restart")
 	install := fs.Bool("install", false, "Install reviewed same-binary zen as broker/agent")
 	rollback := fs.Bool("rollback", false, "Roll back unchanged installed files; broker must be stopped")
 	activate := fs.Bool("activate", false, "Enable/start the installed broker; do not restart SDDM or the owner")
@@ -40,6 +41,9 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 	}
 	if fs.NArg() != 0 {
 		return errors.New("unexpected desktop-host arguments")
+	}
+	if *registerCurrent && (!*install || !*activate || *rollback || *planOnly || *initConfig || *register != "") {
+		return errors.New("--register-current requires --install --activate and cannot be combined with init-config, plan, rollback or register")
 	}
 	if *initConfig {
 		return initLinuxConfig(fs, *configPath, *stateDir, *ownerUnit, stderr)
@@ -100,6 +104,8 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 				source, sourceErr := ResolveInstallSource(*binarySource, *brokerSource, *agentSource)
 				if sourceErr != nil {
 					err = sourceErr
+				} else if *registerCurrent {
+					return installAndRegisterCurrent(config, source, stderr)
 				} else {
 					err = InstallLinux(config, source)
 				}
@@ -133,7 +139,7 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 }
 
 func initLinuxConfig(fs *flag.FlagSet, configuredPath, stateDir, ownerUnit string, stderr io.Writer) error {
-	for _, name := range []string{"register", "install", "rollback", "activate", "plan", "binary-source", "broker-source", "agent-source"} {
+	for _, name := range []string{"register", "register-current", "install", "rollback", "activate", "plan", "binary-source", "broker-source", "agent-source"} {
 		if flagWasSet(fs, name) {
 			return errors.New("--init-config cannot be combined with install, rollback, activate, plan, register, or binary source flags")
 		}
@@ -189,9 +195,9 @@ func initLinuxConfig(fs *flag.FlagSet, configuredPath, stateDir, ownerUnit strin
 	}
 	fmt.Fprintf(stderr, "  owner account: uid %d, seat0\n", config.OwnerUID)
 	fmt.Fprintf(stderr, "  review: %s desktop-host --plan --config %s\n", shellQuote(executable), shellQuote(path))
-	fmt.Fprintf(stderr, "  install: sudo %s desktop-host --install --config %s --binary-source %s --activate\n", shellQuote(executable), shellQuote(path), shellQuote(executable))
+	fmt.Fprintf(stderr, "  install: sudo %s desktop-host --install --config %s --binary-source %s --activate --register-current\n", shellQuote(executable), shellQuote(path), shellQuote(executable))
 	fmt.Fprintln(stderr, "  current-session access does not need this administrator step; boot/greeter access does.")
-	fmt.Fprintln(stderr, "  activation preserves the running SDDM session; its current X11 display must be registered before capture.")
+	fmt.Fprintln(stderr, "  --register-current validates SDDM's current X11 display and verifies one discarded video frame; no restart or input.")
 	return nil
 }
 

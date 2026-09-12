@@ -193,7 +193,7 @@ sudo "$HOME/.local/bin/zen-release" desktop-host \
   --install \
   --config "$HOME/.zen/desktop-host.json" \
   --binary-source "$HOME/.local/bin/zen-release" \
-  --activate
+  --activate --register-current
 ```
 
 This is the only root-required step in the host setup. It installs one
@@ -205,14 +205,32 @@ device database. The broker admits only the configured owner account and the
 existing daemon identity; an optional `ownerUnit` adds system-unit cgroup
 binding.
 
-Installing hooks does not retroactively register the running display. A
-subsequent normal SDDM display start registers it automatically. For an already
-running greeter, registration requires administrator-verified display and
-Xauthority metadata through the existing `desktop-host --register start`
-API; a reachable broker socket alone is not capture readiness. Never guess
-`:0`, select the first Xorg process, restart SDDM to make a probe pass, or copy
-Xauthority cookies into config. Zen currently does not automate this live
-registration step.
+`--register-current` completes current-display registration in the same admin
+execution. It uses logind's active seat0 X11 display, identifies the root Xorg
+process through that display's Unix socket credentials, verifies membership in
+the active SDDM system unit, and pins the process lifetime. Only that verified
+process's unique `-auth` argument is used. Its bounded, protected authority file
+must resolve beneath `/run/sddm`; the open descriptor goes through the existing
+root-only registration API. No guessed `:0`, first-Xorg search, user DISPLAY,
+or Xauthority cookie in config or logs. This requires Linux pidfd support
+(Linux 5.3+) and rootful SDDM Xorg; other display managers, rootless Xorg,
+missing seat metadata, and ambiguous arguments are diagnosed before install.
+
+The command then launches the installed ELF's existing UID-dropped agent in
+view-only mode. Success requires valid stream metadata and an actual H.264
+access unit, which is discarded without storing or displaying pixels. The
+agent also checks XTest availability; no keyboard or pointer input is sent.
+The active session is rechecked before success. A broker socket alone is not
+sufficient. The normal SDDM hooks retain registration on future display starts.
+
+An unchanged installation can run the same command again without restarting
+the broker or replacing its files. A different config/binary or administrator
+file drift is refused, as is a local/transient unit override or mask requiring
+manual review. An already connected phone is left connected and the
+verification reports it busy. A failed new activation/registration/probe
+attempts journaled rollback; failures against an existing installation preserve
+it. If rollback itself is blocked, the command reports the failure and retains
+the journal rather than claiming completion. Neither path restarts SDDM or Zen.
 
 After activation, keep the canonical daemon running with its original state
 and identity. If it must start after reboot, use the optional user-owned boot

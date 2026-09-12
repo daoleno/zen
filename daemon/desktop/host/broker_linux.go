@@ -244,7 +244,7 @@ func (b *broker) register(conn *net.UnixConn) {
 		}
 	}()
 	var request registration
-	if decodeMessage(data, &request) != nil || !xDisplay.MatchString(request.Display) || (request.Action != "start" && request.Action != "stop") {
+	if decodeMessage(data, &request) != nil || !xDisplay.MatchString(request.Display) || (request.Action != "start" && request.Action != "stop" && request.Action != "probe") {
 		return
 	}
 	if request.Action == "start" {
@@ -256,6 +256,15 @@ func (b *broker) register(conn *net.UnixConn) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if request.Action == "probe" {
+		result := b.probeCurrentLocked(request.Display)
+		_ = sendJSON(conn, result, nil)
+		return
+	}
+	if request.Action == "start" && request.Display == b.display && sameAuthority(b.authority, file) {
+		_ = sendJSON(conn, map[string]bool{"ok": true}, nil)
+		return
+	}
 	if request.Action == "stop" && request.Display != b.display {
 		_ = sendJSON(conn, map[string]bool{"ok": true}, nil)
 		log.Printf("desktop display registration ignored: action=stop display=%s current=%s", request.Display, b.display)
@@ -729,6 +738,16 @@ func RegisterDisplay(action, display, authority string) error {
 	}
 	file := os.NewFile(uintptr(fd), "display-authority")
 	defer file.Close()
+	_, err = registerDisplayFile(action, display, file)
+	return err
+}
+
+func registerDisplayFile(action, display string, file *os.File) (probeResult, error) {
+	var result probeResult
+	if os.Geteuid() != 0 || !xDisplay.MatchString(display) || file == nil {
+		return result, errors.New("invalid_registration")
+	}
+	var err error
 	var conn *net.UnixConn
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -739,15 +758,21 @@ func RegisterDisplay(action, display, authority string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		return errors.New("broker_unavailable")
+		return result, errors.New("broker_unavailable")
 	}
 	defer conn.Close()
 	if AuthenticateLocalPeer(conn, 0) != nil || sendJSON(conn, registration{Action: action, Display: display}, file) != nil {
-		return errors.New("registration_failed")
+		return result, errors.New("registration_failed")
 	}
-	data, _, err := ReceiveCapability(conn, 0, false)
-	if err != nil || string(data) != `{"ok":true}` {
-		return fmt.Errorf("registration_failed")
+	data, _, err := ReceiveCapabilityWithin(conn, 0, false, 12*time.Second)
+	if err != nil || decodeMessage(data, &result) != nil || !result.OK {
+		if result.Error == errDesktopProbeBusy.Error() {
+			return result, errDesktopProbeBusy
+		}
+		if result.Error != "" {
+			return result, fmt.Errorf("desktop readiness: %s", result.Error)
+		}
+		return result, errors.New("registration_failed")
 	}
-	return nil
+	return result, nil
 }

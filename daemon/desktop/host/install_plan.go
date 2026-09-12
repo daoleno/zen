@@ -94,6 +94,7 @@ func PrintInstallPlan(w io.Writer, plan InstallPlan) {
 	fmt.Fprintln(w, "Zen desktop-host install plan (not applied)")
 	fmt.Fprintln(w, "This does not write files, start systemd, change SDDM, or capture a display.")
 	fmt.Fprintln(w, "Current-session desktop does not use this plan. Lock/login after reboot does.")
+	fmt.Fprintln(w, "--install --activate --register-current also selects the live SDDM X11 socket, registers its authority FD and discards one view-only H.264 probe frame; no restart or input.")
 	for _, file := range plan.Files {
 		fmt.Fprintf(w, "\nFILE %s mode=%04o\n%s", file.Path, file.Mode, file.Content)
 	}
