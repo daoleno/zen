@@ -37,6 +37,8 @@ The check proves the listed source and control-plane checks at separately report
 
 The check exits with status `1` when an anchor or check fails. It exits with status `2` for invalid arguments or an invalid root or state directory. Each subprocess has a bounded timeout. The report names each failed check and does not turn a partial result into a pass.
 
+The lever uses GNU `timeout` without `--foreground`. Each command runs through an owned wrapper that forwards interrupt and termination signals to its exact child, and the parent waits for that wrapper. This keeps child probes inside timeout's process group without guessing a PGID.
+
 Run the committed inert regressions before changing this lever:
 
 ```sh

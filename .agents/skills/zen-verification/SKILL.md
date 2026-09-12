@@ -38,6 +38,8 @@ Run the real control-plane commands through the lever after the doctor preflight
 
 The command output is a compact JSON report. It separates source checks from runtime checks and includes feature IDs, source and test anchor counts, check IDs, source revision, daemon identity, executor IDs, and Worker count. It never treats a mock provider, a unit test, a playbook catalog, or a helper-only output as proof of project Skill loading or a live product flow.
 
+Each probe uses GNU `timeout` without `--foreground`, so descendants inherit the timeout process group. A small wrapper forwards cancellation to the exact child PID it created. The parent waits for the timeout wrapper before reporting failure.
+
 ## Evidence
 
 Capture the command's stdout, stderr, and exit code in the review record. The JSON report is the primary artifact. A passing report proves the listed source and control-plane checks at separately reported source and daemon identities. It does not prove that those identities match.

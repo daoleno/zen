@@ -135,9 +135,7 @@ elif [[ -L "$state_dir" || ! -d "$state_dir" ]]; then
   failures+=("state-dir: path must be an existing non-symlink directory")
 fi
 command -v jq >/dev/null 2>&1 || failures+=("tool: jq is required")
-command -v setsid >/dev/null 2>&1 || failures+=("tool: setsid is required")
-command -v pgrep >/dev/null 2>&1 || failures+=("tool: pgrep is required")
-command -v ps >/dev/null 2>&1 || failures+=("tool: ps is required")
+command -v timeout >/dev/null 2>&1 || failures+=("tool: timeout is required")
 if [[ "$zen_bin" != */* ]]; then
   zen_bin="$(command -v "$zen_bin" 2>/dev/null || true)"
 fi
@@ -147,26 +145,18 @@ report_dir=""
 private_files=()
 declare -A output_files=()
 active_probe_pid=0
-active_probe_pgid=0
 
 stop_active_probe() {
   local pid="$active_probe_pid"
-  local pgid="$active_probe_pgid"
   [[ "$pid" -gt 0 ]] || return 0
-  kill -TERM -- "-$pgid" 2>/dev/null || true
   kill -TERM "$pid" 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    kill -0 -- "-$pgid" 2>/dev/null || break
+    kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
   done
-  kill -KILL -- "-$pgid" 2>/dev/null || true
+  kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   active_probe_pid=0
-  active_probe_pgid=0
-}
-
-probe_group_alive() {
-  kill -0 -- "-$1" 2>/dev/null
 }
 
 cleanup() {
@@ -190,7 +180,7 @@ else
 fi
 
 run_json() {
-  local name="$1" output error status=0 timed_out=false
+  local name="$1" output error status=0
   shift
   [[ -n "$report_dir" ]] || { failures+=("$name: private output directory is unavailable"); return 1; }
   output="$(mktemp "$report_dir/$name.XXXXXX")"
@@ -198,38 +188,23 @@ run_json() {
   chmod 600 "$output" "$error"
   private_files+=("$output" "$error")
   output_files["$name"]="$output"
-  setsid --wait "$@" >"$output" 2>"$error" &
+  timeout --kill-after=1s "${timeout_seconds}s" bash -c '
+    child_pid=0
+    forward_signal() {
+      if ((child_pid > 0)); then
+        kill -TERM "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+      fi
+      exit 143
+    }
+    trap forward_signal INT TERM HUP
+    "$@" &
+    child_pid=$!
+    wait "$child_pid"
+  ' zen-probe "$@" >"$output" 2>"$error" &
   active_probe_pid=$!
-  active_probe_pgid=0
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    child_pid="$(pgrep -P "$active_probe_pid" | head -n 1 || true)"
-    if [[ -n "$child_pid" ]]; then
-      active_probe_pgid="$(ps -o pgid= -p "$child_pid" | tr -d ' ' || true)"
-      break
-    fi
-    if ! kill -0 "$active_probe_pid" 2>/dev/null; then
-      break
-    fi
-    sleep 0.01
-  done
-  if [[ "$active_probe_pgid" == 0 ]]; then
-    active_probe_pgid="$active_probe_pid"
-  fi
-  local deadline=$((SECONDS + timeout_seconds))
-  while probe_group_alive "$active_probe_pgid"; do
-    if ((SECONDS >= deadline)); then
-      timed_out=true
-      stop_active_probe
-      status=124
-      break
-    fi
-    sleep 0.05
-  done
-  if [[ "$timed_out" != true ]]; then
-    wait "$active_probe_pid" || status=$?
-    active_probe_pid=0
-    active_probe_pgid=0
-  fi
+  wait "$active_probe_pid" || status=$?
+  active_probe_pid=0
   ((status == 0)) || { failures+=("$name: command failed with exit $status"); return 1; }
   jq -e 'type == "object" and (.ok == true or .ready == true)' "$output" >/dev/null 2>&1 || {
     failures+=("$name: command returned invalid or unsuccessful JSON")
@@ -237,7 +212,7 @@ run_json() {
   }
 }
 
-if [[ "$manifest_valid" == true && "$state_dir" == /* && -d "$state_dir" && ! -L "$state_dir" && -x "$zen_bin" && -n "$report_dir" ]]; then
+if [[ "$manifest_valid" == true && "$source_check_pass" == true && "$state_dir" == /* && -d "$state_dir" && ! -L "$state_dir" && -x "$zen_bin" && -n "$report_dir" ]]; then
   run_json doctor "$zen_bin" doctor --json --state-dir "$state_dir" || true
   if [[ -s "${output_files[doctor]:-}" ]] && jq -e '.ready == true' "${output_files[doctor]}" >/dev/null 2>&1; then
     doctor_pass=true

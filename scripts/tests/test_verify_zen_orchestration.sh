@@ -14,8 +14,11 @@ chmod 700 "$TMPDIR" "$SANDBOX/state"
 FAKE_ZEN="$SANDBOX/zen"
 OBSERVE="$SANDBOX/observe"
 DOCTOR_MARKER="$SANDBOX/doctor-called"
-CHILD_PID_FILE="$SANDBOX/child.pid"
-export OBSERVE DOCTOR_MARKER CHILD_PID_FILE
+CHILD_PID_DIR="$SANDBOX/children"
+CALLER_SENTINEL="$SANDBOX/caller-sentinel"
+mkdir -p "$CHILD_PID_DIR"
+printf 'caller\n' >"$CALLER_SENTINEL"
+export OBSERVE DOCTOR_MARKER CHILD_PID_DIR
 cat >"$FAKE_ZEN" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -23,7 +26,7 @@ mode="${FAKE_MODE:-normal}"
 spawn_child() {
   (sleep 30) &
   child_pid=$!
-  printf '%s\n' "$child_pid" >"$CHILD_PID_FILE"
+  printf '%s\n' "$child_pid" >"$CHILD_PID_DIR/$mode.pid"
   wait "$child_pid"
 }
 if [[ "$1 $2" == "doctor --json" ]]; then
@@ -86,9 +89,14 @@ assert_not_contains() {
   [[ "$1" != *"$2"* ]] || { printf 'assertion failed: output contains %s\n%s\n' "$2" "$1" >&2; exit 1; }
 }
 
+assert_caller_sentinel() {
+  [[ -f "$CALLER_SENTINEL" ]] || { echo "caller sentinel was removed" >&2; exit 1; }
+}
+
 assert_child_stopped() {
+  local pid_file="$1"
   local child_pid state
-  child_pid="$(cat "$CHILD_PID_FILE")"
+  child_pid="$(cat "$pid_file")"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     state="$(ps -o stat= -p "$child_pid" 2>/dev/null || true)"
     [[ -z "$state" || "$state" == Z* ]] && return 0
@@ -109,6 +117,7 @@ if tail -n +2 "$OBSERVE" | grep -v '^600$' >/dev/null; then
   echo "private output file was not mode 600" >&2
   exit 1
 fi
+assert_caller_sentinel
 
 sentinel="$TMPDIR/zen-verification-$$"
 mkdir "$sentinel"
@@ -116,17 +125,34 @@ printf 'keep\n' >"$sentinel/sentinel"
 run
 assert_eq "$LAST_STATUS" 0
 [[ -f "$sentinel/sentinel" ]] || { echo "precreated sentinel was removed" >&2; exit 1; }
+assert_caller_sentinel
+
+run_mode rapid-exit
+assert_eq "$LAST_STATUS" 0
+assert_caller_sentinel
 
 BAD_ROOT="$SANDBOX/bad-root"
 mkdir -p "$BAD_ROOT/.agents/skills/zen-verification/features"
 cp "$REPO/.agents/skills/zen-verification/SKILL.md" "$BAD_ROOT/.agents/skills/zen-verification/SKILL.md"
 cp "$REPO/.agents/skills/zen-verification/features/README.md" "$BAD_ROOT/.agents/skills/zen-verification/features/README.md"
 printf '%s\n' '{"schema_version":1,"features":[{"id":"broken","runtime_check":"does-not-exist"}]}' >"$BAD_ROOT/.agents/skills/zen-verification/features/manifest.json"
+rm -f "$DOCTOR_MARKER"
 run --root "$BAD_ROOT"
 assert_eq "$LAST_STATUS" 1
 assert_eq "$(jq -r .status <<<"$LAST_OUTPUT")" fail
 assert_contains "$LAST_OUTPUT" "invalid schema or runtime mapping"
 assert_not_contains "$LAST_OUTPUT" "Cannot iterate over null"
+[[ ! -e "$DOCTOR_MARKER" ]] || { echo "doctor ran for an invalid manifest" >&2; exit 1; }
+
+MISSING_ROOT="$SANDBOX/missing-root"
+mkdir -p "$MISSING_ROOT/.agents/skills/zen-verification/features"
+cp "$REPO/.agents/skills/zen-verification/SKILL.md" "$MISSING_ROOT/.agents/skills/zen-verification/SKILL.md"
+cp "$REPO/.agents/skills/zen-verification/features/README.md" "$MISSING_ROOT/.agents/skills/zen-verification/features/README.md"
+cp "$REPO/.agents/skills/zen-verification/features/manifest.json" "$MISSING_ROOT/.agents/skills/zen-verification/features/manifest.json"
+run --root "$MISSING_ROOT"
+assert_eq "$LAST_STATUS" 1
+assert_contains "$LAST_OUTPUT" "source: missing"
+[[ ! -e "$DOCTOR_MARKER" ]] || { echo "doctor ran for missing anchors" >&2; exit 1; }
 
 run_mode bad-json
 assert_eq "$LAST_STATUS" 1
@@ -139,7 +165,21 @@ assert_contains "$LAST_OUTPUT" "command failed with exit 9"
 run_mode worker-hang --timeout-seconds 1
 assert_eq "$LAST_STATUS" 1
 assert_contains "$LAST_OUTPUT" "worker_list: command failed with exit 124"
-assert_child_stopped
+assert_child_stopped "$CHILD_PID_DIR/worker-hang.pid"
+assert_caller_sentinel
+
+rm -f "$CHILD_PID_DIR/doctor-hang.pid"
+export FAKE_MODE=doctor-hang
+set +e
+("$SCRIPT" --json --root "$REPO" --state-dir "$SANDBOX/state" --zen-bin "$FAKE_ZEN" --timeout-seconds 30 >"$SANDBOX/early.json" 2>"$SANDBOX/early.err") &
+early_pid=$!
+kill -TERM "$early_pid"
+wait "$early_pid"
+early_status=$?
+set -e
+[[ "$early_status" -ne 0 ]] || { echo "early cancellation unexpectedly passed" >&2; exit 1; }
+[[ ! -e "$CHILD_PID_DIR/doctor-hang.pid" ]] || { echo "early cancellation started a child" >&2; exit 1; }
+assert_caller_sentinel
 
 rm -f "$DOCTOR_MARKER"
 set +e
@@ -151,12 +191,13 @@ assert_contains "$NO_STATE_OUTPUT" "explicit existing state directory"
 [[ ! -e "$DOCTOR_MARKER" ]] || { echo "doctor ran without explicit state" >&2; exit 1; }
 
 export FAKE_MODE=doctor-hang
+rm -f "$CHILD_PID_DIR/doctor-hang.pid"
 set +e
 ("$SCRIPT" --json --root "$REPO" --state-dir "$SANDBOX/state" --zen-bin "$FAKE_ZEN" --timeout-seconds 30 >"$SANDBOX/signal.json" 2>"$SANDBOX/signal.err") &
 signal_pid=$!
 set -e
 for _ in $(seq 1 50); do
-  find "$TMPDIR" -maxdepth 1 -type d -name 'zen-verification.*' -print -quit | grep -q . && break
+  [[ -s "$CHILD_PID_DIR/doctor-hang.pid" ]] && break
   sleep 0.1
 done
 kill -TERM "$signal_pid"
@@ -165,7 +206,8 @@ wait "$signal_pid"
 signal_status=$?
 set -e
 [[ "$signal_status" -ne 0 ]] || { echo "signal run unexpectedly passed" >&2; exit 1; }
-assert_child_stopped
+assert_child_stopped "$CHILD_PID_DIR/doctor-hang.pid"
+assert_caller_sentinel
 [[ -z "$(find "$TMPDIR" -maxdepth 1 -type d -name 'zen-verification.*' -print -quit)" ]] || {
   echo "signal cleanup left a private report directory" >&2
   exit 1
