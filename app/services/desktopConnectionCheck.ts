@@ -40,7 +40,7 @@ export interface DesktopCapability {
 
 const PREFLIGHT_MESSAGES: Record<string, string> = {
   desktop_tls_required: "Unattended desktop needs this computer's identity-bound encrypted transport. The unencrypted LAN switch is only for attended assistance.",
-  desktop_scope_required: "This phone has terminal access only. Run zen pair on the computer and scan once to grant unattended desktop.",
+  desktop_scope_required: "Enable remote desktop in the Zen app on this phone.",
   host_setup_required: "No current desktop session for this zen process. Start zen from the logged-in session, or run one OS-admin zen desktop-host --install for lock and login after reboot.",
 };
 

@@ -11,10 +11,10 @@ class DesktopFailureTest {
     assertEquals(false, mapped.second.contains("authorization is required"))
   }
 
-  @Test fun legacyScopeAsksForOneRePair() {
+  @Test fun legacyScopeAsksForExplicitInPlaceEnable() {
     val mapped = DesktopFailure.map(403, "desktop_scope_required")
     assertEquals("denied", mapped.first)
-    assertEquals(true, mapped.second.contains("terminal access only"))
+    assertEquals("Enable remote desktop in the Zen app on this phone.", mapped.second)
   }
 
   @Test fun absentHostIsSetupNotAuthorization() {

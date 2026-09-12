@@ -151,6 +151,7 @@ test("capability preflight distinguishes scope, identity TLS, host setup and rev
   expect(fetched.identityTls).toBe(true);
   expect(fetched.transportPin).toBe(pin);
   expect(desktopPreflightError(fetched)?.code).toBe("desktop_scope_required");
+  expect(desktopPreflightError(fetched)?.message).toBe("Enable remote desktop in the Zen app on this phone.");
   await expect(fetchDesktopCapability(server, "wss://host/desktop", {
     ...proof,
     fetch: async () => ({ ok: false, status: 401, redirected: false, url: "", body: null }),

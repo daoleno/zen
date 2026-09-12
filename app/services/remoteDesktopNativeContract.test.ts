@@ -81,7 +81,7 @@ describe("Remote desktop native lifecycle source contracts", () => {
     expect(ios).toContain('request.setValue(mode, forHTTPHeaderField: "X-Zen-Desktop-Mode")');
     expect(route).not.toContain("Attended unencrypted LAN (not lock/login)");
     expect(route).not.toContain("Allow unencrypted LAN desktop");
-    expect(route).toContain("Grant unattended desktop");
+    expect(route).toContain("Enable remote desktop");
     expect(route).toContain('This server requested attended sharing. Update Zen on the computer.');
     expect(route).not.toContain('desktopStart(');
     expect(prepare).toContain('mode: "unattended"');

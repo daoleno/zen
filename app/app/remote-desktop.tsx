@@ -6,6 +6,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
 import { useAppColors } from "../constants/tokens";
 import { prepareDesktopConnection } from "../services/remoteDesktop";
+import { enableDesktopScope } from "../services/desktopScopeGrant";
+import { confirmDesktopEnable } from "../services/confirmDesktopEnable";
 import { desktopKey, desktopPoint, desktopTextEdits, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopPanState } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
@@ -25,6 +27,8 @@ function DesktopSession() {
   const [connection, setConnection] = useState("");
   const [status, setStatus] = useState<DesktopState>({ state: "disconnected" });
   const [preparing, setPreparing] = useState(false);
+  const [preflightCode, setPreflightCode] = useState("");
+  const [enabling, setEnabling] = useState(false);
   const [control, setControl] = useState(false);
   const [panMode, setPanMode] = useState(false);
   const [dragMode, setDragMode] = useState(false);
@@ -36,6 +40,7 @@ function DesktopSession() {
   const [size, setSize] = useState({ width: 1, height: 1 });
   const generation = useRef(0);
   const pending = useRef<AbortController | null>(null);
+  const grantPending = useRef<AbortController | null>(null);
   const reconnect = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttempts = useRef(0);
   const reconnectAllowed = useRef(false);
@@ -74,6 +79,9 @@ function DesktopSession() {
     setStatus({ state: "disconnected" }); setKeyboard(false);
     textRef.current = ""; setText("");
     setDragMode(false); setPanMode(false); setZoom(1); setOffset({ x: 0, y: 0 });
+    setPreflightCode("");
+    grantPending.current?.abort(); grantPending.current = null;
+    setEnabling(false);
   }, [commands]);
   useFocusEffect(useCallback(() => () => stop(), [stop]));
   useEffect(() => {
@@ -98,6 +106,7 @@ function DesktopSession() {
     const inputGeneration = commands.begin();
     setConnection(""); setControl(false);
     setPreparing(true); setStatus({ state: "disconnected" });
+    setPreflightCode("");
     try {
       const server = currentServer;
       pending.current?.abort(); pending.current = new AbortController();
@@ -109,6 +118,7 @@ function DesktopSession() {
       if (epoch === generation.current) {
         reconnectAllowed.current = automatic && error instanceof DesktopConnectionUnavailable;
         commands.stop();
+        setPreflightCode(error instanceof DesktopPreflightError ? error.code : "");
         setStatus({
           state: "disconnected",
           reason: error instanceof DesktopPreflightError
@@ -119,7 +129,33 @@ function DesktopSession() {
       }
     } finally { if (epoch === generation.current) setPreparing(false); }
   };
-  const grantDesktop = () => router.push({ pathname: "/settings", params: { pairMode: "scanner" } });
+  const pairDesktop = () => router.push({ pathname: "/settings", params: { addServer: Date.now().toString(), pairMode: "scanner" } });
+  const enableDesktop = async () => {
+    if (!currentServer || enabling) return;
+    const server = currentServer;
+    const epoch = generation.current;
+    if (!await confirmDesktopEnable(server.name || "this computer")) return;
+    if (epoch !== generation.current || !isCurrentServer(server.id)) return;
+    grantPending.current?.abort();
+    const controller = new AbortController();
+    grantPending.current = controller;
+    setEnabling(true);
+    setStatus({ state: "disconnected" });
+    setPreflightCode("");
+    try {
+      await enableDesktopScope(server, controller.signal);
+      if (epoch !== generation.current || controller.signal.aborted || !isCurrentServer(server.id)) return;
+      grantPending.current = null;
+      setEnabling(false);
+      await connect();
+    } catch (error) {
+      if (epoch !== generation.current || controller.signal.aborted) return;
+      grantPending.current = null;
+      setEnabling(false);
+      setPreflightCode("desktop_scope_required");
+      setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Could not enable remote desktop." });
+    }
+  };
   const pointer = (x: number, y: number) => desktopPoint(
     (x - size.width / 2 - offset.x) / zoom + size.width / 2,
     (y - size.height / 2 - offset.y) / zoom + size.height / 2,
@@ -183,7 +219,7 @@ function DesktopSession() {
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight}>
     <View style={styles.header}>
       <Text numberOfLines={1} style={[styles.host, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
-      <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
+      <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : enabling ? "Enabling remote desktop" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
     </View>
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
@@ -210,10 +246,11 @@ function DesktopSession() {
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />
         {status.reason ? <Text style={styles.message}>{status.reason}</Text> : null}
-        {!preparing && !["requesting", "streaming", "sources"].includes(status.state) ? <>
-          <Pressable accessibilityRole="button" disabled={!currentServer} onPress={() => void connect()} style={styles.action}><Text style={styles.actionText}>Connect</Text></Pressable>
-          {status.reason?.includes("terminal access only") ? <Pressable accessibilityRole="button" onPress={grantDesktop} style={styles.action}><Text style={styles.actionText}>Grant unattended desktop</Text></Pressable> : null}
-        </> : null}
+        {!preparing && !enabling && !["requesting", "streaming", "sources"].includes(status.state) ? (preflightCode === "desktop_scope_required" ?
+          <Pressable accessibilityRole="button" onPress={() => void enableDesktop()} style={styles.action}><Text style={styles.actionText}>Enable remote desktop</Text></Pressable>
+          : preflightCode === "device_revoked" ?
+          <Pressable accessibilityRole="button" onPress={pairDesktop} style={styles.action}><Text style={styles.actionText}>Pair this phone</Text></Pressable>
+          : <Pressable accessibilityRole="button" disabled={!currentServer} onPress={() => void connect()} style={styles.action}><Text style={styles.actionText}>Connect</Text></Pressable>) : null}
       </View>}
     </View>
     <View style={[styles.toolbar, { borderColor: colors.borderSubtle }]}>
