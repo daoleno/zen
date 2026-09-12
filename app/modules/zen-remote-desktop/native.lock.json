@@ -50,7 +50,10 @@
       "license_sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
       "build_script": "scripts/build-openssl-android.sh",
       "prefix": "app/modules/zen-remote-desktop/third_party/openssl/<abi>",
-      "abi": ["arm64-v8a", "x86_64"],
+      "abi": [
+        "arm64-v8a",
+        "x86_64"
+      ],
       "android_api": 24,
       "api_note": "Matches the module minSdk fallback and the NDK android-24 platform used by AGP.",
       "verified_libcrypto_sha256": {
@@ -65,5 +68,23 @@
     "commit": "dd7a1f796e69283a42663630ecd49b174b070778",
     "license": "GPL-3.0",
     "note": "Independent supervised host process; Linux capture path includes kwingrab.cpp/portalgrab.cpp; macOS build at this revision uses AVFoundation (av_video.m) despite the README ScreenCaptureKit claim."
+  },
+  "application_layer": {
+    "component": "moonlight-android application layer (pairing, serverinfo, launch, identity)",
+    "repository": "https://github.com/moonlight-stream/moonlight-android",
+    "commit": "98c12bebffac592eb57cf25e9a4638b40aa2c17d",
+    "license": "GPL-3.0",
+    "vendored_under": "android/src/main/java/expo/modules/zenremotedesktop/moonlight/",
+    "upstream_source_sha256": {
+      "app/src/main/java/com/limelight/nvstream/http/PairingManager.java": "83858d10e77026777acbee6857c95a0af22dc025a0b1f76072704639ac5d572a",
+      "app/src/main/java/com/limelight/nvstream/http/LimelightCryptoProvider.java": "82fbc7a0c0bef759d0e8a1b943aed0af1641d873cc86ff1c664f240a2a6a4a5c",
+      "app/src/main/java/com/limelight/nvstream/http/NvHTTP.java": "363b0618e6c911ab35930b8a40528618100d2135726aded76804e113cfd537f7",
+      "app/src/main/java/com/limelight/binding/crypto/AndroidCryptoProvider.java": "e24b1462d0a86ecffdb8ecaa6b1aaf72df4634e1976103d38e1f79f23b20f2ba"
+    },
+    "notes": [
+      "Mechanical adaptations only: package name, a DOM-based XML helper instead of XmlPullParser, a java.util.logging shim, and explicit exception types.",
+      "The pairing challenge/response AES blocks, PIN salting, SHA-1/SHA-256 selection and signature steps are upstream code.",
+      "RI key/IV are generated client-side exactly like upstream NvConnection: 16-byte key, 16-byte IV with rikeyid big-endian in the first four bytes."
+    ]
   }
 }

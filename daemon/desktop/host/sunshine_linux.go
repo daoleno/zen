@@ -63,8 +63,6 @@ type SunshineHostOptions struct {
 	AppsFilePath string
 	// Port is the Sunshine base port; Sunshine validates its own narrower bound.
 	Port int
-	// ExtraArgs are "key=value" config overrides appended after the config path.
-	ExtraArgs []string
 	// StopGrace bounds SIGTERM before SIGKILL. Zero uses the default.
 	StopGrace time.Duration
 }
@@ -127,11 +125,6 @@ func (o SunshineHostOptions) validate() error {
 	// the exact upstream bound is enforced by its own parser at start time.
 	if o.Port < 1024 || o.Port > 65000 {
 		return errors.New("invalid_sunshine_port")
-	}
-	for _, arg := range o.ExtraArgs {
-		if strings.HasPrefix(arg, "-") || !strings.Contains(arg, "=") || strings.ContainsAny(arg, "\n") {
-			return errors.New("invalid_sunshine_arg")
-		}
 	}
 	return nil
 }
@@ -249,7 +242,7 @@ func StartSunshineHost(opts SunshineHostOptions, spawner SunshineSpawner) (*Suns
 	if spawner == nil {
 		spawner = DefaultSunshineSpawner
 	}
-	args := append([]string{opts.ConfigPath}, opts.ExtraArgs...)
+	args := []string{opts.ConfigPath}
 	process, err := spawner(opts.BinaryPath, args, opts.StateDir)
 	if err != nil {
 		return nil, err

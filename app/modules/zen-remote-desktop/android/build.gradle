@@ -96,5 +96,9 @@ dependencies {
   implementation project(':zen-link-transport')
   implementation 'com.facebook.react:react-android'
   implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+  // Upstream Moonlight application-layer pairing/certificate crypto
+  // (moonlight-android@98c12beb uses these exact artifacts).
+  implementation 'org.bouncycastle:bcprov-jdk18on:1.85.2'
+  implementation 'org.bouncycastle:bcpkix-jdk18on:1.85'
   testImplementation 'junit:junit:4.13.2'
 }

@@ -11,6 +11,8 @@ in the Zen remote-desktop native library (`libzen_moonlight.so`).
 | enet (cgutman fork) | `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1` | MIT | `notices/ENET-MIT.txt` |
 | nanors | `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a` | MIT | `notices/NANORS-MIT.txt` |
 | OpenSSL (Android prefix) | `3.5.4` (maintained LTS; 3.0.x EOL 2026-09) | Apache-2.0 | `notices/OPENSSL-APACHE-2.0.txt` |
+| Moonlight application layer (pairing/serverinfo/launch) | `98c12bebffac592eb57cf25e9a4638b40aa2c17d` | GPL-3.0 | vendored under `android/src/main/java/expo/modules/zenremotedesktop/moonlight/` |
+| BouncyCastle bcprov/bcpkix | `1.85.2` / `1.85` | MIT-style Bouncy Castle licence | `notices/BOUNCYCASTLE-LICENSE.txt` |
 | Sunshine (host, separate process) | `dd7a1f796e69283a42663630ecd49b174b070778` | GPL-3.0 | distributed with the host package, not embedded in the app |
 
 Exact archive URLs and sha256 digests live in `native.lock.json`. Nothing is

@@ -127,4 +127,37 @@ describe("Moonlight client core integration contract", () => {
     expect(thirdParty).toContain("scripts/build-openssl-android.sh");
     expect(thirdParty).toContain("No upstream source file is patched");
   });
+
+  test("vendored upstream application layer keeps pairing crypto and pinning semantics", () => {
+    expect(lock.application_layer.commit).toBe("98c12bebffac592eb57cf25e9a4638b40aa2c17d");
+    expect(lock.application_layer.license).toBe("GPL-3.0");
+    const pairing = read(
+      "android/src/main/java/expo/modules/zenremotedesktop/moonlight/PairingManager.java",
+    );
+    // Key exchange stays upstream code, not a Zen re-implementation.
+    expect(pairing).toContain("AESLightEngine");
+    expect(pairing).toContain("saltPin");
+    expect(pairing).toContain("SHA256withRSA");
+    expect(pairing).toContain("PIN_WRONG");
+    const http = read(
+      "android/src/main/java/expo/modules/zenremotedesktop/moonlight/MoonlightNvHttp.java",
+    );
+    // TLS chain validation first, exact pinned certificate second.
+    expect(http).toContain("defaultTrustManager.checkServerTrusted");
+    expect(http).toContain("Certificate mismatch");
+    // Upstream pairing endpoint and verbs; no --config style flags.
+    expect(http).toContain('"pair"');
+    expect(http).toContain("request.verb()");
+    expect(http).not.toContain('"--config"');
+    const session = read(
+      "android/src/main/java/expo/modules/zenremotedesktop/moonlight/ZenMoonlightSession.kt",
+    );
+    // The launched RI key material is what the core receives.
+    expect(session).toContain("remoteInputAesKey = riKey");
+    expect(session).toContain("remoteInputAesIv = riIv");
+    expect(session).toContain("pairing_required");
+    expect(session).toContain("launch_rejected");
+    expect(session).toContain("no_common_video_format");
+    expect(session).toContain("startAccepted = startResult == 0");
+  });
 });

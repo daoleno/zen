@@ -106,8 +106,6 @@ func TestSunshineOptionsValidation(t *testing.T) {
 		"collision":       func(o *SunshineHostOptions) { o.CertPath = o.PKeyPath },
 		"port low":        func(o *SunshineHostOptions) { o.Port = 80 },
 		"port high":       func(o *SunshineHostOptions) { o.Port = 65535 },
-		"flag arg":        func(o *SunshineHostOptions) { o.ExtraArgs = []string{"--config"} },
-		"bare arg":        func(o *SunshineHostOptions) { o.ExtraArgs = []string{"verbose"} },
 		"newline in path": func(o *SunshineHostOptions) { o.CertPath = o.StateDir + "/ce\nrt" },
 	}
 	for name, mutate := range cases {
@@ -116,11 +114,6 @@ func TestSunshineOptionsValidation(t *testing.T) {
 		if err := opts.validate(); err == nil {
 			t.Fatalf("%s: expected validation error", name)
 		}
-	}
-	ok := base
-	ok.ExtraArgs = []string{"sunshine_name = Zen"}
-	if err := ok.validate(); err != nil {
-		t.Fatalf("valid options rejected: %v", err)
 	}
 }
 
@@ -195,22 +188,6 @@ func TestStartUsesPositionalConfigPathAndPrivateWorkingDir(t *testing.T) {
 		t.Fatalf("running=%v pid=%d", host.Running(), host.PID())
 	}
 	_ = host.Stop(context.Background())
-}
-
-func TestExtraArgsFollowConfigPath(t *testing.T) {
-	opts := sunshineTestOptions(t)
-	opts.ExtraArgs = []string{"sunshine_name = Zen"}
-	process := newFakeSunshineProcess(5)
-	var gotArgs []string
-	if _, err := StartSunshineHost(opts, func(_ string, args []string, _ string) (SunshineProcess, error) {
-		gotArgs = append([]string(nil), args...)
-		return process, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(gotArgs) != 2 || gotArgs[0] != opts.ConfigPath || gotArgs[1] != "sunshine_name = Zen" {
-		t.Fatalf("args = %q", gotArgs)
-	}
 }
 
 func TestSpawnerErrorSurfaces(t *testing.T) {
