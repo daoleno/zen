@@ -50,6 +50,9 @@ static void cancel_portal(void) {
 // One quit path for both the GTK main loop (local UI) and the plain GLib loop
 // used by the broker's headless paired helper.
 static void quit_main(void) {
+  // A synchronous startup failure calls this before g_main_loop_run/gtk_main;
+  // the quit flag alone would be lost, so the loop start is gated on stopping.
+  stopping = TRUE;
   if (gtk_ready) gtk_main_quit();
   if (main_loop) g_main_loop_quit(main_loop);
 }
@@ -452,7 +455,11 @@ int zen_desktop_helper_main(int argc, char **argv) {
     packet(1, requesting, strlen(requesting));
     gtk_widget_show_all(dialog);
   }
-  if (main_loop) g_main_loop_run(main_loop); else gtk_main();
+  if (main_loop) {
+    if (!stopping) g_main_loop_run(main_loop);
+  } else if (!stopping) {
+    gtk_main();
+  }
   if (!wayland) release_input();
   if (pipeline) { gst_element_set_state(pipeline, GST_STATE_NULL); gst_object_unref(pipeline); }
   g_object_unref(media_cancel);
