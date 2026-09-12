@@ -2773,7 +2773,7 @@ func (s *Service) ensureHostActivation(sessionID, command string, executor work.
 			command,
 			prompt,
 			func(owned watcher.OwnedGeneration) string {
-				return hostActivationReceipt(sessionID, owned.Generation, brainWorkerRoleContractDigest())
+				return hostActivationReceipt(sessionID, owned.Generation, brainHostContractDigest())
 			},
 		)
 		if err != nil {
@@ -2800,11 +2800,11 @@ func (s *Service) ensureHostActivation(sessionID, command string, executor work.
 	if current.StateVersion == hostActivationStateVersion &&
 		current.SessionID == sessionID &&
 		current.HostGeneration == generation &&
-		current.ContractDigest == brainWorkerRoleContractDigest() {
+		current.ContractDigest == brainHostContractDigest() {
 		return nil
 	}
 
-	receipt := hostActivationReceipt(sessionID, generation, brainWorkerRoleContractDigest())
+	receipt := hostActivationReceipt(sessionID, generation, brainHostContractDigest())
 	result, found, receiptErr := s.watcher.InputReceiptResult(sessionID, receipt)
 	if receiptErr != nil {
 		return fmt.Errorf("settle Brain Host activation receipt: %w", receiptErr)
@@ -2846,7 +2846,7 @@ func (s *Service) markHostActivation(sessionID, receipt string, owned watcher.Ow
 		HostGeneration:  generation,
 		ProcessIdentity: strings.TrimSpace(owned.ProcessIdentity),
 		PaneGeneration:  strings.TrimSpace(owned.PaneGeneration),
-		ContractDigest:  brainWorkerRoleContractDigest(),
+		ContractDigest:  brainHostContractDigest(),
 		Receipt:         strings.TrimSpace(receipt),
 		ActivatedAt:     s.now().UTC(),
 	}); err != nil {

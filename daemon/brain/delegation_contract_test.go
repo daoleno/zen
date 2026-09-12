@@ -40,7 +40,7 @@ func TestBrainWorkerRoleContractProjectedAcrossSurfaces(t *testing.T) {
 		if strings.Count(surface, brainWorkerRoleContract) != 1 || strings.Contains(surface, brainWorkerRoleContractPlaceholder) {
 			t.Fatalf("%s has missing/duplicate role or unresolved placeholder", name)
 		}
-		if strings.Contains(surface, "zen-brain-worker-role/") || strings.Contains(surface, brainWorkerRoleContractDigest()) {
+		if strings.Contains(surface, "zen-brain-worker-role/") || strings.Contains(surface, brainHostContractDigest()) {
 			t.Fatalf("%s exposes internal activation identity", name)
 		}
 	}
@@ -68,10 +68,10 @@ func TestBrainWorkerRoleContractProjectedAcrossSurfaces(t *testing.T) {
 	t.Logf("rendered bootstrap: %d bytes", len(bootstrap))
 }
 
-func TestHostActivationUsesRoleContentDigest(t *testing.T) {
-	want := fmt.Sprintf("%x", sha256.Sum256([]byte(brainWorkerRoleContract)))
-	if brainWorkerRoleContractDigest() != want {
-		t.Fatal("role identity must derive from its exact text")
+func TestHostActivationUsesProductContentDigest(t *testing.T) {
+	want := brainHostContractDigest()
+	if want == fmt.Sprintf("%x", sha256.Sum256([]byte(brainWorkerRoleContract))) {
+		t.Fatal("activation identity must include product guidance, not only the role")
 	}
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -138,7 +138,7 @@ func TestHostActivationContractDeliveredOncePerProcessGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if firstActivation.SessionID != hostID || firstActivation.HostGeneration == "" ||
-		firstActivation.ContractDigest != brainWorkerRoleContractDigest() {
+		firstActivation.ContractDigest != brainHostContractDigest() {
 		t.Fatalf("fresh activation state = %+v", firstActivation)
 	}
 
@@ -316,9 +316,9 @@ func TestLiveHostActivationQueuesWithUserInputsOutsideSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReceipt := hostActivationReceipt(hostID, hostGeneration, brainWorkerRoleContractDigest())
+	wantReceipt := hostActivationReceipt(hostID, hostGeneration, brainHostContractDigest())
 	if activation.SessionID != hostID || activation.HostGeneration != hostGeneration ||
-		activation.ContractDigest != brainWorkerRoleContractDigest() || activation.Receipt != wantReceipt {
+		activation.ContractDigest != brainHostContractDigest() || activation.Receipt != wantReceipt {
 		t.Fatalf("queued activation did not persist exact receipt identity: %+v", activation)
 	}
 	if fw.readyInputCalls != 0 {
@@ -361,7 +361,7 @@ func TestLiveHostActivationAmbiguousReceiptIsNeverReplayed(t *testing.T) {
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	receipt := hostActivationReceipt(hostID, hostGeneration, brainWorkerRoleContractDigest())
+	receipt := hostActivationReceipt(hostID, hostGeneration, brainHostContractDigest())
 	fw := &fakeWatcher{
 		sessions: map[string]*classifier.Worker{
 			hostID: {ID: hostID, Command: "codex", Hidden: true, State: classifier.StateRunning},

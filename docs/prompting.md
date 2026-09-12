@@ -22,7 +22,7 @@ Async tool calling, mid-turn steering and cached reasoning updates require harne
 | --- | --- |
 | Repository `AGENTS.md` | Code layout, Android/iOS and current-server invariants, commands, repository verification and safety. |
 | `daemon/modelprofiles/codex_catalog_instructions.md` | Zen-owned generic coding defaults for managed Codex catalogs; not a verbatim upstream persona. |
-| `daemon/brain/templates/AGENTS.md` | Brain context map, authorization, scheduler and event-driven waiting rules. |
+| `daemon/brain/templates/AGENTS.md` | Brain context map, concise engineering judgment and method routing, authorization, scheduler and event-driven waiting rules. |
 | `daemon/brain/delegation_contract.go` | Compact Host/Worker role used for activation and managed role projection. |
 | `daemon/brain/templates/soul.md` | Default expression and judgment; existing private soul files remain user-owned. |
 | `daemon/brain/templates/policies/` | On-demand delegation, executor routing and Host recovery rules. |
@@ -55,7 +55,7 @@ not establish a conflict. Worktree use does not remove integration into the
 owning target repository or requested delivery from the completion criteria.
 This is contextual prompt guidance, not an automatic worktree policy engine.
 
-The compact role is repeated at Host activation intentionally: a resumed provider process needs the current instructions even if its retained history contains older text. Activation uses the role text's SHA-256 digest, not a manually maintained version. The digest stays in internal receipt/state metadata, never in the model prompt. Other workflow policies refer to AGENTS.md instead of restating that role.
+The compact role is repeated at Host activation intentionally: a resumed provider process needs the current instructions even if its retained history contains older text. Activation hashes the release-owned prompt, instructions, policies and default playbooks, not a manually maintained version or private overlay. A guidance-only change delivers a short re-read instruction through the existing receipt path. The digest stays in internal receipt/state metadata, never in the model prompt. Other workflow policies refer to AGENTS.md instead of restating that role. [Engineering judgment](brain-engineering.md) describes lazy methods, seed migration and the evaluation boundary.
 
 ## Verification And Rollout
 
@@ -63,4 +63,4 @@ Tests cover generated payload preservation, one exact turn identity, mandatory p
 
 Representative same-configuration measurements: bootstrap 13,145 to 1,604 bytes; initial Worker prompt 4,230 to 2,017 bytes. A handoff fixture with 1,000 historical lines shrank from 21,375 to 548 bytes. Bootstrap comparison uses the same current role constant on both sides. Exact sizes vary with paths and task content; bytes are not token counts.
 
-Managed workspace repair updates product-owned blocks and preserves user-authored content. Nonempty soul.md and seeded custom playbooks are not overwritten. Existing private files can still contain conflicting guidance and need explicit review when adopting the new defaults. A Host already running with old instructions does not retroactively lose its context. Deploy and activate the source changes through the normal authorized service lifecycle; do not rewrite live private overlays or restart services as an incidental prompt edit.
+Managed workspace repair updates product-owned blocks and preserves user-authored content. Nonempty soul.md and customized playbooks are not overwritten. Only byte-identical recognized shipped playbook seeds upgrade automatically. Existing private files can still contain conflicting guidance and need explicit review when adopting the new defaults. A Host already running with old instructions does not retroactively lose its context; normal activation asks it to re-read product guidance. Deploy and activate the source changes through the normal authorized service lifecycle; do not rewrite live private overlays or restart services as an incidental prompt edit.

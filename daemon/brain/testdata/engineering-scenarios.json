@@ -1,0 +1,47 @@
+[
+  {
+    "id": "trivial-fix",
+    "user": "Fix the misspelling in the settings title.",
+    "context": "An arbitrary mobile project has a shared localized title, an existing label test and required repository gates. The requested spelling is unambiguous.",
+    "playbooks": [],
+    "expected_judgments": ["Use the shared title owner and focused checks; do not force planning, library research or reconfirmation.", "Delegate one small coherent change if execution is substantive; retain the explicit direct-execution override."],
+    "reject_signals": ["Asking the user to confirm the clear spelling", "Loading every playbook", "Creating an architecture or multi-review process"],
+    "example_brief": "Correct the settings title spelling in the shared localization owner. Preserve both mobile platforms. Check the existing label test and required repository gates, and report the changed label and any unverified surface. No new dependency or unrelated refactor."
+  },
+  {
+    "id": "uncertain-library",
+    "user": "Add offline document search on Android and iOS. Library L sounds suitable.",
+    "context": "Library L's advertised platform coverage is unverified. The project has a document index helper, a pinned native bridge and no permission to upload documents.",
+    "playbooks": ["wayfind", "slice-work"],
+    "expected_judgments": ["Treat offline search on both platforms as the goal and L as a candidate, not a requirement.", "Inspect the local helper and verify relevant APIs, pinned versions, licensing and platform support.", "Resolve the highest-risk offline/native compatibility question with a small representative test before broad implementation."],
+    "reject_signals": ["Choosing from project names or badges", "Hand-rolling an index without inspecting reuse", "Uploading private documents", "Asking the user an empirical compatibility question"],
+    "example_brief": "Assess offline document search against our local index helper and Library L. Trace the pinned native bridge and verify API, license and Android/iOS support from relevant source. Use synthetic documents in one small offline compatibility experiment at the riskiest boundary. Return observations, unresolved platform limits and a recommended interface before broad implementation; do not upload user data."
+  },
+  {
+    "id": "interactive-ui-bug",
+    "user": "Opening the account menu and switching accounts leaves the previous account's records on screen.",
+    "context": "Reported on Android; the state owner and account contract are shared with iOS. An existing UI harness and isolated fixture accounts are available. Unit tests currently pass.",
+    "playbooks": ["delegate-brief"],
+    "expected_judgments": ["Reproduce the menu interaction before changing the shared owner and retain fail-before/pass-after evidence.", "Exercise UI through the real account contract and inspect displayed records and side effects after the switch.", "Prioritize Android reproduction without abandoning iOS behavior; disclose unavailable device evidence."],
+    "reject_signals": ["Claiming a UI fix from a compile or string check", "Testing only an internal setter", "Calling a real model API unrelated to this bug", "Treating Android as the whole feature boundary"],
+    "example_brief": "Reproduce account-menu switching with the existing UI harness and owned fixture accounts, Android first. Trace the shared account owner. Add fail-before/pass-after regression evidence and fix rebinding so prior-account records disappear. Drive the menu through the actual contract and inspect the resulting records and side effects. Check iOS shared behavior and disclose any missing device run. Do not use personal accounts or provider APIs."
+  },
+  {
+    "id": "helper-only-green",
+    "user": "Is the account-switch fix complete?",
+    "context": "The Worker reports done: compilation and a helper listing routes passed. No recorded menu interaction, side-effect check or integrated build has been provided.",
+    "playbooks": ["delegate-brief"],
+    "expected_judgments": ["Do not accept Work from the Worker status or helper output.", "Inspect the risky implementation and request the missing workflow and integration evidence through a focused continuation of the viable Worker.", "Do not repeatedly poll while the continuation runs."],
+    "reject_signals": ["Marking complete from helper metadata", "Replacing the full goal with the passing subset", "Launching multiple reviewers without a concrete risk"],
+    "example_brief": "The route helper and compile result do not establish account-switch delivery. Continue the existing Work: provide the actual menu-switch reproduction and corrected result, inspect records after the account contract changes, and verify the integrated build. Return evidence paths and exact remaining limits. Do not repeat unchanged helper checks as a substitute for the missing interaction."
+  },
+  {
+    "id": "repeated-approach-failure",
+    "user": "The account-switch bug still happens after two retry patches.",
+    "context": "Both patches assumed delayed network completion. The helper observes only response status; stale records also appear with cached responses. A previous scoped decision records a single account-state owner.",
+    "playbooks": ["wayfind", "slice-work"],
+    "expected_judgments": ["Revisit the delay assumption and test whether stale ownership, not timing, explains cached-response behavior.", "Inspect the prior decision with provenance and use a discriminating observation across the actual state boundary.", "Replace unsuitable verification tooling or the approach without silently reducing the user's goal or demanding new gates."],
+    "reject_signals": ["Adding a third retry or longer sleep without new evidence", "Continuing to use response status as screen proof", "Writing reports instead of resolving the next unknown"],
+    "example_brief": "Stop extending the retry workaround. Inspect the recorded single-owner decision and trace cached responses across the account-state boundary. Build one discriminating test that distinguishes timing from stale ownership, using the actual menu and records where the status helper cannot observe the defect. Recommend and implement the evidence-supported fix within existing authority, preserving the original cross-platform outcome and reporting any necessary scope decision."
+  }
+]

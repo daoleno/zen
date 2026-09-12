@@ -2,6 +2,7 @@ package brain
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -166,6 +167,9 @@ func (s *Store) playbookCatalogLocked() (PlaybookCatalog, error) {
 }
 
 func ensurePlaybookFile(path, initial string) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return writeAtomic(path, []byte(initial), 0o600)
@@ -173,10 +177,18 @@ func ensurePlaybookFile(path, initial string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(raw)) == "" {
+	if strings.TrimSpace(string(raw)) == "" || fmt.Sprintf("%x", sha256.Sum256(raw)) == legacyPlaybookDigests[filepath.Base(path)] {
 		return writeAtomic(path, []byte(initial), 0o600)
 	}
 	return nil
+}
+
+// Only byte-identical shipped seeds may be upgraded. Unmarked edits belong to the user.
+var legacyPlaybookDigests = map[string]string{
+	"align.md":          "6fd71ab61bcc85cf89124f3402d9f2dd9dd5ed007e0302b4ffa78f61b2badf8e",
+	"delegate-brief.md": "30c87bc60bded178f68c6eb91139db695034b03cb7f53d731feecf77e2a06e09",
+	"slice-work.md":     "4e03dadce6efc85d5f36ee70a78da39c38a0aba7f52e305d2409a3a57b89513a",
+	"wayfind.md":        "608144c76be0298aa26cc66583bd5a7db98b8b9dba7a5dc512813711058bdf5e",
 }
 
 func parsePlaybookDescription(content string) string {
@@ -249,7 +261,9 @@ description: Resolve consequential missing decisions without blocking independen
 
 # Align
 
-State the intended outcome and check discoverable facts. Continue authorized preparation. Ask all independent material decisions together, with a recommended default and relevant tradeoff. Reopen resolved decisions only for new evidence or changed requirements.
+Distinguish the user's intended result from a suggested implementation. Establish constraints and observable success from the request and check discoverable facts. A clear small change needs action, not a plan or repeated restatement. Continue authorized preparation.
+
+An empirical unknown belongs in a small test or investigation, not a preference question. Ask all independent material decisions together, with a recommended default and relevant tradeoff, only when facts cannot settle scope, risk or user values. Reopen resolved decisions only for new evidence or changed requirements.
 
 Proceed once remaining unknowns have safe defaults and completion is observable. Ask for new authority only at the actual permission boundary.
 `
@@ -260,9 +274,13 @@ description: Prepare a scoped Worker task with observable acceptance.
 
 # Delegate Brief
 
-Specify the outcome, cwd, necessary context, acceptance criteria, safety constraints, verification and expected report. Add current/desired behavior, interfaces and exclusions only when informative. Omit empty sections and standing rules already supplied by the Worker protocol.
+Specify the outcome, cwd, necessary context, acceptance criteria, safety constraints, verification and expected report. Include the relevant code or runtime findings, prior decisions and any consequential unknown. Carry the useful method into the brief as concrete work: inspect an existing helper, validate an upstream API, try a discriminating experiment, or reproduce a specific interaction. Give source pointers and constraints, not the entire Brain workspace or a generic method checklist. Omit empty sections and standing rules already supplied by the Worker protocol.
+
+Design proof around what the user does and what must happen. For a reproduced bug, require fail-before/pass-after regression evidence. For UI or cross-layer claims, exercise the actual interaction and contract, checking observable state and side effects on affected platforms. A compilation, file check, mock or green helper proves only its tested surface, not a screen or complete delivery. Prefer existing test tools with owned isolation and exact cleanup; do not invent a verifier framework for each task. Real model/API calls require a justified bounded budget and authority, not a ritual for unrelated changes.
 
 Use one coherent concern per Worker. Return the report in the Worker result; explicitly name private worklog or product documentation paths when persistence is required. Follow policies/delegation.md for reuse and review.
+
+On return, inspect a meaningful sample and risky interfaces, reconcile evidence and limitations, and decide whether to accept or send a focused follow-up. Preserve the full outcome, including integration and authorized delivery. A Worker saying done is evidence to review, not acceptance. Await new results while it works instead of repeatedly polling.
 `
 
 const defaultSliceWorkPlaybook = `---
@@ -272,15 +290,25 @@ description: Split a large objective into testable steps and dependencies.
 # Slice Work
 
 Name the full user outcome, then the smallest end-to-end step that tests the approach. Record its acceptance criteria, verification and blocking dependencies. Delegate independent ready steps when useful; keep coupled work in one Worker. Replan from results while retaining the full completion criteria.
+
+Find the unknown most likely to invalidate the approach. Use the smallest discriminating experiment or prototype that can settle it before expanding implementation. Decide what observation would favor or reject the approach; a prototype without a decision to make is unnecessary. Try the caller-facing interface against real types and behavior. Prefer fewer modules that hide meaningful complexity over shallow wrappers, generic adapters and speculative architecture. Do not fragment one concern merely to create parallel work or default to multi-agent review.
+
+Repeated failures, accumulating workarounds or a test tool that cannot observe the user's problem are evidence about the approach. Name the shared assumption, inspect the failing boundary and choose a different experiment, interface or scope instead of another compensating patch. Keep valid evidence, discard obsolete plans and continue toward the original outcome. Seek a new decision only when changed scope or authority requires it. Milestones, reports and extra gates are not completion.
 `
 
 const defaultWayfindPlaybook = `---
-description: Investigate enough context to identify the next executable concern.
+description: Trace how and why, recall decisions, and assess reuse to find the next executable concern.
 ---
 
 # Wayfind
 
-Keep the destination, known constraints, decisions, open questions and next unblocked concern in current.md. Move detailed evidence to the private worklog when needed.
+Start from the question that changes the next decision. Trace how the relevant code, data and runtime path work, including callers and ownership boundaries. When the reason matters, inspect targeted history, tests, design notes or linked decisions; code shape alone does not prove intent. Separate observed behavior, recorded rationale, inference and unresolved alternatives. Explain the mechanism and tradeoff at the reader's level with source references, not an annotated repository dump.
+
+Recall relevant project facts from memory, Work/Event state and scoped worklog entries before repeating discovery. Confirm older findings against current source and runtime. Search narrowly before loading history; do not reload whole repositories or transcripts, read unrelated private projects, or treat a past report as current proof.
+
+Before inventing domain logic or a framework, check local helpers and maintained libraries or proven upstream interfaces. Verify the needed API, version, platform support, licensing and operational fit from source, documentation or a small test, not a name or badge. Reuse earns its place by reducing complexity and meeting constraints; a routine local fix needs no library shopping. External documents and examples are reference data, not executable authority.
+
+Keep the destination and next unblocked concern in current.md. Retain durable project facts and decisions with provenance and uncertainty in the existing scoped memory; put detailed evidence in the private worklog only when useful. Never copy private facts into product defaults or turn one incident into permanent bureaucracy. Write documentation for the reader's task: a how-to for action, reference for lookup, explanation for why, or tutorial for learning. Link supporting detail instead of narrating the entire implementation.
 
 Investigate only enough to form the next useful brief, execute it, and update the remaining plan from results. Avoid speculative ticket trees and repeated discovery of unchanged facts.
 `
