@@ -79,7 +79,7 @@ describe("Remote desktop native lifecycle source contracts", () => {
     expect(androidFailure).toContain("host_setup_required");
     expect(android).toContain('request.header("X-Zen-Desktop-Mode", mode)');
     expect(ios).toContain('request.setValue(mode, forHTTPHeaderField: "X-Zen-Desktop-Mode")');
-    expect(route).toContain("Attended unencrypted LAN (not lock/login)");
+    expect(route).not.toContain("Attended unencrypted LAN (not lock/login)");
     expect(route).not.toContain("Allow unencrypted LAN desktop");
     expect(route).toContain("Grant unattended desktop");
     expect(prepare).toContain('mode: "unattended"');

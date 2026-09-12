@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { Alert, AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, router, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -9,8 +9,6 @@ import { prepareDesktopConnection } from "../services/remoteDesktop";
 import { desktopKey, desktopPoint, desktopTextEdits, desktopStart, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopPanState } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
-import { desktopLanOrigin, hasDesktopLanConsent } from "../services/desktopTransportPolicy";
-import { setDesktopLanConsent } from "../services/storage";
 import { DesktopConnectionUnavailable, DesktopPreflightError } from "../services/desktopConnectionCheck";
 import { PAIRING_SCOPE_COPY } from "../services/pairingScope";
 
@@ -21,7 +19,7 @@ export default function RemoteDesktopScreen() {
 }
 
 function DesktopSession() {
-  const { currentServer, isCurrentServer, refreshServers } = useCurrentServer();
+  const { currentServer, isCurrentServer } = useCurrentServer();
   const colors = useAppColors();
   const root = useRef<View>(null);
   const [headerHeight, setHeaderHeight] = useState(0);
@@ -60,8 +58,6 @@ function DesktopSession() {
     offset: { x: number; y: number }; pan: DesktopPanState | null;
   }>({ x: 0, y: 0, time: 0, pinch: 0, zoom: 1, offset: { x: 0, y: 0 }, pan: null });
   const connected = status.state === "connected";
-  const lan = currentServer ? desktopLanOrigin(currentServer) : null;
-  const lanAllowed = currentServer ? hasDesktopLanConsent(currentServer) : false;
   const send = (value: object) => commands.send(value);
   const input = (events: DesktopInput[]) => {
     if (connected && control && events.length) send({ type: "batch", events });
@@ -127,27 +123,6 @@ function DesktopSession() {
       [{ text: "Cancel", style: "cancel" },
         { text: "Scan pairing link", onPress: () => router.push({ pathname: "/settings", params: { pairMode: "scanner" } }) }]);
   };
-  const acknowledgeAttendedLan = async () => {
-    if (!currentServer) return;
-    const origin = desktopLanOrigin(currentServer);
-    if (!origin) return;
-    const allowed = await new Promise<boolean>((resolve) => Alert.alert(
-      "Attended assistance only",
-      `Unencrypted LAN cannot open lock or login screens or carry OS passwords. Allow attended assistance to ${origin} only on a network you trust.`,
-      [{ text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-        { text: "Allow attended LAN", style: "destructive", onPress: () => resolve(true) }],
-      { cancelable: true, onDismiss: () => resolve(false) },
-    ));
-    if (!allowed || !isCurrentServer(currentServer.id)) return;
-    await setDesktopLanConsent(currentServer, true, () => isCurrentServer(currentServer.id));
-    await refreshServers();
-  };
-  const revokeLan = async () => {
-    if (!currentServer) return;
-    const server = currentServer; stop();
-    try { await setDesktopLanConsent(server, false, () => isCurrentServer(server.id)); await refreshServers(); }
-    catch (error) { if (isCurrentServer(server.id)) setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Unable to update desktop approval." }); }
-  };
   const pointer = (x: number, y: number) => desktopPoint(
     (x - size.width / 2 - offset.x) / zoom + size.width / 2,
     (y - size.height / 2 - offset.y) / zoom + size.height / 2,
@@ -212,11 +187,6 @@ function DesktopSession() {
     <View style={styles.header}>
       <Text numberOfLines={1} style={[styles.host, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
       <Text style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
-      {lan ? <View style={styles.lanRow}>
-        <Text style={{ color: colors.textSecondary, flex: 1 }}>Attended unencrypted LAN (not lock/login)</Text>
-        <Switch accessibilityLabel="Attended unencrypted LAN desktop" value={lanAllowed} disabled={preparing}
-          onValueChange={(allowed) => { if (allowed) void acknowledgeAttendedLan(); else void revokeLan(); }} />
-      </View> : null}
     </View>
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
@@ -228,6 +198,10 @@ function DesktopSession() {
             if (retry) scheduleReconnect();
           }
           if (nativeEvent.state === "connected") reconnectAttempts.current = 0;
+          if (nativeEvent.state === "sources") {
+            const start = desktopStart(nativeEvent.source, true);
+            if (start) send(start);
+          }
           if (nativeEvent.state === "streaming" || nativeEvent.state === "connected") setControl(nativeEvent.control === true);
           if (nativeEvent.surface === "greeter" || nativeEvent.surface === "locked") {
             textRef.current = ""; setText(""); setKeyboard(false);
@@ -238,13 +212,7 @@ function DesktopSession() {
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />
         <Text style={styles.message}>{status.reason || (status.state === "sources" ? status.source === "wayland" ? "Wayland portal desktop" : "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : "Connect")}</Text>
-        {status.state === "sources" ? <>
-          <View style={styles.mode}><Text style={styles.message}>Allow control</Text><Switch value={control} onValueChange={setControl} /></View>
-          <Pressable accessibilityRole="button" disabled={!desktopStart(status.source, control)} onPress={() => {
-            const start = desktopStart(status.source, control);
-            if (start) send(start);
-          }} style={styles.action}><Text style={styles.actionText}>Share desktop</Text></Pressable>
-        </> : !preparing && !["requesting", "streaming"].includes(status.state) ? <>
+        {!preparing && !["requesting", "streaming", "sources"].includes(status.state) ? <>
           <Pressable accessibilityRole="button" disabled={!currentServer} onPress={() => void connect()} style={styles.action}><Text style={styles.actionText}>Connect</Text></Pressable>
           {status.reason?.includes("terminal access only") ? <Pressable accessibilityRole="button" onPress={grantDesktop} style={styles.action}><Text style={styles.actionText}>Grant unattended desktop</Text></Pressable> : null}
         </> : null}
@@ -281,12 +249,10 @@ function DesktopSession() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   header: { paddingHorizontal: 16, paddingVertical: 10, gap: 4 },
-  lanRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   host: { fontSize: 14, fontWeight: "600" },
   viewport: { flex: 1, backgroundColor: "#000000", overflow: "hidden" },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 16 },
   message: { fontSize: 15, color: "#e3e7eb", textAlign: "center" },
-  mode: { flexDirection: "row", alignItems: "center", gap: 16 },
   action: { backgroundColor: "#edf1f4", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 6 },
   actionText: { color: "#182024", fontSize: 15, fontWeight: "600" },
   toolbar: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-evenly", borderTopWidth: StyleSheet.hairlineWidth, padding: 4 },
