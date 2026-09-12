@@ -223,6 +223,7 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
       supportedVideoFormats = config.optInt("supportedVideoFormats", MoonlightVideoFormats.DECODER_SUPPORTED),
       streamingRemotely = config.optInt("streamingRemotely", -1),
       enableSops = config.optBoolean("enableSops", true),
+      pauseBeforeLaunch = config.optBoolean("pairOnly", false),
     )
     val pin = config.optString("pin").takeIf { it.isNotBlank() }
     publish(conn, "connecting", hostName)
@@ -251,6 +252,7 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
         }
         when (val result = activeSession.connect(hostClient, plan, pin)) {
           is ZenMoonlightSession.Result.Rejected -> publish(conn, "rejected", result.reason)
+          is ZenMoonlightSession.Result.Paired -> publish(conn, "paired", "awaiting_enrollment")
           is ZenMoonlightSession.Result.Started ->
             publish(conn, if (result.startAccepted) "start_accepted" else "start_failed", result.launchVerb)
         }

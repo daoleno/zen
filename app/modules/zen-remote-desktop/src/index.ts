@@ -1,4 +1,4 @@
-import { requireNativeViewManager } from "expo-modules-core";
+import { requireNativeModule, requireNativeViewManager } from "expo-modules-core";
 import type { ComponentType, Ref } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
 import type { DesktopCommandTarget } from "../../../services/remoteDesktopCommands";
@@ -65,6 +65,7 @@ export const NativeDesktopKeyboard: ComponentType<DesktopKeyboardProps> | null =
 export interface MoonlightDesktopState {
   state:
     | "connecting"
+    | "paired"
     | "start_accepted"
     | "start_failed"
     | "stage"
@@ -115,6 +116,21 @@ export const NativeMoonlightDesktopView: ComponentType<MoonlightDesktopProps> | 
     if (!expo || typeof expo.getViewConfig !== "function" ||
         expo.getViewConfig("ZenRemoteDesktop", "MoonlightDesktopView") == null) return null;
     return requireNativeViewManager<MoonlightDesktopProps>("ZenRemoteDesktop", "MoonlightDesktopView");
+  } catch {
+    return null;
+  }
+})();
+
+/** Narrow native enrollment boundary: certificate/fingerprint and detached
+ * signatures only; the Moonlight private key never leaves native storage. */
+export interface MoonlightEnrollmentApi {
+  moonlightEnrollmentIdentity(identityKey: string): Promise<{ certPem: string; fingerprint: string }>;
+  moonlightSignEnrollment(identityKey: string, attempt: string, nonce: string): Promise<string>;
+}
+
+export const MoonlightEnrollment: MoonlightEnrollmentApi | null = (() => {
+  try {
+    return requireNativeModule<MoonlightEnrollmentApi>("ZenRemoteDesktop");
   } catch {
     return null;
   }

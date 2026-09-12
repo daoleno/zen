@@ -14,7 +14,9 @@ export class DesktopPreflightError extends Error {
 }
 
 export interface DesktopProofDependencies {
-  fetch: (url: string, init: Pick<RequestInit, "headers" | "signal" | "redirect">) => Promise<Pick<Response, "ok" | "status" | "url" | "redirected" | "body">>;
+  // POST bodies are used by the authenticated enrollment control calls.
+
+  fetch: (url: string, init: Pick<RequestInit, "headers" | "signal" | "redirect" | "method" | "body">) => Promise<Pick<Response, "ok" | "status" | "url" | "redirected" | "body">>;
   authorization: (purpose: "zen-probe" | "zen-desktop-capability") => Promise<string>;
   verify: (input: DaemonAssertionInput) => boolean;
   timeoutMs?: number;
@@ -175,7 +177,7 @@ export function desktopPreflightError(capability: DesktopCapability): DesktopPre
   return new DesktopPreflightError(code, PREFLIGHT_MESSAGES[code] || "Desktop is not ready.", capability.recovery);
 }
 
-function httpEndpoint(desktop: string): URL {
+export function httpEndpoint(desktop: string): URL {
   const endpoint = new URL(desktop);
   endpoint.protocol = endpoint.protocol === "wss:" ? "https:" : "http:";
   return endpoint;

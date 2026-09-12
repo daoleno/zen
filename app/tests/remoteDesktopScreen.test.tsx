@@ -44,7 +44,10 @@ if (!process.env.ZEN_DESKTOP_SCREEN_CHILD) {
   mock.module("react-native-safe-area-context", () => ({ SafeAreaView: host("safe-area") }));
   mock.module("../store/currentServer", () => ({ useCurrentServer: () => ({ currentServer: current, isCurrentServer: (id: string) => id === current.id }) }));
   mock.module("../constants/tokens", () => ({ useAppColors: () => ({}) }));
-  mock.module("../services/remoteDesktop", () => ({ prepareDesktopConnection: (_: unknown, generation: string) => prepare(generation) }));
+  mock.module("../services/remoteDesktop", () => ({
+      prepareDesktopConnection: (_: unknown, generation: string) => prepare(generation),
+      enrollMoonlightConnection: async () => "verified",
+    }));
   mock.module("../services/desktopScopeGrant", () => ({ enableDesktopScope: (server: unknown, signal?: AbortSignal) => enable(server, signal) }));
   mock.module("../services/confirmDesktopEnable", () => ({ confirmDesktopEnable: () => confirmImpl ? confirmImpl() : Promise.resolve(confirmResult) }));
   mock.module("../modules/zen-remote-desktop/src", () => ({

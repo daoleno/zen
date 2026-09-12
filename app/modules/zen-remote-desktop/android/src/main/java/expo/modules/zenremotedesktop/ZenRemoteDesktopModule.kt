@@ -28,6 +28,14 @@ import android.widget.EditText
 import org.json.JSONArray
 
 class ZenRemoteDesktopModule : Module() {
+  private fun enrollmentIdentityDir(identityKey: String): java.io.File {
+    require(identityKey.matches(Regex("[A-Za-z0-9._-]{1,128}"))) { "invalid_identity_key" }
+    val root = appContext.reactContext?.filesDir ?: throw IllegalStateException("identity_dir_unavailable")
+    val dir = java.io.File(root, "zen-desktop/identity/$identityKey")
+    if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("identity_dir_unavailable")
+    return dir
+  }
+
   override fun definition() = ModuleDefinition {
     Name("ZenRemoteDesktop")
     View(DesktopView::class) {
@@ -44,6 +52,16 @@ class ZenRemoteDesktopModule : Module() {
       Events("onDesktopText", "onDesktopKey")
       AsyncFunction("focus") { view: DesktopKeyboardView -> view.focusInput() }
       AsyncFunction("clear") { view: DesktopKeyboardView -> view.clearInput() }
+    }
+    AsyncFunction("moonlightEnrollmentIdentity") { identityKey: String ->
+      val dir = enrollmentIdentityDir(identityKey)
+      mapOf(
+        "certPem" to expo.modules.zenremotedesktop.moonlight.MoonlightEnrollmentSigner.certificatePem(dir),
+        "fingerprint" to expo.modules.zenremotedesktop.moonlight.MoonlightEnrollmentSigner.fingerprint(dir),
+      )
+    }
+    AsyncFunction("moonlightSignEnrollment") { identityKey: String, attempt: String, nonce: String ->
+      expo.modules.zenremotedesktop.moonlight.MoonlightEnrollmentSigner.sign(enrollmentIdentityDir(identityKey), attempt, nonce)
     }
     View(MoonlightDesktopView::class) {
       Events("onState")

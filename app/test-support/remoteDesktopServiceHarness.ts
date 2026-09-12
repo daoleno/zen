@@ -81,16 +81,35 @@ mock.module(root + "/modules/zen-link-transport/src/index.ts", () => ({
     return { port: 43210 };
   },
 }));
+mock.module("expo-modules-core", () => ({
+  requireNativeModule: () => ({
+    moonlightEnrollmentIdentity: async () => ({ certPem: "test-cert-pem", fingerprint: "test-fingerprint" }),
+    moonlightSignEnrollment: async () => "test-signature",
+  }),
+  requireNativeViewManager: () => null,
+}));
+const controlCalls: { path: string; body: Record<string, unknown> }[] = [];
 mock.module("expo/fetch", () => ({
-  fetch: async (url: string) => {
+  fetch: async (url: string, init?: { method?: string; body?: unknown }) => {
     const path = new URL(url).pathname;
+    if (init?.method === "POST") {
+      const parsed = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      controlCalls.push({ path, body: parsed });
+      if (path === "/desktop/moonlight/enroll/begin") {
+        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({ nonce: "b".repeat(64) })).body };
+      }
+      if (path === "/desktop/moonlight/enroll/complete") {
+        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({ enrolled: true, uuid: "host-uuid" })).body };
+      }
+      return { ok: false, status: 404, url, redirected: false, body: new Response(JSON.stringify({ reason: "not_found" })).body };
+    }
     const body = bodies()[path as keyof ReturnType<typeof bodies>];
     if (!body) return { ok: false, status: 404, url, redirected: false, body: null };
     return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify(body)).body };
   },
 }));
 
-const { prepareDesktopConnection } = await import(root + "/services/remoteDesktop.ts");
+const { prepareDesktopConnection, enrollMoonlightConnection } = await import(root + "/services/remoteDesktop.ts");
 
 scenario = "moonlight";
 tunnelCalls = 0;
@@ -105,4 +124,14 @@ const legacyPlan = JSON.parse(await prepareDesktopConnection(server as never, "g
 assert.equal(legacyPlan.transport, "pinned-link");
 assert.equal(tunnelCalls, 1);
 
-console.log(JSON.stringify({ moonlight: "moonlight", legacy: "pinned-link", tunnelCalls }));
+scenario = "moonlight";
+const enrollment = await enrollMoonlightConnection(server as never, "device-1");
+assert.equal(enrollment, "verified");
+assert.deepEqual(controlCalls.map((call) => call.path), [
+  "/desktop/moonlight/enroll/begin",
+  "/desktop/moonlight/enroll/complete",
+]);
+assert.equal(controlCalls[1].body.signature, "test-signature");
+assert.equal(controlCalls[1].body.client_cert_pem, "test-cert-pem");
+
+console.log(JSON.stringify({ moonlight: "moonlight", legacy: "pinned-link", tunnelCalls, enrollment, controlCalls: controlCalls.length }));

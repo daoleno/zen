@@ -6,11 +6,95 @@ import { fetch } from "expo/fetch";
 import {
   desktopPreflightError,
   fetchDesktopCapability,
+  httpEndpoint,
   type DesktopProofDependencies,
   verifyDesktopServer,
 } from "./desktopConnectionCheck";
+import { MoonlightEnrollment } from "../modules/zen-remote-desktop/src";
 
-export async function prepareDesktopConnection(server: StoredServer, inputGeneration: string, signal?: AbortSignal): Promise<string> {
+interface PrepareOptions {
+  /** Set after this device/identity/host completed enrollment successfully. */
+  moonlightEnrolled?: boolean;
+}
+
+function randomHex(bytes: number): string {
+  const value = new Uint8Array(bytes);
+  crypto.getRandomValues(value);
+  return Array.from(value, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Freshly authorized, redirect-rejecting control POST with a bounded body. */
+async function postControl(server: StoredServer, resolved: string, proof: DesktopProofDependencies,
+  path: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  const endpoint = httpEndpoint(resolved);
+  endpoint.pathname = path;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort);
+  const timer = setTimeout(abort, proof.timeoutMs ?? 5000);
+  try {
+    const authorization = await proof.authorization("zen-desktop-capability");
+    if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+    const response = await proof.fetch(endpoint.toString(), {
+      method: "POST",
+      headers: { Authorization: authorization, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+      redirect: "error",
+    });
+    if (response.redirected || (response.url && response.url !== endpoint.toString())) {
+      throw new Error("Desktop endpoint redirects are not allowed.");
+    }
+    const payload = response.body ? JSON.parse(await new Response(response.body).text()) : {};
+    if (!response.ok) {
+      const reason = typeof payload?.reason === "string" ? payload.reason : `http_${response.status}`;
+      const error = new Error(reason);
+      (error as Error & { status?: number }).status = response.status;
+      throw error;
+    }
+    return payload;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+/**
+ * Production enrollment caller: native identity -> fresh authorized begin ->
+ * native detached signature -> authenticated complete. Pending means pairing
+ * has not reached the host state yet; the caller retries after pairing.
+ * 401/403/rejected/expired attempts are surfaced and never treated as enrolled.
+ */
+export async function enrollMoonlightConnection(server: StoredServer, identityKey: string, signal?: AbortSignal): Promise<"verified" | "pending"> {
+  if (!MoonlightEnrollment) throw new Error("This build has no Moonlight enrollment support.");
+  const resolved = await resolveStoredServerURL(server);
+  const proof: DesktopProofDependencies = {
+    fetch,
+    authorization: (purpose) => buildAuthorizationHeader({ daemonId: server.daemonId, purpose }),
+    verify: verifyDaemonAssertion,
+  };
+  const attempt = randomHex(16);
+  const identity = await MoonlightEnrollment.moonlightEnrollmentIdentity(identityKey);
+  if (!identity.certPem || !identity.fingerprint) throw new Error("moonlight_identity_unavailable");
+  if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+  const begin = await postControl(server, resolved, proof, "/desktop/moonlight/enroll/begin", { attempt }, signal);
+  const nonce = typeof begin.nonce === "string" ? begin.nonce : "";
+  if (!nonce) throw new Error("enrollment_challenge_missing");
+  if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+  const signature = await MoonlightEnrollment.moonlightSignEnrollment(identityKey, attempt, nonce);
+  if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+  try {
+    const complete = await postControl(server, resolved, proof, "/desktop/moonlight/enroll/complete", {
+      attempt, nonce, client_cert_pem: identity.certPem, signature,
+    }, signal);
+    return complete.enrolled === true ? "verified" : "pending";
+  } catch (error) {
+    if ((error as Error).message === "enrollment_pending") return "pending";
+    throw error;
+  }
+}
+
+export async function prepareDesktopConnection(server: StoredServer, inputGeneration: string, signal?: AbortSignal, options: PrepareOptions = {}): Promise<string> {
   const resolved = await resolveStoredServerURL(server);
   const proof: DesktopProofDependencies = {
     fetch,
@@ -36,7 +120,11 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
       transport: "moonlight",
       authorization,
       inputGeneration,
-      moonlight: { ...capability.moonlight, host: engineHost },
+      moonlight: {
+        ...capability.moonlight,
+        host: engineHost,
+        pairOnly: !options.moonlightEnrolled && capability.moonlight.admission !== "verified",
+      },
     });
   }
   if (blocking && !identityLan) throw blocking;

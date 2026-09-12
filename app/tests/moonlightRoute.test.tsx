@@ -36,10 +36,18 @@ mock.module(require.resolve("expo-router"), () => ({
 mock.module(require.resolve("react-native-safe-area-context"), () => ({ SafeAreaView: host("safe") }));
 mock.module(require.resolve(root + "/store/currentServer"), () => ({ useCurrentServer: () => ({ currentServer, isCurrentServer: () => true }) }));
 mock.module(require.resolve(root + "/constants/tokens"), () => ({ useAppColors: () => ({}) }));
+let enrollmentResult: "verified" | "pending" = "verified";
+let enrollmentCalls = 0;
 mock.module(root + "/services/remoteDesktop.ts", () => ({
-  prepareDesktopConnection: async () => JSON.stringify({ transport: "moonlight", moonlight: {
-    host: "192.0.2.10", hostKey: "host-key", identityKey: "owned-device", httpPort: 47989, httpsPort: 47984,
-  } }),
+  prepareDesktopConnection: async (_server: unknown, _generation: string, _signal?: unknown, options?: { moonlightEnrolled?: boolean }) =>
+    JSON.stringify({ transport: "moonlight", moonlight: {
+      host: "192.0.2.10", hostKey: "host-key", identityKey: "owned-device", httpPort: 47989, httpsPort: 47984,
+      pairOnly: options?.moonlightEnrolled !== true,
+    } }),
+  enrollMoonlightConnection: async () => {
+    enrollmentCalls++;
+    return enrollmentResult;
+  },
 }));
 mock.module(root + "/services/desktopScopeGrant.ts", () => ({ enableDesktopScope: async () => {} }));
 mock.module(root + "/services/confirmDesktopEnable.ts", () => ({ confirmDesktopEnable: async () => true }));
@@ -97,6 +105,33 @@ test("mounted route sends absolute input, disconnect on Stop and ignores stale c
     await act(async () => newCallback(connected));
     expect(tree.root.findAllByType("moonlight-native")).toHaveLength(1);
     await act(async () => oldCallback({ nativeEvent: { state: "disconnected", generation: 1, reason: "late old connection" } }));
+    expect(tree.root.findAllByType("moonlight-native")).toHaveLength(1);
+  } finally {
+    if (tree) await act(async () => tree.unmount());
+  }
+});
+
+test("launch waits for enrollment: paired pauses, verified relaunches", async () => {
+  enrollmentResult = "verified";
+  enrollmentCalls = 0;
+  calls.length = 0;
+  let tree: any;
+  const clickConnect = async () => act(async () => {
+    tree.root.findAllByType("button").find((button: any) =>
+      button.findAllByType("text").some((text: any) => text.children.includes("Connect")))!.props.onPress();
+  });
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  try {
+    await act(async () => { tree = create(React.createElement(Screen)); });
+    await clickConnect();
+    const firstView = tree.root.findByType("moonlight-native");
+    const firstCallback = firstView.props.onState;
+    await act(async () => firstCallback({ nativeEvent: { state: "paired", generation: 1 } }));
+    // The pair-only pass emitted no start event and asked for enrollment.
+    await act(async () => { await Promise.resolve(); });
+    expect(enrollmentCalls).toBe(1);
+    expect(calls.some((call) => call.name === "sendPointerPosition")).toBe(false);
+    // A verified enrollment mounts the second (launching) pass.
     expect(tree.root.findAllByType("moonlight-native")).toHaveLength(1);
   } finally {
     if (tree) await act(async () => tree.unmount());

@@ -5,7 +5,7 @@ import { Stack, router, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
 import { useAppColors } from "../constants/tokens";
-import { prepareDesktopConnection } from "../services/remoteDesktop";
+import { enrollMoonlightConnection, prepareDesktopConnection } from "../services/remoteDesktop";
 import { enableDesktopScope } from "../services/desktopScopeGrant";
 import { confirmDesktopEnable } from "../services/confirmDesktopEnable";
 import { desktopNamedKey, desktopPoint, desktopCommittedText, desktopTextEdits, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopNamedKey, type DesktopPanState } from "../services/remoteDesktopModel";
@@ -65,6 +65,10 @@ function DesktopSession() {
   // Monotonic attempt identity: repeated identical configs (including a
   // colliding random PIN) still mount a fresh view and reject stale callbacks.
   const moonlightAttempt = useRef(0);
+  // Set only after this device/identity/host completed the authenticated
+  // enrollment; the pair-only pass never reaches host.launchOrResume.
+  const moonlightEnrolled = useRef(false);
+  const moonlightEnrollment = useRef<AbortController | null>(null);
   const [moonlightPin, setMoonlightPin] = useState("");
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
     generation.current++;
@@ -169,6 +173,9 @@ function DesktopSession() {
   // pairing; explicit device/trust removal (daemon revocation) calls
   // revokeMoonlight and is the only path that unpairs.
   const stop = useCallback((keepReconnect = false) => {
+    moonlightEnrollment.current?.abort();
+    moonlightEnrollment.current = null;
+    if (!keepReconnect) moonlightEnrolled.current = false;
     const session = moonlightSession.current;
     if (session && !session.ended) {
       void moonlight.current?.disconnect(session.generation).catch(() => undefined);
@@ -238,7 +245,9 @@ function DesktopSession() {
     try {
       const server = currentServer;
       pending.current?.abort(); pending.current = new AbortController();
-      const next = await prepareDesktopConnection(server, inputGeneration, pending.current.signal);
+      const next = await prepareDesktopConnection(server, inputGeneration, pending.current.signal, {
+        moonlightEnrolled: moonlightEnrolled.current,
+      });
       if (epoch === generation.current && isCurrentServer(server.id)) {
         const parsed = JSON.parse(next) as { transport?: string; moonlight?: MoonlightHostBootstrap };
         if (parsed.transport === "moonlight" && parsed.moonlight) {
@@ -386,6 +395,38 @@ function DesktopSession() {
               }
             }
             if (event.state === "connected") { reconnectAttempts.current = 0; setControl(true); setMoonlightPin(""); }
+            if (event.state === "paired") {
+              // Pairing done, launch gated: prove possession and register
+              // enrollment for this same device/host/certificate before the
+              // second pass is allowed to start the stream.
+              setMoonlightPin("");
+              setStatus({ state: "requesting" });
+              const activeServer = currentServer;
+              if (!activeServer) return;
+              const identityKey = (JSON.parse(connection) as { identityKey?: string }).identityKey ?? "";
+              moonlightEnrollment.current?.abort();
+              const controller = new AbortController();
+              moonlightEnrollment.current = controller;
+              void (async () => {
+                try {
+                  const enrollment = await enrollMoonlightConnection(activeServer, identityKey, controller.signal);
+                  if (controller.signal.aborted || moonlightKey.current !== connection) return;
+                  moonlightEnrollment.current = null;
+                  if (enrollment === "verified") {
+                    moonlightEnrolled.current = true;
+                    stop(true);
+                    void connect(false);
+                  } else {
+                    setInputNotice("Finish pairing in Sunshine, then connect again.");
+                  }
+                } catch (error) {
+                  if (controller.signal.aborted) return;
+                  moonlightEnrollment.current = null;
+                  setStatus({ state: "disconnected", reason: error instanceof Error ? error.message : "Enrollment failed." });
+                }
+              })();
+              return;
+            }
             if (event.state === "rejected" || event.state === "failed") {
               setInputNotice(event.reason ?? "");
               setControl(false);

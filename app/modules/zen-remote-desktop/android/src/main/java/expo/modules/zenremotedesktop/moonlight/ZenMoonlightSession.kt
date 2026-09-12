@@ -50,10 +50,22 @@ class ZenMoonlightSession(
     val enableSops: Boolean = true,
     val remoteControllersBitmap: Int = 0,
     val attachedGamepadMask: Int = 0,
+    /**
+     * When true, pair and bind trust but stop before host.launchOrResume /
+     * core.start. The caller must confirm enrollment for this exact attempt
+     * before a second pass is allowed to launch.
+     */
+    val pauseBeforeLaunch: Boolean = false,
   )
 
   sealed class Result {
     data class Rejected(val serverInfo: MoonlightServerInfo?, val reason: String) : Result()
+
+    /** Paired and pinned, but paused before launch until enrollment confirms. */
+    data class Paired(
+      val serverInfo: MoonlightServerInfo,
+      val pairState: PairingManager.PairState?,
+    ) : Result()
 
     data class Started(
       val serverInfo: MoonlightServerInfo,
@@ -181,7 +193,16 @@ class ZenMoonlightSession(
       return Result.Rejected(serverInfo, "invalid_resolution")
     }
 
-    // 6. Upstream launch/resume policy. Foreign busy state is explicit.
+    // 6. Enrollment gate: pair and trust are done, but the stream may not
+    // start until the caller confirms enrollment for this same attempt.
+    if (plan.pauseBeforeLaunch) {
+      if (!attemptAlive(attempt)) {
+        return Result.Rejected(serverInfo, "revoked")
+      }
+      return Result.Paired(serverInfo, pairState)
+    }
+
+    // 7. Upstream launch/resume policy. Foreign busy state is explicit.
     val verb = when {
       serverInfo.runningGameId() == 0 -> MoonlightLaunchRequest.VERB_LAUNCH
       serverInfo.runningGameId() == plan.appId -> MoonlightLaunchRequest.VERB_RESUME
