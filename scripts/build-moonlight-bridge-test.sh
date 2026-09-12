@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODULE="$ROOT/app/modules/zen-remote-desktop"
-OUT="${1:-$MODULE/android/build/moonlight-test}"
+OUT="${1:-$ROOT/build/zen-moonlight-bridge-test}"
 
 "$ROOT/scripts/fetch-moonlight-common-c.sh" >/dev/null
 

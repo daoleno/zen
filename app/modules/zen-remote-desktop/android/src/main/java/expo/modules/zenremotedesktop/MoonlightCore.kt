@@ -54,6 +54,12 @@ open class MoonlightCore {
 
   open fun onConnectionStarted() {}
 
+  /**
+   * Async start failure surfaced by the bridge (for example a setup or stage
+   * callback rejected the stream). Not called for an intentional stop.
+   */
+  open fun onConnectionStartFailed(errorCode: Int) {}
+
   /** CONN_STATUS_OKAY (0) or CONN_STATUS_POOR (1). */
   open fun onConnectionStatusUpdate(connectionStatus: Int) {}
 
@@ -125,6 +131,9 @@ open class MoonlightCore {
   /** Last connectionTerminated error code, 0 when none was observed. */
   fun lastError(): Int = nativeLastError()
 
+  /** Last failed LiStartConnection result, 0 when the last start succeeded. */
+  fun lastStartError(): Int = nativeLastStartError()
+
   fun isActive(): Boolean = nativeIsActive()
 
   fun sendKeyboardEvent(keyCode: Short, keyAction: Byte, modifiers: Byte, flags: Byte = 0): Int =
@@ -183,6 +192,8 @@ open class MoonlightCore {
 
   private external fun nativeLastError(): Int
 
+  private external fun nativeLastStartError(): Int
+
   private external fun nativeSendKeyboardEvent(keyCode: Short, keyAction: Byte, modifiers: Byte, flags: Byte): Int
 
   private external fun nativeSendUtf8TextEvent(utf8: ByteArray): Int
@@ -201,6 +212,8 @@ open class MoonlightCore {
     private fun validStreamArguments(config: Config): Boolean =
       config.address.isNotEmpty() &&
         config.serverCodecModeSupport != 0 &&
+        MoonlightAudioConfiguration.isValid(config.audioConfiguration) &&
+        config.supportedVideoFormats != 0 &&
         config.width in 16..8192 &&
         config.height in 16..8192 &&
         config.fps in 1..240 &&
@@ -262,4 +275,21 @@ object MoonlightKeyMaterial {
 
   fun isValid(key: ByteArray?, iv: ByteArray?): Boolean =
     key != null && iv != null && key.size == 16 && iv.size == 16 && key.any { it != 0.toByte() }
+}
+
+/**
+ * Packed audio configuration using the same layout as upstream
+ * MAKE_AUDIO_CONFIGURATION: magic 0xCA, channel count in bits 8..15, channel
+ * mask in bits 16..31.
+ */
+object MoonlightAudioConfiguration {
+  const val STEREO = (0x3 shl 16) or (2 shl 8) or 0xCA
+  const val SURROUND_51 = (0x3F shl 16) or (6 shl 8) or 0xCA
+  const val SURROUND_71 = (0x63F shl 16) or (8 shl 8) or 0xCA
+
+  fun channelCount(value: Int): Int = (value shr 8) and 0xFF
+
+  fun channelMask(value: Int): Int = (value shr 16) and 0xFFFF
+
+  fun isValid(value: Int): Boolean = value and 0xFF == 0xCA && channelCount(value) in 1..8
 }

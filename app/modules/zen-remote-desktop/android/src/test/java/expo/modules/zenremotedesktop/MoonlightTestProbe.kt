@@ -16,4 +16,5 @@ object MoonlightTestProbe {
   external fun emitDecodeUnit(payload: ByteArray, frameType: Int, presentationTimeUs: Long, declaredLength: Int)
   external fun lastUtf8Bytes(): ByteArray
   external fun lastKeyCode(): Short
+  external fun setTeardownDelayMs(milliseconds: Int)
 }

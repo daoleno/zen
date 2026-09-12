@@ -33,6 +33,7 @@ if(ZEN_BRIDGE_TEST)
   target_include_directories(zen_moonlight_test PRIVATE "${ZEN_MOONLIGHT_THIRD_PARTY}/src")
   find_package(JNI REQUIRED)
   target_include_directories(zen_moonlight_test PRIVATE ${JNI_INCLUDE_DIRS})
+  target_compile_definitions(zen_moonlight_test PRIVATE ZEN_BRIDGE_TEST=1)
   target_link_libraries(zen_moonlight_test PRIVATE pthread)
   set_target_properties(zen_moonlight_test PROPERTIES
     OUTPUT_NAME "zen_moonlight_test"

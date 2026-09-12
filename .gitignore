@@ -46,6 +46,9 @@ app/modules/zen-remote-desktop/android/build/
 app/modules/zen-remote-desktop/android/.cxx/
 app/modules/zen-remote-desktop/third_party/
 
+# Host CMake/JVM bridge test build (never shipped)
+/build/
+
 # Expo
 .expo/
 app/.expo/

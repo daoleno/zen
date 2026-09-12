@@ -12,10 +12,14 @@
  *  - LiStopConnection is the only full teardown and is called exactly once per
  *    session, from a thread that is not a core callback thread.
  *  - LiInterruptConnection only aborts a pending start; stop() uses it while a
- *    start is in flight and then waits for the start call to return.
- *  - connectionTerminated() is delived on a core helper thread after the stream
- *    has ended; the bridge notifies Java and then performs the real teardown on
- *    a dedicated thread.
+ *    start is in flight and then waits for the start call to return. A stop
+ *    requested from a core callback is deferred: that callback is running on
+ *    the LiStartConnection thread (starting) or a stream thread (active), so
+ *    waiting there would wait for itself.
+ *  - Sessions are generation-bound. Deferred teardown from session A can never
+ *    stop session B, and a retired session's global ref is cleared before the
+ *    bridge publishes IDLE, so a new start cannot install a ref that the old
+ *    cleanup then deletes.
  *  - Only the instance that started the session may stop it; input events and
  *    teardown calls from another instance are rejected.
  *
@@ -30,6 +34,10 @@
 #include <string.h>
 
 #include "Limelight.h"
+
+#ifdef ZEN_BRIDGE_TEST
+#include <unistd.h>
+#endif
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -66,7 +74,9 @@ static int g_stop_requested;
 static int g_callback_failed;
 static int g_terminated;
 static int g_last_error;
+static int g_last_start_error;
 static int g_callbacks_inflight;
+static uint64_t g_generation;
 static jobject g_session_ref;
 
 static jmethodID g_on_video_setup;
@@ -74,12 +84,18 @@ static jmethodID g_on_stage;
 static jmethodID g_on_stage_complete;
 static jmethodID g_on_stage_failed;
 static jmethodID g_on_connected;
+static jmethodID g_on_start_failed;
 static jmethodID g_on_terminated;
 static jmethodID g_on_status;
 static jmethodID g_on_decode;
 
-/* Set while a bridge callback runs on this thread; guards stop-from-callback. */
+/* Set while a bridge callback runs on this thread; a callback must never wait
+ * for the start/stream thread that is executing it. */
 static __thread int t_callback_depth;
+
+#ifdef ZEN_BRIDGE_TEST
+static int g_test_teardown_delay_ms;
+#endif
 
 /* ---- JNI environment ------------------------------------------------ */
 
@@ -127,19 +143,29 @@ static void bridge_clear_exception(JNIEnv *env) {
     }
 }
 
-static void bridge_request_teardown(void);
-static int bridge_snapshot_state_is_active(void);
+static void bridge_request_teardown(uint64_t generation);
 
 /* Returns 1 when the Java callback threw and the session is being retired. */
 static int bridge_handle_callback_exception(JNIEnv *env) {
+    int state;
+    uint64_t generation;
     if (!(*env)->ExceptionCheck(env)) {
         return 0;
     }
     bridge_clear_exception(env);
     pthread_mutex_lock(&g_lock);
     g_callback_failed = 1;
+    state = g_state;
+    generation = g_generation;
+    if (state == SESSION_STARTING) {
+        /* Abort the in-flight start instead of waiting for it. */
+        g_stop_requested = 1;
+    }
     pthread_mutex_unlock(&g_lock);
-    bridge_request_teardown();
+    if (state == SESSION_STARTING) {
+        LiInterruptConnection();
+    }
+    bridge_request_teardown(generation);
     return 1;
 }
 
@@ -167,18 +193,20 @@ static void bridge_leave_callback(void) {
     pthread_mutex_unlock(&g_cb_lock);
 }
 
-/* Drops the listener once no bridge callback can be running (called after the
- * core has joined its stream threads). */
-static void bridge_release_session_ref(void) {
+/* Drops the generation's listener once no bridge callback can be running.
+ * Called after the core joined its stream threads and before publishing IDLE. */
+static void bridge_release_session_ref(uint64_t generation) {
     JNIEnv *env = bridge_env();
-    jobject ref;
+    jobject ref = NULL;
     pthread_mutex_lock(&g_cb_lock);
     while (g_callbacks_inflight > 0) {
         pthread_cond_wait(&g_cb_cond, &g_cb_lock);
     }
     pthread_mutex_lock(&g_lock);
-    ref = g_session_ref;
-    g_session_ref = NULL;
+    if (g_generation == generation && g_session_ref != NULL) {
+        ref = g_session_ref;
+        g_session_ref = NULL;
+    }
     pthread_mutex_unlock(&g_lock);
     pthread_mutex_unlock(&g_cb_lock);
     if (ref != NULL && env != NULL) {
@@ -186,7 +214,7 @@ static void bridge_release_session_ref(void) {
     }
 }
 
-static int bridge_is_owner(JNIEnv *env, jobject thiz) {
+static int bridge_owns(JNIEnv *env, jobject thiz) {
     int owner;
     pthread_mutex_lock(&g_lock);
     owner = g_session_ref != NULL && (*env)->IsSameObject(env, thiz, g_session_ref);
@@ -196,47 +224,104 @@ static int bridge_is_owner(JNIEnv *env, jobject thiz) {
 
 /* ---- teardown ------------------------------------------------------- */
 
-static void bridge_finish_stop(void) {
+/* Publishes IDLE only after the generation's callbacks and ref are retired. */
+static void bridge_finish_stop(uint64_t generation) {
+    bridge_release_session_ref(generation);
     pthread_mutex_lock(&g_lock);
-    g_state = SESSION_IDLE;
-    g_stop_requested = 0;
-    g_terminated = 0;
-    pthread_cond_broadcast(&g_state_cond);
-    pthread_mutex_unlock(&g_lock);
-    bridge_release_session_ref();
-}
-
-/* Runs LiStopConnection exactly once for the session that this call owns. */
-static int bridge_stop_owned_session(void) {
-    int owned;
-    pthread_mutex_lock(&g_lock);
-    owned = g_state == SESSION_ACTIVE;
-    if (owned) {
-        g_state = SESSION_STOPPING;
+    if (g_generation == generation) {
+        g_state = SESSION_IDLE;
+        g_stop_requested = 0;
+        g_terminated = 0;
+        pthread_cond_broadcast(&g_state_cond);
     }
     pthread_mutex_unlock(&g_lock);
+}
+
+/* Runs LiStopConnection exactly once for the generation this call owns.
+ * A stale generation is a no-op; a session still STARTING is only aborted. */
+static int bridge_stop_owned_session(uint64_t generation) {
+    int owned = 0;
+    int starting = 0;
+    pthread_mutex_lock(&g_lock);
+    if (g_generation != generation) {
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    if (g_state == SESSION_ACTIVE) {
+        g_state = SESSION_STOPPING;
+        owned = 1;
+    } else if (g_state == SESSION_STARTING) {
+        g_stop_requested = 1;
+        starting = 1;
+    }
+    pthread_mutex_unlock(&g_lock);
+    if (starting) {
+        LiInterruptConnection();
+        return 0;
+    }
     if (!owned) {
         return 0;
     }
     BRIDGE_LOG("LiStopConnection\n");
     LiStopConnection();
-    bridge_finish_stop();
+    bridge_finish_stop(generation);
     return 1;
 }
 
+typedef struct {
+    uint64_t generation;
+} bridge_teardown_request;
+
 static void *bridge_teardown_thread(void *context) {
-    (void)context;
-    bridge_stop_owned_session();
+    bridge_teardown_request *request = (bridge_teardown_request *)context;
+    uint64_t generation = request->generation;
+    free(request);
+#ifdef ZEN_BRIDGE_TEST
+    if (g_test_teardown_delay_ms > 0) {
+        usleep((useconds_t)g_test_teardown_delay_ms * 1000);
+    }
+#endif
+    bridge_stop_owned_session(generation);
     return NULL;
 }
 
-static void bridge_request_teardown(void) {
+static void bridge_request_teardown(uint64_t generation) {
+    bridge_teardown_request *request = (bridge_teardown_request *)malloc(sizeof(*request));
     pthread_t thread;
-    if (pthread_create(&thread, NULL, bridge_teardown_thread, NULL) == 0) {
+    if (request == NULL) {
+        return;
+    }
+    request->generation = generation;
+    if (pthread_create(&thread, NULL, bridge_teardown_thread, request) == 0) {
         pthread_detach(thread);
     } else {
+        free(request);
         BRIDGE_LOG("teardown thread creation failed\n");
     }
+}
+
+/* Called from a core callback thread: defer instead of waiting for self. */
+static int bridge_defer_stop(JNIEnv *env, jobject thiz) {
+    int state;
+    int owner;
+    uint64_t generation;
+    pthread_mutex_lock(&g_lock);
+    state = g_state;
+    generation = g_generation;
+    owner = g_session_ref != NULL && (*env)->IsSameObject(env, thiz, g_session_ref);
+    if (owner && state == SESSION_STARTING) {
+        g_stop_requested = 1;
+    }
+    pthread_mutex_unlock(&g_lock);
+    if (!owner) {
+        return state == SESSION_IDLE ? 0 : BRIDGE_ERR_STATE;
+    }
+    if (state == SESSION_STARTING) {
+        LiInterruptConnection();
+    } else if (state == SESSION_ACTIVE) {
+        bridge_request_teardown(generation);
+    }
+    return 0;
 }
 
 /* ---- decoder renderer callbacks ------------------------------------- */
@@ -389,8 +474,10 @@ static void bridge_connection_terminated(int errorCode) {
     jobject listener = bridge_enter_callback();
     JNIEnv *env = listener != NULL ? bridge_env() : NULL;
     int stale;
+    uint64_t generation;
     pthread_mutex_lock(&g_lock);
     stale = (g_state == SESSION_IDLE) || g_terminated;
+    generation = g_generation;
     g_terminated = 1;
     g_last_error = errorCode;
     pthread_mutex_unlock(&g_lock);
@@ -401,8 +488,23 @@ static void bridge_connection_terminated(int errorCode) {
     bridge_leave_callback();
     if (!stale) {
         /* Upstream may leave stream threads alive after termination. */
-        bridge_request_teardown();
+        bridge_request_teardown(generation);
     }
+}
+
+/* Surfaces a failed start to the caller before the listener is retired. */
+static void bridge_notify_start_failed(uint64_t generation, int errorCode) {
+    jobject listener = bridge_enter_callback();
+    JNIEnv *env = listener != NULL ? bridge_env() : NULL;
+    int current;
+    pthread_mutex_lock(&g_lock);
+    current = g_generation == generation;
+    pthread_mutex_unlock(&g_lock);
+    if (env != NULL && listener != NULL && current) {
+        (*env)->CallVoidMethod(env, listener, g_on_start_failed, (jint)errorCode);
+        bridge_handle_callback_exception(env);
+    }
+    bridge_leave_callback();
 }
 
 /* ---- audio renderer callbacks (no audio pipeline in the prototype) -- */
@@ -451,6 +553,13 @@ static int bridge_copy_key_material(JNIEnv *env, jbyteArray key, jbyteArray iv,
     return keyNonZero;
 }
 
+/* Same packed layout as upstream MAKE_AUDIO_CONFIGURATION: magic 0xCA, channel
+ * count in bits 8..15, channel mask in bits 16..31. */
+static int bridge_validate_audio_configuration(int audioConfiguration) {
+    int channelCount = (audioConfiguration >> 8) & 0xFF;
+    return (audioConfiguration & 0xFF) == 0xCA && channelCount >= 1 && channelCount <= 8;
+}
+
 static int bridge_validate_stream_arguments(int width, int height, int fps, int bitrate, int packetSize) {
     return width >= 16 && width <= 8192 &&
            height >= 16 && height <= 8192 &&
@@ -476,9 +585,12 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSt
         jbyteArray remoteInputAesKey, jbyteArray remoteInputAesIv) {
     char keyMaterial[BRIDGE_KEY_BYTES];
     char ivMaterial[BRIDGE_KEY_BYTES];
+    uint64_t generation;
+    int result;
 
     if (!bridge_validate_stream_arguments(width, height, fps, bitrate, packetSize) ||
-        address == NULL || serverCodecModeSupport == 0) {
+        !bridge_validate_audio_configuration(audioConfiguration) ||
+        supportedVideoFormats == 0 || address == NULL || serverCodecModeSupport == 0) {
         return BRIDGE_ERR_ARGUMENT;
     }
     if (!bridge_copy_key_material(env, remoteInputAesKey, remoteInputAesIv, keyMaterial, ivMaterial)) {
@@ -491,11 +603,13 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSt
         pthread_mutex_unlock(&g_lock);
         return BRIDGE_ERR_BUSY;
     }
+    generation = ++g_generation;
     g_state = SESSION_STARTING;
     g_stop_requested = 0;
     g_callback_failed = 0;
     g_terminated = 0;
     g_last_error = 0;
+    g_last_start_error = 0;
     g_session_ref = (*env)->NewGlobalRef(env, thiz);
     if (g_session_ref == NULL) {
         g_state = SESSION_IDLE;
@@ -510,18 +624,22 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSt
     g_on_stage_complete = (*env)->GetMethodID(env, listenerClass, "onConnectionStageComplete", "(I)V");
     g_on_stage_failed = (*env)->GetMethodID(env, listenerClass, "onConnectionStageFailed", "(II)V");
     g_on_connected = (*env)->GetMethodID(env, listenerClass, "onConnectionStarted", "()V");
+    g_on_start_failed = (*env)->GetMethodID(env, listenerClass, "onConnectionStartFailed", "(I)V");
     g_on_status = (*env)->GetMethodID(env, listenerClass, "onConnectionStatusUpdate", "(I)V");
     g_on_terminated = (*env)->GetMethodID(env, listenerClass, "onConnectionTerminated", "(I)V");
     g_on_decode = (*env)->GetMethodID(env, listenerClass, "onDecodeUnit", "([BIJ)I");
     (*env)->DeleteLocalRef(env, listenerClass);
     if (g_on_video_setup == NULL || g_on_stage == NULL || g_on_stage_complete == NULL ||
-        g_on_stage_failed == NULL || g_on_connected == NULL || g_on_status == NULL ||
-        g_on_terminated == NULL || g_on_decode == NULL) {
+        g_on_stage_failed == NULL || g_on_connected == NULL || g_on_start_failed == NULL ||
+        g_on_status == NULL || g_on_terminated == NULL || g_on_decode == NULL) {
         bridge_clear_exception(env);
+        bridge_release_session_ref(generation);
         pthread_mutex_lock(&g_lock);
-        g_state = SESSION_IDLE;
+        if (g_generation == generation) {
+            g_state = SESSION_IDLE;
+            pthread_cond_broadcast(&g_state_cond);
+        }
         pthread_mutex_unlock(&g_lock);
-        bridge_release_session_ref();
         return BRIDGE_ERR_STATE;
     }
 
@@ -581,8 +699,8 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSt
     audioCallbacks.capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION;
 
     BRIDGE_LOG("LiStartConnection\n");
-    int result = LiStartConnection(&serverInfo, &streamConfig, &listenerCallbacks,
-                                   &decoderCallbacks, &audioCallbacks, NULL, 0, NULL, 0);
+    result = LiStartConnection(&serverInfo, &streamConfig, &listenerCallbacks,
+                               &decoderCallbacks, &audioCallbacks, NULL, 0, NULL, 0);
 
     (*env)->ReleaseStringUTFChars(env, addressStr, serverInfo.address);
     (*env)->ReleaseStringUTFChars(env, appVersionStr, serverInfo.serverInfoAppVersion);
@@ -598,30 +716,59 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSt
         (*env)->DeleteLocalRef(env, rtspUrlStr);
     }
 
-    pthread_mutex_lock(&g_lock);
     if (result == 0) {
-        int stopRequested = g_stop_requested;
-        g_state = SESSION_ACTIVE;
-        pthread_cond_broadcast(&g_state_cond);
+        int stopWanted;
+        pthread_mutex_lock(&g_lock);
+        stopWanted = (g_generation != generation) ||
+                     g_stop_requested || g_callback_failed || g_terminated;
+        if (g_generation == generation) {
+            g_state = SESSION_ACTIVE;
+            pthread_cond_broadcast(&g_state_cond);
+        }
         pthread_mutex_unlock(&g_lock);
         BRIDGE_LOG("stream active\n");
-        if (stopRequested) {
-            bridge_stop_owned_session();
+        if (stopWanted) {
+            bridge_stop_owned_session(generation);
         }
         return 0;
     }
 
-    /* The core undid its own partial work; retire the session reference. */
-    g_state = SESSION_IDLE;
-    g_stop_requested = 0;
-    pthread_cond_broadcast(&g_state_cond);
-    pthread_mutex_unlock(&g_lock);
+    /* The core undid its own partial work; surface the failure, then retire. */
+    {
+        int stopRequested;
+        int callbackFailed;
+        pthread_mutex_lock(&g_lock);
+        stopRequested = g_stop_requested;
+        callbackFailed = g_callback_failed;
+        if (g_generation == generation) {
+            g_last_start_error = result;
+        }
+        pthread_mutex_unlock(&g_lock);
+        if (!stopRequested || callbackFailed) {
+            bridge_notify_start_failed(generation, result);
+        }
+    }
     BRIDGE_LOG("LiStartConnection failed: %d\n", result);
-    bridge_release_session_ref();
+    bridge_release_session_ref(generation);
+    pthread_mutex_lock(&g_lock);
+    if (g_generation == generation) {
+        g_state = SESSION_IDLE;
+        g_stop_requested = 0;
+        pthread_cond_broadcast(&g_state_cond);
+    }
+    pthread_mutex_unlock(&g_lock);
     return result;
 }
 
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeStopConnection(JNIEnv *env, jobject thiz) {
+    uint64_t generation;
+
+    /* A callback runs on the thread that would have to finish starting or
+     * streaming, so it must never wait for that thread. */
+    if (t_callback_depth > 0) {
+        return bridge_defer_stop(env, thiz);
+    }
+
     for (;;) {
         pthread_mutex_lock(&g_lock);
         if (g_state == SESSION_IDLE) {
@@ -632,15 +779,20 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSt
             pthread_mutex_unlock(&g_lock);
             return BRIDGE_ERR_STATE;
         }
+        generation = g_generation;
         if (g_state == SESSION_STARTING) {
             g_stop_requested = 1;
             pthread_mutex_unlock(&g_lock);
             LiInterruptConnection();
             pthread_mutex_lock(&g_lock);
-            while (g_state == SESSION_STARTING) {
+            while (g_state == SESSION_STARTING && g_generation == generation) {
                 pthread_cond_wait(&g_state_cond, &g_lock);
             }
+            int generationChanged = g_generation != generation;
             pthread_mutex_unlock(&g_lock);
+            if (generationChanged) {
+                return 0;
+            }
             continue;
         }
         if (g_state == SESSION_STOPPING) {
@@ -651,28 +803,26 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSt
             return 0;
         }
         pthread_mutex_unlock(&g_lock);
-        break;
-    }
-
-    if (t_callback_depth > 0) {
-        /* Called from a bridge callback; LiStopConnection must not join it. */
-        bridge_request_teardown();
+        bridge_stop_owned_session(generation);
         return 0;
     }
-    bridge_stop_owned_session();
-    return 0;
 }
 
 JNIEXPORT void JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeInterruptConnection(JNIEnv *env, jobject thiz) {
-    if (!bridge_is_owner(env, thiz)) {
-        return;
+    int starting;
+    pthread_mutex_lock(&g_lock);
+    starting = g_state == SESSION_STARTING && g_session_ref != NULL &&
+               (*env)->IsSameObject(env, thiz, g_session_ref);
+    pthread_mutex_unlock(&g_lock);
+    if (starting) {
+        LiInterruptConnection();
     }
-    LiInterruptConnection();
 }
 
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSessionState(JNIEnv *env, jobject thiz) {
     int state;
     int flags = 0;
+    (void)env;
     (void)thiz;
     pthread_mutex_lock(&g_lock);
     state = g_state;
@@ -696,10 +846,14 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeLa
     return value;
 }
 
-JNIEXPORT jboolean JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeIsActive(JNIEnv *env, jobject thiz) {
+JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeLastStartError(JNIEnv *env, jobject thiz) {
+    int value;
     (void)env;
     (void)thiz;
-    return bridge_snapshot_state_is_active();
+    pthread_mutex_lock(&g_lock);
+    value = g_last_start_error;
+    pthread_mutex_unlock(&g_lock);
+    return value;
 }
 
 static int bridge_snapshot_state_is_active(void) {
@@ -710,9 +864,15 @@ static int bridge_snapshot_state_is_active(void) {
     return active;
 }
 
+JNIEXPORT jboolean JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeIsActive(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    return bridge_snapshot_state_is_active();
+}
+
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSendKeyboardEvent(
         JNIEnv *env, jobject thiz, jshort keyCode, jbyte keyAction, jbyte modifiers, jbyte flags) {
-    if (!bridge_is_owner(env, thiz) || !bridge_snapshot_state_is_active()) {
+    if (!bridge_owns(env, thiz) || !bridge_snapshot_state_is_active()) {
         return BRIDGE_ERR_STATE;
     }
     return LiSendKeyboardEvent2((short)keyCode, (char)keyAction, (char)modifiers, (char)flags);
@@ -724,7 +884,7 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSe
     jsize length;
     char *buffer;
 
-    if (!bridge_is_owner(env, thiz) || !bridge_snapshot_state_is_active()) {
+    if (!bridge_owns(env, thiz) || !bridge_snapshot_state_is_active()) {
         return BRIDGE_ERR_STATE;
     }
     if (utf8 == NULL) {
@@ -752,7 +912,7 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSe
 
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSendMouseMove(
         JNIEnv *env, jobject thiz, jshort deltaX, jshort deltaY) {
-    if (!bridge_is_owner(env, thiz) || !bridge_snapshot_state_is_active()) {
+    if (!bridge_owns(env, thiz) || !bridge_snapshot_state_is_active()) {
         return BRIDGE_ERR_STATE;
     }
     return LiSendMouseMoveEvent((short)deltaX, (short)deltaY);
@@ -760,7 +920,7 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSe
 
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSendMousePosition(
         JNIEnv *env, jobject thiz, jshort x, jshort y, jshort referenceWidth, jshort referenceHeight) {
-    if (!bridge_is_owner(env, thiz) || !bridge_snapshot_state_is_active()) {
+    if (!bridge_owns(env, thiz) || !bridge_snapshot_state_is_active()) {
         return BRIDGE_ERR_STATE;
     }
     return LiSendMousePositionEvent((short)x, (short)y, (short)referenceWidth, (short)referenceHeight);
@@ -768,7 +928,7 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSe
 
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSendMouseButton(
         JNIEnv *env, jobject thiz, jbyte buttonAction, jint button) {
-    if (!bridge_is_owner(env, thiz) || !bridge_snapshot_state_is_active()) {
+    if (!bridge_owns(env, thiz) || !bridge_snapshot_state_is_active()) {
         return BRIDGE_ERR_STATE;
     }
     return LiSendMouseButtonEvent((char)buttonAction, (int)button);
@@ -776,7 +936,7 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSe
 
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSendScroll(
         JNIEnv *env, jobject thiz, jbyte scrollClicks) {
-    if (!bridge_is_owner(env, thiz) || !bridge_snapshot_state_is_active()) {
+    if (!bridge_owns(env, thiz) || !bridge_snapshot_state_is_active()) {
         return BRIDGE_ERR_STATE;
     }
     return LiSendScrollEvent((signed char)scrollClicks);
@@ -784,8 +944,19 @@ JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSe
 
 JNIEXPORT jint JNICALL Java_expo_modules_zenremotedesktop_MoonlightCore_nativeSendHighResScroll(
         JNIEnv *env, jobject thiz, jshort scrollAmount) {
-    if (!bridge_is_owner(env, thiz) || !bridge_snapshot_state_is_active()) {
+    if (!bridge_owns(env, thiz) || !bridge_snapshot_state_is_active()) {
         return BRIDGE_ERR_STATE;
     }
     return LiSendHighResScrollEvent((short)scrollAmount);
 }
+
+#ifdef ZEN_BRIDGE_TEST
+/* Test-only hook: deterministically delay a detached teardown so a stale
+ * generation can be observed racing a newly started session. */
+JNIEXPORT void JNICALL Java_expo_modules_zenremotedesktop_MoonlightTestProbe_setTeardownDelayMs(
+        JNIEnv *env, jobject thiz, jint milliseconds) {
+    (void)env;
+    (void)thiz;
+    g_test_teardown_delay_ms = milliseconds > 0 ? (int)milliseconds : 0;
+}
+#endif

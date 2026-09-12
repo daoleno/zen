@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -15,29 +16,49 @@ type fakeSunshineProcess struct {
 	mu         sync.Mutex
 	pid        int
 	signals    []syscall.Signal
-	waitCh     chan error
-	waitOnce   sync.Once
+	waitCh     chan struct{}
+	waitErr    error
 	ignoreTerm bool
+	signalFail bool
 }
 
-func newFakeSunshineProcess(pid int, ignoreTerm bool) *fakeSunshineProcess {
-	return &fakeSunshineProcess{pid: pid, waitCh: make(chan error, 1), ignoreTerm: ignoreTerm}
+func newFakeSunshineProcess(pid int) *fakeSunshineProcess {
+	return &fakeSunshineProcess{pid: pid, waitCh: make(chan struct{})}
 }
 
 func (p *fakeSunshineProcess) Signal(signal syscall.Signal) error {
 	p.mu.Lock()
 	p.signals = append(p.signals, signal)
 	ignore := p.ignoreTerm && signal != syscall.SIGKILL
+	fail := p.signalFail
 	p.mu.Unlock()
+	if fail {
+		return errors.New("signal_failed")
+	}
 	if !ignore {
-		p.waitOnce.Do(func() { p.waitCh <- nil })
+		p.exitNow()
 	}
 	return nil
 }
 
-func (p *fakeSunshineProcess) Wait() error { return <-p.waitCh }
+func (p *fakeSunshineProcess) Wait() error {
+	<-p.waitCh
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.waitErr
+}
 
 func (p *fakeSunshineProcess) PID() int { return p.pid }
+
+func (p *fakeSunshineProcess) exitNow() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case <-p.waitCh:
+	default:
+		close(p.waitCh)
+	}
+}
 
 func (p *fakeSunshineProcess) observedSignals() []syscall.Signal {
 	p.mu.Lock()
@@ -47,34 +68,47 @@ func (p *fakeSunshineProcess) observedSignals() []syscall.Signal {
 
 func sunshineTestOptions(t *testing.T) SunshineHostOptions {
 	t.Helper()
-	stateDir := filepath.Join(t.TempDir(), "sunshine")
-	return SunshineHostOptions{
-		BinaryPath:       "/usr/libexec/zen/sunshine",
-		StateDir:         stateDir,
-		ConfigPath:       filepath.Join(stateDir, "sunshine.conf"),
-		PairingStatePath: filepath.Join(stateDir, "pairing.state"),
-		Port:             47989,
-		StopGrace:        50 * time.Millisecond,
+	opts := DefaultSunshineHostOptions("/usr/libexec/zen/sunshine", filepath.Join(t.TempDir(), "sunshine"), 47989)
+	opts.StopGrace = 50 * time.Millisecond
+	return opts
+}
+
+func TestDefaultSunshineOptionsBindAllPathsToPrivateState(t *testing.T) {
+	stateDir := "/var/lib/zen/sunshine"
+	opts := DefaultSunshineHostOptions("/usr/libexec/zen/sunshine", stateDir, 47989)
+	if err := opts.validate(); err != nil {
+		t.Fatalf("default options rejected: %v", err)
+	}
+	for name, path := range opts.statePaths() {
+		if filepath.Dir(path) != stateDir {
+			t.Fatalf("%s = %q is outside %q", name, path, stateDir)
+		}
+	}
+	body := opts.configBody()
+	for _, key := range []string{"cert = ", "credentials_file = ", "file_apps = ", "file_state = ", "pkey = ", "port = 47989"} {
+		if !strings.Contains(body, key) {
+			t.Fatalf("config body missing %q: %q", key, body)
+		}
 	}
 }
 
 func TestSunshineOptionsValidation(t *testing.T) {
-	base := SunshineHostOptions{
-		BinaryPath:       "/usr/libexec/zen/sunshine",
-		StateDir:         "/var/lib/zen/sunshine",
-		ConfigPath:       "/var/lib/zen/sunshine/sunshine.conf",
-		PairingStatePath: "/var/lib/zen/sunshine/pairing.state",
-		Port:             47989,
-	}
+	base := DefaultSunshineHostOptions("/usr/libexec/zen/sunshine", "/var/lib/zen/sunshine", 47989)
 	cases := map[string]func(o *SunshineHostOptions){
-		"relative binary":       func(o *SunshineHostOptions) { o.BinaryPath = "sunshine" },
-		"relative state dir":    func(o *SunshineHostOptions) { o.StateDir = "sunshine" },
-		"config outside state":  func(o *SunshineHostOptions) { o.ConfigPath = "/etc/sunshine.conf" },
-		"pairing outside state": func(o *SunshineHostOptions) { o.PairingStatePath = "/etc/pairing.state" },
-		"colliding paths":       func(o *SunshineHostOptions) { o.ConfigPath = o.PairingStatePath },
-		"zero port":             func(o *SunshineHostOptions) { o.Port = 0 },
-		"high port":             func(o *SunshineHostOptions) { o.Port = 70000 },
-		"empty extra arg":       func(o *SunshineHostOptions) { o.ExtraArgs = []string{""} },
+		"relative binary": func(o *SunshineHostOptions) { o.BinaryPath = "sunshine" },
+		"relative state":  func(o *SunshineHostOptions) { o.StateDir = "sunshine" },
+		"config outside":  func(o *SunshineHostOptions) { o.ConfigPath = "/etc/sunshine.conf" },
+		"state outside":   func(o *SunshineHostOptions) { o.StateFilePath = "/etc/state.json" },
+		"pkey outside":    func(o *SunshineHostOptions) { o.PKeyPath = "/etc/pkey" },
+		"cert outside":    func(o *SunshineHostOptions) { o.CertPath = "/etc/cert" },
+		"apps outside":    func(o *SunshineHostOptions) { o.AppsFilePath = "/etc/apps.json" },
+		"credentials out": func(o *SunshineHostOptions) { o.CredentialsFilePath = "/etc/creds.json" },
+		"collision":       func(o *SunshineHostOptions) { o.CertPath = o.PKeyPath },
+		"port low":        func(o *SunshineHostOptions) { o.Port = 80 },
+		"port high":       func(o *SunshineHostOptions) { o.Port = 65535 },
+		"flag arg":        func(o *SunshineHostOptions) { o.ExtraArgs = []string{"--config"} },
+		"bare arg":        func(o *SunshineHostOptions) { o.ExtraArgs = []string{"verbose"} },
+		"newline in path": func(o *SunshineHostOptions) { o.CertPath = o.StateDir + "/ce\nrt" },
 	}
 	for name, mutate := range cases {
 		opts := base
@@ -83,7 +117,9 @@ func TestSunshineOptionsValidation(t *testing.T) {
 			t.Fatalf("%s: expected validation error", name)
 		}
 	}
-	if err := base.validate(); err != nil {
+	ok := base
+	ok.ExtraArgs = []string{"sunshine_name = Zen"}
+	if err := ok.validate(); err != nil {
 		t.Fatalf("valid options rejected: %v", err)
 	}
 }
@@ -102,9 +138,9 @@ func TestSunshineStateDirAndConfigArePrivateAndNeverOverwritten(t *testing.T) {
 	if err != nil || configInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %v err=%v", configInfo.Mode().Perm(), err)
 	}
-	body, err := os.ReadFile(opts.ConfigPath)
-	if err != nil || string(body) != "port = 47989\n" {
-		t.Fatalf("config body = %q err=%v", body, err)
+	body, _ := os.ReadFile(opts.ConfigPath)
+	if string(body) != opts.configBody() {
+		t.Fatalf("config body = %q want %q", body, opts.configBody())
 	}
 
 	// An administrator-reviewed config must never be rewritten.
@@ -131,9 +167,9 @@ func TestUnsafeSunshineStateDirRejected(t *testing.T) {
 	}
 }
 
-func TestStartPassesPrivateConfigAndWorkingDir(t *testing.T) {
+func TestStartUsesPositionalConfigPathAndPrivateWorkingDir(t *testing.T) {
 	opts := sunshineTestOptions(t)
-	process := newFakeSunshineProcess(4242, false)
+	process := newFakeSunshineProcess(4242)
 	var gotBinary string
 	var gotArgs []string
 	var gotDir string
@@ -147,7 +183,9 @@ func TestStartPassesPrivateConfigAndWorkingDir(t *testing.T) {
 	if gotBinary != opts.BinaryPath {
 		t.Fatalf("binary = %q", gotBinary)
 	}
-	if len(gotArgs) != 2 || gotArgs[0] != "--config" || gotArgs[1] != opts.ConfigPath {
+	// Upstream config.cpp reads a bare path as the config; "--config" would be
+	// parsed as an unknown command by main.cpp.
+	if len(gotArgs) != 1 || gotArgs[0] != opts.ConfigPath {
 		t.Fatalf("args = %q", gotArgs)
 	}
 	if gotDir != opts.StateDir {
@@ -157,6 +195,22 @@ func TestStartPassesPrivateConfigAndWorkingDir(t *testing.T) {
 		t.Fatalf("running=%v pid=%d", host.Running(), host.PID())
 	}
 	_ = host.Stop(context.Background())
+}
+
+func TestExtraArgsFollowConfigPath(t *testing.T) {
+	opts := sunshineTestOptions(t)
+	opts.ExtraArgs = []string{"sunshine_name = Zen"}
+	process := newFakeSunshineProcess(5)
+	var gotArgs []string
+	if _, err := StartSunshineHost(opts, func(_ string, args []string, _ string) (SunshineProcess, error) {
+		gotArgs = append([]string(nil), args...)
+		return process, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotArgs) != 2 || gotArgs[0] != opts.ConfigPath || gotArgs[1] != "sunshine_name = Zen" {
+		t.Fatalf("args = %q", gotArgs)
+	}
 }
 
 func TestSpawnerErrorSurfaces(t *testing.T) {
@@ -169,21 +223,40 @@ func TestSpawnerErrorSurfaces(t *testing.T) {
 	}
 }
 
-func TestStopIsBoundedAndIdempotent(t *testing.T) {
+func TestRunningReflectsRealProcessExit(t *testing.T) {
 	opts := sunshineTestOptions(t)
-	process := newFakeSunshineProcess(7, false)
+	process := newFakeSunshineProcess(7)
 	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
 		return process, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	started := time.Now()
+	process.exitNow()
+	deadline := time.Now().Add(2 * time.Second)
+	for host.Running() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if host.Running() {
+		t.Fatal("running still true after process exit")
+	}
+	// Stop after an exit reports success instead of discarding a live handle.
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatalf("stop after exit: %v", err)
+	}
+}
+
+func TestStopIsBoundedAndIdempotent(t *testing.T) {
+	opts := sunshineTestOptions(t)
+	process := newFakeSunshineProcess(7)
+	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+		return process, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := host.Stop(context.Background()); err != nil {
 		t.Fatalf("stop: %v", err)
-	}
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("stop took %v", elapsed)
 	}
 	if signals := process.observedSignals(); len(signals) != 1 || signals[0] != syscall.SIGTERM {
 		t.Fatalf("signals = %v", signals)
@@ -198,7 +271,8 @@ func TestStopIsBoundedAndIdempotent(t *testing.T) {
 
 func TestStopEscalatesWhenTermIsIgnored(t *testing.T) {
 	opts := sunshineTestOptions(t)
-	process := newFakeSunshineProcess(9, true)
+	process := newFakeSunshineProcess(9)
+	process.ignoreTerm = true
 	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
 		return process, nil
 	})
@@ -214,31 +288,64 @@ func TestStopEscalatesWhenTermIsIgnored(t *testing.T) {
 	}
 }
 
-func TestRevokeStopsAndRemovesOnlyZenPairingState(t *testing.T) {
+func TestFailedStopKeepsHandleForRetry(t *testing.T) {
 	opts := sunshineTestOptions(t)
-	userFile := filepath.Join(opts.StateDir, "user.conf")
-	process := newFakeSunshineProcess(11, false)
+	process := newFakeSunshineProcess(13)
+	process.ignoreTerm = true
+	process.signalFail = true
 	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
 		return process, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(opts.PairingStatePath, []byte("pair"), 0o600); err != nil {
+	if err := host.Stop(context.Background()); err == nil {
+		t.Fatal("expected stop failure")
+	}
+	if !host.Running() {
+		t.Fatal("failed stop discarded the live handle")
+	}
+	process.mu.Lock()
+	process.signalFail = false
+	process.ignoreTerm = false
+	process.mu.Unlock()
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatalf("retry stop: %v", err)
+	}
+	if host.Running() {
+		t.Fatal("still running after retry")
+	}
+}
+
+func TestRevokeRemovesOnlyUpstreamStateFile(t *testing.T) {
+	opts := sunshineTestOptions(t)
+	process := newFakeSunshineProcess(11)
+	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+		return process, nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(userFile, []byte("user"), 0o600); err != nil {
+	preserved := []string{opts.PKeyPath, opts.CertPath, opts.CredentialsFilePath, opts.AppsFilePath, opts.ConfigPath}
+	for _, path := range preserved {
+		if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(opts.StateFilePath, []byte("pair"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := host.Revoke(context.Background()); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
-	if _, err := os.Lstat(opts.PairingStatePath); !os.IsNotExist(err) {
-		t.Fatalf("pairing state still present: %v", err)
+	if _, err := os.Lstat(opts.StateFilePath); !os.IsNotExist(err) {
+		t.Fatalf("file_state still present: %v", err)
 	}
-	if _, err := os.Lstat(userFile); err != nil {
-		t.Fatalf("unrelated file removed: %v", err)
+	for _, path := range preserved {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("unrelated file removed: %s: %v", path, err)
+		}
 	}
 	if host.Running() {
 		t.Fatal("process still running after revoke")

@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,16 +16,26 @@ import (
 
 // SunshineHost supervises the pinned Sunshine host process that Zen owns.
 //
-// The daemon never edits a user's personal Sunshine installation: Zen writes
-// only its own private state directory (mode 0700) and starts the reviewed
-// binary with that private config. Every process action goes through a spawner
-// so tests can exercise the contract without touching a real host, and the
-// stop/revoke paths are bounded and idempotent because revoke is the product's
-// authority boundary: once Zen revokes, the supervised process is gone.
+// Sunshine reads its configuration from the positional path passed on the
+// command line (src/config.cpp: a bare argument selects the config file; an
+// argument starting with "--" is parsed as a command name and main.cpp rejects
+// unknown commands). This type therefore launches "<binary> <config> [key=value
+// overrides...]" and never uses a "--config" flag.
+//
+// Isolation is expressed in the configuration itself: the state file
+// (upstream "file_state"), credentials, private key, certificate and app list
+// are all bound to the private 0700 state directory. An environment variable is
+// not counted as isolation proof.
+//
+// Lifecycle is explicit: Start spawns one process group and reaps it on a
+// goroutine, Running reflects the reaped state, Stop reports its real signal
+// and wait results and keeps the handle on failure so a retry can signal again,
+// and Revoke removes only the Zen-owned state file after the process is gone.
 const defaultSunshineStopGrace = 5 * time.Second
 
 type SunshineProcess interface {
 	Signal(signal syscall.Signal) error
+	// Wait blocks until the process exits and returns its wait result.
 	Wait() error
 	PID() int
 }
@@ -35,18 +47,41 @@ type SunshineSpawner func(binary string, args []string, dir string) (SunshinePro
 type SunshineHostOptions struct {
 	// BinaryPath is the reviewed Sunshine executable; must be absolute.
 	BinaryPath string
-	// StateDir is the Zen-owned private directory; must be absolute.
+	// StateDir is the Zen-owned private directory; must be absolute and 0700.
 	StateDir string
-	// ConfigPath is the Sunshine config inside StateDir; must be absolute.
+	// ConfigPath is the Sunshine config file; upstream positional argument.
 	ConfigPath string
-	// PairingStatePath holds the Zen-owned pairing state, inside StateDir.
-	PairingStatePath string
-	// Port is the Sunshine control port.
+	// StateFilePath maps to upstream "file_state" (pairing/credential state).
+	StateFilePath string
+	// CredentialsFilePath maps to upstream "credentials_file".
+	CredentialsFilePath string
+	// PKeyPath maps to upstream "pkey".
+	PKeyPath string
+	// CertPath maps to upstream "cert".
+	CertPath string
+	// AppsFilePath maps to upstream "file_apps".
+	AppsFilePath string
+	// Port is the Sunshine base port; Sunshine validates its own narrower bound.
 	Port int
-	// ExtraArgs are appended after the private config argument.
+	// ExtraArgs are "key=value" config overrides appended after the config path.
 	ExtraArgs []string
 	// StopGrace bounds SIGTERM before SIGKILL. Zero uses the default.
 	StopGrace time.Duration
+}
+
+// DefaultSunshineHostOptions builds the private layout Zen owns under stateDir.
+func DefaultSunshineHostOptions(binaryPath, stateDir string, port int) SunshineHostOptions {
+	return SunshineHostOptions{
+		BinaryPath:          binaryPath,
+		StateDir:            stateDir,
+		ConfigPath:          filepath.Join(stateDir, "sunshine.conf"),
+		StateFilePath:       filepath.Join(stateDir, "sunshine_state.json"),
+		CredentialsFilePath: filepath.Join(stateDir, "sunshine_creds.json"),
+		PKeyPath:            filepath.Join(stateDir, "sunshine.key"),
+		CertPath:            filepath.Join(stateDir, "sunshine.crt"),
+		AppsFilePath:        filepath.Join(stateDir, "apps.json"),
+		Port:                port,
+	}
 }
 
 func (o SunshineHostOptions) stopGrace() time.Duration {
@@ -56,28 +91,45 @@ func (o SunshineHostOptions) stopGrace() time.Duration {
 	return defaultSunshineStopGrace
 }
 
+func (o SunshineHostOptions) statePaths() map[string]string {
+	return map[string]string{
+		"config_path":      o.ConfigPath,
+		"state_file_path":  o.StateFilePath,
+		"credentials_path": o.CredentialsFilePath,
+		"pkey_path":        o.PKeyPath,
+		"cert_path":        o.CertPath,
+		"apps_file_path":   o.AppsFilePath,
+	}
+}
+
 func (o SunshineHostOptions) validate() error {
-	for name, path := range map[string]string{
-		"sunshine_binary":             o.BinaryPath,
-		"sunshine_state_dir":          o.StateDir,
-		"sunshine_config_path":        o.ConfigPath,
-		"sunshine_pairing_state_path": o.PairingStatePath,
-	} {
-		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+	if o.BinaryPath == "" || !filepath.IsAbs(o.BinaryPath) || filepath.Clean(o.BinaryPath) != o.BinaryPath {
+		return errors.New("invalid_sunshine_binary")
+	}
+	if o.StateDir == "" || !filepath.IsAbs(o.StateDir) || filepath.Clean(o.StateDir) != o.StateDir {
+		return errors.New("invalid_sunshine_state_dir")
+	}
+	seen := make(map[string]string)
+	for name, path := range o.statePaths() {
+		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path ||
+			strings.ContainsAny(path, "\n#=") {
 			return fmt.Errorf("invalid_%s", name)
 		}
+		if filepath.Dir(path) != o.StateDir {
+			return fmt.Errorf("sunshine_%s_outside_state_dir", name)
+		}
+		if other, exists := seen[path]; exists {
+			return fmt.Errorf("sunshine_%s_collides_with_%s", name, other)
+		}
+		seen[path] = name
 	}
-	if filepath.Dir(o.ConfigPath) != o.StateDir || filepath.Dir(o.PairingStatePath) != o.StateDir {
-		return errors.New("sunshine_path_outside_state_dir")
-	}
-	if o.ConfigPath == o.PairingStatePath {
-		return errors.New("sunshine_config_pairing_collision")
-	}
-	if o.Port <= 0 || o.Port > 65535 {
+	// Sunshine accepts port in [1024 + PORT_HTTPS, 65535 - RTSP_SETUP_PORT];
+	// the exact upstream bound is enforced by its own parser at start time.
+	if o.Port < 1024 || o.Port > 65000 {
 		return errors.New("invalid_sunshine_port")
 	}
 	for _, arg := range o.ExtraArgs {
-		if arg == "" {
+		if strings.HasPrefix(arg, "-") || !strings.Contains(arg, "=") || strings.ContainsAny(arg, "\n") {
 			return errors.New("invalid_sunshine_arg")
 		}
 	}
@@ -107,6 +159,19 @@ func EnsureSunshineStateDir(opts SunshineHostOptions) error {
 	return nil
 }
 
+func (o SunshineHostOptions) configBody() string {
+	lines := []string{
+		"cert = " + o.CertPath,
+		"credentials_file = " + o.CredentialsFilePath,
+		"file_apps = " + o.AppsFilePath,
+		"file_state = " + o.StateFilePath,
+		"pkey = " + o.PKeyPath,
+		fmt.Sprintf("port = %d", o.Port),
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // WriteSunshineConfig writes the private config once. An existing file is never
 // overwritten because its content may have been reviewed by an administrator.
 func WriteSunshineConfig(opts SunshineHostOptions) (created bool, err error) {
@@ -118,8 +183,7 @@ func WriteSunshineConfig(opts SunshineHostOptions) (created bool, err error) {
 	} else if !os.IsNotExist(statErr) {
 		return false, fmt.Errorf("stat sunshine config: %w", statErr)
 	}
-	body := fmt.Sprintf("port = %d\n", opts.Port)
-	if err := os.WriteFile(opts.ConfigPath, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(opts.ConfigPath, []byte(opts.configBody()), 0o600); err != nil {
 		return false, fmt.Errorf("write sunshine config: %w", err)
 	}
 	return true, nil
@@ -127,15 +191,13 @@ func WriteSunshineConfig(opts SunshineHostOptions) (created bool, err error) {
 
 // DefaultSunshineSpawner starts the reviewed binary in its own process group so
 // stop signals reach the whole supervised tree and never the daemon's group.
+// No guessed environment variables are used for isolation: the config file
+// binds every state path.
 func DefaultSunshineSpawner(binary string, args []string, dir string) (SunshineProcess, error) {
 	command := exec.Command(binary, args...)
 	command.Dir = dir
-	command.Env = append(os.Environ(), "SUNSHINE_STATE_DIR="+dir)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
-	// Setpgid keeps stop signals inside the supervised tree. No Pdeathsig:
-	// Go may deliver it when the spawning thread exits, which is not the
-	// daemon lifetime; orphan cleanup is owned by the Zen service unit.
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("start sunshine: %w", err)
@@ -171,6 +233,9 @@ type SunshineHost struct {
 	opts    SunshineHostOptions
 	spawner SunshineSpawner
 	process SunshineProcess
+	done    chan struct{}
+	waitErr error
+	exited  bool
 }
 
 // StartSunshineHost prepares the private state and starts exactly one process.
@@ -184,18 +249,34 @@ func StartSunshineHost(opts SunshineHostOptions, spawner SunshineSpawner) (*Suns
 	if spawner == nil {
 		spawner = DefaultSunshineSpawner
 	}
-	args := append([]string{"--config", opts.ConfigPath}, opts.ExtraArgs...)
+	args := append([]string{opts.ConfigPath}, opts.ExtraArgs...)
 	process, err := spawner(opts.BinaryPath, args, opts.StateDir)
 	if err != nil {
 		return nil, err
 	}
-	return &SunshineHost{opts: opts, spawner: spawner, process: process}, nil
+	host := &SunshineHost{opts: opts, spawner: spawner, process: process, done: make(chan struct{})}
+	go host.reap(process)
+	return host, nil
+}
+
+// reap records the real process exit so Running and Stop are not pointer
+// liveness guesses.
+func (h *SunshineHost) reap(process SunshineProcess) {
+	err := process.Wait()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.process != process {
+		return
+	}
+	h.waitErr = err
+	h.exited = true
+	close(h.done)
 }
 
 func (h *SunshineHost) Running() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.process != nil
+	return h.process != nil && !h.exited
 }
 
 func (h *SunshineHost) PID() int {
@@ -207,52 +288,72 @@ func (h *SunshineHost) PID() int {
 	return h.process.PID()
 }
 
+func (h *SunshineHost) waitForExit(done chan struct{}, budget time.Duration, ctx context.Context) bool {
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Stop terminates the supervised process group within the configured grace
-// period. It is idempotent and never touches an unowned process.
+// period. It is idempotent. On a signal or wait failure the handle is kept so a
+// retry can signal again instead of silently dropping a live process.
 func (h *SunshineHost) Stop(ctx context.Context) error {
 	h.mu.Lock()
 	process := h.process
-	h.process = nil
+	done := h.done
 	h.mu.Unlock()
 	if process == nil {
 		return nil
 	}
 
 	signalErr := process.Signal(syscall.SIGTERM)
-	waitResult := make(chan error, 1)
-	go func() { waitResult <- process.Wait() }()
-
-	timer := time.NewTimer(h.opts.stopGrace())
-	defer timer.Stop()
-	select {
-	case err := <-waitResult:
-		if err != nil && signalErr != nil {
-			return fmt.Errorf("stop sunshine: %w", err)
-		}
+	if h.waitForExit(done, h.opts.stopGrace(), ctx) {
+		h.clear(process)
 		return nil
-	case <-timer.C:
-	case <-ctx.Done():
 	}
-	_ = process.Signal(syscall.SIGKILL)
-	select {
-	case <-waitResult:
+
+	killErr := process.Signal(syscall.SIGKILL)
+	if h.waitForExit(done, h.opts.stopGrace(), ctx) {
+		h.clear(process)
 		return nil
-	case <-time.After(h.opts.stopGrace()):
-		return errors.New("sunshine_stop_timeout")
+	}
+	if signalErr != nil {
+		return fmt.Errorf("stop sunshine: %w", signalErr)
+	}
+	if killErr != nil {
+		return fmt.Errorf("kill sunshine: %w", killErr)
+	}
+	return errors.New("sunshine_stop_timeout")
+}
+
+func (h *SunshineHost) clear(process SunshineProcess) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.process == process {
+		h.process = nil
+		h.done = nil
+		h.waitErr = nil
 	}
 }
 
-// Revoke stops the supervised host and removes the Zen-owned pairing state so
-// the next start requires an explicit re-pair. The user's own Sunshine data is
-// never touched because only paths inside the private state directory are used.
+// Revoke stops the supervised host and removes only the Zen-owned upstream
+// file_state so the next start requires an explicit re-pair. Certificate,
+// private key, credentials and app list are preserved for isolation review.
 func (h *SunshineHost) Revoke(ctx context.Context) error {
 	stopErr := h.Stop(ctx)
-	removeErr := os.Remove(h.opts.PairingStatePath)
+	removeErr := os.Remove(h.opts.StateFilePath)
 	if removeErr != nil && !os.IsNotExist(removeErr) {
 		if stopErr != nil {
 			return fmt.Errorf("revoke sunshine: %v; %w", stopErr, removeErr)
 		}
-		return fmt.Errorf("revoke sunshine pairing state: %w", removeErr)
+		return fmt.Errorf("revoke sunshine state file: %w", removeErr)
 	}
 	return stopErr
 }

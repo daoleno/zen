@@ -37,7 +37,7 @@ logger.lifecycle("zen-remote-desktop: ndk abiFilters=${resolvedAbis}")
 def zenBridgeTestEnabled = project.hasProperty('zenMoonlightBridgeTest') ||
   System.getenv('ZEN_MOONLIGHT_BRIDGE_TEST') == '1'
 def zenRepoRoot = file("${rootProject.projectDir}/../..")
-def zenBridgeTestLib = new File(project.buildDir, 'moonlight-test/libzen_moonlight_test.so')
+def zenBridgeTestLib = new File(zenRepoRoot, 'build/zen-moonlight-bridge-test/libzen_moonlight_test.so')
 
 tasks.register('buildMoonlightBridgeTestLib', Exec) {
   group = 'verification'

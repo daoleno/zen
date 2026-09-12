@@ -52,7 +52,7 @@ class MoonlightCoreBridgeTest {
       fps = 60,
       bitrateKbps = 20_000,
       packetSize = 1024,
-      audioConfiguration = 2,
+      audioConfiguration = MoonlightAudioConfiguration.STEREO,
       supportedVideoFormats = MoonlightCore.VIDEO_FORMAT_H264,
       clientRefreshRateX100 = 0,
       streamingRemotely = 0,
@@ -179,10 +179,24 @@ class MoonlightCoreBridgeTest {
   }
 
   @Test
+  fun packedAudioConfigurationMatchesUpstreamLayout() {
+    assertEquals(0x302CA, MoonlightAudioConfiguration.STEREO)
+    assertEquals(0x3F06CA, MoonlightAudioConfiguration.SURROUND_51)
+    assertEquals(0x63F08CA, MoonlightAudioConfiguration.SURROUND_71)
+    assertEquals(2, MoonlightAudioConfiguration.channelCount(MoonlightAudioConfiguration.STEREO))
+    assertEquals(0x3, MoonlightAudioConfiguration.channelMask(MoonlightAudioConfiguration.STEREO))
+    assertTrue(MoonlightAudioConfiguration.isValid(MoonlightAudioConfiguration.SURROUND_71))
+    assertFalse(MoonlightAudioConfiguration.isValid(2))
+    assertFalse(MoonlightAudioConfiguration.isValid(0))
+  }
+
+  @Test
   fun invalidStreamArgumentsAreRejectedBeforeAnyStart() {
     val core = TestCore()
     assertEquals(-5, core.start(config().copy(width = 0)))
     assertEquals(-5, core.start(config().copy(packetSize = 8)))
+    assertEquals(-5, core.start(config().copy(audioConfiguration = 2)))
+    assertEquals(-5, core.start(config().copy(supportedVideoFormats = 0)))
     assertEquals(0, MoonlightTestProbe.startCount())
   }
 
@@ -234,5 +248,146 @@ class MoonlightCoreBridgeTest {
     assertEquals(MoonlightCore.SESSION_ACTIVE, core.sessionState() and 0x0F)
 
     assertEquals(0, core.stop())
+  }
+
+  private fun awaitCondition(timeoutMs: Long = 5_000, condition: () -> Boolean) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      if (condition()) return
+      Thread.sleep(10)
+    }
+    assertTrue("condition not met within ${timeoutMs}ms", condition())
+  }
+
+  @Test
+  fun stopFromStartedCallbackDefersInsteadOfDeadlocking() {
+    var stopResult = -999
+    val entered = CountDownLatch(1)
+    val core = object : MoonlightCore() {
+      override fun onConnectionStarted() {
+        entered.countDown()
+        stopResult = stop()
+      }
+    }
+    assertEquals(0, core.start(config()))
+    assertTrue(entered.await(2, TimeUnit.SECONDS))
+    awaitCondition { stopResult != -999 }
+    assertEquals(0, stopResult)
+    assertEquals(MoonlightCore.SESSION_IDLE, awaitState(core, MoonlightCore.SESSION_IDLE) and 0x0F)
+    assertEquals(1, MoonlightTestProbe.stopCount())
+  }
+
+  @Test
+  fun stopFromStageAndSetupCallbacksDefersWithoutDeadlock() {
+    val stageEntered = CountDownLatch(1)
+    val stageStop = object : MoonlightCore() {
+      override fun onConnectionStage(stage: Int) {
+        stageEntered.countDown()
+        stop()
+      }
+    }
+    assertEquals(0, stageStop.start(config()))
+    assertTrue(stageEntered.await(2, TimeUnit.SECONDS))
+    assertEquals(MoonlightCore.SESSION_IDLE, awaitState(stageStop, MoonlightCore.SESSION_IDLE) and 0x0F)
+    assertTrue(MoonlightTestProbe.stopCount() <= 1)
+    // No stale stop request may leak into the next start.
+    MoonlightTestProbe.reset()
+    val next = TestCore()
+    assertEquals(0, next.start(config()))
+    assertTrue(next.started.await(2, TimeUnit.SECONDS))
+    assertEquals(MoonlightCore.SESSION_ACTIVE, next.sessionState() and 0x0F)
+    assertEquals(0, next.stop())
+
+    MoonlightTestProbe.reset()
+    val setupEntered = CountDownLatch(1)
+    val setupStop = object : MoonlightCore() {
+      override fun onVideoSetup(videoFormat: Int, width: Int, height: Int, redrawRate: Int): Int {
+        setupEntered.countDown()
+        stop()
+        return 0
+      }
+    }
+    assertEquals(0, setupStop.start(config()))
+    assertTrue(setupEntered.await(2, TimeUnit.SECONDS))
+    assertEquals(MoonlightCore.SESSION_IDLE, awaitState(setupStop, MoonlightCore.SESSION_IDLE) and 0x0F)
+    assertTrue(MoonlightTestProbe.stopCount() <= 1)
+  }
+
+  @Test
+  fun setupExceptionSurfacesAsyncStartFailureAndRetires() {
+    val failed = java.util.concurrent.atomic.AtomicInteger(0)
+    val failedLatch = CountDownLatch(1)
+    val core = object : MoonlightCore() {
+      override fun onVideoSetup(videoFormat: Int, width: Int, height: Int, redrawRate: Int): Int =
+        throw IllegalStateException("decoder refused the stream")
+
+      override fun onConnectionStartFailed(errorCode: Int) {
+        failed.set(errorCode)
+        failedLatch.countDown()
+      }
+    }
+    assertEquals(0, core.start(config()))
+    assertTrue(failedLatch.await(2, TimeUnit.SECONDS))
+    assertEquals(-1, failed.get())
+    assertEquals(-1, core.lastStartError())
+    assertEquals(MoonlightCore.SESSION_IDLE, awaitState(core, MoonlightCore.SESSION_IDLE) and 0x0F)
+    assertTrue(core.sessionState() and MoonlightCore.STATE_FLAG_CALLBACK_FAILED != 0)
+
+    // The failed start must retire fully so a new session can start.
+    MoonlightTestProbe.reset()
+    val next = TestCore()
+    assertEquals(0, next.start(config()))
+    assertTrue(next.started.await(2, TimeUnit.SECONDS))
+    assertEquals(0, next.stop())
+  }
+
+  @Test
+  fun staleTeardownFromPreviousSessionCannotStopNewSession() {
+    MoonlightTestProbe.setTeardownDelayMs(400)
+    try {
+      val first = TestCore()
+      assertEquals(0, first.start(config()))
+      assertTrue(first.started.await(2, TimeUnit.SECONDS))
+      MoonlightTestProbe.emitTerminated(0)
+      Thread.sleep(80) // teardown request is enqueued and sleeping
+
+      assertEquals(0, first.stop())
+      assertEquals(MoonlightCore.SESSION_IDLE, awaitState(first, MoonlightCore.SESSION_IDLE) and 0x0F)
+      assertEquals(1, MoonlightTestProbe.stopCount())
+
+      val second = TestCore()
+      assertEquals(0, second.start(config()))
+      assertTrue(second.started.await(2, TimeUnit.SECONDS))
+
+      // The delayed teardown from the first session must not stop the second.
+      Thread.sleep(600)
+      assertEquals(MoonlightCore.SESSION_ACTIVE, second.sessionState() and 0x0F)
+      assertEquals(1, MoonlightTestProbe.stopCount())
+
+      // The retired owner may no longer stop the live session.
+      assertEquals(-3, first.stop())
+      assertEquals(1, MoonlightTestProbe.stopCount())
+      assertEquals(0, second.stop())
+      assertEquals(2, MoonlightTestProbe.stopCount())
+    } finally {
+      MoonlightTestProbe.setTeardownDelayMs(0)
+    }
+  }
+
+  @Test
+  fun newSessionKeepsItsOwnListenerReference() {
+    val first = TestCore()
+    assertEquals(0, first.start(config()))
+    assertTrue(first.started.await(2, TimeUnit.SECONDS))
+    assertEquals(0, first.stop())
+    assertEquals(MoonlightCore.SESSION_IDLE, awaitState(first, MoonlightCore.SESSION_IDLE) and 0x0F)
+
+    val second = TestCore()
+    assertEquals(0, second.start(config()))
+    assertTrue(second.started.await(2, TimeUnit.SECONDS))
+    MoonlightTestProbe.emitDecodeUnit(byteArrayOf(7, 7, 7, 7), MoonlightCore.FRAME_TYPE_IDR, 5, 4)
+    assertTrue(second.decoded.await(2, TimeUnit.SECONDS))
+    assertEquals(MoonlightCore.SESSION_ACTIVE, second.sessionState() and 0x0F)
+    assertEquals(0, second.stop())
   }
 }
