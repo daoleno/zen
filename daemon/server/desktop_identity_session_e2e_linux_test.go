@@ -23,8 +23,9 @@ import (
 )
 
 // Isolated-host proof: identity TLS to a LAN IP with SNI zen-desktop.invalid,
-// live InspectReadiness (no stub), owned Xvfb capture/input, reconnect, re-pair,
-// revoke, wrong pin, and forged readiness headers. Never opens the personal :0.
+// owned Xvfb capture/input, reconnect, re-pair, revoke, wrong pin, and forged
+// readiness headers. Session-only readiness is injected where a real installed
+// broker would otherwise mask the isolated path. Never opens the personal :0.
 func TestDesktopIdentityPinnedLANSessionE2E(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux isolated host")
@@ -160,9 +161,9 @@ func TestDesktopIdentityPinnedLANSessionE2E(t *testing.T) {
 		t.Setenv("DISPLAY", "")
 		t.Setenv("WAYLAND_DISPLAY", "")
 		t.Setenv("ZEN_DESKTOP_DISPLAY", "")
-		if host.InspectReadiness().Broker {
-			t.Skip("a host broker socket exists; empty-session fail-closed cannot be proven here")
-		}
+		// Inject the no-host readiness that a real installed broker can otherwise
+		// mask; forged headers must not create readiness regardless of the host.
+		stubDesktopReadiness(t, host.Readiness{Status: host.ReadinessSetupRequired})
 		if host.InspectReadiness().CurrentSession {
 			t.Fatal("cleared session env still reported a current session")
 		}
@@ -189,9 +190,9 @@ func TestDesktopIdentityPinnedLANSessionE2E(t *testing.T) {
 		if !host.InspectReadiness().CurrentSession {
 			t.Fatal("owned Xvfb was not visible to InspectReadiness")
 		}
-		if host.InspectReadiness().Broker {
-			t.Skip("a host broker socket exists; session-only capture is not isolated on this machine")
-		}
+		// Route through the production session-only path deterministically even
+		// when a host broker is installed; the owned Xvfb stays the display.
+		stubDesktopReadiness(t, host.Readiness{Status: host.ReadinessSession, CurrentSession: true, Surface: "desktop", Session: "current"})
 		req, err := http.NewRequest(http.MethodGet, "https://"+addr+"/desktop/capability", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -258,9 +259,7 @@ func TestDesktopIdentityPinnedLANSessionE2E(t *testing.T) {
 	})
 
 	t.Run("revoke", func(t *testing.T) {
-		if host.InspectReadiness().Broker {
-			t.Skip("a host broker socket exists; session-only revocation cannot be isolated on this machine")
-		}
+		stubDesktopReadiness(t, host.Readiness{Status: host.ReadinessSession, CurrentSession: true, Surface: "desktop", Session: "current"})
 		t.Setenv("DISPLAY", display)
 		conn := openStreamingDesktop(t, &dialer, addr, func() http.Header {
 			return http.Header{"Authorization": {desktopAuthorization(t, key, manager.DaemonID(), id, "zen-desktop")}}

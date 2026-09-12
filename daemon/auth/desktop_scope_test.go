@@ -135,6 +135,12 @@ func TestDesktopScopeProofCannotBeAddedReplayedOrRetargeted(t *testing.T) {
 	}
 }
 
+func TestDesktopGrantPurposeCanonicalLiteral(t *testing.T) {
+	if DesktopGrantPurpose != "zen-device-admin:desktop-grant:POST:/desktop/scope" {
+		t.Fatalf("DesktopGrantPurpose=%q", DesktopGrantPurpose)
+	}
+}
+
 func enrollLegacyPhone(t *testing.T, m *Manager, pub string) *TrustedDevice {
 	t.Helper()
 	token, err := m.IssuePairingToken(time.Minute)

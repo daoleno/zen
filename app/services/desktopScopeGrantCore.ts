@@ -3,7 +3,10 @@ import type { StoredServer } from "./storage";
 import type { DaemonAssertionInput } from "./auth";
 import type { DesktopCapability } from "./desktopConnectionCheck";
 
-export const DESKTOP_GRANT_PURPOSE = "zen-desktop-grant";
+// Canonical purpose shared with daemon/auth.DesktopGrantPurpose. The app signs
+// this exact literal; the daemon authenticates and signs its confirmation with
+// the same literal.
+export const DESKTOP_GRANT_PURPOSE = "zen-device-admin:desktop-grant:POST:/desktop/scope";
 export const DESKTOP_GRANT_VERSION = 1;
 
 export interface DesktopGrantTunnelFactory {

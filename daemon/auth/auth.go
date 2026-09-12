@@ -21,8 +21,11 @@ const (
 	AuthorizationHeaderPrefix = "ZenDevice "
 	DefaultPairingTTL         = 15 * time.Minute
 	DeviceListPurpose         = "zen-device-admin:list:GET:/devices"
-	DesktopGrantPurpose       = "zen-device-admin:desktop-grant:POST:/desktop/scope"
-	DesktopScopeVersion       = 1
+	// DesktopGrantPurpose is mirrored verbatim by the app contract
+	// (app/services/desktopScopeGrantCore.ts DESKTOP_GRANT_PURPOSE). Both the
+	// device request and the daemon confirmation assertion use this literal.
+	DesktopGrantPurpose = "zen-device-admin:desktop-grant:POST:/desktop/scope"
+	DesktopScopeVersion = 1
 )
 
 var (

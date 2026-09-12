@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { StoredServer } from "./storage";
-import { desktopGrantTransport, postDesktopGrant, type DesktopGrantRequestDependencies, type DesktopGrantTunnelFactory } from "./desktopScopeGrantCore";
+import { DESKTOP_GRANT_PURPOSE, desktopGrantTransport, postDesktopGrant, type DesktopGrantRequestDependencies, type DesktopGrantTunnelFactory } from "./desktopScopeGrantCore";
 
 const daemonId = "a".repeat(64);
 const daemonPublicKey = "b".repeat(64);
@@ -25,6 +25,10 @@ function grantDependencies(fetch: DesktopGrantRequestDependencies["fetch"], veri
     verify,
   } satisfies DesktopGrantRequestDependencies;
 }
+
+test("grant purpose literal matches the daemon contract", () => {
+  expect(DESKTOP_GRANT_PURPOSE).toBe("zen-device-admin:desktop-grant:POST:/desktop/scope");
+});
 
 test("identity pin transport bootstraps scope0 grant on LAN, link and wss only", async () => {
   await expect(desktopGrantTransport(server as StoredServer, "ws://192.168.1.5:9876/ws", { identityTls: false, transportPin: "" }))
@@ -71,7 +75,7 @@ test("explicit versioned consent uses the signed grant purpose and validates the
   expect(calls[0].init.method).toBe("POST");
   expect(calls[0].init.headers.Authorization).toContain("ZenDevice");
   expect(JSON.parse(calls[0].init.body)).toEqual({ desktop_scope_version: 1 });
-  expect(verified[0]).toMatchObject({ purpose: "zen-desktop-grant", daemonId, daemonPublicKey });
+  expect(verified[0]).toMatchObject({ purpose: "zen-device-admin:desktop-grant:POST:/desktop/scope", daemonId, daemonPublicKey });
 });
 
 test("negatives fail closed: other device, forged assertion, insecure transport, server failure and abort", async () => {

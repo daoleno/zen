@@ -5,18 +5,26 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import nacl from "tweetnacl";
 import { bytesToHex, hexToBytes, normalizeFixedHex } from "./protocolCrypto";
+import { normalizeDaemonId, signDeviceAuthorization } from "./deviceAuthContract";
 
 export {
   bytesToHex,
   hexToBytes,
   verifyLinkPairingSignature,
 } from "./protocolCrypto";
+export {
+  buildServerAssertionPayload,
+  buildSignaturePayload,
+  normalizeDaemonId,
+  normalizePublicKeyHex,
+  verifyDaemonAssertion,
+} from "./deviceAuthContract";
+export type { DaemonAssertionInput } from "./deviceAuthContract";
 
 const DEVICE_ID_KEY = "zen.device.v3.id";
 const DEVICE_NAME_KEY = "zen.device.v3.name";
 const DEVICE_SEED_KEY = "zen.device.v3.seed";
 const DEVICE_PUBLIC_KEY_KEY = "zen.device.v3.public-key";
-const AUTH_HEADER_PREFIX = "ZenDevice ";
 const WEB_SECURE_STORE_PREFIX = "zen:secure:";
 
 export interface LocalDeviceIdentity {
@@ -26,33 +34,14 @@ export interface LocalDeviceIdentity {
   seedHex: string;
 }
 
-export interface DaemonAssertionInput {
-  purpose: string;
-  daemonId: string;
-  daemonPublicKey: string;
-  timestamp: string | null | undefined;
-  nonceHex: string | null | undefined;
-  signatureHex: string | null | undefined;
-}
-
 export type AuthPurpose =
   | "zen-desktop"
   | "zen-desktop-capability"
-  | "zen-desktop-grant"
+  | "zen-device-admin:desktop-grant:POST:/desktop/scope"
   | "zen-connect"
   | "zen-upload"
   | "zen-probe"
   | "zen-session-file";
-
-export function normalizeDaemonId(rawValue: string | null | undefined): string {
-  return normalizeFixedHex(rawValue, 64);
-}
-
-export function normalizePublicKeyHex(
-  rawValue: string | null | undefined,
-): string {
-  return normalizeFixedHex(rawValue, 64);
-}
 
 export function normalizePairingToken(
   rawValue: string | null | undefined,
@@ -111,83 +100,14 @@ export async function buildAuthorizationHeader(input: {
   const identity = await getOrCreateLocalDeviceIdentity();
   const timestamp = Date.now().toString();
   const nonceHex = bytesToHex(Crypto.getRandomBytes(16));
-  const payload = buildSignaturePayload(
-    input.purpose,
+  return signDeviceAuthorization({
+    purpose: input.purpose,
     daemonId,
-    identity.deviceId,
+    deviceId: identity.deviceId,
+    seedHex: identity.seedHex,
     timestamp,
     nonceHex,
-  );
-
-  const keyPair = nacl.sign.keyPair.fromSeed(hexToBytes(identity.seedHex));
-  const signature = nacl.sign.detached(payload, keyPair.secretKey);
-
-  return `${AUTH_HEADER_PREFIX}v1:${identity.deviceId}:${daemonId}:${timestamp}:${nonceHex}:${bytesToHex(signature)}`;
-}
-
-export function buildSignaturePayload(
-  purpose: AuthPurpose,
-  daemonId: string,
-  deviceId: string,
-  timestamp: string,
-  nonceHex: string,
-): Uint8Array {
-  const encoder = new TextEncoder();
-  return encoder.encode(
-    [
-      purpose.trim(),
-      normalizeDaemonId(daemonId),
-      deviceId.trim(),
-      timestamp.trim(),
-      normalizeFixedHex(nonceHex, 32),
-    ].join("\n"),
-  );
-}
-
-export function buildServerAssertionPayload(
-  purpose: string,
-  daemonId: string,
-  timestamp: string,
-  nonceHex: string,
-): Uint8Array {
-  const encoder = new TextEncoder();
-  return encoder.encode(
-    [
-      purpose.trim(),
-      normalizeDaemonId(daemonId),
-      timestamp.trim(),
-      normalizeFixedHex(nonceHex, 32),
-    ].join("\n"),
-  );
-}
-
-export function verifyDaemonAssertion(input: DaemonAssertionInput): boolean {
-  const daemonId = normalizeDaemonId(input.daemonId);
-  const daemonPublicKey = normalizePublicKeyHex(input.daemonPublicKey);
-  const nonceHex = normalizeFixedHex(input.nonceHex, 32);
-  const signatureHex = normalizeFixedHex(input.signatureHex, 128);
-  const timestamp = input.timestamp?.trim() || "";
-
-  if (
-    !input.purpose.trim() ||
-    !daemonId ||
-    !daemonPublicKey ||
-    !timestamp ||
-    !nonceHex ||
-    !signatureHex
-  ) {
-    return false;
-  }
-
-  try {
-    return nacl.sign.detached.verify(
-      buildServerAssertionPayload(input.purpose, daemonId, timestamp, nonceHex),
-      hexToBytes(signatureHex),
-      hexToBytes(daemonPublicKey),
-    );
-  } catch {
-    return false;
-  }
+  });
 }
 
 function defaultDeviceName(): string {
