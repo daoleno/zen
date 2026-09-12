@@ -130,7 +130,8 @@ journal; duplicates are still answered to clear Telegram's spinner.
 `allowed_updates` includes both messages and callback queries.
 It also explicitly requests `message_reaction`. Telegram documents administrator
 status as a prerequisite for those updates, so native owner-reaction delivery is
-not promised in private bot chats. Inline feedback is the supported counterpart.
+not promised in private bot chats. Unavailable native reactions are not replaced
+with automatic inline feedback buttons.
 
 Outbound rows persist pending, then dispatching, then sent/failed/ambiguous.
 Definite flood waits honor `retry_after` across the private chat, including other
@@ -248,9 +249,9 @@ apply without calling a provider, creating a conversation or issuing commands.
 The bounded journal retains sources for the latest 512 attributable messages;
 unavailable or older messages fail closed.
 
-Assistant replies offer thumbs-up, thumbs-down and Clear feedback buttons.
-These persist feedback on that exact message and acknowledge via a callback
-toast. They are not a claim that Telegram delivered a native reaction update.
+Assistant replies do not generate thumbs-up, thumbs-down or Clear feedback
+buttons. Already-sent legacy feedback controls still persist feedback on the
+exact message and acknowledge via a callback toast without creating new controls.
 The native `message_reaction` handler is defensive and uses the same journal;
 private-chat inbound delivery remains unverified and administrator-gated in the
 official Bot API documentation.
@@ -266,8 +267,25 @@ Zen reuses the persisted primary Brain topic. It creates one navigation message
 with the exact primary-topic link and pins that **message** using
 `pinChatMessage`. The send/pin operations use the existing durable, serialized
 outbox. Restart does not create another entry. A failed or ambiguous pin does
-not imply success or trigger a replacement topic. Assistant messages also
-retain a Brain navigation button.
+not imply success or trigger a replacement topic. Ordinary messages do not
+repeat that navigation.
+
+## Content-Only Messages
+
+Brain and Session replies, streamed chunks and edits, file success/failure
+receipts, routine status, lifecycle and error notices contain only message
+content. Navigation and feedback keyboards are not added automatically. Inline
+keyboards are reserved for explicitly requested interactions such as `/sessions`,
+`/brain`, a requested Session link or New Chat confirmation, and the single
+persistent pinned Brain entry. Explicit topic links retain their exact destination.
+
+Before dispatch, pending legacy ordinary outbox rows lose only the known complete
+generated navigation/feedback keyboard. Explicit interaction and unknown keyboards
+are preserved. This does not reset receipts, replay delivery, change message text,
+alter source/feedback attribution or delete topics/messages. Already-sent controls
+remain usable; no setting re-enables automatic message chrome.
+
+## Telegram Client Navigation
 
 Telegram's **All / View as messages / General** navigation is client-owned.
 The Bot API cannot replace, hide or reorder All, and has no topic-pin method.

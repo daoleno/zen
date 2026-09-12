@@ -302,7 +302,7 @@ func (m *Manager) failMedia(id, reason string) error {
 			text = reason + " This follow-up was not submitted. Resend the file and prompt together to retry."
 		}
 		if !enqueue(state, outboxRecord{ID: "media-error:" + id, Kind: "send", Text: text,
-			SessionID: input.SessionID, BrainThreadID: input.BrainThreadID, MessageThreadID: input.MessageThreadID, ReplyMessageID: input.Parts[0].MessageID, CreatedAt: m.now().UTC(), ReplyMarkup: navigationKeyboard(*state, input.MessageThreadID)}) {
+			SessionID: input.SessionID, BrainThreadID: input.BrainThreadID, MessageThreadID: input.MessageThreadID, ReplyMessageID: input.Parts[0].MessageID, CreatedAt: m.now().UTC()}) {
 			return fmt.Errorf("media feedback queue is full")
 		}
 		return nil
@@ -621,7 +621,7 @@ func (m *Manager) finishMedia(input mediaInput, result brain.ExternalInputDispos
 			return nil
 		}
 		if !enqueue(state, outboxRecord{ID: "media-ack:" + input.ID, Kind: "send", Text: text, MessageThreadID: input.MessageThreadID,
-			SessionID: input.SessionID, BrainThreadID: input.BrainThreadID, ReplyMessageID: input.Parts[0].MessageID, CreatedAt: m.now().UTC(), ReplyMarkup: navigationKeyboard(*state, input.MessageThreadID)}) {
+			SessionID: input.SessionID, BrainThreadID: input.BrainThreadID, ReplyMessageID: input.Parts[0].MessageID, CreatedAt: m.now().UTC()}) {
 			return fmt.Errorf("media feedback queue is full")
 		}
 		return nil

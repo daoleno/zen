@@ -794,7 +794,7 @@ func (m *Manager) tryBind(message Message, state durableState) string {
 			current.BrainTopicID = message.MessageThreadID
 			current.BrainTopics = append(current.BrainTopics, message.MessageThreadID)
 		}
-		enqueue(current, outboxRecord{ID: "binding:connected", Kind: "send", MessageThreadID: message.MessageThreadID, Text: "Brain connected.", ReplyMarkup: navigationKeyboard(*current, message.MessageThreadID), CreatedAt: m.now().UTC()})
+		enqueue(current, outboxRecord{ID: "binding:connected", Kind: "send", MessageThreadID: message.MessageThreadID, Text: "Brain connected.", CreatedAt: m.now().UTC()})
 		return nil
 	})
 	if err != nil {
@@ -1090,9 +1090,9 @@ func (m *Manager) handleCallback(ctx context.Context, token string, query Callba
 							reply("That Session is unavailable. Run /sessions again.")
 							return "callback_unavailable"
 						}
-						var buttons []InlineKeyboardButton
+						var buttons [][]InlineKeyboardButton
 						if link := topicURL(state, mapping.MessageThreadID); link != "" {
-							buttons = append(buttons, InlineKeyboardButton{Text: "Open Session", URL: link})
+							buttons = append(buttons, []InlineKeyboardButton{{Text: "Open Session", URL: link}})
 						}
 						m.enqueueTopicText("callback:"+query.ID, sessionStatusText(projection), query.Message.MessageThreadID, query.Message.MessageID, buttons...)
 						return "callback_topic_link"
@@ -1302,7 +1302,7 @@ func (m *Manager) stopTyping() {
 func (m *Manager) enqueueText(id, text string, reply int64) {
 	_ = m.store.mutate(func(state *durableState) error {
 		for index, chunk := range chunkRichText(richText{Text: strings.TrimSpace(text)}, maxMessageText) {
-			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk.Text, MessageThreadID: brainDestination(*state), ReplyMessageID: reply, ReplyMarkup: navigationKeyboard(*state, brainDestination(*state)), CreatedAt: m.now().UTC()})
+			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk.Text, MessageThreadID: brainDestination(*state), ReplyMessageID: reply, CreatedAt: m.now().UTC()})
 		}
 		return nil
 	})
@@ -1483,9 +1483,11 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 		return nil
 	}
 	row := state.Outbox[index]
+	stripOrdinaryReplyMarkup(state, &row)
 	if err := m.store.mutate(func(current *durableState) error {
 		for i := range current.Outbox {
 			if current.Outbox[i].ID == row.ID && current.Outbox[i].State == "pending" {
+				current.Outbox[i].ReplyMarkup = row.ReplyMarkup
 				current.Outbox[i].State = "dispatching"
 				return nil
 			}
@@ -1511,9 +1513,6 @@ func (m *Manager) deliverOne(ctx context.Context, token string) error {
 	} else if row.Kind == "edit" {
 		sent, err = m.api.EditMessage(ctx, token, EditRequest{ChatID: state.ChatID, MessageID: row.MessageID, Text: row.Text, Entities: entities})
 	} else {
-		if row.CanonicalID != "" && row.WorkID == "" {
-			row.ReplyMarkup = feedbackKeyboard(state, row.MessageThreadID)
-		}
 		sent, err = m.api.SendMessage(ctx, token, SendRequest{ChatID: state.ChatID, MessageThreadID: row.MessageThreadID, Text: row.Text, Entities: entities, ReplyToMessageID: row.ReplyMessageID, ReplyMarkup: row.ReplyMarkup})
 	}
 	if err != nil {

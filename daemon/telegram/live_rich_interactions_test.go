@@ -194,10 +194,10 @@ func TestLiveTelegramRichInteractions(t *testing.T) {
 	for _, reaction := range reactions {
 		count("setMessageReaction QA photo")
 		if err := c.SetMessageReaction(t.Context(), token, ReactionRequest{ChatID: before.ChatID, MessageID: photo.MessageID, Reaction: reaction}); err != nil {
-			t.Logf("private bot reaction unavailable: %v; supported inline-feedback fallback remains", err)
+			t.Logf("private bot reaction unavailable: %v; no inline-button substitute", err)
 			break
 		}
 		t.Logf("private bot setMessageReaction accepted; reaction count=%d", len(reaction))
 	}
-	t.Log("Native owner reaction UPDATE/UI reception not proven: no signed-in client and no second update consumer; administrator-gated Bot API documented fallback tested offline.")
+	t.Log("Native owner reaction UPDATE/UI reception not proven: no signed-in client and no second update consumer; defensive native and legacy callback handling tested offline.")
 }

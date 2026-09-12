@@ -519,16 +519,15 @@ func sessionStatusText(projection brain.SessionProjection) string {
 
 // enqueueTopicText enqueues a topic-scoped plain text message split into safe
 // chunks. The same row identity is shared across re-enqueues.
-func (m *Manager) enqueueTopicText(id, text string, threadID, reply int64, buttons ...InlineKeyboardButton) {
+func (m *Manager) enqueueTopicText(id, text string, threadID, reply int64, buttons ...[]InlineKeyboardButton) {
 	_ = m.store.mutate(func(state *durableState) error {
 		enqueueTopicTextLocked(state, id, threadID, text, m.now().UTC())
 		for i := range state.Outbox {
 			if state.Outbox[i].ID == id+":0" {
 				state.Outbox[i].ReplyMessageID = reply
-				state.Outbox[i].ReplyMarkup = navigationKeyboard(*state, threadID)
+				state.Outbox[i].ReplyMarkup = nil
 				if len(buttons) > 0 {
-					keyboard := state.Outbox[i].ReplyMarkup
-					keyboard.InlineKeyboard = append([][]InlineKeyboardButton{buttons}, keyboard.InlineKeyboard...)
+					state.Outbox[i].ReplyMarkup = &InlineKeyboardMarkup{InlineKeyboard: buttons}
 				}
 				if mapping, ok := topicMappingByThread(*state, threadID); ok {
 					state.Outbox[i].SessionID = mapping.SessionID
@@ -1068,7 +1067,7 @@ func (m *Manager) applyCreateTopicResult(state *durableState, op topicOpRecord, 
 			state.BrainTopicID = topic.MessageThreadID
 		}
 		state.BrainTopics = append(state.BrainTopics, topic.MessageThreadID)
-		enqueue(state, outboxRecord{ID: "topic:brain:welcome", Kind: "send", MessageThreadID: topic.MessageThreadID, Text: "Brain", ReplyMarkup: navigationKeyboard(*state, topic.MessageThreadID), CreatedAt: now})
+		enqueue(state, outboxRecord{ID: "topic:brain:welcome", Kind: "send", MessageThreadID: topic.MessageThreadID, Text: "Brain", CreatedAt: now})
 		return nil
 	}
 	for index := range state.Topics {

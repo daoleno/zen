@@ -101,5 +101,5 @@ func (m *Manager) returnToBrain(id string, sourceThread, replyID int64) {
 	if m.store.snapshot().TopicsAvailable {
 		text = "Brain"
 	}
-	m.enqueueTopicText(id, text, sourceThread, replyID)
+	m.enqueueTopicText(id, text, sourceThread, replyID, navigationKeyboard(m.store.snapshot(), sourceThread).InlineKeyboard...)
 }

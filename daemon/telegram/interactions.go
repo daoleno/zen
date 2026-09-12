@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"slices"
+	"strings"
 )
 
 type messageSource struct {
@@ -63,8 +64,8 @@ func (m *Manager) recordFeedback(id, updateID int64, reactions []ReactionType, n
 }
 
 // Private Bot API reaction delivery is not documented: Update requires chat
-// administrator status. Defensive support here grants no provider authority;
-// inline feedback is the supported private-chat counterpart.
+// administrator status. Defensive support here grants no provider authority
+// and does not replace unavailable native reactions with inline buttons.
 func (m *Manager) handleReaction(reaction MessageReactionUpdated, updateID int64) (string, error) {
 	state := m.store.snapshot()
 	if !state.Enabled || state.OwnerID == 0 || reaction.User == nil || reaction.User.IsBot || reaction.ActorChat != nil || reaction.Chat.Type != "private" || reaction.Chat.ID != state.ChatID || reaction.User.ID != state.OwnerID {
@@ -73,14 +74,49 @@ func (m *Manager) handleReaction(reaction MessageReactionUpdated, updateID int64
 	return m.recordFeedback(reaction.MessageID, updateID, reaction.NewReaction, true)
 }
 
-func feedbackKeyboard(state durableState, threadID int64) *InlineKeyboardMarkup {
-	keyboard := navigationKeyboard(state, threadID)
-	keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, []InlineKeyboardButton{
+// Old pending rows can contain the former automatic keyboard. Match only that
+// complete shape on known ordinary output; preserve explicit and unknown controls.
+func stripOrdinaryReplyMarkup(state durableState, row *outboxRecord) {
+	if row.ReplyMarkup == nil || (row.Kind != "send" && row.Kind != "edit") {
+		return
+	}
+	ordinary := row.CanonicalID != "" || row.TopicKey != "" || row.ID == "binding:connected" || row.ID == "topic:brain:welcome"
+	for _, prefix := range []string{"ack:", "entities:", "fallback:", "media-ack:", "media-error:", "media-late:", "topic-ack:", "topic-command:", "command:", "callback:"} {
+		ordinary = ordinary || strings.HasPrefix(row.ID, prefix)
+	}
+	if !ordinary {
+		return
+	}
+	if row.CanonicalID == "" && (strings.HasPrefix(row.ID, "command:") || strings.HasPrefix(row.ID, "callback:")) {
+		// Legacy command rows have no intent field. These are the exact Brain
+		// entry and chooser bodies; populated choosers also carry Session buttons.
+		if row.Text == "Brain" || row.Text == "Recipient: Brain." || row.Text == sessionListText(nil, state.TopicsAvailable) || strings.HasPrefix(row.Text, "Delegated Sessions:\n") {
+			return
+		}
+	}
+	rows := row.ReplyMarkup.InlineKeyboard
+	if len(rows) == 0 {
+		return
+	}
+	nav := navigationKeyboard(state, row.MessageThreadID).InlineKeyboard[0]
+	callbackNav := []InlineKeyboardButton{{Text: "Brain", CallbackData: "brain"}, {Text: "Sessions", CallbackData: "sessions"}}
+	if !slices.Equal(rows[0], nav) && !slices.Equal(rows[0], callbackNav) {
+		return
+	}
+	rows = rows[1:]
+	if len(rows) > 0 && slices.Equal(rows[0], []InlineKeyboardButton{{Text: "New Chat", CallbackData: "new"}}) {
+		rows = rows[1:]
+	}
+	if len(rows) > 0 && slices.Equal(rows[0], []InlineKeyboardButton{
 		{Text: "\U0001f44d", CallbackData: "feedback:up"},
 		{Text: "\U0001f44e", CallbackData: "feedback:down"},
 		{Text: "Clear feedback", CallbackData: "feedback:clear"},
-	})
-	return keyboard
+	}) {
+		rows = rows[1:]
+	}
+	if len(rows) == 0 {
+		row.ReplyMarkup = nil
+	}
 }
 
 func (m *Manager) ensureBrainEntry() error {
