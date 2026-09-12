@@ -32,6 +32,7 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 	install := fs.Bool("install", false, "Install reviewed same-binary zen as broker/agent")
 	rollback := fs.Bool("rollback", false, "Roll back unchanged installed files; broker must be stopped")
 	activate := fs.Bool("activate", false, "Enable/start the installed broker; do not restart SDDM or the owner")
+	verbose := fs.Bool("verbose", false, "Print verified probe details and rollback instructions; the default success stays brief")
 	planOnly := fs.Bool("plan", false, "Print the reviewed install manifest without changing the host")
 	binarySource := fs.String("binary-source", "", "Reviewed desktop-capable zen ELF used for every role")
 	brokerSource := fs.String("broker-source", "", "Legacy alias; must match --binary-source / --agent-source")
@@ -105,7 +106,7 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 				if sourceErr != nil {
 					err = sourceErr
 				} else if *registerCurrent {
-					return installAndRegisterCurrent(config, source, stderr)
+					return installAndRegisterCurrent(config, source, stderr, *verbose)
 				} else {
 					err = InstallLinux(config, source)
 				}

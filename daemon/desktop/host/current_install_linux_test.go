@@ -71,6 +71,37 @@ func TestCurrentSessionRequiresEnrolledOwnerOrSDDM(t *testing.T) {
 	}
 }
 
+func TestCurrentInstallSuccessIsBriefEnglishAndLocaleIndependent(t *testing.T) {
+	t.Setenv("LANG", "zh_CN.UTF-8")
+	t.Setenv("LC_ALL", "zh_CN.UTF-8")
+	var brief bytes.Buffer
+	writeCurrentInstallSuccess(&brief, probeResult{Surface: "greeter", Width: 960, Height: 720, FrameBytes: 2211}, ":0", false)
+	want := "Remote desktop is set up.\n" +
+		"Open Remote Desktop in the Zen app on your phone and tap Connect.\n" +
+		"The Zen daemon and the login screen were not restarted.\n"
+	if brief.String() != want {
+		t.Fatalf("brief output=%q", brief.String())
+	}
+	for _, hidden := range []string{"H.264", "XTest", "greeter", "960x720", "2211", "Rollback", "scope"} {
+		if strings.Contains(brief.String(), hidden) {
+			t.Fatalf("default success leaks %q: %q", hidden, brief.String())
+		}
+	}
+	for _, cjk := range []string{"已", "设置", "远程"} {
+		if strings.Contains(brief.String(), cjk) {
+			t.Fatalf("default success is not English: %q", brief.String())
+		}
+	}
+
+	var verbose bytes.Buffer
+	writeCurrentInstallSuccess(&verbose, probeResult{Surface: "greeter", Width: 960, Height: 720, FrameBytes: 2211}, ":0", true)
+	for _, detail := range []string{"greeter", ":0", "960x720", "H.264", "XTest", "pair again", "Rollback"} {
+		if !strings.Contains(verbose.String(), detail) {
+			t.Fatalf("verbose output missing %q: %q", detail, verbose.String())
+		}
+	}
+}
+
 func TestCurrentInstallRollsBackOnlyNewChanges(t *testing.T) {
 	for _, existing := range []bool{false, true} {
 		for _, failure := range []string{"", "install", "activate", "register", "probe", "desktop_busy_existing_connection_preserved"} {

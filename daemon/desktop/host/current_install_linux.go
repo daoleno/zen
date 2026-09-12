@@ -85,7 +85,7 @@ func runCurrentInstall(existing bool, ops currentInstallOps) (result probeResult
 	return ops.probe()
 }
 
-func installAndRegisterCurrent(config HostConfig, source string, out io.Writer) error {
+func installAndRegisterCurrent(config HostConfig, source string, out io.Writer, verbose bool) error {
 	if err := rejectBrokerUnitOverrides("/etc/systemd/system/zen-desktop-host.service", "/run/systemd/system/zen-desktop-host.service"); err != nil {
 		return err
 	}
@@ -173,10 +173,24 @@ func installAndRegisterCurrent(config HostConfig, source string, out io.Writer) 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Desktop host ready: %s %s, %dx%d H.264 frame verified and discarded. XTest available; no input sent.\n", result.Surface, display.observation.Display, result.Width, result.Height)
-	fmt.Fprintln(out, "The existing daemon and SDDM session were not restarted. Pairing and device-scope checks remain required.")
-	fmt.Fprintln(out, "Rollback: sudo systemctl disable --now zen-desktop-host.service; sudo /usr/libexec/zen/zen desktop-host --rollback")
+	writeCurrentInstallSuccess(out, result, display.observation.Display, verbose)
 	return nil
+}
+
+// writeCurrentInstallSuccess keeps the default success message brief and
+// human-oriented: one verified fact and the next phone action. Probe internals
+// and the rollback command stay available with --verbose. The message is always
+// English and does not depend on LANG/LC_ALL.
+func writeCurrentInstallSuccess(out io.Writer, result probeResult, display string, verbose bool) {
+	fmt.Fprintln(out, "Remote desktop is set up.")
+	fmt.Fprintln(out, "Open Remote Desktop in the Zen app on your phone and tap Connect.")
+	fmt.Fprintln(out, "The Zen daemon and the login screen were not restarted.")
+	if !verbose {
+		return
+	}
+	fmt.Fprintf(out, "Verified: %s %s, %dx%d H.264 frame decoded and discarded; XTest available; no input sent.\n", result.Surface, display, result.Width, result.Height)
+	fmt.Fprintln(out, "Pairing and device-scope checks were not changed; a phone paired before desktop support may need to pair again.")
+	fmt.Fprintln(out, "Rollback: sudo systemctl disable --now zen-desktop-host.service; sudo /usr/libexec/zen/zen desktop-host --rollback")
 }
 
 func rejectBrokerUnitOverrides(paths ...string) error {
