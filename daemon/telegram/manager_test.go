@@ -112,33 +112,34 @@ func (f *fakeBrain) CurrentHostForegroundTurn() (*brain.HostForegroundTurn, erro
 }
 
 type fakeAPI struct {
-	mu             sync.Mutex
-	bot            User
-	webhook        WebhookInfo
-	updates        []Update
-	sent           []SendRequest
-	edited         []EditRequest
-	nextSendErr    error
-	nextEditErr    error
-	nextID         int64
-	blockPoll      bool
-	pollStarted    chan struct{}
-	actions        []ChatActionRequest
-	actionErr      error
-	mutationActive atomic.Int32
-	maxMutation    atomic.Int32
-	blockSend      chan struct{}
-	sendStarted    chan struct{}
-	createdTopics  []CreateForumTopicRequest
-	editedTopics   []EditForumTopicRequest
-	closingTopics  []ForumTopicIDRequest
-	reopenedTopics []ForumTopicIDRequest
-	deletedTopics  []ForumTopicIDRequest
-	nextTopic      ForumTopic
-	nextTopicIDs   []int64
-	topicErr       error
-	topicOpErrs    map[string]error
-	pollCount      int
+	mu              sync.Mutex
+	bot             User
+	webhook         WebhookInfo
+	updates         []Update
+	sent            []SendRequest
+	edited          []EditRequest
+	nextSendErr     error
+	nextEditErr     error
+	nextID          int64
+	blockPoll       bool
+	pollStarted     chan struct{}
+	actions         []ChatActionRequest
+	callbackAnswers []string
+	actionErr       error
+	mutationActive  atomic.Int32
+	maxMutation     atomic.Int32
+	blockSend       chan struct{}
+	sendStarted     chan struct{}
+	createdTopics   []CreateForumTopicRequest
+	editedTopics    []EditForumTopicRequest
+	closingTopics   []ForumTopicIDRequest
+	reopenedTopics  []ForumTopicIDRequest
+	deletedTopics   []ForumTopicIDRequest
+	nextTopic       ForumTopic
+	nextTopicIDs    []int64
+	topicErr        error
+	topicOpErrs     map[string]error
+	pollCount       int
 }
 
 func (f *fakeAPI) CreateForumTopic(_ context.Context, _ string, request CreateForumTopicRequest) (ForumTopic, error) {
@@ -208,6 +209,13 @@ func (f *fakeAPI) topicOpError(kind string) error {
 		f.topicOpErrs[kind] = nil
 		return err
 	}
+	return nil
+}
+
+func (f *fakeAPI) AnswerCallbackQuery(_ context.Context, _ string, callbackID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.callbackAnswers = append(f.callbackAnswers, callbackID)
 	return nil
 }
 

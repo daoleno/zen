@@ -65,9 +65,17 @@ func (m Message) hasUnsupportedMedia() bool {
 }
 
 type Update struct {
-	UpdateID      int64    `json:"update_id"`
-	Message       *Message `json:"message,omitempty"`
-	EditedMessage *Message `json:"edited_message,omitempty"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	EditedMessage *Message       `json:"edited_message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+}
+
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *User    `json:"from,omitempty"`
+	Message *Message `json:"message,omitempty"`
+	Data    string   `json:"data,omitempty"`
 }
 
 type WebhookInfo struct {
@@ -81,6 +89,16 @@ type SendRequest struct {
 	Text             string          `json:"text"`
 	Entities         []MessageEntity `json:"entities,omitempty"`
 	ReplyToMessageID int64           `json:"-"`
+	ReplyMarkup      any             `json:"reply_markup,omitempty"`
+}
+
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"`
+}
+
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
 }
 
 type EditRequest struct {
@@ -132,6 +150,7 @@ type API interface {
 	CloseForumTopic(ctx context.Context, token string, request ForumTopicIDRequest) error
 	ReopenForumTopic(ctx context.Context, token string, request ForumTopicIDRequest) error
 	DeleteForumTopic(ctx context.Context, token string, request ForumTopicIDRequest) error
+	AnswerCallbackQuery(ctx context.Context, token, callbackID, text string) error
 }
 
 type APIError struct {
@@ -166,7 +185,10 @@ type Status struct {
 	OwnerHint           string          `json:"owner_hint,omitempty"`
 	BindingPending      bool            `json:"binding_pending"`
 	TopicsAvailable     bool            `json:"topics_available,omitempty"`
+	TopicNotice         string          `json:"topic_notice,omitempty"`
 	TopicMappings       int             `json:"topic_mappings,omitempty"`
+	RecipientID         string          `json:"recipient_id,omitempty"`
+	RecipientLabel      string          `json:"recipient_label,omitempty"`
 	TopicAmbiguousOps   int             `json:"topic_ambiguous_ops_count,omitempty"`
 	TopicFailedOps      int             `json:"topic_failed_ops_count,omitempty"`
 	TopicFailedMessages int             `json:"topic_failed_messages_count,omitempty"`

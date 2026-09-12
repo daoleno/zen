@@ -11,11 +11,12 @@ import (
 	"time"
 )
 
-const stateSchema = 3
+const stateSchema = 4
 
 const (
-	formattedVariant = "formatted"
-	plainVariant     = "plain"
+	maxCallbackRoutes = 64
+	formattedVariant  = "formatted"
+	plainVariant      = "plain"
 
 	// Topic mapping lifecycle states. Routing authority is the Session ID;
 	// these states mirror the Session's durable lifecycle so input can fail
@@ -52,6 +53,7 @@ type outboxRecord struct {
 	Entities        []MessageEntity `json:"entities,omitempty"`
 	Variant         string          `json:"variant,omitempty"`
 	ReplyMessageID  int64           `json:"reply_message_id,omitempty"`
+	ReplyMarkup     any             `json:"reply_markup,omitempty"`
 	MessageThreadID int64           `json:"message_thread_id,omitempty"`
 	MessageID       int64           `json:"message_id,omitempty"`
 	State           string          `json:"state"`
@@ -106,6 +108,10 @@ type durableState struct {
 	TopicOps           []topicOpRecord         `json:"topic_ops,omitempty"`
 	TopicProjection    map[string]string       `json:"topic_projection,omitempty"`
 	TopicMessages      map[string]int64        `json:"topic_messages,omitempty"`
+	FallbackSessionID  string                  `json:"fallback_session_id,omitempty"`
+	FallbackStartedAt  time.Time               `json:"fallback_started_at,omitempty"`
+	TopicNotice        string                  `json:"topic_notice,omitempty"`
+	CallbackRoutes     map[string]string       `json:"callback_routes,omitempty"`
 	DeliveryStartedAt  time.Time               `json:"delivery_started_at,omitempty"`
 	LastReceiveAt      *time.Time              `json:"last_receive_at,omitempty"`
 	LastSendAt         *time.Time              `json:"last_send_at,omitempty"`
@@ -148,6 +154,11 @@ func openStore(root string) (*store, error) {
 		case 2:
 			// Schema 2 -> 3 only introduces topic state maps/slices, which
 			// did not exist before; every existing row is preserved as-is.
+			s.state.Schema = stateSchema
+			migrated = true
+		case 3:
+			// Schema 3 already contains durable topic state. Schema 4 adds the
+			// non-topic private-chat recipient and a non-fatal capability notice.
 			s.state.Schema = stateSchema
 			migrated = true
 		case stateSchema:
@@ -221,6 +232,9 @@ func ensureDurableMaps(state *durableState) {
 	}
 	if state.TopicMessages == nil {
 		state.TopicMessages = map[string]int64{}
+	}
+	if state.CallbackRoutes == nil {
+		state.CallbackRoutes = map[string]string{}
 	}
 }
 

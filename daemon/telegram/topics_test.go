@@ -463,11 +463,11 @@ func TestTopicRenameLabelAndCapabilityDisabled(t *testing.T) {
 	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
 		t.Fatal(err)
 	}
-	if status := manager.Status(); status.TopicsAvailable || status.TopicMappings != 1 || status.State != StateDegraded {
+	if status := manager.Status(); status.TopicsAvailable || status.TopicMappings != 1 || status.State != StateConnected {
 		t.Fatalf("status=%+v", status)
 	}
-	if !strings.Contains(manager.Status().LastError, "@BotFather") {
-		t.Fatalf("capability error not actionable: %q", manager.Status().LastError)
+	if !strings.Contains(manager.Status().TopicNotice, "/sessions") {
+		t.Fatalf("capability notice not actionable: %q", manager.Status().TopicNotice)
 	}
 }
 
@@ -1029,5 +1029,151 @@ func TestSessionTopicTypingUsesTopicThreadAndStopsOnTerminal(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if after := api.actionCount(); after > before+1 {
 		t.Fatalf("typing continued past terminal turn: %d -> %d", before, after)
+	}
+}
+
+func TestPrivateChatFallbackRecipientKeepsBrainAndSessionRoutesSeparate(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	api.bot.Topics = false
+	if err := manager.refreshTopicCapability(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	owner.sessions = []brain.WorkerRef{{ID: "sess-a", Name: "Session A", Delegated: true, Status: "running"}}
+	owner.projections = map[string]brain.SessionProjection{"sess-a": {
+		SessionID: "sess-a", Present: true, Label: "Session A", Status: "running", TurnStatus: "running",
+		Assistant: []brain.SessionAssistantItem{{ID: "answer-a", Body: "answer from A", CreatedAt: manager.now().Add(time.Second)}},
+	}}
+	updates := []Update{
+		{UpdateID: 2, Message: &Message{MessageID: 2, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "/sessions"}},
+		{UpdateID: 3, Message: &Message{MessageID: 3, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "/use 1"}},
+		{UpdateID: 4, Message: &Message{MessageID: 4, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "for session"}},
+		{UpdateID: 5, Message: &Message{MessageID: 5, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "/brain"}},
+		{UpdateID: 6, Message: &Message{MessageID: 6, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "for brain"}},
+	}
+	for _, update := range updates {
+		if err := manager.handleUpdate(context.Background(), "token", update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(owner.sessionBodies) != 1 || owner.sessionBodies[0] != "for session" {
+		t.Fatalf("session route=%v", owner.sessionBodies)
+	}
+	if len(owner.bodies) != 1 || owner.bodies[0] != "for brain" {
+		t.Fatalf("brain route=%v", owner.bodies)
+	}
+	state := manager.store.snapshot()
+	if state.FallbackSessionID != "" || manager.Status().State != StateConnected || state.TopicNotice == "" {
+		t.Fatalf("fallback/capability state=%+v status=%+v", state, manager.Status())
+	}
+	state.FallbackSessionID = "sess-a"
+	state.FallbackStartedAt = manager.now()
+	if err := manager.store.mutate(func(current *durableState) error {
+		current.FallbackSessionID = state.FallbackSessionID
+		current.FallbackStartedAt = state.FallbackStartedAt
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.projectFallbackSession(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.deliverPending(context.Background(), "token", 8); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, sent := range api.sent {
+		if strings.Contains(sent.Text, "answer from A") && strings.Contains(sent.Text, "Session A") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("labeled fallback output missing: %+v", api.sent)
+	}
+}
+
+func TestPrivateChatFallbackSelectionClearsWhenSessionDisappears(t *testing.T) {
+	manager, owner, _, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	if err := manager.store.mutate(func(state *durableState) error {
+		state.TopicsAvailable = false
+		state.FallbackSessionID = "gone"
+		state.FallbackStartedAt = manager.now()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner.projections = map[string]brain.SessionProjection{"gone": {SessionID: "gone", Present: false}}
+	if err := manager.projectFallbackSession(); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.store.snapshot()
+	if state.FallbackSessionID != "" || len(state.Outbox) == 0 {
+		t.Fatalf("stale fallback not cleared: %+v", state)
+	}
+}
+
+func TestPrivateChatFallbackCallbackUsesDurableRouteAndDeduplicatesID(t *testing.T) {
+	manager, owner, api, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	if err := manager.store.mutate(func(state *durableState) error {
+		state.TopicsAvailable = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	owner.sessions = []brain.WorkerRef{{ID: "long-session-id", Name: "Session A", Delegated: true, Status: "running"}}
+	if err := manager.handleUpdate(context.Background(), "token", Update{UpdateID: 2, Message: &Message{
+		MessageID: 2, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "/sessions",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.store.snapshot()
+	route := "session:" + digestText("long-session-id")
+	if state.CallbackRoutes[digestText("long-session-id")] != "long-session-id" {
+		t.Fatalf("callback route is not exact: %+v", state.CallbackRoutes)
+	}
+	callback := func(updateID int64) Update {
+		return Update{UpdateID: updateID, CallbackQuery: &CallbackQuery{
+			ID: "callback-once", From: &User{ID: 10}, Data: route,
+			Message: &Message{MessageID: 3, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}},
+		}}
+	}
+	if err := manager.handleUpdate(context.Background(), "token", callback(3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.handleUpdate(context.Background(), "token", callback(4)); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.store.snapshot().FallbackSessionID; got != "long-session-id" {
+		t.Fatalf("callback selection=%q", got)
+	}
+	api.mu.Lock()
+	answers := append([]string(nil), api.callbackAnswers...)
+	api.mu.Unlock()
+	if len(answers) != 2 || answers[0] != "callback-once" || answers[1] != "callback-once" {
+		t.Fatalf("callback answers=%v", answers)
+	}
+}
+
+func TestPrivateChatFallbackRecipientClearsOnExplicitNewChat(t *testing.T) {
+	manager, owner, _, _ := configuredManager(t)
+	bindOwner(t, manager, 1, 10, 10)
+	if err := manager.store.mutate(func(state *durableState) error {
+		state.TopicsAvailable = false
+		state.FallbackSessionID = "sess-a"
+		state.FallbackStartedAt = manager.now()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.handleUpdate(context.Background(), "token", Update{UpdateID: 2, Message: &Message{
+		MessageID: 2, From: &User{ID: 10}, Chat: Chat{ID: 10, Type: "private"}, Text: "/new",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.store.snapshot()
+	if owner.newChats != 1 || state.FallbackSessionID != "" || !state.FallbackStartedAt.IsZero() {
+		t.Fatalf("new chat retained fallback recipient: chats=%d state=%+v", owner.newChats, state)
 	}
 }

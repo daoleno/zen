@@ -36,7 +36,10 @@ credential, owner binding, update cursor/dedupe, delivery attempts, and Telegram
 
 The first slice supports one bot, one immutable numeric Telegram owner, and that owner's one private
 bot chat. It uses Bot API long polling and therefore requires no inbound port, webhook, hosted
-service, tunnel, or separate Node process.
+service, tunnel, or separate Node process. When private-chat Threaded mode is unavailable, the
+private chat remains a usable Brain conversation and `/sessions` presents an exact, daemon-owned
+inline Session chooser. `/use` and `/brain` change only the Telegram presentation recipient; they
+never create, terminate, or rename a local Session.
 
 ## Official Capability Evidence
 
@@ -106,8 +109,12 @@ backoff. Paid broadcasts are never enabled.
 
 Bot commands are up to 32 Latin letters, digits, or underscores. Telegram recommends global
 `/start` and `/help`; command scopes are presentation only and do not authorize received commands.
-Zen supports `/start <challenge>`, `/help`, `/status`, and `/new`. `/new` invokes Brain's canonical
-new-chat operation and never creates Telegram-local thread state.
+Zen supports `/start <challenge>`, `/help`, `/status`, `/new`, `/sessions`, `/use
+<number|session-id>`, `/session <number|session-id>`, and `/brain`. `/new` invokes Brain's canonical
+new-chat operation, clears any private-chat fallback recipient, and never creates Telegram-local
+thread state. `/sessions` uses native inline buttons when Threaded mode is unavailable; callback
+data resolves through a bounded daemon-owned exact Session route and duplicate callback IDs are
+acknowledged without repeating the selection.
 
 Deep-link `start` payloads allow `A-Z`, `a-z`, `0-9`, `_`, and `-`, up to 64 characters. Zen uses a
 random base64url challenge, with expiry and single-use state persisted by the trusted daemon. The
@@ -243,18 +250,23 @@ core Telegram protocol page `core.telegram.org/api/forum`.
   serialization and the provider's native pending queue. An unknown/unmapped, stale, dead,
   ambiguous, or terminal-without-reopen Topic fails closed with a concise actionable reply in that
   same Topic.
-- Commands are route-local. General keeps `/help`, `/start`, `/status`, `/new` unchanged. In a
+- Commands are route-local. General keeps `/help`, `/start`, `/status`, `/new`, `/sessions`,
+  `/use`, `/session`, and `/brain`. In a
   Session topic, `/status` reports that exact Session's lifecycle state and `/help` explains the
   topic contract; `/new` never executes there (it is the Brain new-chat operation) and replies
   with an actionable pointer to General.
 
-### Durable topic state (schema 3)
+### Durable topic state (schema 4)
 
 - `topics`: per-mapping records — SessionID, ThreadID (Brain thread), WorkID, ChatID,
   MessageThreadID, Label, State (`active`, `completed`, `stale`), CreatedAt/UpdatedAt, and
   no-replay message checkpoints in `TopicProjection`/`TopicMessages`. Schema 2 -> 3 keeps every
-  existing row intact; no topics existed in schema 2, so only the new maps and empty slices are
-  added.
+  existing row intact; schema 3 -> 4 adds only fallback recipient metadata and callback routes.
+- `fallback_session_id` and `fallback_started_at` persist the selected exact Session only when
+  private-chat Threaded mode is unavailable. The selection is read-only presentation state and is
+  cleared by `/brain`, `/new`, revoke, remove, bot rotation, or topic-mode availability.
+- `callback_routes` stores at most 64 short callback keys to exact Session IDs for the current
+  chooser. Callback IDs are deduplicated in the processed-update journal.
 - `topic_ops`: durable topic operations (create/rename/close/reopen/delete) with the same
   pending -> dispatching -> sent/failed/ambiguous state discipline as the message outbox. On
   restart any residual `dispatching` op becomes `ambiguous`; ambiguous ops are never retried
@@ -306,8 +318,8 @@ core Telegram protocol page `core.telegram.org/api/forum`.
 
 ## Deferred Capabilities
 
-Channel direct-message topics, Business bots, callbacks/buttons, reactions, draft streaming, and
-file transfer are later channel enhancements. Group/supergroup Topic support (including
+Channel direct-message topics, Business bots, reactions, draft streaming, and file transfer are
+later channel enhancements. Group/supergroup Topic support (including
 `closeForumTopic`/`reopenForumTopic` and topic enumeration) stays deferred: this adapter is the
 one private Bot chat, and the Bot API has no topic-list method. A later Work-level grouping could
 layer multiple Work IDs under the same Session routing surface without changing routing

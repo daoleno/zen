@@ -33,7 +33,7 @@ func TestStoreMigratesSchemaOneAndPreservesState(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := opened.snapshot()
-	if state.Schema != 3 || !state.Enabled || state.BotID != 7001 || state.OwnerID != 99 || state.NextOffset != 42 ||
+	if state.Schema != 4 || !state.Enabled || state.BotID != 7001 || state.OwnerID != 99 || state.NextOffset != 42 ||
 		state.Processed["41"].Disposition != "accepted" || state.Projection["outbox:assistant:one:0"] != "digest" || state.WorkMessages["work-one"] != 7 {
 		t.Fatalf("migration lost state: %+v", state)
 	}
@@ -41,7 +41,7 @@ func TestStoreMigratesSchemaOneAndPreservesState(t *testing.T) {
 		t.Fatalf("legacy row=%+v", row)
 	}
 	if len(state.Topics) != 0 || len(state.TopicOps) != 0 || state.TopicProjection == nil || state.TopicMessages == nil {
-		t.Fatalf("schema-3 topic maps missing: %+v", state)
+		t.Fatalf("schema-4 topic maps missing: %+v", state)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestStoreMigratesSchemaTwoPreservingCurrentSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := opened.snapshot()
-	if state.Schema != 3 || state.Enabled != true || state.BotID != 7001 || state.OwnerID != 77 || state.ChatID != 77 ||
+	if state.Schema != 4 || state.Enabled != true || state.BotID != 7001 || state.OwnerID != 77 || state.ChatID != 77 ||
 		state.NextOffset != 9 || state.DeliveryStartedAt != now ||
 		state.Projection["work:w1"] != "d1" || state.WorkMessages["w1"] != 3 ||
 		state.Processed["8"].Disposition != "accepted" {

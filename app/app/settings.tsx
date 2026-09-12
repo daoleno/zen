@@ -1404,6 +1404,13 @@ function TelegramConnectionRow({
     : colors.textTertiary;
   const hasConfiguredBot = Boolean(visibleStatus?.bot_username);
   const hasBoundOwner = Boolean(visibleStatus?.owner_hint);
+  const recipientText = hasBoundOwner
+    ? visibleStatus?.topics_available
+      ? `Recipient: Brain (General)${visibleStatus.topic_mappings ? ` / ${visibleStatus.topic_mappings} Session topics` : ""}`
+      : visibleStatus?.recipient_label
+        ? `Recipient: ${visibleStatus.recipient_label}`
+        : "Recipient: Brain"
+    : null;
   const closeDetails = () => {
     setExpanded(false);
     setToken("");
@@ -1514,6 +1521,22 @@ function TelegramConnectionRow({
                     ? ` / Sent ${formatConnectionTime(status.last_send_at)}`
                     : ""}
                 </Text>
+              ) : null}
+
+              {recipientText ? (
+                <View style={styles.telegramRecipient} accessibilityLabel={recipientText}>
+                  <Ionicons name="navigate-outline" size={16} color={colors.accentStrong} />
+                  <Text style={styles.telegramRecipientText} numberOfLines={2}>
+                    {recipientText}
+                  </Text>
+                </View>
+              ) : null}
+
+              {status?.topic_notice ? (
+                <View style={styles.telegramNotice}>
+                  <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
+                  <Text style={styles.telegramNoticeText}>{status.topic_notice}</Text>
+                </View>
               ) : null}
 
               {!hasBoundOwner && !showToken ? (
@@ -2158,6 +2181,40 @@ function createStyles(theme: ResolvedZenTheme) {
       ...TypeScale.caption,
       marginTop: 8,
       color: colors.textTertiary,
+    },
+    telegramRecipient: {
+      minHeight: 44,
+      marginTop: 12,
+      paddingHorizontal: 10,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfaceSubtle,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+    },
+    telegramRecipientText: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      flex: 1,
+      color: colors.textPrimary,
+    },
+    telegramNotice: {
+      marginTop: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 9,
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfaceSubtle,
+    },
+    telegramNoticeText: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      flex: 1,
+      color: colors.textSecondary,
     },
     telegramLocalCommand: {
       ...UiTextMetrics,

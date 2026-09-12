@@ -260,6 +260,10 @@ export interface TelegramConnectionStatus {
   owner_hint?: string;
   binding_pending: boolean;
   topics_available?: boolean;
+  topic_notice?: string;
+  topic_mappings?: number;
+  recipient_id?: string;
+  recipient_label?: string;
   last_receive_at?: string;
   last_send_at?: string;
   last_error?: string;

@@ -123,9 +123,20 @@ func (c *Client) SendMessage(ctx context.Context, token string, request SendRequ
 	if request.ReplyToMessageID != 0 {
 		body["reply_parameters"] = map[string]any{"message_id": request.ReplyToMessageID}
 	}
+	if request.ReplyMarkup != nil {
+		body["reply_markup"] = request.ReplyMarkup
+	}
 	var result Message
 	err := c.call(ctx, token, "sendMessage", body, &result)
 	return result, err
+}
+
+func (c *Client) AnswerCallbackQuery(ctx context.Context, token, callbackID, text string) error {
+	body := map[string]any{"callback_query_id": callbackID}
+	if strings.TrimSpace(text) != "" {
+		body["text"] = text
+	}
+	return c.call(ctx, token, "answerCallbackQuery", body, nil)
 }
 
 // EditMessage uses editMessageText, which has no message_thread_id parameter:

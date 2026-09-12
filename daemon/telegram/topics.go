@@ -259,6 +259,9 @@ func (m *Manager) projectSessionOutput(mapping topicMapping, projection brain.Se
 			continue
 		}
 		rendered := renderMarkdown(item.Body)
+		if mapping.MessageThreadID == 0 && strings.TrimSpace(mapping.Label) != "" {
+			rendered = renderMarkdown("[" + strings.TrimSpace(mapping.Label) + "]\n\n" + item.Body)
+		}
 		for index, chunk := range chunkRichText(rendered, maxMessageText) {
 			key := fmt.Sprintf("topic:msg:%s:%s:%d", mapping.SessionID, item.ID, index)
 			candidates = append(candidates, sessionOutputCandidate{
