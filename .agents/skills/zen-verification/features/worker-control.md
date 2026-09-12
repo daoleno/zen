@@ -10,7 +10,7 @@ Zen exposes visible Worker identities through the canonical control socket. This
 
 ## How to get to it (user POV)
 
-- Run `scripts/verify-zen-orchestration.sh --json` from the repository root.
+- Run `scripts/verify-zen-orchestration.sh --json --state-dir /absolute/path/to/existing-zen-state` from the repository root.
 - Read the `worker_list` entry and its `runtime.worker_count` value.
 
 ## Driving it with the Zen CLI

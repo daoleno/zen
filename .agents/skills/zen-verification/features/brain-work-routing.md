@@ -10,7 +10,7 @@ Brain is the canonical owner of current work, executor routing, and discoverable
 
 ## How to get to it (user POV)
 
-- Run `scripts/verify-zen-orchestration.sh --json` from the repository root.
+- Run `scripts/verify-zen-orchestration.sh --json --state-dir /absolute/path/to/existing-zen-state` from the repository root.
 - Read the `brain_context` and `brain_playbooks` entries in the report.
 
 ## Driving it with the Zen CLI
@@ -20,8 +20,8 @@ Preconditions:
 - The exact Zen daemon is running and passes `zen doctor --json`.
 - The checkout contains the source and test anchors in `features/manifest.json`.
 
-- **Context.** Run the lever. The report contains `brain_context: pass`, a host executor name, a delegated executor name, and a Worker count.
-- **Playbooks.** Read the same report. The report contains `brain_playbooks: pass` and the `brain-flows` catalog entry.
+- **Context.** Run the lever. The report contains a passing `brain_context` runtime check, a separate runtime daemon identity, a host executor name, a delegated executor name, and a Worker count.
+- **Playbooks.** Read the same report. The report contains a passing `brain_playbooks` preflight and the `brain-flows` catalog entry. This does not prove Skill loading.
 - **Privacy.** Inspect the report. It contains no raw `current`, transcript, or Work objective field.
 
 ## Gotchas

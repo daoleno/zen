@@ -1,44 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 usage() {
   cat <<'EOF'
-Usage: scripts/verify-zen-orchestration.sh [--json] [--root PATH] [--state-dir PATH]
+Usage: scripts/verify-zen-orchestration.sh --state-dir PATH [--json] [--root PATH]
+       [--zen-bin PATH] [--timeout-seconds 1-300]
 
-Check the project feature map and the live, read-only Zen control paths.
-The command creates no resources and never invokes an AI provider.
+Check the project feature map and bounded Zen control paths.
+The command does not start Zen or invoke an AI provider.
+The state directory must already exist and belong to the daemon being checked.
 EOF
 }
 
 json_output=false
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 state_dir=""
+zen_bin="${ZEN_BIN:-zen}"
+timeout_seconds=30
 
 while (($# > 0)); do
   case "$1" in
-    --help|-h)
-      usage
-      exit 0
-      ;;
-    --json)
-      json_output=true
-      shift
-      ;;
-    --root)
-      (($# >= 2)) || { echo "--root requires a path" >&2; exit 2; }
-      root="$2"
+    --help|-h) usage; exit 0 ;;
+    --json) json_output=true; shift ;;
+    --root|--state-dir|--zen-bin|--timeout-seconds)
+      (($# >= 2)) || { echo "$1 requires a value" >&2; exit 2; }
+      case "$1" in
+        --root) root="$2" ;;
+        --state-dir) state_dir="$2" ;;
+        --zen-bin) zen_bin="$2" ;;
+        --timeout-seconds) timeout_seconds="$2" ;;
+      esac
       shift 2
       ;;
-    --state-dir)
-      (($# >= 2)) || { echo "--state-dir requires a path" >&2; exit 2; }
-      state_dir="$2"
-      shift 2
-      ;;
-    *)
-      echo "unknown argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
@@ -46,137 +41,187 @@ root="$(cd "$root" 2>/dev/null && pwd)" || {
   echo "root is not an existing directory: $root" >&2
   exit 2
 }
-
-manifest="$root/.agents/skills/zen-verification/features/manifest.json"
-report_dir="${TMPDIR:-/tmp}/zen-verification-$$"
-mkdir -p "$report_dir"
-trap 'rm -rf "$report_dir"' EXIT
+if ! [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || ((timeout_seconds < 1 || timeout_seconds > 300)); then
+  echo "timeout-seconds must be an integer from 1 to 300" >&2
+  exit 2
+fi
 
 failures=()
 source_count=0
 test_count=0
 feature_count=0
 feature_json='[]'
-
-if [[ ! -f "$manifest" ]]; then
-  failures+=("project-skill-discovery: missing features/manifest.json")
-else
-  if ! jq -e '.schema_version == 1 and (.features | type == "array" and length > 0)' "$manifest" >/dev/null; then
-    failures+=("project-skill-discovery: invalid manifest schema")
-  else
-    feature_count="$(jq '.features | length' "$manifest")"
-    feature_json="$(jq '[.features[] | {id, runtime_check, source_paths:(.source_paths | length), test_paths:(.test_paths | length)}]' "$manifest")"
-    while IFS= read -r path; do
-      ((source_count += 1))
-      [[ -f "$root/$path" ]] || failures+=("source: missing $path")
-    done < <(jq -r '.features[].source_paths[]' "$manifest")
-    while IFS= read -r path; do
-      ((test_count += 1))
-      [[ -f "$root/$path" ]] || failures+=("test: missing $path")
-    done < <(jq -r '.features[].test_paths[]' "$manifest")
-  fi
-fi
-
-run_json() {
-  local name="$1"
-  shift
-  local output="$report_dir/$name.json"
-  local error="$report_dir/$name.stderr"
-  local status=0
-  "$@" >"$output" 2>"$error" || status=$?
-  if ((status != 0)); then
-    failures+=("$name: command failed with exit $status")
-    return 1
-  fi
-  if ! jq -e '.ok == true or .ready == true' "$output" >/dev/null 2>&1; then
-    failures+=("$name: command returned an unsuccessful JSON response")
-    return 1
-  fi
-  return 0
-}
-
-doctor_args=(doctor --json)
-brain_args=(brain playbooks --json)
-context_args=(brain context --json)
-worker_args=(worker list --json)
-if [[ -n "$state_dir" ]]; then
-  doctor_args+=(--state-dir "$state_dir")
-  brain_args+=(--state-dir "$state_dir")
-  context_args+=(--state-dir "$state_dir")
-  worker_args+=(--state-dir "$state_dir")
-fi
-
-run_json doctor zen "${doctor_args[@]}" || true
+manifest_valid=false
+source_check_pass=false
+skill_source_pass=false
 doctor_pass=false
-if [[ -s "$report_dir/doctor.json" ]] && jq -e '.ready == true' "$report_dir/doctor.json" >/dev/null 2>&1; then
-  doctor_pass=true
-fi
-
 brain_playbooks_pass=false
 brain_context_pass=false
 worker_list_pass=false
-if [[ "$doctor_pass" == true ]]; then
-  run_json brain_playbooks zen "${brain_args[@]}" || true
-  run_json brain_context zen "${context_args[@]}" || true
-  run_json worker_list zen "${worker_args[@]}" || true
+worker_count=0
+source_revision="unknown"
+source_dirty=false
+daemon_id=""
+runtime_addr=""
+runtime_running=false
+
+manifest="$root/.agents/skills/zen-verification/features/manifest.json"
+if [[ -f "$manifest" ]] && jq -e '
+  def text: type == "string" and length > 0;
+  def safe_path: text and (startswith("/") | not) and ((test("(^|/)\\.\\.?(/|$)") | not));
+  def path_array: type == "array" and length > 0 and all(.[]; safe_path);
+  def runtime_id: ["brain_context", "worker_list"] | index(.) != null;
+  def source_id: . == "skill_source";
+  .schema_version == 1
+  and (.features | type == "array" and length == 3)
+  and ([.features[].id] | length == (unique | length))
+  and ([.features[] | .runtime_kind] | sort) == ["runtime", "runtime", "source"]
+  and ([.features[] | select(.runtime_kind == "runtime") | .runtime_check] | sort) == ["brain_context", "worker_list"]
+  and ([.features[] | select(.runtime_kind == "source") | .runtime_check] | sort) == ["skill_source"]
+  and all(.features[];
+    type == "object"
+    and (.id | text)
+    and (.runtime_kind == "runtime" or .runtime_kind == "source")
+    and ((.runtime_kind == "runtime" and (.runtime_check | runtime_id)) or (.runtime_kind == "source" and (.runtime_check | source_id)))
+    and (.source_paths | path_array)
+    and (.test_paths | path_array)
+  )
+' "$manifest" >/dev/null 2>&1; then
+  manifest_valid=true
+  feature_count="$(jq '.features | length' "$manifest")"
+  feature_json="$(jq '[.features[] | {id, runtime_kind, runtime_check, source_paths:(.source_paths | length), test_paths:(.test_paths | length)}]' "$manifest")"
 else
-  failures+=("runtime: doctor did not authorize Brain and Worker checks")
+  failures+=("manifest: invalid schema or runtime mapping")
 fi
 
-if [[ -s "$report_dir/brain_playbooks.json" ]] && jq -e '.playbooks.playbooks | map(.name) | index("brain-flows") != null' "$report_dir/brain_playbooks.json" >/dev/null 2>&1; then
-  brain_playbooks_pass=true
-else
-  failures+=("brain_playbooks: brain-flows is not discoverable")
+if [[ "$manifest_valid" == true ]]; then
+  source_check_pass=true
+  source_paths="$(jq -r '.features[].source_paths[]' "$manifest")"
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    ((source_count += 1))
+    if [[ ! -f "$root/$path" ]]; then
+      source_check_pass=false
+      failures+=("source: missing $path")
+    fi
+  done <<< "$source_paths"
+  test_paths="$(jq -r '.features[].test_paths[]' "$manifest")"
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    ((test_count += 1))
+    if [[ ! -f "$root/$path" ]]; then
+      source_check_pass=false
+      failures+=("test: missing $path")
+    fi
+  done <<< "$test_paths"
+  if [[ -f "$root/.agents/skills/zen-verification/SKILL.md" ]] && grep -q '^name: zen-verification$' "$root/.agents/skills/zen-verification/SKILL.md"; then
+    skill_source_pass=true
+  else
+    source_check_pass=false
+    failures+=("skill_source: zen-verification frontmatter is missing")
+  fi
 fi
-if [[ -s "$report_dir/brain_context.json" ]] && jq -e '.context.host_executor.id != null and .context.delegated_executor.id != null' "$report_dir/brain_context.json" >/dev/null 2>&1; then
-  brain_context_pass=true
-else
-  failures+=("brain_context: executor contract is incomplete")
+
+if git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
+  source_revision="$(git -C "$root" rev-parse HEAD)"
+  [[ -z "$(git -C "$root" status --porcelain --untracked-files=all 2>/dev/null)" ]] || source_dirty=true
 fi
-if [[ -s "$report_dir/worker_list.json" ]] && jq -e '.workers | type == "array"' "$report_dir/worker_list.json" >/dev/null 2>&1; then
-  worker_list_pass=true
+
+if [[ -z "$state_dir" ]]; then
+  failures+=("state-dir: an explicit existing state directory is required before doctor")
+elif [[ "$state_dir" != /* ]]; then
+  failures+=("state-dir: path must be absolute")
+elif [[ -L "$state_dir" || ! -d "$state_dir" ]]; then
+  failures+=("state-dir: path must be an existing non-symlink directory")
+fi
+command -v jq >/dev/null 2>&1 || failures+=("tool: jq is required")
+command -v timeout >/dev/null 2>&1 || failures+=("tool: timeout is required")
+if [[ "$zen_bin" != */* ]]; then
+  zen_bin="$(command -v "$zen_bin" 2>/dev/null || true)"
+fi
+[[ -n "$zen_bin" && -x "$zen_bin" ]] || failures+=("tool: zen executable is unavailable")
+
+report_dir=""
+private_files=()
+declare -A output_files=()
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM HUP
+  local file
+  for file in "${private_files[@]}"; do rm -f -- "$file"; done
+  [[ -z "$report_dir" ]] || rmdir -- "$report_dir" 2>/dev/null || true
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT HUP
+trap 'exit 143' TERM
+
+if [[ -d "${TMPDIR:-/tmp}" ]]; then
+  report_dir="$(mktemp -d "${TMPDIR:-/tmp}/zen-verification.XXXXXX")"
+  chmod 700 "$report_dir"
 else
-  failures+=("worker_list: canonical Worker list is unavailable")
+  failures+=("temp: TMPDIR is unavailable")
+fi
+
+run_json() {
+  local name="$1" output error status=0
+  shift
+  [[ -n "$report_dir" ]] || { failures+=("$name: private output directory is unavailable"); return 1; }
+  output="$(mktemp "$report_dir/$name.XXXXXX")"
+  error="$(mktemp "$report_dir/$name.stderr.XXXXXX")"
+  chmod 600 "$output" "$error"
+  private_files+=("$output" "$error")
+  output_files["$name"]="$output"
+  timeout --foreground --kill-after=1s "${timeout_seconds}s" "$@" >"$output" 2>"$error" || status=$?
+  ((status == 0)) || { failures+=("$name: command failed with exit $status"); return 1; }
+  jq -e 'type == "object" and (.ok == true or .ready == true)' "$output" >/dev/null 2>&1 || {
+    failures+=("$name: command returned invalid or unsuccessful JSON")
+    return 1
+  }
+}
+
+if [[ "$state_dir" == /* && -d "$state_dir" && ! -L "$state_dir" && -x "$zen_bin" && -n "$report_dir" ]]; then
+  run_json doctor "$zen_bin" doctor --json --state-dir "$state_dir" || true
+  if [[ -s "${output_files[doctor]:-}" ]] && jq -e '.ready == true' "${output_files[doctor]}" >/dev/null 2>&1; then
+    doctor_pass=true
+    daemon_id="$(jq -r '.listen.daemon_id // ""' "${output_files[doctor]}")"
+    runtime_addr="$(jq -r '.listen.addr // ""' "${output_files[doctor]}")"
+    runtime_running="$(jq -r '.listen.zen_running == true' "${output_files[doctor]}")"
+  else
+    failures+=("doctor: readiness is false")
+  fi
+else
+  failures+=("doctor: skipped because the explicit state/tool/temp prerequisite failed")
+fi
+
+if [[ "$doctor_pass" == true ]]; then
+  run_json brain_playbooks "$zen_bin" brain playbooks --json --state-dir "$state_dir" || true
+  run_json brain_context "$zen_bin" brain context --json --state-dir "$state_dir" || true
+  run_json worker_list "$zen_bin" worker list --json --state-dir "$state_dir" || true
+  if [[ -s "${output_files[brain_playbooks]:-}" ]] && jq -e '.playbooks.playbooks | map(.name) | index("brain-flows") != null' "${output_files[brain_playbooks]}" >/dev/null 2>&1; then brain_playbooks_pass=true; else failures+=("brain_playbooks: brain-flows is not available"); fi
+  if [[ -s "${output_files[brain_context]:-}" ]] && jq -e '.context.host_executor.id != null and .context.delegated_executor.id != null' "${output_files[brain_context]}" >/dev/null 2>&1; then brain_context_pass=true; else failures+=("brain_context: executor contract is incomplete"); fi
+  if [[ -s "${output_files[worker_list]:-}" ]] && jq -e '.workers | type == "array"' "${output_files[worker_list]}" >/dev/null 2>&1; then
+    worker_list_pass=true
+    worker_count="$(jq '.workers | length' "${output_files[worker_list]}")"
+  else
+    failures+=("worker_list: canonical Worker list is unavailable")
+  fi
+else
+  failures+=("runtime: Brain and Worker checks were not run")
 fi
 
 status="pass"
-if ((${#failures[@]} > 0)); then
+if ((${#failures[@]} != 0)) || [[ "$source_check_pass" != true || "$skill_source_pass" != true ]]; then
   status="fail"
-fi
-
-worker_count=0
-host_executor=""
-delegated_executor=""
-if [[ -s "$report_dir/worker_list.json" ]]; then
-  worker_count="$(jq '.workers | length' "$report_dir/worker_list.json")"
-fi
-if [[ -s "$report_dir/brain_context.json" ]]; then
-  host_executor="$(jq -r '.context.host_executor.id // ""' "$report_dir/brain_context.json")"
-  delegated_executor="$(jq -r '.context.delegated_executor.id // ""' "$report_dir/brain_context.json")"
 fi
 
 if [[ "$json_output" == true ]]; then
   failure_json="$(printf '%s\n' "${failures[@]:-}" | jq -Rsc 'split("\n") | map(select(length > 0))')"
-  jq -n \
-    --arg status "$status" \
-    --arg root "$root" \
-    --arg host_executor "$host_executor" \
-    --arg delegated_executor "$delegated_executor" \
-    --argjson feature_count "$feature_count" \
-    --argjson feature_items "$feature_json" \
-    --argjson source_count "$source_count" \
-    --argjson test_count "$test_count" \
-    --argjson worker_count "$worker_count" \
-    --argjson doctor "$doctor_pass" \
-    --argjson brain_playbooks "$brain_playbooks_pass" \
-    --argjson brain_context "$brain_context_pass" \
-    --argjson worker_list "$worker_list_pass" \
-    --argjson failures "$failure_json" \
-    '{status:$status,root:$root,features:{count:$feature_count,source_paths:$source_count,test_paths:$test_count,items:$feature_items},runtime:{doctor:$doctor,brain_playbooks:$brain_playbooks,brain_context:$brain_context,worker_list:$worker_list,host_executor:$host_executor,delegated_executor:$delegated_executor,worker_count:$worker_count},failures:$failures}'
+  jq -n     --arg status "$status"     --arg root "$root"     --arg source_revision "$source_revision"     --arg daemon_id "$daemon_id"     --arg runtime_addr "$runtime_addr"     --argjson source_dirty "$source_dirty"     --argjson runtime_running "$runtime_running"     --argjson feature_count "$feature_count"     --argjson feature_items "$feature_json"     --argjson source_count "$source_count"     --argjson test_count "$test_count"     --argjson source_check "$source_check_pass"     --argjson skill_source "$skill_source_pass"     --argjson doctor "$doctor_pass"     --argjson brain_playbooks "$brain_playbooks_pass"     --argjson brain_context "$brain_context_pass"     --argjson worker_list "$worker_list_pass"     --argjson worker_count "$worker_count"     --argjson failures "$failure_json"     '{status:$status,source_identity:{root:$root,revision:$source_revision,dirty:$source_dirty},runtime_identity:{daemon_id:$daemon_id,address:$runtime_addr,running:$runtime_running},features:{count:$feature_count,source_paths:$source_count,test_paths:$test_count,items:$feature_items},source_checks:{manifest_and_anchors:$source_check,skill_source:$skill_source},runtime_checks:{doctor:$doctor,brain_playbooks:$brain_playbooks,brain_context:$brain_context,worker_list:$worker_list,worker_count:$worker_count},failures:$failures}'
 else
   printf 'Zen verification: %s\n' "$status"
-  printf 'Features: %s. Source anchors: %s. Test anchors: %s.\n' "$feature_count" "$source_count" "$test_count"
-  printf 'Runtime: doctor=%s brain_playbooks=%s brain_context=%s worker_list=%s workers=%s.\n' "$doctor_pass" "$brain_playbooks_pass" "$brain_context_pass" "$worker_list_pass" "$worker_count"
+  printf 'Source: revision=%s dirty=%s. Features=%s source_anchors=%s test_anchors=%s.\n' "$source_revision" "$source_dirty" "$feature_count" "$source_count" "$test_count"
+  printf 'Runtime: daemon=%s running=%s doctor=%s brain_playbooks=%s brain_context=%s worker_list=%s workers=%s.\n' "$daemon_id" "$runtime_running" "$doctor_pass" "$brain_playbooks_pass" "$brain_context_pass" "$worker_list_pass" "$worker_count"
   if ((${#failures[@]} > 0)); then
     printf 'Failures:\n'
     printf '  %s\n' "${failures[@]}"
