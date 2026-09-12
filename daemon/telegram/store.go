@@ -83,6 +83,8 @@ type topicOpRecord struct {
 	Kind            string    `json:"kind"`
 	SessionID       string    `json:"session_id,omitempty"`
 	MessageThreadID int64     `json:"message_thread_id,omitempty"`
+	ChatID          int64     `json:"chat_id,omitempty"`
+	BotID           int64     `json:"bot_id,omitempty"`
 	Label           string    `json:"label,omitempty"`
 	ThreadID        string    `json:"thread_id,omitempty"`
 	WorkID          string    `json:"work_id,omitempty"`

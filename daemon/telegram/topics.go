@@ -199,13 +199,23 @@ func (m *Manager) ensureSessionTopic(session brain.WorkerRef, now time.Time) err
 }
 
 // reviveTopicMapping restores a stale mapping when its exact Session identity
-// is user-visible again, and enqueues a one-shot revival marker.
+// is user-visible again, and enqueues a one-shot revival marker. A pending
+// deletion is cancelled because the Session reappeared before dispatch. An
+// in-flight or transport-indeterminate deletion cannot be undone: the topic may
+// already be gone, so the exact tombstone stays fail-closed instead of guessing.
 func (m *Manager) reviveTopicMapping(mapping topicMapping, now time.Time) error {
 	return m.store.mutate(func(state *durableState) error {
+		for _, op := range state.TopicOps {
+			if op.Kind == topicOpDelete && op.SessionID == mapping.SessionID &&
+				op.MessageThreadID == mapping.MessageThreadID &&
+				(op.State == "dispatching" || op.State == "ambiguous") {
+				return fmt.Errorf("Telegram topic deletion outcome is unresolved for %s", mapping.SessionID)
+			}
+		}
 		ops := state.TopicOps[:0]
 		for _, op := range state.TopicOps {
 			if op.Kind == topicOpDelete && op.SessionID == mapping.SessionID &&
-				op.MessageThreadID == mapping.MessageThreadID && op.State == "pending" {
+				op.MessageThreadID == mapping.MessageThreadID {
 				continue
 			}
 			ops = append(ops, op)
@@ -228,35 +238,48 @@ func (m *Manager) reviveTopicMapping(mapping topicMapping, now time.Time) error 
 	})
 }
 
-// Private topics cannot be closed through the Bot API. Keep a tombstone and
-// rename our exact topic; deleteForumTopic would erase the user's history.
+// retireTopicMapping keeps the exact Session/topic tombstone fail-closed and
+// enqueues the bounded deletion of the mapped Topic. deliverTopicOpOne runs the
+// delete only after re-proving the current bot/chat binding, the exact mapping
+// and strict Session absence immediately before the API call. Local projections,
+// navigation routes and the tombstone itself are removed only after the delete
+// succeeds or Telegram authoritatively reports the topic already missing. A
+// Session that reappears before dispatch cancels the queued delete.
 func (m *Manager) retireTopicMapping(mapping topicMapping, now time.Time) error {
 	return m.store.mutate(func(state *durableState) error {
+		current, found := exactTopicMapping(*state, mapping.SessionID, mapping.MessageThreadID)
+		if !found {
+			return nil
+		}
+		// A queued rename to a Closed label is obsolete once the exact topic is
+		// being deleted; only ops for this exact mapping are cancelled.
 		for i := range state.TopicOps {
-			if state.TopicOps[i].SessionID == mapping.SessionID && state.TopicOps[i].Kind == topicOpDelete && state.TopicOps[i].State == "pending" {
-				state.TopicOps[i].State = "cancelled"
+			op := &state.TopicOps[i]
+			if op.SessionID == current.SessionID && op.MessageThreadID == current.MessageThreadID && op.Kind == topicOpRename {
+				op.State = "cancelled"
 			}
 		}
 		rows := state.Outbox[:0]
 		for _, row := range state.Outbox {
-			if row.State == "pending" && row.MessageThreadID == mapping.MessageThreadID && row.TopicKey != "" {
+			if row.State == "pending" && row.MessageThreadID == current.MessageThreadID && row.TopicKey != "" {
 				continue
 			}
 			rows = append(rows, row)
 		}
 		state.Outbox = rows
-		label := topicLabel(brain.WorkerRef{Name: "Closed - " + strings.TrimPrefix(mapping.Label, "Closed - ")})
-		opID := fmt.Sprintf("topic:retire:%s:%d", mapping.SessionID, mapping.MessageThreadID)
-		if !enqueueTopicOp(state, topicOpRecord{ID: opID, Kind: topicOpRename, SessionID: mapping.SessionID,
-			MessageThreadID: mapping.MessageThreadID, Label: label, CreatedAt: now}) {
-			return fmt.Errorf("Telegram topic operation queue is full")
+		if err := enqueueTopicDeleteOp(state, topicOpRecord{
+			ID:   fmt.Sprintf("topic:delete:%s:%d", current.SessionID, current.MessageThreadID),
+			Kind: topicOpDelete, SessionID: current.SessionID, MessageThreadID: current.MessageThreadID,
+			ChatID: state.ChatID, BotID: state.BotID, Label: current.Label, CreatedAt: now,
+		}); err != nil {
+			return err
 		}
 		for index := range state.Topics {
-			current := &state.Topics[index]
-			if current.SessionID == mapping.SessionID && current.MessageThreadID == mapping.MessageThreadID {
-				if current.State != topicStateStale {
-					current.State = topicStateStale
-					current.UpdatedAt = now
+			candidate := &state.Topics[index]
+			if candidate.SessionID == current.SessionID && candidate.MessageThreadID == current.MessageThreadID {
+				if candidate.State != topicStateStale {
+					candidate.State = topicStateStale
+					candidate.UpdatedAt = now
 				}
 				break
 			}
@@ -774,6 +797,38 @@ func enqueueTopicOp(state *durableState, op topicOpRecord) bool {
 	return true
 }
 
+// enqueueTopicDeleteOp keeps at most one delete op per exact Session/topic.
+// Pending, in-flight and ambiguous work is left untouched; a previously
+// cancelled attempt (the Session reappeared and is absent again) is queued
+// again under the same identity.
+func enqueueTopicDeleteOp(state *durableState, op topicOpRecord) error {
+	for i := range state.TopicOps {
+		existing := &state.TopicOps[i]
+		if existing.ID != op.ID {
+			continue
+		}
+		switch existing.State {
+		case "pending", "dispatching", "ambiguous", "failed", "sent":
+			return nil
+		default: // cancelled
+			existing.Kind = op.Kind
+			existing.SessionID = op.SessionID
+			existing.MessageThreadID = op.MessageThreadID
+			existing.ChatID = op.ChatID
+			existing.BotID = op.BotID
+			existing.Label = op.Label
+			existing.State = "pending"
+			existing.AttemptAt = time.Time{}
+			existing.Attempts = 0
+			return nil
+		}
+	}
+	if !enqueueTopicOp(state, op) {
+		return fmt.Errorf("Telegram topic operation queue is full")
+	}
+	return nil
+}
+
 func compactTopicOps(state *durableState) {
 	if len(state.TopicOps) < maxTopicOps {
 		return
@@ -829,10 +884,12 @@ func (m *Manager) deliverTopicOps(ctx context.Context, token string, limit int) 
 }
 
 // deliverTopicOpOne performs one durable Topic operation. A definite create
-// rejection returns to pending with capped backoff (safe: no Topic exists);
-// rename/close/reopen/delete failures are terminal and opportunistic; any
-// transport-indeterminate outcome becomes durable ambiguous and is never
-// retried automatically.
+// rejection returns to pending with capped backoff (safe: no Topic exists). A
+// delete is dispatched only after authorizeTopicDelete re-proves the exact
+// bot/chat mapping and confirmed Session absence; an authoritative
+// already-missing response converges local state as a success. Other definite
+// rejections are terminal and opportunistic; any transport-indeterminate
+// outcome becomes durable ambiguous and is never retried automatically.
 func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
 	m.outboundMu.Lock()
 	defer m.outboundMu.Unlock()
@@ -866,15 +923,17 @@ func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
 			})
 		}
 	}
-	if op.Kind == topicOpDelete || op.Kind == topicOpClose || op.Kind == topicOpReopen {
-		return m.store.mutate(func(current *durableState) error {
-			for i := range current.TopicOps {
-				if current.TopicOps[i].ID == op.ID {
-					current.TopicOps[i].State = "cancelled"
-				}
-			}
-			return nil
-		})
+	if op.Kind == topicOpClose || op.Kind == topicOpReopen {
+		return m.cancelTopicOp(op.ID)
+	}
+	if op.Kind == topicOpDelete {
+		allowed, err := m.authorizeTopicDelete(state, op)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return m.cancelTopicOp(op.ID)
+		}
 	}
 	if err := m.store.mutate(func(current *durableState) error {
 		for i := range current.TopicOps {
@@ -945,6 +1004,14 @@ func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
 	}
 	var apiErr *APIError
 	definite := errors.As(err, &apiErr)
+	if op.Kind == topicOpDelete && topicAlreadyMissing(err) {
+		// Telegram authoritatively reports the exact mapped topic gone: converge
+		// local state exactly as a successful delete would.
+		return m.store.mutate(func(current *durableState) error {
+			removeDeletedTopicState(current, op)
+			return nil
+		})
+	}
 	switch {
 	case definite && !apiErr.Retryable && op.Kind == topicOpCreate:
 		delay := retryDelay(err)
@@ -995,6 +1062,80 @@ func (m *Manager) deliverTopicOpOne(ctx context.Context, token string) error {
 	}
 }
 
+func (m *Manager) cancelTopicOp(id string) error {
+	return m.store.mutate(func(current *durableState) error {
+		for i := range current.TopicOps {
+			if current.TopicOps[i].ID == id && current.TopicOps[i].State == "pending" {
+				current.TopicOps[i].State = "cancelled"
+			}
+		}
+		return nil
+	})
+}
+
+func exactTopicMapping(state durableState, sessionID string, threadID int64) (topicMapping, bool) {
+	for _, mapping := range state.Topics {
+		if mapping.SessionID == sessionID && mapping.MessageThreadID == threadID {
+			return mapping, true
+		}
+	}
+	return topicMapping{}, false
+}
+
+// authorizeTopicDelete re-proves, immediately before dispatch, that a queued
+// deletion still targets exactly the current bot/chat mapping and that the
+// canonical Session projection confirms the Session is absent. A false result
+// cancels the op (Session present/revived, wrong binding, mapping replaced).
+// An error means absence is unknown: keep the op queued and do not delete.
+func (m *Manager) authorizeTopicDelete(state durableState, op topicOpRecord) (bool, error) {
+	if op.SessionID == "" || op.MessageThreadID == 0 || op.ChatID == 0 || op.BotID == 0 {
+		return false, nil // unbound legacy op: never delete on unproven provenance
+	}
+	if !state.Enabled || state.ChatID != op.ChatID || state.BotID != op.BotID {
+		return false, nil
+	}
+	mapping, found := exactTopicMapping(state, op.SessionID, op.MessageThreadID)
+	if !found || mapping.ChatID != state.ChatID || mapping.State != topicStateStale {
+		return false, nil
+	}
+	if m.brain == nil {
+		return false, fmt.Errorf("Session absence cannot be confirmed")
+	}
+	projection, err := m.brain.SessionProjection(op.SessionID)
+	if err != nil {
+		return false, err
+	}
+	if projection.Present {
+		return false, nil
+	}
+	if !projection.AbsenceConfirmed {
+		return false, fmt.Errorf("Session absence is unconfirmed")
+	}
+	return true, nil
+}
+
+// topicAlreadyMissing reports a definite Telegram rejection that proves the
+// exact topic no longer exists. The Bot API has no topic lookup method, so a
+// curated 400 description is the only authoritative already-missing signal;
+// rights, parameter and retryable errors never qualify.
+func topicAlreadyMissing(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Retryable || apiErr.Code != 400 {
+		return false
+	}
+	description := strings.ToLower(apiErr.description)
+	for _, marker := range []string{"topic_id_invalid", "topic deleted", "message thread not found", "topic not found"} {
+		if strings.Contains(description, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeDeletedTopicState removes the exact mapping, its operations and all
+// local navigation/projection metadata only after the mapped topic was either
+// deleted or authoritatively reported already missing. Nothing here touches
+// Brain topics or other Sessions.
 func removeDeletedTopicState(state *durableState, op topicOpRecord) {
 	topics := state.Topics[:0]
 	for _, mapping := range state.Topics {
@@ -1014,16 +1155,43 @@ func removeDeletedTopicState(state *durableState, op topicOpRecord) {
 
 	outbox := state.Outbox[:0]
 	for _, row := range state.Outbox {
-		if row.MessageThreadID != op.MessageThreadID {
-			outbox = append(outbox, row)
+		if row.MessageThreadID == op.MessageThreadID {
+			continue
 		}
+		if row.SessionID == op.SessionID && row.MessageThreadID == 0 && strings.HasPrefix(row.TopicKey, "private:msg:") {
+			continue
+		}
+		outbox = append(outbox, row)
 	}
 	state.Outbox = outbox
 
+	if state.FallbackSessionID == op.SessionID {
+		state.FallbackSessionID = ""
+		state.FallbackStartedAt = time.Time{}
+	}
+	choices := state.SessionChoices[:0]
+	for _, sessionID := range state.SessionChoices {
+		if sessionID != op.SessionID {
+			choices = append(choices, sessionID)
+		}
+	}
+	state.SessionChoices = choices
+	for key, sessionID := range state.CallbackRoutes {
+		if sessionID == op.SessionID {
+			delete(state.CallbackRoutes, key)
+		}
+	}
+	for messageID, sessionID := range state.ReplySessions {
+		if sessionID == op.SessionID {
+			delete(state.ReplySessions, messageID)
+		}
+	}
+
 	messagePrefix := "topic:msg:" + op.SessionID + ":"
 	markerPrefix := "topic:mark:" + op.SessionID + ":"
+	lifePrefix := "topic:life:" + op.SessionID
 	for key := range state.TopicProjection {
-		if strings.HasPrefix(key, messagePrefix) || strings.HasPrefix(key, markerPrefix) {
+		if strings.HasPrefix(key, messagePrefix) || strings.HasPrefix(key, markerPrefix) || strings.HasPrefix(key, lifePrefix) {
 			delete(state.TopicProjection, key)
 		}
 	}

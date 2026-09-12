@@ -297,23 +297,35 @@ func TestRealBrainTelegramSessionRoutingPreservesWorkAuthority(t *testing.T) {
 	if err := m.projectSessionTopics(t.Context(), "fixture-token"); err != nil {
 		t.Fatal(err)
 	}
+	// Before the delete dispatches, the stale route fails closed and retains
+	// the exact tombstone.
+	if err := m.handleUpdate(t.Context(), "fixture-token", topicUpdate(6, a, "stale topic")); err != nil {
+		t.Fatal(err)
+	}
+	if m.store.snapshot().Processed["6"].Disposition != "topic_stale" {
+		t.Fatal("unconfirmed removal did not fail closed")
+	}
 	for m.hasDeliverableTopicOp() {
 		if err := m.deliverTopicOpOne(t.Context(), "fixture-token"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := m.handleUpdate(t.Context(), "fixture-token", topicUpdate(6, a, "stale topic")); err != nil {
+	if len(api.deletedTopics) != 1 || api.deletedTopics[0].MessageThreadID != a {
+		t.Fatalf("exact mapped topic not deleted: %+v", api.deletedTopics)
+	}
+	// The removed topic cannot route to another recipient and the mapping is
+	// gone locally, not merely renamed.
+	if err := m.handleUpdate(t.Context(), "fixture-token", topicUpdate(7, a, "removed topic")); err != nil {
 		t.Fatal(err)
 	}
-	if m.store.snapshot().Processed["6"].Disposition != "topic_stale" || len(api.deletedTopics) != 0 {
-		t.Fatal("stale route did not retain history")
+	if m.store.snapshot().Processed["7"].Disposition != "topic_unknown" {
+		t.Fatal("removed topic routed after deletion")
 	}
 	reopened, err := NewManagerWithOptions(root, brain.NewService(s, p, nil), Options{API: api})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mapping, ok := topicMappingByThread(reopened.store.snapshot(), a)
-	if !ok || mapping.SessionID != "session-a" || mapping.State != topicStateStale {
-		t.Fatal("restart lost exact tombstone")
+	if _, ok := topicMappingByThread(reopened.store.snapshot(), a); ok {
+		t.Fatal("restart resurrected deleted topic mapping")
 	}
 }

@@ -732,7 +732,7 @@ func TestSessionTopicStaleMappingSurvivesRestartAndFailsClosed(t *testing.T) {
 	}
 }
 
-func TestReapedSessionPreservesHistoryAndTombstonesExactTopic(t *testing.T) {
+func TestReapedSessionDeletesExactMappedTopicOnce(t *testing.T) {
 	manager, owner, api, _ := topicFixture(t)
 	createTopicFor(t, manager)
 	threadID := manager.store.snapshot().Topics[0].MessageThreadID
@@ -743,7 +743,14 @@ func TestReapedSessionPreservesHistoryAndTombstonesExactTopic(t *testing.T) {
 		})
 		state.TopicProjection["topic:msg:sess-a:event-1:0"] = "digest"
 		state.TopicProjection["topic:mark:sess-a:turn-1:done"] = "digest"
+		state.TopicProjection["topic:life:sess-a:revive"] = "digest"
 		state.TopicMessages["topic:msg:sess-a:event-1:0"] = 99
+		state.FallbackSessionID = "sess-a"
+		state.SessionChoices = []string{"sess-a", "sess-b"}
+		state.CallbackRoutes = map[string]string{"route-a": "sess-a", "route-b": "sess-b"}
+		state.ReplySessions = map[int64]string{42: "sess-a", 43: "sess-b"}
+		state.BrainTopicID = 76315
+		state.BrainTopics = []int64{76315, 76437}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -761,29 +768,82 @@ func TestReapedSessionPreservesHistoryAndTombstonesExactTopic(t *testing.T) {
 	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.deletedTopics) != 0 || len(api.editedTopics) != 1 || api.editedTopics[0].MessageThreadID != threadID {
+	if len(api.deletedTopics) != 1 || api.deletedTopics[0].ChatID != 10 || api.deletedTopics[0].MessageThreadID != threadID {
 		t.Fatalf("delete operations=%+v", api.deletedTopics)
 	}
+	if len(api.editedTopics) != 0 {
+		t.Fatalf("obsolete Closed rename issued: %+v", api.editedTopics)
+	}
 	state = manager.store.snapshot()
-	if len(state.Topics) != 1 || state.Topics[0].State != topicStateStale || state.Topics[0].SessionID != "sess-a" {
-		t.Fatalf("topic lost its exact tombstone: topics=%+v", state.Topics)
+	if len(state.Topics) != 0 {
+		t.Fatalf("deleted mapping retained: %+v", state.Topics)
+	}
+	for _, op := range state.TopicOps {
+		if op.SessionID == "sess-a" {
+			t.Fatalf("deleted Session op retained: %+v", op)
+		}
 	}
 	for _, row := range state.Outbox {
 		if row.MessageThreadID == threadID {
 			t.Fatalf("deleted topic retained outbox row: %+v", row)
 		}
 	}
-	if len(state.TopicProjection) != 2 || state.TopicMessages["topic:msg:sess-a:event-1:0"] != 99 {
-		t.Fatalf("topic history checkpoints lost: projection=%+v messages=%+v", state.TopicProjection, state.TopicMessages)
+	for key := range state.TopicProjection {
+		if strings.Contains(key, "sess-a") {
+			t.Fatalf("topic projection retained %q", key)
+		}
+	}
+	if state.TopicMessages["topic:msg:sess-a:event-1:0"] != 0 {
+		t.Fatalf("topic message checkpoints retained: %+v", state.TopicMessages)
+	}
+	if state.FallbackSessionID != "" || !state.FallbackStartedAt.IsZero() {
+		t.Fatalf("fallback retained deleted Session: %q", state.FallbackSessionID)
+	}
+	if len(state.SessionChoices) != 1 || state.SessionChoices[0] != "sess-b" {
+		t.Fatalf("chooser retained deleted Session: %+v", state.SessionChoices)
+	}
+	if len(state.CallbackRoutes) != 1 || state.CallbackRoutes["route-b"] != "sess-b" {
+		t.Fatalf("callback routes retained deleted Session: %+v", state.CallbackRoutes)
+	}
+	if len(state.ReplySessions) != 1 || state.ReplySessions[43] != "sess-b" {
+		t.Fatalf("reply routes retained deleted Session: %+v", state.ReplySessions)
+	}
+	if state.BrainTopicID != 76315 || len(state.BrainTopics) != 2 {
+		t.Fatalf("Brain topics changed: id=%d topics=%v", state.BrainTopicID, state.BrainTopics)
+	}
+
+	// A repeat reconcile must not delete again or regenerate the removed topic.
+	creates := len(api.createdTopics)
+	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deletedTopics) != 1 || len(api.createdTopics) != creates {
+		t.Fatalf("deleted topic regenerated: deletes=%d creates=%d", len(api.deletedTopics), len(api.createdTopics))
+	}
+	// Input in the removed topic cannot reach another recipient.
+	if err := manager.handleUpdate(context.Background(), "token", topicUpdate(45, threadID, "anyone?")); err != nil {
+		t.Fatal(err)
+	}
+	if state := manager.store.snapshot(); state.Processed["45"].Disposition != "topic_unknown" {
+		t.Fatalf("removed topic input disposition=%+v", state.Processed["45"])
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if len(owner.sessionBodies) != 0 {
+		t.Fatalf("removed topic admitted input: %v", owner.sessionBodies)
 	}
 }
 
-func TestHistoricalStaleMappingGetsNonDestructiveRetirement(t *testing.T) {
+func TestHistoricalClosedMappingDeletedAfterAbsenceConfirmed(t *testing.T) {
 	manager, owner, api, _ := topicFixture(t)
 	createTopicFor(t, manager)
 	threadID := manager.store.snapshot().Topics[0].MessageThreadID
 	if err := manager.store.mutate(func(state *durableState) error {
 		state.Topics[0].State = topicStateStale
+		state.Topics[0].Label = "Closed - Session A"
 		ops := state.TopicOps[:0]
 		for _, op := range state.TopicOps {
 			if op.SessionID != "sess-a" || op.Kind == topicOpCreate {
@@ -795,30 +855,48 @@ func TestHistoricalStaleMappingGetsNonDestructiveRetirement(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	owner.sessions = nil
-	owner.projections = map[string]brain.SessionProjection{"sess-a": {SessionID: "sess-a", Present: false}}
 
+	// The exact Session is still user-visible: the old Closed mapping is not
+	// deleted even though its label says Closed.
+	owner.sessions = []brain.WorkerRef{{ID: "sess-a", Name: "Session A", Delegated: true, Status: "running"}}
+	owner.projections["sess-a"] = brain.SessionProjection{SessionID: "sess-a", Present: true, Label: "Session A", Status: "running"}
 	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
 		t.Fatal(err)
-	}
-	state := manager.store.snapshot()
-	foundDelete := false
-	for _, op := range state.TopicOps {
-		if op.Kind == topicOpRename && op.SessionID == "sess-a" && op.MessageThreadID == threadID && op.State == "pending" {
-			foundDelete = true
-		}
-	}
-	if !foundDelete {
-		t.Fatalf("historical stale mapping did not get a delete operation: %+v", state.TopicOps)
 	}
 	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.deletedTopics) != 0 || len(api.editedTopics) != 1 || api.editedTopics[0].MessageThreadID != threadID {
+	if len(api.deletedTopics) != 0 {
+		t.Fatalf("present Session deleted: %+v", api.deletedTopics)
+	}
+
+	// The exact owner is now confirmed absent: the historical mapping gets one
+	// bounded delete and no Closed rename.
+	owner.sessions = nil
+	owner.projections = map[string]brain.SessionProjection{"sess-a": {SessionID: "sess-a", Present: false}}
+	if err := manager.projectSessionTopics(context.Background(), "token"); err != nil {
+		t.Fatal(err)
+	}
+	foundDelete := false
+	for _, op := range manager.store.snapshot().TopicOps {
+		if op.Kind == topicOpDelete && op.SessionID == "sess-a" && op.MessageThreadID == threadID && op.State == "pending" {
+			foundDelete = true
+		}
+	}
+	if !foundDelete {
+		t.Fatalf("historical stale mapping did not get a delete operation: %+v", manager.store.snapshot().TopicOps)
+	}
+	if err := manager.deliverTopicOps(context.Background(), "token", 8); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.deletedTopics) != 1 || api.deletedTopics[0].MessageThreadID != threadID {
 		t.Fatalf("delete operations=%+v", api.deletedTopics)
 	}
-	if state := manager.store.snapshot(); len(state.Topics) != 1 || state.Topics[0].State != topicStateStale {
-		t.Fatalf("historical topic tombstone lost: %+v", state.Topics)
+	if len(api.editedTopics) != 0 {
+		t.Fatalf("Closed rename issued: %+v", api.editedTopics)
+	}
+	if state := manager.store.snapshot(); len(state.Topics) != 0 {
+		t.Fatalf("historical topic tombstone retained: %+v", state.Topics)
 	}
 }
 

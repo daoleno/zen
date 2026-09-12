@@ -33,6 +33,8 @@ type fakeBrain struct {
 	sessionDisposition    brain.ExternalInputDisposition
 	sessionDispositionErr error
 	sessionInputErr       error
+	projectionErrors      map[string]error
+	absenceUnconfirmed    map[string]bool
 }
 
 func (f *fakeBrain) SubmitExternalUserInput(receipt, body string) (brain.ExternalInputDisposition, error) {
@@ -86,11 +88,14 @@ func (f *fakeBrain) SubmitExternalSessionInput(sessionID, receipt, body string) 
 func (f *fakeBrain) SessionProjection(sessionID string) (brain.SessionProjection, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.projectionErrors[sessionID]; err != nil {
+		return brain.SessionProjection{SessionID: sessionID}, err
+	}
 	if f.projections == nil {
 		return brain.SessionProjection{SessionID: sessionID, Present: true, Label: sessionID}, nil
 	}
 	if projection, ok := f.projections[sessionID]; ok {
-		if !projection.Present {
+		if !projection.Present && !f.absenceUnconfirmed[sessionID] {
 			projection.AbsenceConfirmed = true
 		}
 		return projection, nil

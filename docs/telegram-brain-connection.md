@@ -95,24 +95,43 @@ do not enter the Telegram inventory.
 - Unavailable, unmapped or stale destinations do not send to Brain, create a
   replacement worker, or infer success.
 
-## Non-Destructive Reconciliation
+## Absence-Confirmed Topic Deletion
 
 A Session missing from one watcher snapshot is not proof of death.
 `SessionProjection.AbsenceConfirmed` uses the watcher's strict
 `ResolveDelegatedAbsence` check. Only confirmed absence retires a topic.
 
-Retirement retains the exact Session/topic tombstone and delivery checkpoints,
-cancels pending projected updates, and renames the Zen-owned topic **Closed**.
-It never deletes Telegram history or kills local tasks. Pending legacy
-delete/close/reopen operations are cancelled by the private-chat adapter.
-A still-live exact Session may become active again; it is never replaced by
-a name match or by a new ID.
+Retirement keeps the exact Session/topic tombstone fail-closed, cancels pending
+projected updates, and enqueues one bounded durable `deleteForumTopic`
+operation. Immediately before dispatch the adapter re-proves the current
+bot/chat binding, the exact Session/topic mapping and confirmed absence from the
+canonical projection. A Session that is present, running, completed-but-present,
+revived or not strictly confirmed absent is never deleted. A Session that
+reappears before dispatch cancels the queued delete.
 
-The Bot API documents `closeForumTopic` and `reopenForumTopic` for forum
-supergroups, not private chats. `deleteForumTopic` erases topic history.
-A Closed label and tombstone are therefore the private-chat counterpart.
-The Bot API has no topic enumeration method. A send failure is not enough to
-prove deletion or authorize automatic recreation; failures remain explicit.
+A successful delete, or an authoritative Telegram already-missing response,
+removes the local mapping, projected checkpoints, Session chooser entries,
+callback routes, reply destinations and fallback recipient in the same durable
+step. The Topic then disappears from Telegram and no replacement is created
+while the Session is absent. Deletion erases the Topic's Telegram messages and
+history; this is the chosen policy for removed Sessions, so there is no
+per-deletion confirmation popup.
+
+Failure handling is truthful and bounded: definite flood waits return to
+pending with the existing `retry_after`/backoff schedule; a
+transport-indeterminate outcome becomes durable ambiguous and is never replayed
+automatically; a definite rejection keeps the exact tombstone and degrades the
+connection status. Local state is never removed on an unresolved outcome. The
+Bot API documents `closeForumTopic` and `reopenForumTopic` for forum
+supergroups, not private chats, so those operations stay cancelled, and legacy
+delete ops without an exact bot/chat/mapping binding are cancelled too.
+
+Ownership is exact Session ID, bot ID, chat ID and message thread ID. Names and
+the `Closed` label never authorize deletion. Brain topics, user-created Brain
+aliases, manual/nondelegated Sessions and unknown or unmapped topics are never
+deleted by this path. The Bot API has no topic enumeration method, so a send
+failure is not enough to prove deletion or authorize automatic recreation;
+failures remain explicit.
 
 ## Durable Delivery
 
@@ -296,7 +315,9 @@ capabilities. Pinning a message does not pin its topic in the left topic list.
 To keep Brain high in the topic list, open the bot's topic list, long-press
 **Brain** on mobile (right-click on Desktop), and choose **Pin** when that
 client exposes it. All remains client-owned. No Threaded-mode/BotFather change,
-new bot, group conversion, renamed substitute for All or topic deletion is used.
+new bot, group conversion or renamed substitute for All is used. Removed
+Sessions delete only their exact absence-confirmed Session topics under the
+policy above; Brain and user-created topics are excluded.
 
 Android and iOS share the channel behavior and Settings contract. Actual
 signed-in client UI proof requires a user-owned Telegram client session; an
@@ -310,6 +331,6 @@ API receipt or bundle export is not a client screenshot.
 - [Bot API](https://core.telegram.org/bots/api), especially getMe, Message,
   CallbackQuery, getFile, Sticker, MessageReactionUpdated, Update,
   setMessageReaction, pinChatMessage, sendMessage, createForumTopic,
-  editForumTopic and closeForumTopic
+  editForumTopic, closeForumTopic and deleteForumTopic
 - [Bot FAQ and flood control](https://core.telegram.org/bots/faq)
 - [Telegram Privacy Policy](https://telegram.org/privacy)

@@ -102,9 +102,17 @@ func (a *boundedConversationAPI) ReopenForumTopic(context.Context, string, Forum
 	a.t.Fatal("private reopen prohibited")
 	return fmt.Errorf("reopen prohibited")
 }
-func (a *boundedConversationAPI) DeleteForumTopic(context.Context, string, ForumTopicIDRequest) error {
-	a.t.Fatal("history deletion prohibited")
-	return fmt.Errorf("delete prohibited")
+func (a *boundedConversationAPI) DeleteForumTopic(ctx context.Context, token string, req ForumTopicIDRequest) error {
+	if !a.topics[req.MessageThreadID] {
+		a.t.Fatal("live QA may only delete its own topics")
+	}
+	a.mutation(req.ChatID, req.MessageThreadID)
+	err := a.Client.DeleteForumTopic(ctx, a.token, req)
+	if err == nil {
+		delete(a.topics, req.MessageThreadID)
+		a.t.Logf("Removed QA topic=%d with its contained messages", req.MessageThreadID)
+	}
+	return err
 }
 
 func TestLiveTelegramConversationWithIsolatedBrainStore(t *testing.T) {
@@ -281,9 +289,14 @@ func TestLiveTelegramConversationWithIsolatedBrainStore(t *testing.T) {
 	}
 	input(11, sessionTopic, "Zen QA only: stale destination must reject")
 	flush()
-	mapping, found := topicMappingByThread(m.store.snapshot(), sessionTopic)
-	if !found || mapping.State != topicStateStale || m.store.snapshot().Processed["11"].Disposition != "topic_stale" {
-		t.Fatal("exact Session tombstone missing")
+	if _, found := topicMappingByThread(m.store.snapshot(), sessionTopic); found {
+		t.Fatal("removed Session QA topic mapping retained")
+	}
+	if _, found := api.topics[sessionTopic]; found {
+		t.Fatal("removed Session QA topic still exists")
+	}
+	if m.store.snapshot().Processed["11"].Disposition != "topic_stale" {
+		t.Fatal("stale route disposition changed")
 	}
 	if err := api.EditForumTopic(t.Context(), token, EditForumTopicRequest{ChatID: before.ChatID, MessageThreadID: primary, Name: "Closed - Zen QA Brain " + stamp}); err != nil {
 		t.Fatal(err)
@@ -292,5 +305,5 @@ func TestLiveTelegramConversationWithIsolatedBrainStore(t *testing.T) {
 	if before.BotID != after.BotID || before.OwnerID != after.OwnerID || before.BrainTopicID != after.BrainTopicID || !reflect.DeepEqual(before.BrainTopics, after.BrainTopics) || !before.DeliveryStartedAt.Equal(after.DeliveryStartedAt) {
 		t.Fatal("production identity or delivery boundary changed during fixture QA")
 	}
-	t.Logf("PASS real Brain Store + real Bot API output: QA Brain=%d Session=%d sends=%d mutations=%d. Inbound/callback/provider are fixtures; production Brain topic=%d unchanged. No polling, model execution, deletion or live state writes.", primary, sessionTopic, len(api.sent), api.count, before.BrainTopicID)
+	t.Logf("PASS real Brain Store + real Bot API output: QA Brain=%d removed Session QA topic=%d sends=%d mutations=%d. Inbound/callback/provider are fixtures; production Brain topic=%d unchanged. The exact absence-confirmed Session topic and its contained messages were deleted; no polling, model execution or production state writes.", primary, sessionTopic, len(api.sent), api.count, before.BrainTopicID)
 }
