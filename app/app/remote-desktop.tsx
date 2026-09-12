@@ -67,7 +67,7 @@ function DesktopSession() {
   const moonlightAttempt = useRef(0);
   // Set only after this device/identity/host completed the authenticated
   // enrollment; the pair-only pass never reaches host.launchOrResume.
-  const moonlightEnrolled = useRef(false);
+  const moonlightReceipt = useRef("");
   const moonlightEnrollment = useRef<AbortController | null>(null);
   const [moonlightPin, setMoonlightPin] = useState("");
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
@@ -175,7 +175,7 @@ function DesktopSession() {
   const stop = useCallback((keepReconnect = false) => {
     moonlightEnrollment.current?.abort();
     moonlightEnrollment.current = null;
-    if (!keepReconnect) moonlightEnrolled.current = false;
+    if (!keepReconnect) moonlightReceipt.current = "";
     const session = moonlightSession.current;
     if (session && !session.ended) {
       void moonlight.current?.disconnect(session.generation).catch(() => undefined);
@@ -246,7 +246,7 @@ function DesktopSession() {
       const server = currentServer;
       pending.current?.abort(); pending.current = new AbortController();
       const next = await prepareDesktopConnection(server, inputGeneration, pending.current.signal, {
-        moonlightEnrolled: moonlightEnrolled.current,
+        moonlightEnrolled: moonlightReceipt.current,
       });
       if (epoch === generation.current && isCurrentServer(server.id)) {
         const parsed = JSON.parse(next) as { transport?: string; moonlight?: MoonlightHostBootstrap };
@@ -403,17 +403,17 @@ function DesktopSession() {
               setStatus({ state: "requesting" });
               const activeServer = currentServer;
               if (!activeServer) return;
-              const identityKey = (JSON.parse(connection) as { identityKey?: string }).identityKey ?? "";
+              const moonlightDoc = JSON.parse(connection) as MoonlightHostBootstrap & { attemptId?: number };
               moonlightEnrollment.current?.abort();
               const controller = new AbortController();
               moonlightEnrollment.current = controller;
               void (async () => {
                 try {
-                  const enrollment = await enrollMoonlightConnection(activeServer, identityKey, controller.signal);
+                  const enrollment = await enrollMoonlightConnection(activeServer, moonlightDoc, controller.signal);
                   if (controller.signal.aborted || moonlightKey.current !== connection) return;
                   moonlightEnrollment.current = null;
-                  if (enrollment === "verified") {
-                    moonlightEnrolled.current = true;
+                  if (enrollment.state === "verified") {
+                    moonlightReceipt.current = enrollment.handle.receipt;
                     stop(true);
                     void connect(false);
                   } else {

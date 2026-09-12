@@ -81,6 +81,7 @@ mock.module(root + "/modules/zen-link-transport/src/index.ts", () => ({
     return { port: 43210 };
   },
 }));
+mock.module("expo-crypto", () => ({ getRandomBytes: (length: number) => new Uint8Array(length).fill(7) }));
 mock.module("expo-modules-core", () => ({
   requireNativeModule: () => ({
     moonlightEnrollmentIdentity: async () => ({ certPem: "test-cert-pem", fingerprint: "test-fingerprint" }),
@@ -96,10 +97,16 @@ mock.module("expo/fetch", () => ({
       const parsed = typeof init.body === "string" ? JSON.parse(init.body) : {};
       controlCalls.push({ path, body: parsed });
       if (path === "/desktop/moonlight/enroll/begin") {
-        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({ nonce: "b".repeat(64) })).body };
+        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({
+          nonce: "b".repeat(64), daemon_id: daemonId, assertion_timestamp: timestamp, assertion_nonce: nonce,
+          assertion_signature: assertion("zen-desktop-capability"),
+        })).body };
       }
       if (path === "/desktop/moonlight/enroll/complete") {
-        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({ enrolled: true, uuid: "host-uuid" })).body };
+        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({
+          enrolled: true, uuid: "host-uuid", daemon_id: daemonId, assertion_timestamp: timestamp,
+          assertion_nonce: nonce, assertion_signature: assertion("zen-desktop-capability"),
+        })).body };
       }
       return { ok: false, status: 404, url, redirected: false, body: new Response(JSON.stringify({ reason: "not_found" })).body };
     }
@@ -125,8 +132,8 @@ assert.equal(legacyPlan.transport, "pinned-link");
 assert.equal(tunnelCalls, 1);
 
 scenario = "moonlight";
-const enrollment = await enrollMoonlightConnection(server as never, "device-1");
-assert.equal(enrollment, "verified");
+const enrollment = await enrollMoonlightConnection(server as never, { ...moonlight } as never);
+assert.equal(enrollment.state, "verified");
 assert.deepEqual(controlCalls.map((call) => call.path), [
   "/desktop/moonlight/enroll/begin",
   "/desktop/moonlight/enroll/complete",

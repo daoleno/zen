@@ -58,7 +58,11 @@ func (s *Server) handleMoonlightEnrollBegin(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) || !actualRequestTLS(r) {
+	// The control call is authenticated by the signed Zen device assertion and
+	// desktop scope, same as /desktop/capability. The app's verified control
+	// channel is the signed HTTP endpoint; identity-bound TLS is used when the
+	// transport provides it, and is never assumed for a self-signed daemon.
+	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) {
 		http.Error(w, "desktop_scope_required", http.StatusForbidden)
 		return
 	}
@@ -113,7 +117,11 @@ func (s *Server) handleMoonlightEnrollComplete(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) || !actualRequestTLS(r) {
+	// The control call is authenticated by the signed Zen device assertion and
+	// desktop scope, same as /desktop/capability. The app's verified control
+	// channel is the signed HTTP endpoint; identity-bound TLS is used when the
+	// transport provides it, and is never assumed for a self-signed daemon.
+	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) {
 		http.Error(w, "desktop_scope_required", http.StatusForbidden)
 		return
 	}

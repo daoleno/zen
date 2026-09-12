@@ -8,19 +8,30 @@ import {
   fetchDesktopCapability,
   httpEndpoint,
   type DesktopProofDependencies,
+  type MoonlightHostBootstrap,
   verifyDesktopServer,
 } from "./desktopConnectionCheck";
 import { MoonlightEnrollment } from "../modules/zen-remote-desktop/src";
 
 interface PrepareOptions {
-  /** Set after this device/identity/host completed enrollment successfully. */
-  moonlightEnrolled?: boolean;
+  /**
+   * Bound enrollment receipt from a previous verified enrollment. It includes
+   * the daemon, host key, native identity key and certificate fingerprint, so a
+   * changed host/device/certificate never reuses a generic "enrolled" flag.
+   */
+  moonlightEnrolled?: string;
 }
 
+// expo-crypto exposes the platform CSPRNG; do not assume a browser global.
+import { getRandomBytes } from "expo-crypto";
+
 function randomHex(bytes: number): string {
-  const value = new Uint8Array(bytes);
-  crypto.getRandomValues(value);
-  return Array.from(value, (b) => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(getRandomBytes(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function moonlightReceiptKey(server: Pick<StoredServer, "daemonId">,
+  moonlight: Pick<MoonlightHostBootstrap, "hostKey" | "identityKey">, fingerprint: string): string {
+  return [server.daemonId, moonlight.hostKey, moonlight.identityKey, fingerprint].join(":");
 }
 
 /** Freshly authorized, redirect-rejecting control POST with a bounded body. */
@@ -45,12 +56,41 @@ async function postControl(server: StoredServer, resolved: string, proof: Deskto
     if (response.redirected || (response.url && response.url !== endpoint.toString())) {
       throw new Error("Desktop endpoint redirects are not allowed.");
     }
-    const payload = response.body ? JSON.parse(await new Response(response.body).text()) : {};
+    // Read bounded text first: the daemon can answer with a plain-text error
+    // (for example the 409 "enrollment_pending" body), never a JSON parse crash.
+    const raw = response.body ? (await new Response(response.body).text()).slice(0, 8192) : "";
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch {
+      payload = { reason: raw.trim() };
+    }
     if (!response.ok) {
-      const reason = typeof payload?.reason === "string" ? payload.reason : `http_${response.status}`;
+      const reason = typeof payload.reason === "string" && payload.reason ? payload.reason : `http_${response.status}`;
       const error = new Error(reason);
       (error as Error & { status?: number }).status = response.status;
       throw error;
+    }
+    // Signed receipt policy: the response must carry a valid daemon assertion
+    // for the expected daemon, and the enrollment result must target this
+    // device/host. An unsigned or foreign receipt is never accepted.
+    const servedDaemon = typeof payload.daemon_id === "string" ? payload.daemon_id.toLowerCase() : "";
+    if (servedDaemon !== server.daemonId.trim().toLowerCase()) {
+      throw new Error("enrollment_receipt_daemon_mismatch");
+    }
+    const timestamp = typeof payload.assertion_timestamp === "string" ? payload.assertion_timestamp : "";
+    const nonce = typeof payload.assertion_nonce === "string" ? payload.assertion_nonce : "";
+    const assertion = typeof payload.assertion_signature === "string" ? payload.assertion_signature : "";
+    if (!timestamp || !nonce || !assertion ||
+        !proof.verify({
+          purpose: "zen-desktop-capability",
+          daemonId: server.daemonId,
+          daemonPublicKey: server.daemonPublicKey,
+          timestamp,
+          nonceHex: nonce,
+          signatureHex: assertion,
+        })) {
+      throw new Error("enrollment_receipt_unverified");
     }
     return payload;
   } finally {
@@ -65,7 +105,18 @@ async function postControl(server: StoredServer, resolved: string, proof: Deskto
  * has not reached the host state yet; the caller retries after pairing.
  * 401/403/rejected/expired attempts are surfaced and never treated as enrolled.
  */
-export async function enrollMoonlightConnection(server: StoredServer, identityKey: string, signal?: AbortSignal): Promise<"verified" | "pending"> {
+export interface MoonlightEnrollmentHandle {
+  attempt: string;
+  nonce: string;
+  signature: string;
+  certPem: string;
+  fingerprint: string;
+  receipt: string;
+}
+
+/** Bound, retryable enrollment attempt for one device/host/certificate. */
+export async function beginMoonlightEnrollment(server: StoredServer, moonlight: MoonlightHostBootstrap,
+  signal?: AbortSignal): Promise<MoonlightEnrollmentHandle> {
   if (!MoonlightEnrollment) throw new Error("This build has no Moonlight enrollment support.");
   const resolved = await resolveStoredServerURL(server);
   const proof: DesktopProofDependencies = {
@@ -73,25 +124,48 @@ export async function enrollMoonlightConnection(server: StoredServer, identityKe
     authorization: (purpose) => buildAuthorizationHeader({ daemonId: server.daemonId, purpose }),
     verify: verifyDaemonAssertion,
   };
-  const attempt = randomHex(16);
-  const identity = await MoonlightEnrollment.moonlightEnrollmentIdentity(identityKey);
+  const identity = await MoonlightEnrollment.moonlightEnrollmentIdentity(moonlight.identityKey);
   if (!identity.certPem || !identity.fingerprint) throw new Error("moonlight_identity_unavailable");
   if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+  const attempt = randomHex(16);
   const begin = await postControl(server, resolved, proof, "/desktop/moonlight/enroll/begin", { attempt }, signal);
   const nonce = typeof begin.nonce === "string" ? begin.nonce : "";
   if (!nonce) throw new Error("enrollment_challenge_missing");
   if (signal?.aborted) throw new Error("Desktop connection cancelled.");
-  const signature = await MoonlightEnrollment.moonlightSignEnrollment(identityKey, attempt, nonce);
+  const signature = await MoonlightEnrollment.moonlightSignEnrollment(moonlight.identityKey, attempt, nonce);
+  if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+  return {
+    attempt, nonce, signature, certPem: identity.certPem, fingerprint: identity.fingerprint,
+    receipt: moonlightReceiptKey(server, moonlight, identity.fingerprint),
+  };
+}
+
+/** Finalizes the same attempt; pending keeps the handle for a later retry. */
+export async function completeMoonlightEnrollment(server: StoredServer, handle: MoonlightEnrollmentHandle,
+  signal?: AbortSignal): Promise<"verified" | "pending"> {
+  const resolved = await resolveStoredServerURL(server);
+  const proof: DesktopProofDependencies = {
+    fetch,
+    authorization: (purpose) => buildAuthorizationHeader({ daemonId: server.daemonId, purpose }),
+    verify: verifyDaemonAssertion,
+  };
   if (signal?.aborted) throw new Error("Desktop connection cancelled.");
   try {
     const complete = await postControl(server, resolved, proof, "/desktop/moonlight/enroll/complete", {
-      attempt, nonce, client_cert_pem: identity.certPem, signature,
+      attempt: handle.attempt, nonce: handle.nonce, client_cert_pem: handle.certPem, signature: handle.signature,
     }, signal);
     return complete.enrolled === true ? "verified" : "pending";
   } catch (error) {
     if ((error as Error).message === "enrollment_pending") return "pending";
     throw error;
   }
+}
+
+export async function enrollMoonlightConnection(server: StoredServer, moonlight: MoonlightHostBootstrap,
+  signal?: AbortSignal): Promise<{ state: "verified" | "pending"; handle: MoonlightEnrollmentHandle }> {
+  const handle = await beginMoonlightEnrollment(server, moonlight, signal);
+  const state = await completeMoonlightEnrollment(server, handle, signal);
+  return { state, handle };
 }
 
 export async function prepareDesktopConnection(server: StoredServer, inputGeneration: string, signal?: AbortSignal, options: PrepareOptions = {}): Promise<string> {
@@ -123,8 +197,9 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
       moonlight: {
         ...capability.moonlight,
         host: engineHost,
-        pairOnly: !options.moonlightEnrolled && capability.moonlight.admission !== "verified",
+        pairOnly: capability.moonlight.admission !== "verified",
       },
+      moonlightReceipt: options.moonlightEnrolled ?? "",
     });
   }
   if (blocking && !identityLan) throw blocking;

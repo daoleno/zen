@@ -46,7 +46,7 @@ if (!process.env.ZEN_DESKTOP_SCREEN_CHILD) {
   mock.module("../constants/tokens", () => ({ useAppColors: () => ({}) }));
   mock.module("../services/remoteDesktop", () => ({
       prepareDesktopConnection: (_: unknown, generation: string) => prepare(generation),
-      enrollMoonlightConnection: async () => "verified",
+      enrollMoonlightConnection: async () => ({ state: "verified", handle: { receipt: "receipt-1" } }),
     }));
   mock.module("../services/desktopScopeGrant", () => ({ enableDesktopScope: (server: unknown, signal?: AbortSignal) => enable(server, signal) }));
   mock.module("../services/confirmDesktopEnable", () => ({ confirmDesktopEnable: () => confirmImpl ? confirmImpl() : Promise.resolve(confirmResult) }));

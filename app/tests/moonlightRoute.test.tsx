@@ -46,7 +46,7 @@ mock.module(root + "/services/remoteDesktop.ts", () => ({
     } }),
   enrollMoonlightConnection: async () => {
     enrollmentCalls++;
-    return enrollmentResult;
+    return { state: enrollmentResult, handle: { receipt: "receipt-1" } };
   },
 }));
 mock.module(root + "/services/desktopScopeGrant.ts", () => ({ enableDesktopScope: async () => {} }));
