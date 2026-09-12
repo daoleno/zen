@@ -15,6 +15,11 @@ import (
 // files (the ELF) are copied to a sidecar before the upgrade overwrites them.
 const inlineBackupLimit = 65536
 
+// previousJournalPath holds a durable copy of the previous transaction journal
+// across an upgrade, so a crash or a metadata-write failure can always restore
+// the old managed installation instead of relying on process memory.
+const previousJournalPath = installJournalPath + ".zen-previous"
+
 // upgradeIO isolates the in-place upgrade and rollback file operations so fault
 // tests can inject write/backup failures without root or a real /etc tree.
 type upgradeIO struct {
@@ -163,18 +168,33 @@ func upgradeTransaction(plan []PlannedFile, io upgradeIO) (installJournal, []str
 	return journal, sidecars, nil
 }
 
-// restoreJournal reverses one installation or upgrade transaction. It refuses
-// to overwrite administrator changes made after the transaction: every tracked
-// file must still match the recorded new state or the recorded previous state.
-// Every sidecar backup is validated before the first write and kept until the
-// whole restore has succeeded, so a mid-restore failure stays retryable.
+// restoreJournal reverses one installation or upgrade transaction and then
+// consumes its backups. See restoreJournalWithBackups for the shared core.
 func restoreJournal(journal installJournal, io upgradeIO) error {
+	backups, err := restoreJournalWithBackups(journal, io)
+	if err != nil {
+		return err
+	}
+	for _, backup := range backups {
+		if err := io.remove(backup); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// restoreJournalWithBackups reverses one installation or upgrade transaction
+// and returns the sidecar backups that must survive until the caller has made
+// the previous transaction journal durable. Every backup is validated before
+// the first write and kept on any failure, so a mid-restore failure stays
+// retryable.
+func restoreJournalWithBackups(journal installJournal, io upgradeIO) ([]string, error) {
 	backups := map[string][]byte{}
 	for _, entry := range journal.Files {
 		if entry.BeforePath != "" {
 			backup, err := io.read(entry.BeforePath, entry.Mode)
 			if err != nil || digest(backup) != entry.BeforeSHA256 {
-				return errors.New("install_backup_missing")
+				return nil, errors.New("install_backup_missing")
 			}
 			backups[entry.BeforePath] = backup
 		}
@@ -183,7 +203,7 @@ func restoreJournal(journal installJournal, io upgradeIO) error {
 		}
 		current, err := io.read(entry.Path, entry.Mode)
 		if err != nil {
-			return errors.New("installed_file_changed")
+			return nil, errors.New("installed_file_changed")
 		}
 		matchesNew := digest(current) == entry.SHA256
 		matchesOld := false
@@ -195,7 +215,7 @@ func restoreJournal(journal installJournal, io upgradeIO) error {
 			}
 		}
 		if !matchesNew && !matchesOld {
-			return errors.New("installed_file_changed")
+			return nil, errors.New("installed_file_changed")
 		}
 	}
 	for i := len(journal.Files) - 1; i >= 0; i-- {
@@ -203,43 +223,107 @@ func restoreJournal(journal installJournal, io upgradeIO) error {
 		switch {
 		case entry.BeforePath != "":
 			if err := io.write(entry.Path, backups[entry.BeforePath], entry.Mode); err != nil {
-				return err
+				return nil, err
 			}
 		case entry.Exists:
 			if err := io.write(entry.Path, entry.Before, entry.Mode); err != nil {
-				return err
+				return nil, err
 			}
 		default:
 			if err := io.remove(entry.Path); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
-	// The installation is fully restored; backups are no longer needed.
+	restored := make([]string, 0, len(backups))
 	for _, entry := range journal.Files {
 		if entry.BeforePath != "" {
-			if err := io.remove(entry.BeforePath); err != nil {
-				return err
-			}
+			restored = append(restored, entry.BeforePath)
 		}
 	}
-	return nil
+	return restored, nil
 }
 
-// restorePreviousInstall reverses an upgrade and puts the previous transaction
-// journal back, so the old installation stays managed and rollbackable.
-func restorePreviousInstall(current installJournal, previous []byte, io upgradeIO) error {
-	if err := restoreJournal(current, io); err != nil {
-		return err
-	}
-	if len(previous) == 0 {
+// restorePreviousInstall reverses an upgrade, restores the previous journal
+// metadata from its durable backup, and only then consumes the backups. A
+// metadata-write failure before that point stays retryable.
+func restorePreviousInstall(current installJournal, io upgradeIO) error {
+	previous, err := io.read(previousJournalPath, 0600)
+	if err != nil {
 		return errors.New("previous_install_journal_missing")
 	}
-	return io.write(installJournalPath, previous, 0600)
+	var parsed installJournal
+	if decodeMessage(previous, &parsed) != nil || parsed.Version != 1 {
+		return errors.New("invalid_previous_install_journal")
+	}
+	restored, err := restoreJournalWithBackups(current, io)
+	if err != nil {
+		return err
+	}
+	if err := io.write(installJournalPath, previous, 0600); err != nil {
+		return err
+	}
+	for _, backup := range restored {
+		if err := io.remove(backup); err != nil {
+			return err
+		}
+	}
+	return io.remove(previousJournalPath)
 }
 
-// readInstallJournalBytes returns the raw previous journal so an upgrade
-// rollback can restore the old installation metadata instead of deleting it.
+// upgradeWithIO runs the whole upgrade file transaction: the previous journal
+// is made durable first, the new journal is written before any file changes,
+// and an apply failure restores both the previous files and the previous
+// journal before returning. The returned paths are the superseded journal's
+// sidecars; they are removed by commitUpgrade only after activation and the
+// health probe have succeeded.
+func upgradeWithIO(previousBytes []byte, plan []PlannedFile, io upgradeIO) ([]string, error) {
+	var previous installJournal
+	if decodeMessage(previousBytes, &previous) != nil || previous.Version != 1 {
+		return nil, errors.New("invalid_install_journal")
+	}
+	if err := io.write(previousJournalPath, previousBytes, 0600); err != nil {
+		return nil, err
+	}
+	journal, sidecars, err := upgradeTransaction(plan, io)
+	if err != nil {
+		return nil, err
+	}
+	data, _ := json.Marshal(journal)
+	if err := io.write(installJournalPath, data, 0600); err != nil {
+		for _, sidecar := range sidecars {
+			_ = io.remove(sidecar)
+		}
+		return nil, err
+	}
+	if err := applyPlan(plan, io); err != nil {
+		if rollbackErr := restorePreviousInstall(journal, io); rollbackErr != nil {
+			return nil, fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
+		}
+		return nil, err
+	}
+	var superseded []string
+	for _, entry := range previous.Files {
+		if entry.BeforePath != "" {
+			superseded = append(superseded, entry.BeforePath)
+		}
+	}
+	return superseded, nil
+}
+
+// commitUpgrade removes the resources of the superseded installation and the
+// temporary previous journal only after the whole transaction is verified.
+func commitUpgrade(superseded []string, io upgradeIO) error {
+	for _, path := range superseded {
+		if err := io.remove(path); err != nil {
+			return err
+		}
+	}
+	return io.remove(previousJournalPath)
+}
+
+// readInstallJournalBytes returns the raw previous journal so an upgrade can
+// keep it durable across the whole transaction and restore its metadata.
 func readInstallJournalBytes() ([]byte, error) {
 	file, err := OpenRootFile(installJournalPath, 0600)
 	if err != nil {
@@ -250,41 +334,17 @@ func readInstallJournalBytes() ([]byte, error) {
 }
 
 // upgradeLinuxLocked replaces the binary of an existing, unchanged
-// installation while preserving its exact config. The new journal is written
-// before any file is replaced, sidecars are collision-safe, and on success the
-// superseded journal's sidecars are removed. The caller has already verified
-// config identity and file drift.
-func upgradeLinuxLocked(config HostConfig, binarySource string) error {
-	previous, err := loadInstallJournal()
+// installation while preserving its exact config. Nothing of the superseded
+// installation (journal metadata or sidecar backups) is removed until the
+// caller commits after activation and the health probe.
+func upgradeLinuxLocked(config HostConfig, binarySource string) ([]string, error) {
+	previousBytes, err := readInstallJournalBytes()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	plan, err := buildInstallPlan(config, binarySource)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	io := rootUpgradeIO()
-	journal, sidecars, err := upgradeTransaction(plan.Files, io)
-	if err != nil {
-		return err
-	}
-	data, _ := json.Marshal(journal)
-	if err := writeRootFile(installJournalPath, data, 0600); err != nil {
-		for _, sidecar := range sidecars {
-			_ = io.remove(sidecar)
-		}
-		return err
-	}
-	if err := applyPlan(plan.Files, io); err != nil {
-		if rollbackErr := restoreJournal(journal, io); rollbackErr != nil {
-			return fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
-		}
-		return err
-	}
-	for _, entry := range previous.Files {
-		if entry.BeforePath != "" {
-			_ = io.remove(entry.BeforePath)
-		}
-	}
-	return nil
+	return upgradeWithIO(previousBytes, plan.Files, rootUpgradeIO())
 }

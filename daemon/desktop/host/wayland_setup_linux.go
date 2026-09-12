@@ -113,11 +113,12 @@ func installAndRegisterWaylandCurrent(config HostConfig, source string, out io.W
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	installOp, activateOp, rollbackOp, changedOp := currentInstallSharedOps(config, source, existing)
+	installOp, activateOp, rollbackOp, commitOp, changedOp := currentInstallSharedOps(config, source, existing)
 	result, err := runCurrentInstall(existing, currentInstallOps{
 		install:  installOp,
 		activate: activateOp,
 		changed:  changedOp,
+		commit:   commitOp,
 		register: func() error {
 			_, err := waylandRegistrationCheck(config)
 			return err
