@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/daoleno/zen/daemon/auth"
@@ -11,6 +12,11 @@ import (
 // inspectHostReadiness is the live broker probe. Tests may stub it; production
 // never treats a header or pairing record as host installation.
 var inspectHostReadiness = host.InspectReadiness
+
+// Sunshine runtime hooks are the production entry point for the supervised
+// Moonlight host; tests stub them so no process is started.
+var moonlightSnapshot = host.SunshineSnapshot
+var moonlightEnsure = host.EnsureSunshineRuntime
 
 func actualRequestTLS(r *http.Request) bool {
 	return r.TLS != nil && r.TLS.HandshakeComplete
@@ -25,10 +31,10 @@ func (s *Server) handleDesktopCapability(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, s.desktopCapability(device, actualRequestTLS(r)))
+	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, s.desktopCapability(device, actualRequestTLS(r), r.Host))
 }
 
-func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool) map[string]any {
+func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, requestHost string) map[string]any {
 	scoped := s.auth.HasDesktopScope(device.ID, device.PublicKeyHex)
 	trust := "legacy_terminal"
 	if scoped {
@@ -67,7 +73,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool) 
 			recovery = "This connection uses the current logged-in session. Lock and login after reboot need one zen desktop-host --install."
 		}
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"ok":                    true,
 		"daemon_id":             s.auth.DaemonID(),
 		"daemon_public_key":     s.auth.PublicKeyHex(),
@@ -96,5 +102,43 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool) 
 			"recovery":   recovery,
 		},
 		"capability_signature": s.auth.SignDesktopCapability(pin, identityTLS),
+	}
+	if scoped && (readiness.Broker || readiness.CurrentSession) {
+		if moonlight := moonlightBootstrap(device, requestHost); moonlight != nil {
+			payload["moonlight"] = moonlight
+		}
+	}
+	return payload
+}
+
+// moonlightBootstrap advertises the explicitly configured Sunshine host. The
+// identity key is the authenticated Zen device id; the host key is the
+// Zen-owned Sunshine host identity, so private storage never falls back to a
+// lossy hostname and the app keeps using signed desktop-scope authorization.
+func moonlightBootstrap(device *auth.TrustedDevice, requestHost string) map[string]any {
+	snapshot := moonlightSnapshot()
+	if !snapshot.Configured {
+		return nil
+	}
+	if !snapshot.Running {
+		if updated, err := moonlightEnsure(nil); err == nil {
+			snapshot = updated
+		}
+	}
+	hostname, _, err := net.SplitHostPort(requestHost)
+	if err != nil {
+		hostname = requestHost
+	}
+	if hostname == "" || snapshot.HostKey == "" || snapshot.HTTPPort <= 0 {
+		return nil
+	}
+	return map[string]any{
+		"available":    snapshot.Running,
+		"host":         hostname,
+		"http_port":    snapshot.HTTPPort,
+		"https_port":   snapshot.HTTPSPort,
+		"app_id":       snapshot.AppID,
+		"host_key":     snapshot.HostKey,
+		"identity_key": device.ID,
 	}
 }

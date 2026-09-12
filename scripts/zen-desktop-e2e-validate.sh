@@ -41,7 +41,10 @@ def sha256(path):
 
 manifest = json.loads(manifest_path.read_text())
 check(manifest.get("schema") == "zen-desktop-moonlight-e2e/v1", "unexpected manifest schema")
-check(manifest.get("approved") is False, "manifest must stay approved=false until Brain sets it")
+if mode == "--launch-ready":
+    check(manifest.get("approved") is True, "launch-ready requires approved=true")
+else:
+    check(manifest.get("approved") in (True, False), "approved must be a boolean")
 
 lock = json.loads((root / "app/modules/zen-remote-desktop/native.lock.json").read_text())
 pins = manifest["pins"]

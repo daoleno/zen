@@ -199,11 +199,39 @@ describe("Moonlight client core integration contract", () => {
     expect(view).toContain("setOnFrameRenderedListener");
     expect(view).toContain("MAX_QUEUED_FRAMES");
     expect(view).toContain('"start_accepted"');
-    expect(view).toContain('publish("frame", "first")');
+    expect(view).toContain('publish(conn, "frame", "first")');
     expect(view).toContain("sendUtf8TextEvent");
-    expect(view).toContain("revoke(activeHost)");
+    expect(view).toContain("activeSession.revoke(hostClient)");
     const index = read("src/index.ts");
     expect(index).toContain("NativeMoonlightDesktopView");
     expect(index).toContain("MoonlightDesktopApi");
+
+    // Actual App entry: the route mounts the Moonlight view when the daemon
+    // advertises a Sunshine-capable host and routes input/disconnect/revoke.
+    const route = read("../../app/remote-desktop.tsx");
+    expect(route).toContain("NativeMoonlightDesktopView");
+    expect(route).toContain('transport === "moonlight"');
+    expect(route).toContain("moonlightInput");
+    expect(route).toContain("sendPointerMove");
+    expect(route).toContain("sendPointerButton");
+    expect(route).toContain("sendText");
+    expect(route).toContain("sendKey");
+    expect(route).toContain("view.revoke");
+    expect(route).toContain("view.disconnect");
+    expect(route).toContain("moonlightPin");
+    const service = read("../../services/remoteDesktop.ts");
+    expect(service).toContain("capability.moonlight?.available");
+    expect(service).toContain('transport: "moonlight"');
+    const capability = read("../../services/desktopConnectionCheck.ts");
+    expect(capability).toContain("MoonlightHostBootstrap");
+    expect(capability).toContain("identityKey");
+    // Ownership/recovery wiring in the native view.
+    expect(view).toContain("publishTerminal");
+    expect(view).toContain("alive(conn)");
+    expect(view).toContain("scheduleDrain");
+    expect(view).toContain("recoverDecoder");
+    expect(view).toContain('return -1');
+    expect(view).toContain("conn.waitingIdr");
+    expect(view).toContain("hostDirectory");
   });
 });

@@ -38,5 +38,16 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
     }
   }
   const authorization = await buildAuthorizationHeader({ daemonId: server.daemonId, purpose: "zen-desktop" });
+  if (capability.moonlight?.available && capability.scopeVersion > 0) {
+    if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+    // The daemon advertised an explicitly configured Sunshine host under the
+    // signed desktop scope; the native view consumes this bootstrap directly.
+    return JSON.stringify({
+      transport: "moonlight",
+      authorization,
+      inputGeneration,
+      moonlight: capability.moonlight,
+    });
+  }
   return JSON.stringify({ ...plan, authorization, inputGeneration, mode: "unattended" });
 }

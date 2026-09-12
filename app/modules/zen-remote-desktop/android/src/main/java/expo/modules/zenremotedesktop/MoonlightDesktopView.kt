@@ -5,7 +5,6 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
-import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -22,16 +21,20 @@ import org.json.JSONObject
 import java.io.File
 import java.nio.ByteBuffer
 import java.security.cert.X509Certificate
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Actual paired rendering path: per-host Zen identity -> upstream
- * pairing/launch through MoonlightNvHttp -> MoonlightCore -> MediaCodec on a
- * real SurfaceView, with keyboard/pointer/scroll input and disconnect/revoke on
- * the same connection.
+ * Actual paired rendering path with per-connection ownership. Every connection
+ * attempt owns a [Connection] record; core callbacks, decoder tasks, frame
+ * listeners and input all check that their connection is still the current one,
+ * so stale callbacks cannot mutate a newer attempt. Terminal states
+ * (disconnected/revoked) are always observable, even though the attempt is
+ * invalidated before the blocking host cleanup runs.
  *
- * startAccepted, connectionStarted and the first rendered frame are distinct
- * observations reported to JS as separate states.
+ * Decoder recovery follows the pinned upstream client renderer: any condition
+ * that prevents decoding (no surface, waiting for a keyframe, full queue,
+ * buffer failure, decoder exception) returns DR_NEED_IDR (-1) so the core
+ * requests a fresh keyframe instead of silently dropping frames.
  */
 class MoonlightDesktopView(context: Context, appContext: AppContext) :
   ExpoView(context, appContext), SurfaceHolder.Callback {
@@ -41,85 +44,118 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
   private val cover = android.view.View(context).apply { setBackgroundColor(android.graphics.Color.BLACK) }
   private val thread = HandlerThread("ZenMoonlightDecoder").apply { start() }
   private val decoder = Handler(thread.looper)
-  private val generation = AtomicInteger(0)
+  private val stateLock = Any()
+
+  private var attemptSeq = 0L
+
+  @Volatile
+  private var currentAttempt = 0L
+
+  @Volatile
+  private var connection: Connection? = null
 
   @Volatile
   private var destroyed = false
 
-  @Volatile
   private var codec: MediaCodec? = null
-  private var width = 1280
-  private var height = 720
-  private var needIDR = true
-  private var presented = 0
-  private var dropped = 0
-  private val queue = ArrayDeque<Pair<ByteArray, Int>>()
 
-  @Volatile
-  private var connected = false
+  private val background = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "zen-moonlight-session")
+  }
 
-  @Volatile
-  private var renderedFirstFrame = false
+  private inner class Connection(val attempt: Long) {
+    val core = Core(this)
+    var host: MoonlightHost? = null
+    var session: ZenMoonlightSession? = null
 
-  private var core: MoonlightCore? = null
-  private var session: ZenMoonlightSession? = null
-  private var host: MoonlightHost? = null
-  private var trustStore: ZenHostTrustStore? = null
-  private var connectThread: Thread? = null
+    @Volatile
+    var connected = false
 
-  private inner class Core : MoonlightCore() {
+    @Volatile
+    var surfaceReady = false
+
+    @Volatile
+    var waitingIdr = true
+
+    val queue = ArrayDeque<Pair<ByteArray, Int>>()
+    val drainScheduled = AtomicBoolean(false)
+    var width = 1280
+    var height = 720
+    var presented = 0
+    var dropped = 0
+  }
+
+  private fun alive(conn: Connection): Boolean =
+    !destroyed && connection === conn && currentAttempt == conn.attempt
+
+  private fun attach(conn: Connection, host: MoonlightHost, session: ZenMoonlightSession): Boolean =
+    synchronized(stateLock) {
+      if (connection !== conn || currentAttempt != conn.attempt) {
+        false
+      } else {
+        conn.host = host
+        conn.session = session
+        true
+      }
+    }
+
+  private inner class Core(private val conn: Connection) : MoonlightCore() {
     override fun onVideoSetup(videoFormat: Int, videoWidth: Int, videoHeight: Int, redrawRate: Int): Int {
-      // The wired renderer is H.264 only until another decoder path exists.
-      if (videoFormat != MoonlightCore.VIDEO_FORMAT_H264) {
-        publish("failed", "unsupported_video_format:$videoFormat")
+      if (!alive(conn)) return -1
+      if (videoFormat != VIDEO_FORMAT_H264) {
+        publish(conn, "failed", "unsupported_video_format:$videoFormat")
         return -1
       }
-      width = videoWidth
-      height = videoHeight
-      decoder.post { ensureCodec() }
+      conn.width = videoWidth
+      conn.height = videoHeight
+      conn.surfaceReady = surface.holder.surface?.isValid == true
+      conn.waitingIdr = true
+      decoder.post { if (alive(conn)) releaseCodecLocked() }
       return 0
     }
 
     override fun onDecodeUnit(data: ByteArray, frameType: Int, presentationTimeUs: Long): Int {
-      if (needIDR && frameType != MoonlightCore.FRAME_TYPE_IDR) {
-        dropped++
-        return 0
+      if (!alive(conn) || !conn.surfaceReady) return -1
+      if (conn.waitingIdr && frameType != MoonlightCore.FRAME_TYPE_IDR) {
+        conn.dropped++
+        return -1
       }
-      synchronized(queue) {
-        if (queue.size >= MAX_QUEUED_FRAMES) {
-          val droppedFrame = queue.removeFirst()
-          dropped++
-          if (droppedFrame.second == MoonlightCore.FRAME_TYPE_IDR) {
-            needIDR = true
-          }
+      synchronized(conn.queue) {
+        if (conn.queue.size >= MAX_QUEUED_FRAMES) {
+          conn.queue.clear()
+          conn.dropped++
+          conn.waitingIdr = true
+          return -1
         }
-        queue.addLast(data to frameType)
+        conn.queue.addLast(data to frameType)
       }
-      decoder.post { drainQueue() }
+      scheduleDrain(conn)
       return 0
     }
 
     override fun onConnectionStarted() {
-      connected = true
-      publish("connected", "established")
+      if (!alive(conn)) return
+      conn.connected = true
+      publish(conn, "connected", "established")
     }
 
     override fun onConnectionStage(stage: Int) {
-      publish("stage", "stage:$stage")
+      if (alive(conn)) publish(conn, "stage", "stage:$stage")
     }
 
     override fun onConnectionStatusUpdate(connectionStatus: Int) {
-      publish("status", if (connectionStatus == 0) "okay" else "poor")
+      if (alive(conn)) publish(conn, "status", if (connectionStatus == 0) "okay" else "poor")
     }
 
     override fun onConnectionStartFailed(errorCode: Int) {
-      publish("failed", "start:$errorCode")
+      if (alive(conn)) publish(conn, "failed", "start:$errorCode")
     }
 
     override fun onConnectionTerminated(errorCode: Int) {
-      connected = false
-      releaseCodec()
-      publish("disconnected", "host:$errorCode")
+      if (!alive(conn)) return
+      conn.connected = false
+      decoder.post { if (alive(conn)) releaseCodecLocked() }
+      publish(conn, "disconnected", "host:$errorCode")
     }
   }
 
@@ -131,252 +167,321 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
   }
 
   fun connect(value: String) {
-    if (destroyed || value.isEmpty()) return
+    if (destroyed) return
+    if (value.isEmpty()) {
+      disconnectCurrent()
+      return
+    }
     val config = try {
       JSONObject(value)
     } catch (_: Exception) {
-      publish("rejected", "invalid_config")
+      publishDetached("rejected", "invalid_config")
       return
     }
-    val epoch = generation.incrementAndGet()
-    stopInternal(epoch, publishState = false)
+    val hostName = config.optString("host").trim()
+    val identityKey = config.optString("identityKey").trim()
+    val hostKey = config.optString("hostKey").trim()
+    if (hostName.isEmpty()) {
+      publishDetached("rejected", "missing_host")
+      return
+    }
+    // Stable Zen device identity plus Zen host key from the authenticated
+    // bootstrap; never a lossy hostname/port substitution.
+    if (!identityKey.matches(Regex("[A-Za-z0-9._-]{1,128}")) || !hostKey.matches(Regex("[A-Za-z0-9._-]{1,128}"))) {
+      publishDetached("rejected", "missing_identity")
+      return
+    }
+    val ports = intArrayOf(config.optInt("httpPort", 47989), config.optInt("httpsPort", 47984))
+    if (ports[0] !in 1..65535 || ports[1] !in 1..65535) {
+      publishDetached("rejected", "invalid_ports")
+      return
+    }
 
-    val hostName = config.optString("host")
-    if (hostName.isBlank()) {
-      publish("rejected", "missing_host", epoch)
-      return
+    val (conn, previous) = synchronized(stateLock) {
+      val old = connection
+      val next = Connection(++attemptSeq)
+      currentAttempt = next.attempt
+      connection = next
+      next to old
     }
-    val httpPort = config.optInt("httpPort", 47989)
-    val httpsPort = config.optInt("httpsPort", 47984)
-    val uniqueId = config.optString("uniqueId")
-    if (uniqueId.isBlank()) {
-      publish("rejected", "missing_identity", epoch)
-      return
-    }
-    val appId = config.optInt("appId", 1)
-    val pin = config.optString("pin").takeIf { it.isNotBlank() }
+    previous?.let { stopConnectionDetached(it) }
+
     val plan = ZenMoonlightSession.Plan(
-      appId = appId,
-      width = config.optInt("width", 1920),
-      height = config.optInt("height", 1080),
-      fps = config.optInt("fps", 60),
-      bitrateKbps = config.optInt("bitrateKbps", 20_000),
+      appId = config.optInt("appId", 1),
+      width = config.optInt("width", 1280),
+      height = config.optInt("height", 720),
+      fps = config.optInt("fps", 30),
+      bitrateKbps = config.optInt("bitrateKbps", 8_000),
       packetSize = config.optInt("packetSize", 1024),
       audioConfiguration = config.optInt("audioConfiguration", MoonlightAudioConfiguration.STEREO),
-      // Decoder-supported formats; H.264 only until another decoder exists.
       supportedVideoFormats = config.optInt("supportedVideoFormats", MoonlightVideoFormats.DECODER_SUPPORTED),
       streamingRemotely = config.optInt("streamingRemotely", -1),
       enableSops = config.optBoolean("enableSops", true),
     )
+    val pin = config.optString("pin").takeIf { it.isNotBlank() }
+    publish(conn, "connecting", hostName)
 
-    val active = Core()
-    core = active
-    publish("connecting", hostName, epoch)
-
-    val worker = Thread({
+    background.execute {
       try {
-        val identityDir = identityDirectory(hostName)
-        val store = ZenHostTrustStore(identityDir)
-        trustStore = store
+        val identityDir = identityDirectory(identityKey)
+        val hostDir = hostDirectory(identityKey, hostKey)
+        val store = ZenHostTrustStore(hostDir)
         val crypto = ZenCryptoProvider(identityDir)
-        val hostClient = MoonlightNvHttp(hostName, httpPort, httpsPort, uniqueId, "zen",
-          loadPinned(store), crypto)
-        host = hostClient
+        val pinned: X509Certificate? = try {
+          store.load()
+        } catch (_: Exception) {
+          null
+        }
+        val hostClient = MoonlightNvHttp(hostName, ports[0], ports[1], identityKey, "zen", pinned, crypto)
         val sessionControl = object : ZenMoonlightSession.CoreControl {
-          override fun start(config: MoonlightCore.Config): Int = active.start(config)
-          override fun stop(): Int = active.stop()
+          override fun start(config: MoonlightCore.Config): Int = if (alive(conn)) conn.core.start(config) else -2
+
+          override fun stop(): Int = conn.core.stop()
         }
         val activeSession = ZenMoonlightSession(store, sessionControl)
-        session = activeSession
-        if (epoch != generation.get()) return@Thread
+        if (!attach(conn, hostClient, activeSession)) {
+          activeSession.stop(hostClient)
+          return@execute
+        }
         when (val result = activeSession.connect(hostClient, plan, pin)) {
-          is ZenMoonlightSession.Result.Rejected -> publish("rejected", result.reason, epoch)
+          is ZenMoonlightSession.Result.Rejected -> publish(conn, "rejected", result.reason)
           is ZenMoonlightSession.Result.Started ->
-            publish(
-              if (result.startAccepted) "start_accepted" else "start_failed",
-              "${result.launchVerb}:${result.rtspSessionUrl ?: ""}",
-              epoch,
-            )
+            publish(conn, if (result.startAccepted) "start_accepted" else "start_failed", result.launchVerb)
         }
       } catch (error: Exception) {
-        publish("rejected", "connect_failed:${error.javaClass.simpleName}", epoch)
+        publish(conn, "rejected", "connect_failed:${error.javaClass.simpleName}")
       }
-    }, "zen-moonlight-connect")
-    connectThread = worker
-    worker.start()
+    }
   }
 
   fun disconnect(generationValue: Int): Boolean {
-    if (generationValue == 0 || generationValue != generation.get()) return false
-    stopInternal(generationValue, publishState = true)
+    val conn = currentConnection(generationValue) ?: return false
+    invalidate(conn)
+    stopConnectionDetached(conn)
+    publishTerminal(conn, "disconnected", "user")
     return true
   }
 
   fun revoke(generationValue: Int): Boolean {
-    if (generationValue == 0 || generationValue != generation.get()) return false
-    val activeSession = session
-    val activeHost = host
-    generation.incrementAndGet()
-    releaseCodec()
-    connected = false
-    if (activeSession != null && activeHost != null) {
-      val report = activeSession.revoke(activeHost)
-      publish("revoked", if (report.complete) "complete" else report.failures.joinToString(","), generationValue)
-    } else {
-      publish("revoked", "no_session", generationValue)
+    val conn = currentConnection(generationValue) ?: return false
+    invalidate(conn)
+    // Blocking host cleanup runs off the UI thread; the terminal result is
+    // still emitted for this attempt.
+    background.execute {
+      val hostClient = conn.host
+      val activeSession = conn.session
+      val detail = if (activeSession != null && hostClient != null) {
+        val report = activeSession.revoke(hostClient)
+        if (report.complete) "complete" else report.failures.joinToString(",")
+      } else {
+        conn.core.stop()
+        "no_session"
+      }
+      publishTerminal(conn, "revoked", detail)
     }
-    session = null
-    host = null
     return true
   }
 
   fun sendKey(generationValue: Int, keyCode: Int, keyAction: Int, modifiers: Int, flags: Int): Boolean {
-    if (generationValue != generation.get() || !connected) return false
-    return core?.sendKeyboardEvent(keyCode.toShort(), keyAction.toByte(), modifiers.toByte(), flags.toByte()) == 0
+    val conn = currentConnection(generationValue) ?: return false
+    if (!conn.connected) return false
+    return conn.core.sendKeyboardEvent(keyCode.toShort(), keyAction.toByte(), modifiers.toByte(), flags.toByte()) == 0
   }
 
   fun sendText(generationValue: Int, value: String): Boolean {
-    if (generationValue != generation.get() || !connected || value.isEmpty()) return false
-    return core?.sendUtf8TextEvent(value) == 0
+    val conn = currentConnection(generationValue) ?: return false
+    if (!conn.connected || value.isEmpty()) return false
+    return conn.core.sendUtf8TextEvent(value) == 0
   }
 
   fun sendPointerMove(generationValue: Int, deltaX: Int, deltaY: Int): Boolean {
-    if (generationValue != generation.get() || !connected) return false
-    return core?.sendMouseMove(deltaX.toShort(), deltaY.toShort()) == 0
+    val conn = currentConnection(generationValue) ?: return false
+    if (!conn.connected) return false
+    return conn.core.sendMouseMove(deltaX.toShort(), deltaY.toShort()) == 0
   }
 
   fun sendPointerButton(generationValue: Int, button: Int, action: Int): Boolean {
-    if (generationValue != generation.get() || !connected) return false
-    return core?.sendMouseButton(action.toByte(), button) == 0
+    val conn = currentConnection(generationValue) ?: return false
+    if (!conn.connected) return false
+    return conn.core.sendMouseButton(action.toByte(), button) == 0
   }
 
   fun sendScroll(generationValue: Int, clicks: Int): Boolean {
-    if (generationValue != generation.get() || !connected) return false
-    return core?.sendScroll(clicks.toByte()) == 0
+    val conn = currentConnection(generationValue) ?: return false
+    if (!conn.connected) return false
+    return conn.core.sendScroll(clicks.toByte()) == 0
   }
 
-  private fun loadPinned(store: ZenHostTrustStore): X509Certificate? =
-    try {
-      store.load()
-    } catch (_: Exception) {
-      null
-    }
+  private fun currentConnection(generationValue: Int): Connection? {
+    if (generationValue <= 0) return null
+    val conn = connection ?: return null
+    return if (conn.attempt == generationValue.toLong() && alive(conn)) conn else null
+  }
 
-  private fun identityDirectory(hostName: String): File {
-    val safe = hostName.replace(Regex("[^A-Za-z0-9._-]"), "_")
-    val dir = File(context.filesDir, "zen-desktop/$safe")
+  private fun invalidate(conn: Connection) = synchronized(stateLock) {
+    if (connection === conn) {
+      currentAttempt = ++attemptSeq
+      connection = null
+    }
+  }
+
+  private fun disconnectCurrent() {
+    val conn = connection ?: return
+    invalidate(conn)
+    stopConnectionDetached(conn)
+    publishTerminal(conn, "disconnected", "cleared")
+  }
+
+  private fun stopConnectionDetached(conn: Connection) {
+    val hostClient = conn.host
+    val activeSession = conn.session
+    background.execute {
+      if (activeSession != null) {
+        activeSession.stop(hostClient)
+      } else {
+        conn.core.stop()
+      }
+    }
+  }
+
+  private fun identityDirectory(identityKey: String): File {
+    val dir = File(context.filesDir, "zen-desktop/identity/$identityKey")
     if (!dir.exists() && !dir.mkdirs()) {
       throw IllegalStateException("identity_dir_unavailable")
     }
     return dir
   }
 
-  private fun stopInternal(epoch: Int, publishState: Boolean) {
-    releaseCodec()
-    connected = false
-    val activeSession = session
-    val activeHost = host
-    if (activeSession != null) {
-      activeSession.stop(activeHost)
+  private fun hostDirectory(identityKey: String, hostKey: String): File {
+    val dir = File(context.filesDir, "zen-desktop/hosts/$identityKey/$hostKey")
+    if (!dir.exists() && !dir.mkdirs()) {
+      throw IllegalStateException("host_dir_unavailable")
     }
-    session = null
-    host = null
-    if (publishState) publish("disconnected", "user", epoch)
+    return dir
   }
 
-  private fun drainQueue() {
-    val epoch = generation.get()
+  private fun scheduleDrain(conn: Connection) {
+    if (!conn.drainScheduled.compareAndSet(false, true)) return
+    if (!decoder.post {
+        try {
+          drainQueue(conn)
+        } finally {
+          conn.drainScheduled.set(false)
+        }
+      }) {
+      conn.drainScheduled.set(false)
+    }
+  }
+
+  private fun drainQueue(conn: Connection) {
+    if (!alive(conn)) {
+      synchronized(conn.queue) { conn.queue.clear() }
+      return
+    }
     repeat(MAX_DRAIN_PER_TICK) {
-      val next = synchronized(queue) { if (queue.isEmpty()) null else queue.removeFirst() } ?: return
-      if (epoch != generation.get()) return
-      decode(next.first, next.second)
+      val next = synchronized(conn.queue) { if (conn.queue.isEmpty()) null else conn.queue.removeFirst() } ?: return
+      if (!alive(conn)) return
+      decode(conn, next.first, next.second)
+    }
+    if (alive(conn) && synchronized(conn.queue) { conn.queue.isNotEmpty() }) {
+      scheduleDrain(conn)
     }
   }
 
-  private fun ensureCodec() {
-    if (codec != null || destroyed) return
-    val surfaceReady = surface.holder.surface
-    if (surfaceReady == null || !surfaceReady.isValid) return
-    // Codec creation happens in decode() once SPS/PPS are available.
-  }
-
-  private fun decode(data: ByteArray, frameType: Int) {
-    if (destroyed) return
+  private fun decode(conn: Connection, data: ByteArray, frameType: Int) {
     val units = try {
       AnnexB.units(data)
     } catch (_: Exception) {
-      dropped++
+      conn.dropped++
       return
     }
     val idr = units.any { (it[0].toInt() and 31) == 5 }
-    if (needIDR && !idr) {
-      dropped++
+    if (conn.waitingIdr && !idr) {
+      conn.dropped++
       return
     }
-    if (codec == null) {
+    var active = codec
+    if (active == null) {
       val sps = units.firstOrNull { (it[0].toInt() and 31) == 7 } ?: return
       val pps = units.firstOrNull { (it[0].toInt() and 31) == 8 } ?: return
       val target: Surface = surface.holder.surface ?: return
       if (!target.isValid) return
-      val format = MediaFormat.createVideoFormat("video/avc", width, height)
-      format.setByteBuffer("csd-0", ByteBuffer.wrap(byteArrayOf(0, 0, 0, 1) + sps))
-      format.setByteBuffer("csd-1", ByteBuffer.wrap(byteArrayOf(0, 0, 0, 1) + pps))
-      format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024)
-      if (android.os.Build.VERSION.SDK_INT >= 30) {
-        format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-      }
-      val created = try {
-        MediaCodec.createDecoderByType("video/avc")
-      } catch (error: Exception) {
-        publish("failed", "decoder_unavailable")
+      active = try {
+        createCodec(conn, sps, pps, target)
+      } catch (_: Exception) {
+        recoverDecoder(conn, "decoder_config_failed")
         return
-      }
-      created.configure(format, target, null, 0)
-      created.setOnFrameRenderedListener({ _, _, _ ->
-        presented++
-        if (!renderedFirstFrame) {
-          renderedFirstFrame = true
-          post { cover.visibility = GONE }
-          publish("frame", "first")
-        }
-      }, decoder)
-      created.start()
-      codec = created
-      needIDR = true
+      } ?: return
     }
-    val active = codec ?: return
+
     val index = try {
       active.dequeueInputBuffer(10_000)
     } catch (_: Exception) {
-      releaseCodec()
+      recoverDecoder(conn, "decoder_dequeue_failed")
       return
     }
     if (index < 0) {
-      dropped++
-      needIDR = true
+      recoverDecoder(conn, "decoder_backpressure")
       return
     }
-    val input = active.getInputBuffer(index)
+    val input = try {
+      active.getInputBuffer(index)
+    } catch (_: Exception) {
+      null
+    }
     if (input == null || input.capacity() < data.size) {
-      dropped++
-      needIDR = true
+      // Never abandon a held input buffer: return it to the codec first.
+      try {
+        active.queueInputBuffer(index, 0, 0, 0, 0)
+      } catch (_: Exception) {
+      }
+      recoverDecoder(conn, "decoder_buffer_too_small")
       return
     }
-    input.clear()
-    input.put(data)
-    val flags = if (frameType == MoonlightCore.FRAME_TYPE_IDR) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-    active.queueInputBuffer(index, 0, data.size, System.nanoTime() / 1000, flags)
-    needIDR = false
-    drainOutput(active)
+    try {
+      input.clear()
+      input.put(data)
+      val flags = if (frameType == MoonlightCore.FRAME_TYPE_IDR) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+      active.queueInputBuffer(index, 0, data.size, System.nanoTime() / 1000, flags)
+      conn.waitingIdr = false
+      drainOutput(conn, active)
+    } catch (_: Exception) {
+      recoverDecoder(conn, "decoder_queue_failed")
+    }
   }
 
-  private fun drainOutput(active: MediaCodec) {
+  private fun createCodec(conn: Connection, sps: ByteArray, pps: ByteArray, target: Surface): MediaCodec {
+    val format = MediaFormat.createVideoFormat("video/avc", conn.width, conn.height)
+    format.setByteBuffer("csd-0", ByteBuffer.wrap(byteArrayOf(0, 0, 0, 1) + sps))
+    format.setByteBuffer("csd-1", ByteBuffer.wrap(byteArrayOf(0, 0, 0, 1) + pps))
+    format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_DECODE_UNIT_BYTES)
+    if (android.os.Build.VERSION.SDK_INT >= 30) {
+      format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+    }
+    val created = MediaCodec.createDecoderByType("video/avc")
+    created.configure(format, target, null, 0)
+    created.setOnFrameRenderedListener({ _, _, _ ->
+      if (!alive(conn)) return@setOnFrameRenderedListener
+      conn.presented++
+      if (conn.presented == 1) {
+        post { if (alive(conn)) cover.visibility = GONE }
+        publish(conn, "frame", "first")
+      }
+    }, decoder)
+    created.start()
+    codec = created
+    conn.waitingIdr = true
+    conn.surfaceReady = target.isValid
+    return created
+  }
+
+  private fun drainOutput(conn: Connection, active: MediaCodec) {
     val info = MediaCodec.BufferInfo()
     repeat(16) {
       val index = try {
         active.dequeueOutputBuffer(info, 0)
       } catch (_: Exception) {
-        releaseCodec()
+        recoverDecoder(conn, "decoder_output_failed")
         return
       }
       if (index >= 0) {
@@ -387,69 +492,125 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
     }
   }
 
-  private fun releaseCodec() {
-    decoder.post {
-      try {
-        codec?.stop()
-      } catch (_: Exception) {
-      }
-      codec?.release()
-      codec = null
-      needIDR = true
-      renderedFirstFrame = false
-      synchronized(queue) { queue.clear() }
-      post { cover.visibility = VISIBLE }
-    }
+  private fun recoverDecoder(conn: Connection, reason: String) {
+    releaseCodecLocked()
+    conn.waitingIdr = true
+    if (alive(conn)) publish(conn, "failed", reason)
   }
 
-  private fun publish(state: String, reason: String, epoch: Int = generation.get()) {
-    if (destroyed || epoch != generation.get()) return
+  private fun releaseCodecLocked() {
+    try {
+      codec?.stop()
+    } catch (_: Exception) {
+    }
+    try {
+      codec?.release()
+    } catch (_: Exception) {
+    }
+    codec = null
+    connection?.let { conn ->
+      conn.waitingIdr = true
+    }
+    post { cover.visibility = VISIBLE }
+  }
+
+  /** Emits a rejection before any connection record exists. */
+  private fun publishDetached(state: String, reason: String) {
+    val attempt = currentAttempt.toInt()
     val event = mapOf(
       "state" to state,
       "reason" to reason,
-      "generation" to epoch,
-      "width" to width,
-      "height" to height,
-      "presented" to presented,
-      "dropped" to dropped,
-      "connected" to connected,
+      "generation" to attempt,
+      "width" to 0,
+      "height" to 0,
+      "presented" to 0,
+      "dropped" to 0,
+      "connected" to false,
     )
     if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
       onState(event)
     } else {
-      post { if (!destroyed && epoch == generation.get()) onState(event) }
+      post { if (!destroyed) onState(event) }
     }
   }
+
+  private fun publish(conn: Connection, state: String, reason: String) {
+    if (!alive(conn)) return
+    val event = eventBody(conn, state, reason)
+    if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+      onState(event)
+    } else {
+      post { if (alive(conn)) onState(event) }
+    }
+  }
+
+  /** Terminal events are observable even though the attempt was invalidated. */
+  private fun publishTerminal(conn: Connection, state: String, reason: String) {
+    val event = eventBody(conn, state, reason)
+    if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+      onState(event)
+    } else {
+      post { if (!destroyed) onState(event) }
+    }
+  }
+
+  private fun eventBody(conn: Connection, state: String, reason: String): Map<String, Any> = mapOf(
+    "state" to state,
+    "reason" to reason,
+    "generation" to conn.attempt.toInt(),
+    "width" to conn.width,
+    "height" to conn.height,
+    "presented" to conn.presented,
+    "dropped" to conn.dropped,
+    "connected" to conn.connected,
+  )
 
   fun destroy() {
     if (destroyed) return
     destroyed = true
-    generation.incrementAndGet()
-    val activeSession = session
-    val activeHost = host
-    if (activeSession != null) {
-      activeSession.stop(activeHost)
+    val conn = synchronized(stateLock) {
+      val old = connection
+      connection = null
+      currentAttempt = ++attemptSeq
+      old
     }
-    session = null
-    host = null
-    releaseCodec()
-    decoder.post { thread.quitSafely() }
+    conn?.let {
+      it.session?.stop(it.host)
+      it.core.stop()
+    }
+    decoder.post {
+      releaseCodecLocked()
+      thread.quitSafely()
+    }
+    background.shutdown()
   }
 
   override fun surfaceCreated(holder: SurfaceHolder) {
-    if (!destroyed && codec == null) needIDR = true
+    val conn = connection ?: return
+    conn.surfaceReady = holder.surface?.isValid == true
+    conn.waitingIdr = true
   }
 
-  override fun surfaceChanged(holder: SurfaceHolder, format: Int, surfaceWidth: Int, surfaceHeight: Int) {}
+  override fun surfaceChanged(holder: SurfaceHolder, format: Int, surfaceWidth: Int, surfaceHeight: Int) {
+    val conn = connection ?: return
+    conn.surfaceReady = holder.surface?.isValid == true
+    conn.waitingIdr = true
+  }
 
   override fun surfaceDestroyed(holder: SurfaceHolder) {
-    // Keep the session; release the decoder so stream frames drop until the
-    // surface returns and an IDR reconfigures it.
-    releaseCodec()
+    // Keep the session; release the decoder and let the core send a fresh IDR
+    // once a surface returns (onDecodeUnit returns DR_NEED_IDR meanwhile).
+    val conn = connection
+    if (conn != null) {
+      conn.surfaceReady = false
+      conn.waitingIdr = true
+    }
+    decoder.post { releaseCodecLocked() }
   }
 
   private companion object {
     const val MAX_QUEUED_FRAMES = 4
     const val MAX_DRAIN_PER_TICK = 4
+    const val MAX_DECODE_UNIT_BYTES = 4 * 1024 * 1024
   }
 }

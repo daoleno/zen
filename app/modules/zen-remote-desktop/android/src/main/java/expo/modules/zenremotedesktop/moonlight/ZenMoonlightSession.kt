@@ -73,11 +73,18 @@ class ZenMoonlightSession(
     val trustCleared: Boolean,
     val failures: List<String>,
   ) {
+    /** True only when every step actually succeeded (stop included). */
     val complete: Boolean
-      get() = failures.isEmpty()
+      get() = failures.isEmpty() && stopResult == 0 && quitSucceeded && unpairSucceeded && trustCleared
   }
 
   private val epoch = AtomicLong(0)
+  /**
+   * Short admission lock: stop/revoke invalidate and connect admits core.start
+   * and trust persistence under the same lock, so no check-then-act window can
+   * start a session after stop returned. Never held over blocking HTTP.
+   */
+  private val admissionLock = Any()
   private val random = SecureRandom()
 
   @Volatile
@@ -85,11 +92,10 @@ class ZenMoonlightSession(
 
   private fun attemptAlive(attempt: Long): Boolean = epoch.get() == attempt
 
-  /** Cancels the current attempt without touching the core. */
+  /** Invalidates in-flight attempts without touching the core. */
   fun cancel(host: MoonlightHost): Long {
-    val next = epoch.incrementAndGet()
+    val next = synchronized(admissionLock) { epoch.incrementAndGet() }
     inMemoryPin = null
-    host.setServerCert(null)
     host.cancelInFlight()
     return next
   }
@@ -150,15 +156,18 @@ class ZenMoonlightSession(
     if (!attemptAlive(attempt)) {
       return Result.Rejected(serverInfo, "revoked")
     }
-    host.setServerCert(pinned)
-    inMemoryPin = pinned
-    try {
-      trustStore.save(pinned)
-    } catch (error: Exception) {
-      return Result.Rejected(serverInfo, if (attemptAlive(attempt)) "trust_store_failed:${error.javaClass.simpleName}" else "revoked")
-    }
-    if (!attemptAlive(attempt)) {
-      return Result.Rejected(serverInfo, "revoked")
+    // Persist only while this attempt still owns admission.
+    synchronized(admissionLock) {
+      if (epoch.get() != attempt) {
+        return Result.Rejected(serverInfo, "revoked")
+      }
+      host.setServerCert(pinned)
+      inMemoryPin = pinned
+      try {
+        trustStore.save(pinned)
+      } catch (error: Exception) {
+        return Result.Rejected(serverInfo, "trust_store_failed:${error.javaClass.simpleName}")
+      }
     }
 
     // 5. Actual decoder-supported formats only; no SCM intersection.
@@ -234,7 +243,18 @@ class ZenMoonlightSession(
       remoteInputAesIv = riIv,
     )
 
-    val startResult = core.start(config)
+    // Atomic admission: stop/revoke either invalidate before this point or
+    // stop the core after it, never leave a start after stop returned.
+    val startResult = synchronized(admissionLock) {
+      if (epoch.get() != attempt) {
+        return Result.Rejected(serverInfo, "revoked")
+      }
+      try {
+        core.start(config)
+      } catch (error: Exception) {
+        return Result.Rejected(serverInfo, "start_failed:${error.javaClass.simpleName}")
+      }
+    }
     return Result.Started(
       serverInfo = serverInfo,
       pairState = pairState,
@@ -247,8 +267,10 @@ class ZenMoonlightSession(
 
   /** Disconnect: invalidates in-flight attempts and stops the core session. */
   fun stop(host: MoonlightHost? = null): Int {
-    epoch.incrementAndGet()
-    inMemoryPin = null
+    synchronized(admissionLock) {
+      epoch.incrementAndGet()
+      inMemoryPin = null
+    }
     if (host != null) {
       host.setServerCert(null)
       host.cancelInFlight()
@@ -262,9 +284,14 @@ class ZenMoonlightSession(
    * the pinned certificate. Failures are reported, not swallowed.
    */
   fun revoke(host: MoonlightHost): RevokeReport {
-    cancel(host)
+    synchronized(admissionLock) {
+      epoch.incrementAndGet()
+    }
+    host.cancelInFlight()
     val failures = mutableListOf<String>()
     val stopResult = core.stop()
+    // Keep the scoped pin installed while the authenticated HTTPS quit runs;
+    // only discard trust after the bounded host cleanup attempt.
     val quitSucceeded = try {
       host.quitApp()
     } catch (error: Exception) {
@@ -278,12 +305,23 @@ class ZenMoonlightSession(
       failures += "unpair:${error.javaClass.simpleName}"
       false
     }
+    inMemoryPin = null
+    host.setServerCert(null)
     val trustCleared = try {
       trustStore.clear()
       true
     } catch (error: Exception) {
       failures += "trust:${error.javaClass.simpleName}"
       false
+    }
+    if (stopResult != 0) {
+      failures += "stop:$stopResult"
+    }
+    if (!quitSucceeded) {
+      failures += "quit:unsuccessful"
+    }
+    if (!unpairSucceeded) {
+      failures += "unpair:unsuccessful"
     }
     return RevokeReport(stopResult, quitSucceeded, unpairSucceeded, trustCleared, failures)
   }

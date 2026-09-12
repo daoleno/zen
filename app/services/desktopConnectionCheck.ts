@@ -20,6 +20,16 @@ export interface DesktopProofDependencies {
   timeoutMs?: number;
 }
 
+export interface MoonlightHostBootstrap {
+  host: string;
+  httpPort: number;
+  httpsPort: number;
+  appId: number;
+  hostKey: string;
+  identityKey: string;
+  available: boolean;
+}
+
 export interface DesktopCapability {
   deviceTrust: string;
   scopeVersion: number;
@@ -36,6 +46,7 @@ export interface DesktopCapability {
   unattended: boolean;
   reason: string;
   recovery: string;
+  moonlight?: MoonlightHostBootstrap | null;
 }
 
 const PREFLIGHT_MESSAGES: Record<string, string> = {
@@ -84,6 +95,22 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     throw new Error("The desktop identity pin is invalid.");
   }
   const reason = typeof connect.reason === "string" ? connect.reason : "";
+  const moonlightRaw = asRecord(payload.moonlight);
+  const moonlight = typeof moonlightRaw.host === "string" && moonlightRaw.host.length <= 253 &&
+    Number.isInteger(Number(moonlightRaw.http_port)) && Number(moonlightRaw.http_port) > 0 && Number(moonlightRaw.http_port) <= 65535 &&
+    Number.isInteger(Number(moonlightRaw.https_port)) && Number(moonlightRaw.https_port) > 0 && Number(moonlightRaw.https_port) <= 65535 &&
+    typeof moonlightRaw.host_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(moonlightRaw.host_key) &&
+    typeof moonlightRaw.identity_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(moonlightRaw.identity_key)
+    ? {
+        host: moonlightRaw.host,
+        httpPort: Number(moonlightRaw.http_port),
+        httpsPort: Number(moonlightRaw.https_port),
+        appId: Number.isInteger(Number(moonlightRaw.app_id)) ? Number(moonlightRaw.app_id) : 1,
+        hostKey: moonlightRaw.host_key,
+        identityKey: moonlightRaw.identity_key,
+        available: moonlightRaw.available === true,
+      }
+    : null;
   return {
     deviceTrust: typeof payload.device_trust === "string" ? payload.device_trust : "",
     scopeVersion: Number(payload.desktop_scope_version) || 0,
@@ -100,6 +127,7 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     unattended: connect.unattended === true,
     reason,
     recovery: typeof connect.recovery === "string" ? connect.recovery : "",
+    moonlight,
   };
 }
 

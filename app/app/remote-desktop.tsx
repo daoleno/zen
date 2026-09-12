@@ -9,9 +9,9 @@ import { prepareDesktopConnection } from "../services/remoteDesktop";
 import { enableDesktopScope } from "../services/desktopScopeGrant";
 import { confirmDesktopEnable } from "../services/confirmDesktopEnable";
 import { desktopNamedKey, desktopPoint, desktopCommittedText, desktopTextEdits, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopNamedKey, type DesktopPanState } from "../services/remoteDesktopModel";
-import { NativeDesktopView, NativeDesktopKeyboard, type DesktopKeyboardApi, type DesktopState } from "../modules/zen-remote-desktop/src";
+import { NativeDesktopView, NativeMoonlightDesktopView, NativeDesktopKeyboard, type DesktopKeyboardApi, type DesktopState, type MoonlightDesktopApi, type MoonlightDesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
-import { DesktopConnectionUnavailable, DesktopPreflightError } from "../services/desktopConnectionCheck";
+import { DesktopConnectionUnavailable, DesktopPreflightError, type MoonlightHostBootstrap } from "../services/desktopConnectionCheck";
 
 export default function RemoteDesktopScreen() {
   const { currentServer } = useCurrentServer();
@@ -56,6 +56,11 @@ function DesktopSession() {
   const reconnectAllowed = useRef(false);
   const [transport, setTransport] = useState("");
   const native = useRef<DesktopCommandTarget>(null);
+  const moonlight = useRef<MoonlightDesktopApi>(null);
+  const moonlightSession = useRef<{ generation: number; ended: boolean } | null>(null);
+  const moonlightPoint = useRef({ x: 0, y: 0 });
+  const moonlightButtons = useRef(new Set<number>());
+  const [moonlightPin, setMoonlightPin] = useState("");
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
     generation.current++;
     pending.current?.abort();
@@ -74,16 +79,70 @@ function DesktopSession() {
   const connected = status.state === "connected";
   const textInputAllowed = connected && control && status.surface !== "greeter" && status.surface !== "locked";
   const send = (value: object) => commands.send(value);
+  // Moonlight route: pointer deltas, buttons and committed text go to the
+  // native view on the connection that produced the state event.
+  const moonlightInput = (events: DesktopInput[]) => {
+    const view = moonlight.current;
+    const session = moonlightSession.current;
+    if (!view || !session || session.ended) return;
+    for (const event of events) {
+      if (event.type === "pointer") {
+        const dx = Math.round(event.x - moonlightPoint.current.x);
+        const dy = Math.round(event.y - moonlightPoint.current.y);
+        moonlightPoint.current = { x: event.x, y: event.y };
+        if (dx || dy) void view.sendPointerMove(session.generation, dx, dy).catch(() => undefined);
+      } else if (event.type === "button") {
+        if (event.down) moonlightButtons.current.add(event.code);
+        else moonlightButtons.current.delete(event.code);
+        void view.sendPointerButton(session.generation, event.code, event.down ? 7 : 8).catch(() => undefined);
+      } else if (event.type === "release") {
+        for (const code of moonlightButtons.current) void view.sendPointerButton(session.generation, code, 8).catch(() => undefined);
+        moonlightButtons.current.clear();
+      }
+    }
+  };
   const input = (events: DesktopInput[]) => {
+    if (moonlight.current) return moonlightInput(events);
     if (connected && control && events.length) send({ type: "batch", events });
   };
   const sendCommittedText = (value: string) => {
+    const session = moonlightSession.current;
+    if (moonlight.current) {
+      if (session && !session.ended) void moonlight.current.sendText(session.generation, value).catch(() => undefined);
+      return;
+    }
     // The daemon rejects batches above 64 events, so a paste or IME commit is
     // split here and a key press always travels with its release.
     for (const batch of desktopCommittedText(value)) input(batch);
   };
-  const sendNamedKey = (key: DesktopNamedKey) => input(desktopNamedKey(key));
+  const moonlightNamedKey = (key: DesktopNamedKey, down: boolean) => {
+    const view = moonlight.current;
+    const session = moonlightSession.current;
+    if (!view || !session || session.ended) return;
+    const code = key === "Backspace" ? 8 : key === "Delete" ? 46 : 13;
+    void view.sendKey(session.generation, code, down ? 3 : 4, 0, 0).catch(() => undefined);
+  };
+  const sendNamedKey = (key: DesktopNamedKey) => {
+    if (moonlight.current) {
+      moonlightNamedKey(key, true);
+      moonlightNamedKey(key, false);
+      return;
+    }
+    input(desktopNamedKey(key));
+  };
   const stop = useCallback((keepReconnect = false) => {
+    const session = moonlightSession.current;
+    if (session && !session.ended) {
+      const view = moonlight.current;
+      if (view) {
+        if (keepReconnect) void view.disconnect(session.generation).catch(() => undefined);
+        else void view.revoke(session.generation).catch(() => undefined);
+      }
+      session.ended = true;
+      moonlightSession.current = null;
+    }
+    moonlightButtons.current.clear();
+    setMoonlightPin("");
     reconnectAllowed.current = keepReconnect;
     if (!keepReconnect) reconnectAttempts.current = 0;
     if (reconnect.current) clearTimeout(reconnect.current);
@@ -100,10 +159,10 @@ function DesktopSession() {
     grantPending.current?.abort(); grantPending.current = null;
     setEnabling(false);
   }, [commands]);
-  useFocusEffect(useCallback(() => () => stop(), [stop]));
+  useFocusEffect(useCallback(() => () => stop(true), [stop]));
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => { if (state !== "active") stop(); });
-    return () => { stop(); subscription.remove(); };
+    const subscription = AppState.addEventListener("change", (state) => { if (state !== "active") stop(true); });
+    return () => { stop(true); subscription.remove(); };
   }, [commands, stop]);
   // Opening the input bar focuses the commit-aware native field when present;
   // otherwise the plain TextInput keeps the pre-native shell working. The OS
@@ -146,7 +205,21 @@ function DesktopSession() {
       pending.current?.abort(); pending.current = new AbortController();
       const next = await prepareDesktopConnection(server, inputGeneration, pending.current.signal);
       if (epoch === generation.current && isCurrentServer(server.id)) {
-        setTransport(JSON.parse(next).transport); setConnection(next);
+        const parsed = JSON.parse(next) as { transport?: string; moonlight?: MoonlightHostBootstrap };
+        if (parsed.transport === "moonlight" && parsed.moonlight) {
+          if (!NativeMoonlightDesktopView) throw new Error("This build has no Moonlight desktop view.");
+          // The client generates the pairing PIN; the host operator enters it
+          // in Sunshine's Web UI for the matching request.
+          const pin = String(Math.floor(1000 + Math.random() * 9000));
+          moonlightSession.current = null;
+          setMoonlightPin(pin);
+          setTransport("moonlight");
+          setConnection(JSON.stringify({ ...parsed.moonlight, pin }));
+        } else {
+          setMoonlightPin("");
+          setTransport(parsed.transport ?? "");
+          setConnection(next);
+        }
       }
     } catch (error) {
       if (epoch === generation.current) {
@@ -255,11 +328,40 @@ function DesktopSession() {
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight}>
     {compactLandscape ? null : <View style={[styles.header, landscape && styles.headerLandscape]}>
       <Text numberOfLines={1} style={[styles.host, landscape && styles.hostLandscape, { color: colors.textPrimary }]}>{currentServer?.name ?? "No current server"}</Text>
-      <Text numberOfLines={1} style={{ color: colors.textSecondary }}>{preparing ? "Connecting" : enabling ? "Enabling remote desktop" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
+      <Text numberOfLines={1} style={{ color: colors.textSecondary }}>{moonlightPin ? `Pair code ${moonlightPin} - enter it in Sunshine` : preparing ? "Connecting" : enabling ? "Enabling remote desktop" : status.state === "streaming" ? "Waiting for video" : status.state === "requesting" ? "Awaiting permission" : connected ? transport === "trusted-lan" ? "Connected (unencrypted attended LAN)" : "Connected" : ""}</Text>
     </View>}
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
-        <NativeDesktopView ref={native} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
+        {transport === "moonlight" && NativeMoonlightDesktopView ? (
+          <NativeMoonlightDesktopView ref={moonlight} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
+            const event = nativeEvent as MoonlightDesktopState & { generation?: number };
+            const generationValue = event.generation ?? 0;
+            if (generationValue > 0) {
+              const current = moonlightSession.current;
+              if (!current || current.ended || current.generation <= generationValue) {
+                moonlightSession.current = { generation: generationValue, ended: false };
+              }
+            }
+            if (event.state === "connected") { reconnectAttempts.current = 0; setControl(true); }
+            if (event.state === "rejected" || event.state === "failed") setInputNotice(event.reason ?? "");
+            if (event.state === "disconnected" || event.state === "revoked") {
+              const current = moonlightSession.current;
+              if (current) current.ended = true;
+              moonlightSession.current = null;
+              setMoonlightPin("");
+              setConnection(""); setTransport(""); setControl(false);
+              setStatus({ state: "disconnected", reason: event.reason });
+              return;
+            }
+            if (event.state === "connected" || event.state === "frame") {
+              setStatus({ state: "connected", width: event.width, height: event.height, presented: event.presented, dropped: event.dropped });
+            } else if (event.state === "connecting" || event.state === "start_accepted" || event.state === "start_failed") {
+              setStatus({ state: "requesting" });
+            } else if (event.state === "rejected" || event.state === "failed") {
+              setStatus({ state: "disconnected", reason: event.reason });
+            }
+          }} />
+        ) : <NativeDesktopView ref={native} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
           if (!inputGeneration || commands.currentGeneration !== inputGeneration) return;
           if (nativeEvent.state === "sources") {
             stop();
@@ -279,7 +381,7 @@ function DesktopSession() {
           if (nativeEvent.inputError) setInputNotice(nativeEvent.inputError);
           else if (nativeEvent.state !== "streaming") setInputNotice("");
           setStatus(nativeEvent);
-        }} />
+        }} />}
       </View> : null}
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />

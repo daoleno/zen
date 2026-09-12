@@ -49,7 +49,10 @@ object MoonlightVideoFormats {
 
     private const val KNOWN = MASK_H264 or MASK_H265 or MASK_AV1
 
-    /** True when the mask is non-empty, known, and includes H.264. */
+    /**
+     * True only when every requested bit is supported by the wired decoder.
+     * H264|HEVC, reserved H.264 mask bits and host SCM values are not.
+     */
     fun isRenderable(formats: Int): Boolean =
-        formats != 0 && (formats and KNOWN.inv()) == 0 && (formats and MASK_H264) != 0
+        formats != 0 && (formats and DECODER_SUPPORTED.inv()) == 0 && (formats and KNOWN.inv()) == 0
 }

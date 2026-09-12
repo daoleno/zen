@@ -23,6 +23,7 @@ class ZenMoonlightSessionTest {
   private class RecordingCore : ZenMoonlightSession.CoreControl {
     val configs = mutableListOf<MoonlightCore.Config>()
     var startResult = 0
+    var stopResult = 0
     var stopCalls = 0
 
     override fun start(config: MoonlightCore.Config): Int {
@@ -32,7 +33,7 @@ class ZenMoonlightSessionTest {
 
     override fun stop(): Int {
       stopCalls++
-      return 0
+      return stopResult
     }
   }
 
@@ -72,6 +73,7 @@ class ZenMoonlightSessionTest {
     var cancelCalls = 0
     var quitFailure = false
     var unpairFailure = false
+    var pinAtQuit: X509Certificate? = null
     var onLaunch: (() -> Unit)? = null
     lateinit var pairing: StubPairingManager
 
@@ -101,6 +103,7 @@ class ZenMoonlightSessionTest {
 
     override fun quitApp(): Boolean {
       quitCalls++
+      pinAtQuit = pinnedCert
       if (quitFailure) throw IOException("quit failed")
       return true
     }
@@ -259,11 +262,15 @@ class ZenMoonlightSessionTest {
     assertEquals(0x0400, MoonlightVideoFormats.H265_REXT8_444)
     assertEquals(0x2000, MoonlightVideoFormats.AV1_MAIN10)
     assertTrue(MoonlightVideoFormats.isRenderable(MoonlightVideoFormats.H264))
-    assertTrue(MoonlightVideoFormats.isRenderable(MoonlightVideoFormats.H264 or MoonlightVideoFormats.H265))
+    // The wired renderer decodes H.264 only: HEVC in the same mask is rejected.
+    assertFalse(MoonlightVideoFormats.isRenderable(MoonlightVideoFormats.H264 or MoonlightVideoFormats.H265))
     assertFalse(MoonlightVideoFormats.isRenderable(0))
     // Host SCM bit must never be accepted as a client decoder format.
     assertFalse(MoonlightVideoFormats.isRenderable(0x10000))
     assertFalse(MoonlightVideoFormats.isRenderable(MoonlightVideoFormats.H265))
+    // Reserved H.264 mask bits are not advertised either.
+    assertFalse(MoonlightVideoFormats.isRenderable(0x0002))
+    assertFalse(MoonlightVideoFormats.isRenderable(0x0001 or 0x0008))
   }
 
   @Test
@@ -358,6 +365,58 @@ class ZenMoonlightSessionTest {
   }
 
   @Test
+  fun twoThreadStopDuringLaunchPreventsAnyCoreStart() {
+    val fixture = Fixture()
+    fixture.host.info = pairedInfo()
+    fixture.host.setServerCert(fixture.crypto.clientCertificate)
+    val launchEntered = java.util.concurrent.CountDownLatch(1)
+    val releaseLaunch = java.util.concurrent.CountDownLatch(1)
+    fixture.host.onLaunch = {
+      launchEntered.countDown()
+      releaseLaunch.await()
+    }
+
+    val result = java.util.concurrent.atomic.AtomicReference<ZenMoonlightSession.Result>()
+    val worker = Thread { result.set(fixture.session.connect(fixture.host, fixture.plan(), pin = null)) }
+    worker.start()
+    assertTrue(launchEntered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+
+    // stop runs on another thread and must return before the launch does.
+    val stopResult = fixture.session.stop(fixture.host)
+    assertEquals(0, stopResult)
+    releaseLaunch.countDown()
+    worker.join(5_000)
+    assertEquals("revoked", (result.get() as ZenMoonlightSession.Result.Rejected).reason)
+    assertTrue("core must not start after stop returned", fixture.core.configs.isEmpty())
+  }
+
+  @Test
+  fun revokeKeepsScopedPinInstalledForAuthenticatedQuit() {
+    val fixture = Fixture()
+    fixture.host.info = pairedInfo()
+    fixture.host.setServerCert(fixture.crypto.clientCertificate)
+    val report = fixture.session.revoke(fixture.host)
+    assertTrue(report.complete)
+    assertNotNull("quit must run with the pinned certificate still installed", fixture.host.pinAtQuit)
+    assertEquals(fixture.crypto.clientCertificate, fixture.host.pinAtQuit)
+    assertNull(fixture.host.getServerCert())
+  }
+
+  @Test
+  fun revokeIsNotCompleteWhenStopOrQuitFail() {
+    val fixture = Fixture()
+    fixture.trustStore.save(fixture.crypto.clientCertificate)
+    fixture.host.quitFailure = true
+    fixture.core.stopResult = -3
+    val report = fixture.session.revoke(fixture.host)
+    assertFalse(report.complete)
+    assertEquals(-3, report.stopResult)
+    assertFalse(report.quitSucceeded)
+    assertTrue(report.failures.any { it.startsWith("stop:") })
+    assertTrue(report.failures.any { it.startsWith("quit") })
+  }
+
+  @Test
   fun revokeReportSurfacesHostFailures() {
     val fixture = Fixture()
     fixture.trustStore.save(fixture.crypto.clientCertificate)
@@ -368,7 +427,8 @@ class ZenMoonlightSessionTest {
     assertFalse(report.unpairSucceeded)
     assertTrue(report.trustCleared)
     assertFalse(report.complete)
-    assertEquals(2, report.failures.size)
+    assertTrue(report.failures.any { it.startsWith("quit") })
+    assertTrue(report.failures.any { it.startsWith("unpair") })
   }
 }
 

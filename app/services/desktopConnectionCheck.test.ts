@@ -174,3 +174,42 @@ test("forged capability pin signatures fail closed", async () => {
     },
   })).rejects.toThrow("capability proof");
 });
+
+test("moonlight bootstrap is typed and invalid blocks fail closed", async () => {
+  function proofWithMoonlight(moonlight: Record<string, unknown>): DesktopProofDependencies {
+    return {
+      authorization: async () => "token",
+      verify: (input) => input.signatureHex === input.purpose && input.nonceHex === "c".repeat(32),
+      fetch: async (url: string) => {
+        const body = {
+          ...server, daemon_id: server.daemonId, daemon_public_key: server.daemonPublicKey,
+          assertion_timestamp: new Date().toISOString(), assertion_nonce: "c".repeat(32),
+          assertion_signature: "zen-desktop-capability", ok: true,
+          device_trust: "paired_unattended", desktop_scope_version: 1,
+          transport: { identity_tls: true, transport_pin: pin },
+          host: { status: "ready", broker: true },
+          connect: { unattended: true },
+          moonlight,
+          capability_signature: signCapability(true),
+        };
+        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify(body)).body };
+      },
+    };
+  }
+
+  const valid = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
+    proofWithMoonlight({ available: true, host: "192.168.110.223", http_port: 47989, https_port: 47984, app_id: 3, host_key: "zen-host-1", identity_key: "dev-42" }));
+  expect(valid.moonlight).toEqual({
+    host: "192.168.110.223", httpPort: 47989, httpsPort: 47984, appId: 3,
+    hostKey: "zen-host-1", identityKey: "dev-42", available: true,
+  });
+
+  for (const invalid of [
+    { available: true, host: "192.168.110.223", http_port: 0, https_port: 47984, host_key: "zen-host-1", identity_key: "dev-42" },
+    { available: true, host: "192.168.110.223", http_port: 47989, https_port: 47984, host_key: "bad key!", identity_key: "dev-42" },
+    { available: true, host: "192.168.110.223", http_port: 47989, https_port: 47984, host_key: "zen-host-1", identity_key: "../escape" },
+  ]) {
+    const parsed = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop", proofWithMoonlight(invalid));
+    expect(parsed.moonlight).toBeNull();
+  }
+});
