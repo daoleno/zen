@@ -75,7 +75,7 @@ func TestCurrentInstallSuccessIsBriefEnglishAndLocaleIndependent(t *testing.T) {
 	t.Setenv("LANG", "zh_CN.UTF-8")
 	t.Setenv("LC_ALL", "zh_CN.UTF-8")
 	var brief bytes.Buffer
-	writeCurrentInstallSuccess(&brief, probeResult{Surface: "greeter", Width: 960, Height: 720, FrameBytes: 2211}, ":0", false)
+	writeCurrentInstallSuccess(&brief, probeResult{Surface: "greeter", Width: 960, Height: 720, FrameBytes: 2211}, ":0", false, false)
 	want := "Remote desktop is set up.\n" +
 		"Open Remote Desktop in the Zen app on your phone and tap Connect.\n" +
 		"The Zen daemon and the login screen were not restarted.\n"
@@ -94,7 +94,7 @@ func TestCurrentInstallSuccessIsBriefEnglishAndLocaleIndependent(t *testing.T) {
 	}
 
 	var verbose bytes.Buffer
-	writeCurrentInstallSuccess(&verbose, probeResult{Surface: "greeter", Width: 960, Height: 720, FrameBytes: 2211}, ":0", true)
+	writeCurrentInstallSuccess(&verbose, probeResult{Surface: "greeter", Width: 960, Height: 720, FrameBytes: 2211}, ":0", false, true)
 	for _, detail := range []string{"greeter", ":0", "960x720", "H.264", "XTest", "pair again", "Rollback"} {
 		if !strings.Contains(verbose.String(), detail) {
 			t.Fatalf("verbose output missing %q: %q", detail, verbose.String())

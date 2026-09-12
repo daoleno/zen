@@ -60,6 +60,53 @@ type currentInstallOps struct {
 	rollback func() error
 }
 
+// currentInstallSharedOps is the install/activate/rollback transaction shared
+// by the X11 SDDM registration and the Wayland dynamic-discovery registration.
+// Only the register/probe steps differ between session types.
+func currentInstallSharedOps(config HostConfig, source string, existing bool) (func() error, func() error, func() error) {
+	install := func() error {
+		if existing {
+			return verifyUnchangedInstall(config, source)
+		}
+		if err := installLinuxLocked(config, source); err != nil {
+			if _, statErr := os.Lstat(installJournalPath); statErr == nil {
+				if rollbackErr := rollbackLinuxLocked(); rollbackErr != nil {
+					return fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
+				}
+			}
+			return err
+		}
+		return nil
+	}
+	activate := func() error {
+		if config.OwnerUnit != "" {
+			if err := serviceCommand("is-active", "--quiet", config.OwnerUnit); err != nil {
+				return errors.New("configured_owner_unit_not_active")
+			}
+		}
+		if err := serviceCommand("daemon-reload"); err != nil {
+			return errors.New("broker_daemon_reload_failed")
+		}
+		if err := serviceCommand("enable", "--now", "zen-desktop-host.service"); err != nil {
+			return errors.New("broker_activation_failed")
+		}
+		return nil
+	}
+	rollback := func() error {
+		if err := serviceCommand("stop", "zen-desktop-host.service"); err != nil {
+			return err
+		}
+		if err := serviceCommand("disable", "--no-reload", "zen-desktop-host.service"); err != nil {
+			return err
+		}
+		if err := rollbackLinuxLocked(); err != nil {
+			return err
+		}
+		return serviceCommand("daemon-reload")
+	}
+	return install, activate, rollback
+}
+
 // The transaction is injectable for fault tests. An unchanged existing install
 // is never stopped or rolled back by a failed verification.
 func runCurrentInstall(existing bool, ops currentInstallOps) (result probeResult, err error) {
@@ -89,6 +136,9 @@ func installAndRegisterCurrent(config HostConfig, source string, out io.Writer, 
 	if err := rejectBrokerUnitOverrides("/etc/systemd/system/zen-desktop-host.service", "/run/systemd/system/zen-desktop-host.service"); err != nil {
 		return err
 	}
+	if observation, err := InspectLinux(context.Background()); err == nil && observation.Session.Backend == "wayland" {
+		return installAndRegisterWaylandCurrent(config, source, out, verbose)
+	}
 	display, err := selectCurrentDisplay(context.Background(), config)
 	if err != nil {
 		return fmt.Errorf("desktop setup preflight: %w (no installation applied)", err)
@@ -104,35 +154,10 @@ func installAndRegisterCurrent(config HostConfig, source string, out io.Writer, 
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	installOp, activateOp, rollbackOp := currentInstallSharedOps(config, source, existing)
 	result, err := runCurrentInstall(existing, currentInstallOps{
-		install: func() error {
-			if existing {
-				return verifyUnchangedInstall(config, source)
-			}
-			if err := installLinuxLocked(config, source); err != nil {
-				if _, statErr := os.Lstat(installJournalPath); statErr == nil {
-					if rollbackErr := rollbackLinuxLocked(); rollbackErr != nil {
-						return fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
-					}
-				}
-				return err
-			}
-			return nil
-		},
-		activate: func() error {
-			if config.OwnerUnit != "" {
-				if err := serviceCommand("is-active", "--quiet", config.OwnerUnit); err != nil {
-					return errors.New("configured_owner_unit_not_active")
-				}
-			}
-			if err := serviceCommand("daemon-reload"); err != nil {
-				return errors.New("broker_daemon_reload_failed")
-			}
-			if err := serviceCommand("enable", "--now", "zen-desktop-host.service"); err != nil {
-				return errors.New("broker_activation_failed")
-			}
-			return nil
-		},
+		install:  installOp,
+		activate: activateOp,
 		register: func() error {
 			if err := display.Revalidate(context.Background(), config); err != nil {
 				return err
@@ -157,23 +182,12 @@ func installAndRegisterCurrent(config HostConfig, source string, out io.Writer, 
 			}
 			return result, nil
 		},
-		rollback: func() error {
-			if err := serviceCommand("stop", "zen-desktop-host.service"); err != nil {
-				return err
-			}
-			if err := serviceCommand("disable", "--no-reload", "zen-desktop-host.service"); err != nil {
-				return err
-			}
-			if err := rollbackLinuxLocked(); err != nil {
-				return err
-			}
-			return serviceCommand("daemon-reload")
-		},
+		rollback: rollbackOp,
 	})
 	if err != nil {
 		return err
 	}
-	writeCurrentInstallSuccess(out, result, display.observation.Display, verbose)
+	writeCurrentInstallSuccess(out, result, display.observation.Display, false, verbose)
 	return nil
 }
 
@@ -181,14 +195,18 @@ func installAndRegisterCurrent(config HostConfig, source string, out io.Writer, 
 // human-oriented: one verified fact and the next phone action. Probe internals
 // and the rollback command stay available with --verbose. The message is always
 // English and does not depend on LANG/LC_ALL.
-func writeCurrentInstallSuccess(out io.Writer, result probeResult, display string, verbose bool) {
+func writeCurrentInstallSuccess(out io.Writer, result probeResult, display string, portal bool, verbose bool) {
 	fmt.Fprintln(out, "Remote desktop is set up.")
 	fmt.Fprintln(out, "Open Remote Desktop in the Zen app on your phone and tap Connect.")
 	fmt.Fprintln(out, "The Zen daemon and the login screen were not restarted.")
 	if !verbose {
 		return
 	}
-	fmt.Fprintf(out, "Verified: %s %s, %dx%d H.264 frame decoded and discarded; XTest available; no input sent.\n", result.Surface, display, result.Width, result.Height)
+	if portal {
+		fmt.Fprintf(out, "Verified: %s Wayland desktop, session %s; the system portal asks for screen-sharing consent on the next Connect.\n", result.Surface, display)
+	} else {
+		fmt.Fprintf(out, "Verified: %s %s, %dx%d H.264 frame decoded and discarded; XTest available; no input sent.\n", result.Surface, display, result.Width, result.Height)
+	}
 	fmt.Fprintln(out, "Pairing and device-scope checks were not changed; a phone paired before desktop support may need to pair again.")
 	fmt.Fprintln(out, "Rollback: sudo systemctl disable --now zen-desktop-host.service; sudo /usr/libexec/zen/zen desktop-host --rollback")
 }

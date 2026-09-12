@@ -35,6 +35,27 @@ func TestInputRejectsInvalidCoordinatesKeysAndScroll(t *testing.T) {
 	}
 }
 
+func TestPrintableUnicodeTextIsAcceptedAndControlsAreNot(t *testing.T) {
+	valid := []uint32{'a', 'Z', '~', 0xe9, 0x4e2d, 0x1f600, 0x10ffff}
+	for _, code := range valid {
+		if !PrintableRune(code) {
+			t.Fatalf("rejected printable scalar U+%04X", code)
+		}
+		if err := (Command{Type: "text", Code: code}).ValidateInput(true); err != nil {
+			t.Fatalf("text U+%04X: %v", code, err)
+		}
+	}
+	invalid := []uint32{0x0, 0x1f, 0x7f, 0xd800, 0xdfff, 0x110000, math.MaxUint32}
+	for _, code := range invalid {
+		if PrintableRune(code) {
+			t.Fatalf("accepted non-printable scalar U+%04X", code)
+		}
+		if (Command{Type: "text", Code: code}).ValidateInput(true) == nil {
+			t.Fatalf("text accepted U+%04X", code)
+		}
+	}
+}
+
 func TestHelperPacketsAreLengthBoundedAndTyped(t *testing.T) {
 	for _, size := range []uint32{0, 1, MaxFrame + 1, math.MaxUint32} {
 		var raw bytes.Buffer

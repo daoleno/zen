@@ -1,10 +1,13 @@
 # Remote Desktop
 
 Zen Remote Desktop connects the paired Android or iOS app to the desktop of
-the current Zen server. The supported delivery target is Linux amd64 with an
-X11 desktop. Android and iOS use the same unattended pairing, transport, and
-session contract. Web, audio, clipboard, file transfer, and multi-monitor
-composition are outside this feature.
+the current Zen server. Supported Linux amd64 targets are an X11 desktop and
+an unlocked KDE Wayland owner desktop through the session's
+xdg-desktop-portal RemoteDesktop interface. Android and iOS use the same
+pairing, transport, and session contract. Web, audio, clipboard, file
+transfer, and multi-monitor composition are outside this feature. On Wayland
+the compositor keeps its own screen-sharing consent; Zen never injects input
+through a compositor test protocol.
 
 ## Quick Start
 
@@ -27,11 +30,15 @@ cd daemon
 go run ./cmd/zen-dev -lan
 ```
 
-The normal Connect action is unattended after pairing. It does not require a
-second Enable, Allow, or Share action. The daemon starts the selected desktop
-source itself. The app still shows contextual failure states and keeps the
-secure OS-password editor, disconnect, pan, pointer, keyboard, and scroll
-controls behind the connection's reported capabilities.
+The normal Connect action needs no second Zen-side Enable or Share step after
+pairing. On X11 the daemon starts the selected desktop source itself. On
+Wayland the compositor shows its own system permission dialog unless the user
+previously granted persistent access there; Zen stores only the portal's
+opaque single-use restore token in the owner's state directory and still
+requires the paired device scope and encrypted transport on every connection.
+The app shows contextual failure states and keeps the secure OS-password
+editor, disconnect, pan, pointer, keyboard, and scroll controls behind the
+connection's reported capabilities.
 
 Current-session access ends with that desktop session. Lock-screen, greeter,
 logout, and boot-before-login access require the optional Linux host install
@@ -154,7 +161,9 @@ authorization error:
 | `desktop_tls_required` | The attempted path is not encrypted to this daemon | Use identity TLS or pinned Link; do not enable plaintext for passwords |
 | `host_setup_required` | Neither this process's current display nor the broker is available | Start Zen inside the logged-in desktop session, or complete host install |
 | `connected` | Native decoder has presented the current generation | Use desktop controls; a received sample alone is not connected proof |
-| `locked` / `greeter` | The OS surface changed | Use the normal OS password through the secure native editor |
+| `connected` + `inputError` | The computer rejected one character or key in the current layout | Keep using the stream and adjust the layout, or use the OS password action; only a revoked or closed portal ends control |
+| `locked` / `greeter` (X11) | The OS surface changed | Use the normal OS password through the secure native editor |
+| Wayland locked / greeter | This host contract does not inject into a Wayland lock or login surface | Unlock the computer, then reconnect; the phone reports the explicit reason |
 | `disconnected` | Session, transport, revocation, or runtime ended | Reconnect only after the reported recovery condition is fixed |
 
 The app clears frames, pending input, and sensitive editor contents on
@@ -181,8 +190,12 @@ reviewed location is required. The generated config has only `version`,
 `hostId`, `ownerUid`, `seat`, and an optional explicitly supplied
 `ownerUnit`. A second run with the same identity is a no-op. A changed
 existing file is refused. Missing daemon identities, symlinks, unsafe config
-ownership/modes, inactive/non-graphical seat0, unsupported Wayland, and unsafe
-or missing SDDM hooks are refused without generating a config.
+ownership/modes, inactive/non-graphical seat0, locked or non-owner Wayland
+sessions, a session without the portal RemoteDesktop/ScreenCast interfaces,
+and unsafe or missing SDDM X11 hooks are refused without generating a config.
+Wayland qualification discovers exactly one running compositor and reads the
+portal interface versions without creating a portal session or showing a
+dialog.
 
 Review the exact transaction before applying it:
 
@@ -226,6 +239,12 @@ root-only registration API. No guessed `:0`, first-Xorg search, user DISPLAY,
 or Xauthority cookie in config or logs. This requires Linux pidfd support
 (Linux 5.3+) and rootful SDDM Xorg; other display managers, rootless Xorg,
 missing seat metadata, and ambiguous arguments are diagnosed before install.
+On an unlocked owner Wayland session, the same flag validates the active
+desktop, discovers the single running compositor, and records no display
+registration: the broker re-discovers the compositor on every admission. It
+does not create a portal session, so the compositor's consent dialog appears
+when the paired phone connects. An existing X11 SDDM hook install is left in
+place so the X11 greeter path keeps working.
 
 The command then launches the installed ELF's existing UID-dropped agent in
 view-only mode. Success requires valid stream metadata and an actual H.264
@@ -301,7 +320,7 @@ the rollback path will not kill an unrelated process.
 | --- | --- |
 | Linux amd64, X11, logged-in session | Supported with a desktop-capable ELF and native dependencies |
 | Linux amd64, SDDM X11 greeter/lock/login | Supported only after the reviewed broker/SDDM host install and owned-stack qualification |
-| Linux Wayland desktop | Not a generic one-command target; portal permission and compositor input must be qualified per environment |
+| Linux Wayland desktop (KDE, unlocked owner session) | Supported after the reviewed host install; the compositor's portal owns screen-sharing consent and may require interactive approval unless persistence was granted there |
 | Wayland greeter/login or no monitor | Not supported by this host contract |
 | macOS | Host capture/boot-login adapter is not implemented; ScreenCaptureKit/TCC cannot be assumed |
 | Windows | Host service, per-session agent, secure desktop, and WTS boundaries are not implemented |
@@ -321,11 +340,31 @@ capture agent drops to the session UID before initializing display or codec
 libraries. Same-UID processes remain inside the configured account trust
 domain unless an explicit root-enrolled `ownerUnit` is configured.
 
+On Wayland the compositor's RemoteDesktop portal is the consent authority. Zen
+requests persistent consent only when the interface advertises restore-token
+support, stores the returned opaque single-use token with owner-only file
+permissions, rotates it on every successful Start, and drops it once when the
+computer rejects it. The token never bypasses the paired-device scope,
+encrypted transport, or revocation. A Wayland connection needs the owner
+desktop to be unlocked; the broker refuses a Wayland lock or greeter surface
+instead of reporting a misleading ready state.
+
 The secure OS-password editor sends at most 64 printable ASCII characters and
 Enter through the existing encrypted native channel. Zen never stores, logs,
 validates, or copies the password and never reads physical keyboard input.
-Unicode, IME composition, non-US layouts, arbitrary lockers, and
-physical-device native qualification are not claimed.
+Committed phone text travels as Unicode scalars in protocol batches of at most
+64 events; the compositor maps each scalar to its own keymap and may reject a
+character it cannot inject. A rejected character or key is reported to the
+phone as an `inputError` without ending the video stream, while a revoked or
+closed portal ends control and retirement. The phone keyboard is a native
+commit-aware field: soft-IME composing text (candidates, pinyin, autocorrect)
+stays on the phone and only committed text plus named Backspace, Enter, and
+Delete keys cross the wire; hardware and injected key events and pasted text
+follow the same bounded batches, and one physical backspace arriving through
+two input paths is deduplicated. Remote Desktop is the only route that unlocks
+rotation; leaving the route restores the product portrait lock. Unicode
+injection quality still depends on the compositor keymap; arbitrary lockers
+and physical-device native qualification are not claimed.
 
 ## Historical Acceptance Notes
 

@@ -1,8 +1,15 @@
-/* xdg-desktop-portal protocol v2 over typed GLib D-Bus, without persistent grants. */
+#define _GNU_SOURCE
+/* xdg-desktop-portal protocol over typed GLib D-Bus. Persistence is requested
+ * only when the interface advertises it; the returned single-use token stays
+ * with the owner and never becomes remote-device authority. */
 #include "portal.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <gio/gunixfdlist.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define DEST "org.freedesktop.portal.Desktop"
@@ -160,9 +167,44 @@ void zen_portal_init(ZenPortal *portal, GDBusConnection *bus, GCancellable *canc
   portal->keys = g_hash_table_new(g_direct_hash, g_direct_equal);
 }
 
-gboolean zen_portal_open(ZenPortal *portal, gboolean control, const char *parent_window, GError **error) {
+/* Reads an interface version without creating a session or showing a dialog.
+ * A missing property or unavailable portal is version 0 (no persistence). */
+static guint32 interface_version(ZenPortal *portal, const char *interface) {
+  GError *error = NULL;
+  GVariant *reply = g_dbus_connection_call_sync(portal->bus, DEST, PATH,
+    "org.freedesktop.DBus.Properties", "Get", g_variant_new("(ss)", interface, "version"),
+    G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, 1000, portal->cancel, &error);
+  if (!reply) { g_clear_error(&error); return 0; }
+  guint32 version = 0;
+  GVariant *boxed = g_variant_get_child_value(reply, 0);
+  GVariant *inner = g_variant_get_variant(boxed);
+  if (inner && g_variant_is_of_type(inner, G_VARIANT_TYPE_UINT32)) version = g_variant_get_uint32(inner);
+  if (inner) g_variant_unref(inner);
+  g_variant_unref(boxed);
+  g_variant_unref(reply);
+  return version;
+}
+
+/* persist_mode=2 asks for an explicit user decision that survives restarts.
+ * It is only sent where the interface advertises restore-token support. */
+static void add_persist_options(GVariantBuilder *builder, guint32 version, guint32 required,
+                                const char *restore_token) {
+  if (version < required) return;
+  g_variant_builder_add(builder, "{sv}", "persist_mode", g_variant_new_uint32(2));
+  if (restore_token && *restore_token)
+    g_variant_builder_add(builder, "{sv}", "restore_token", g_variant_new_string(restore_token));
+}
+
+const char *zen_portal_restore_token(const ZenPortal *portal) {
+  return portal ? portal->restore_token : NULL;
+}
+
+gboolean zen_portal_open(ZenPortal *portal, gboolean control, const char *parent_window,
+                         const char *restore_token, GError **error) {
   if (portal->session || portal->revoked || g_cancellable_is_cancelled(portal->cancel))
     return fail(error, G_IO_ERROR_CLOSED, "Desktop portal session cannot be reused.");
+  portal->remote_version = interface_version(portal, REMOTE);
+  portal->screen_version = interface_version(portal, SCREEN);
   GVariantBuilder builder;
   char *token = options(&builder);
   char *expected_session = owned_path(portal->bus, "session", token);
@@ -184,7 +226,7 @@ gboolean zen_portal_open(ZenPortal *portal, gboolean control, const char *parent
   if (control) {
     token = options(&builder);
     g_variant_builder_add(&builder, "{sv}", "types", g_variant_new_uint32(3));
-    g_variant_builder_add(&builder, "{sv}", "persist_mode", g_variant_new_uint32(0));
+    add_persist_options(&builder, portal->remote_version, 2, restore_token);
     result = request(portal, REMOTE, "SelectDevices", token,
       g_variant_new("(oa{sv})", portal->session, &builder), error);
     g_free(token);
@@ -195,7 +237,7 @@ gboolean zen_portal_open(ZenPortal *portal, gboolean control, const char *parent
   g_variant_builder_add(&builder, "{sv}", "types", g_variant_new_uint32(1));
   g_variant_builder_add(&builder, "{sv}", "multiple", g_variant_new_boolean(FALSE));
   g_variant_builder_add(&builder, "{sv}", "cursor_mode", g_variant_new_uint32(2));
-  if (!control) g_variant_builder_add(&builder, "{sv}", "persist_mode", g_variant_new_uint32(0));
+  if (!control) add_persist_options(&builder, portal->screen_version, 4, restore_token);
   result = request(portal, SCREEN, "SelectSources", token,
     g_variant_new("(oa{sv})", portal->session, &builder), error);
   g_free(token);
@@ -206,6 +248,11 @@ gboolean zen_portal_open(ZenPortal *portal, gboolean control, const char *parent
     g_variant_new("(osa{sv})", portal->session, parent_window ? parent_window : "", &builder), error);
   g_free(token);
   if (!result) goto failed;
+  const char *issued = NULL;
+  if (g_variant_lookup(result, "restore_token", "&s", &issued) && issued && *issued) {
+    g_free(portal->restore_token);
+    portal->restore_token = g_strdup(issued);
+  }
   valid = zen_portal_parse_grant(result, control, &portal->node, &portal->width, &portal->height, error);
   g_variant_unref(result);
   if (!valid) goto failed;
@@ -231,6 +278,16 @@ GVariant *zen_portal_input_parameters(const char *session, guint32 node, int wid
                                      gboolean down, int delta, const char **method, GError **error) {
   *method = NULL;
   if (!session || !g_variant_is_object_path(session) || !type) goto invalid;
+  if (!strcmp(type, "text")) {
+    // Atomic character events carry a Unicode scalar. X keyboard symbols encode
+    // ASCII/Latin-1 directly and everything above U+00FF as 0x01000000 | cp;
+    // the compositor maps the symbol to a keycode and modifiers, or reports
+    // that its active keymap cannot inject this character.
+    if (code < 0x20 || code == 0x7f || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) goto invalid;
+    guint32 keysym = code < 0x100 ? code : (0x01000000u | code);
+    *method = "NotifyKeyboardKeysym";
+    return g_variant_new("(o@a{sv}iu)", session, empty_options(), (gint)keysym, down ? 1u : 0u);
+  }
   if (!strcmp(type, "pointer")) {
     if (!node || width < 2 || height < 2 || !isfinite(x) || !isfinite(y) || x < 0 || x > 1 || y < 0 || y > 1) goto invalid;
     *method = "NotifyPointerMotionAbsolute";
@@ -257,52 +314,89 @@ invalid:
   return NULL;
 }
 
-static gboolean send_input(ZenPortal *portal, const char *type, double x, double y,
-                           guint32 code, gboolean down, int delta, int timeout, GError **error) {
+static ZenPortalInputResult send_input(ZenPortal *portal, const char *type, double x, double y,
+                                       guint32 code, gboolean down, int delta, int timeout, GError **error) {
   const char *method;
   GVariant *parameters = zen_portal_input_parameters(portal->session, portal->node, portal->width,
     portal->height, type, x, y, code, down, delta, &method, error);
-  if (!parameters) return FALSE;
+  if (!parameters) return ZEN_PORTAL_INPUT_REJECTED;
   GVariant *reply = g_dbus_connection_call_sync(portal->bus, DEST, PATH, REMOTE, method,
     parameters, G_VARIANT_TYPE_UNIT, G_DBUS_CALL_FLAGS_NONE, timeout, portal->cancel, error);
-  if (!reply) { zen_portal_close(portal); return FALSE; }
+  if (!reply) {
+    /* A revoked or unauthorized session must end control; a single unsupported
+     * symbol or transient compositor error must not end a healthy stream. */
+    if (zen_portal_error_is_terminal(error ? *error : NULL)) {
+      zen_portal_close(portal);
+      return ZEN_PORTAL_INPUT_TERMINAL;
+    }
+    return ZEN_PORTAL_INPUT_REJECTED;
+  }
   g_variant_unref(reply);
   if (!strcmp(type, "key")) {
     if (down) g_hash_table_add(portal->keys, GUINT_TO_POINTER(code));
     else g_hash_table_remove(portal->keys, GUINT_TO_POINTER(code));
   } else if (!strcmp(type, "button")) portal->buttons[code] = down;
-  return TRUE;
+  return ZEN_PORTAL_INPUT_OK;
 }
 
-gboolean zen_portal_input(ZenPortal *portal, const char *type, double x, double y,
-                          guint32 code, gboolean down, int delta, GError **error) {
-  if (!portal->bus || !portal->control || !portal->session || portal->revoked || portal->fd < 0)
-    return fail(error, G_IO_ERROR_PERMISSION_DENIED, "Desktop control has not been granted or was revoked.");
+ZenPortalInputResult zen_portal_input(ZenPortal *portal, const char *type, double x, double y,
+                                      guint32 code, gboolean down, int delta, GError **error) {
+  if (!portal->bus || !portal->control || !portal->session || portal->revoked || portal->fd < 0) {
+    fail(error, G_IO_ERROR_PERMISSION_DENIED, "Desktop control has not been granted or was revoked.");
+    return ZEN_PORTAL_INPUT_TERMINAL;
+  }
   if (type && !strcmp(type, "release")) {
     gint64 deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
     GList *held = g_hash_table_get_keys(portal->keys);
-    gboolean ok = TRUE;
-    for (GList *key = held; key && ok; key = key->next) {
+    ZenPortalInputResult result = ZEN_PORTAL_INPUT_OK;
+    for (GList *key = held; key && result == ZEN_PORTAL_INPUT_OK; key = key->next) {
       int remaining = (int)((deadline - g_get_monotonic_time()) / 1000);
-      if (remaining <= 0) { ok = fail(error, G_IO_ERROR_TIMED_OUT, "Portal release timed out."); break; }
-      ok = send_input(portal, "key", 0, 0, GPOINTER_TO_UINT(key->data), FALSE, 0, remaining, error);
+      if (remaining <= 0) { fail(error, G_IO_ERROR_TIMED_OUT, "Portal release timed out."); result = ZEN_PORTAL_INPUT_REJECTED; break; }
+      result = send_input(portal, "key", 0, 0, GPOINTER_TO_UINT(key->data), FALSE, 0, remaining, error);
     }
     g_list_free(held);
-    for (guint code_index = 1; code_index <= 3 && ok; code_index++) {
+    for (guint code_index = 1; code_index <= 3 && result == ZEN_PORTAL_INPUT_OK; code_index++) {
       if (!portal->buttons[code_index]) continue;
       int remaining = (int)((deadline - g_get_monotonic_time()) / 1000);
-      if (remaining <= 0) { ok = fail(error, G_IO_ERROR_TIMED_OUT, "Portal release timed out."); break; }
-      ok = send_input(portal, "button", 0, 0, code_index, FALSE, 0, remaining, error);
+      if (remaining <= 0) { fail(error, G_IO_ERROR_TIMED_OUT, "Portal release timed out."); result = ZEN_PORTAL_INPUT_REJECTED; break; }
+      result = send_input(portal, "button", 0, 0, code_index, FALSE, 0, remaining, error);
     }
-    if (!ok) zen_portal_close(portal);
-    return ok;
+    return result;
   }
   if (type && !strcmp(type, "key") && down && !g_hash_table_contains(portal->keys, GUINT_TO_POINTER(code)) &&
       g_hash_table_size(portal->keys) >= 32) {
     zen_portal_close(portal);
-    return fail(error, G_IO_ERROR_NO_SPACE, "Too many held desktop keys.");
+    fail(error, G_IO_ERROR_NO_SPACE, "Too many held desktop keys.");
+    return ZEN_PORTAL_INPUT_TERMINAL;
+  }
+  if (type && !strcmp(type, "text")) {
+    // A typed character is one atomic event: press then release. Held state is
+    // not tracked, so a cancelled release cannot leave a modifier down.
+    ZenPortalInputResult result = send_input(portal, "text", 0, 0, code, TRUE, 0, 1000, error);
+    if (result != ZEN_PORTAL_INPUT_OK) return result;
+    return send_input(portal, "text", 0, 0, code, FALSE, 0, 1000, error);
   }
   return send_input(portal, type, x, y, code, down, delta, 1000, error);
+}
+
+gboolean zen_portal_error_is_unavailable(const GError *error) {
+  if (!error || error->domain != G_DBUS_ERROR || !g_dbus_error_is_remote_error(error)) return FALSE;
+  gchar *remote = g_dbus_error_get_remote_error(error);
+  if (!remote) return FALSE;
+  static const char *missing[] = {
+    "org.freedesktop.DBus.Error.UnknownMethod",
+    "org.freedesktop.DBus.Error.UnknownInterface",
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.DBus.Error.UnknownProperty",
+    "org.freedesktop.DBus.Error.ServiceUnknown",
+    "org.freedesktop.DBus.Error.NameHasNoOwner",
+    "org.freedesktop.DBus.Error.NotSupported",
+  };
+  gboolean unavailable = FALSE;
+  for (guint i = 0; i < G_N_ELEMENTS(missing) && !unavailable; i++)
+    unavailable = !strcmp(remote, missing[i]);
+  g_free(remote);
+  return unavailable;
 }
 
 void zen_portal_close(ZenPortal *portal) {
@@ -318,7 +412,98 @@ void zen_portal_close(ZenPortal *portal) {
   g_clear_object(&portal->bus);
   g_clear_object(&portal->cancel);
   g_clear_pointer(&portal->session, g_free);
+  g_clear_pointer(&portal->restore_token, g_free);
   g_clear_pointer(&portal->keys, g_hash_table_unref);
   memset(portal, 0, sizeof(*portal));
   portal->fd = -1; portal->revoked = TRUE;
+}
+
+gboolean zen_portal_error_is_terminal(const GError *error) {
+  if (!error) return FALSE;
+  if (error->domain == G_IO_ERROR) {
+    return error->code == G_IO_ERROR_PERMISSION_DENIED || error->code == G_IO_ERROR_CLOSED ||
+      error->code == G_IO_ERROR_CANCELLED;
+  }
+  if (error->domain != G_DBUS_ERROR || !g_dbus_error_is_remote_error(error)) return FALSE;
+  gchar *remote = g_dbus_error_get_remote_error(error);
+  if (!remote) return FALSE;
+  static const char *terminal[] = {
+    "org.freedesktop.DBus.Error.AccessDenied",
+    "org.freedesktop.DBus.Error.AuthFailed",
+    "org.freedesktop.DBus.Error.ServiceUnknown",
+    "org.freedesktop.DBus.Error.NameHasNoOwner",
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.portal.Error.NotAllowed",
+    "org.freedesktop.portal.Error.Cancelled",
+    "org.freedesktop.portal.Error.SessionClosed",
+    "org.freedesktop.portal.Error.NotFound",
+  };
+  gboolean ended = FALSE;
+  for (guint i = 0; i < G_N_ELEMENTS(terminal) && !ended; i++) ended = !strcmp(remote, terminal[i]);
+  g_free(remote);
+  return ended;
+}
+
+#define ZEN_PORTAL_TOKEN_MAX 4096
+
+static gboolean token_valid(const char *token, size_t length) {
+  if (length == 0 || length > ZEN_PORTAL_TOKEN_MAX) return FALSE;
+  for (size_t i = 0; i < length; i++) {
+    unsigned char byte = (unsigned char)token[i];
+    if (byte < 0x21 || byte > 0x7e) return FALSE;
+  }
+  return TRUE;
+}
+
+char *zen_portal_restore_token_load(const char *path, GError **error) {
+  if (!path || !*path) return NULL;
+  int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) {
+    if (errno == ENOENT) return NULL;
+    fail(error, g_io_error_from_errno(errno), "Stored portal token cannot be read.");
+    return NULL;
+  }
+  struct stat info;
+  if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != geteuid() ||
+      (info.st_mode & 0077) != 0 || info.st_size <= 0 || info.st_size > ZEN_PORTAL_TOKEN_MAX) {
+    close(fd);
+    fail(error, G_IO_ERROR_PERMISSION_DENIED, "Stored portal token has unsafe ownership or permissions.");
+    return NULL;
+  }
+  char buffer[ZEN_PORTAL_TOKEN_MAX + 1];
+  ssize_t length = read(fd, buffer, ZEN_PORTAL_TOKEN_MAX);
+  close(fd);
+  if (length <= 0 || !token_valid(buffer, (size_t)length)) {
+    fail(error, G_IO_ERROR_INVALID_DATA, "Stored portal token is invalid.");
+    return NULL;
+  }
+  buffer[length] = '\0';
+  return g_strdup(buffer);
+}
+
+gboolean zen_portal_restore_token_store(const char *path, const char *token, GError **error) {
+  if (!path || !*path || !token || !token_valid(token, strlen(token)))
+    return fail(error, G_IO_ERROR_INVALID_ARGUMENT, "Portal token cannot be stored.");
+  char *temporary = g_strdup_printf("%s.tmp.%d", path, (int)getpid());
+  int fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (fd < 0) { g_free(temporary); return fail(error, g_io_error_from_errno(errno), "Portal token cannot be stored."); }
+  size_t length = strlen(token);
+  gboolean stored = write(fd, token, length) == (ssize_t)length && fsync(fd) == 0;
+  if (close(fd) != 0) stored = FALSE;
+  if (stored && rename(temporary, path) != 0) stored = FALSE;
+  if (!stored) {
+    int saved = errno;
+    unlink(temporary);
+    g_free(temporary);
+    return fail(error, g_io_error_from_errno(saved), "Portal token cannot be stored.");
+  }
+  g_free(temporary);
+  return TRUE;
+}
+
+gboolean zen_portal_restore_token_clear(const char *path, GError **error) {
+  if (!path || !*path) return TRUE;
+  if (unlink(path) != 0 && errno != ENOENT)
+    return fail(error, g_io_error_from_errno(errno), "Stored portal token cannot be cleared.");
+  return TRUE;
 }

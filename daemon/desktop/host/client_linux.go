@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,7 +102,13 @@ func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (
 	// before it can send the challenge; the reading deadline must exceed it.
 	data, _, err := ReceiveCapabilityWithin(conn, 0, false, ownerRetirementWait+5*time.Second)
 	var challenge Challenge
-	if err != nil || decodeMessage(data, &challenge) != nil || len(challenge.Nonce) != 64 || challenge.Generation == 0 {
+	if err != nil {
+		return nil, Request{}, errors.New("session_unavailable")
+	}
+	if code := brokerErrorCode(data); code != "" {
+		return nil, Request{}, fmt.Errorf("session_unavailable:%s", code)
+	}
+	if decodeMessage(data, &challenge) != nil || len(challenge.Nonce) != 64 || challenge.Generation == 0 {
 		return nil, Request{}, errors.New("session_unavailable")
 	}
 	key, err := hex.DecodeString(device.PublicKeyHex)
@@ -137,6 +144,39 @@ func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (
 	return agent, request, nil
 }
 
+// brokerErrorCode decodes the additive pre-challenge error frame. A challenge
+// carries no "error" field, so a non-empty code always means the broker refused
+// the observation before authentication; older daemons fail closed on it.
+func brokerErrorCode(data []byte) string {
+	if len(data) == 0 || len(data) > 4096 {
+		return ""
+	}
+	var frame brokerErrorFrame
+	if json.Unmarshal(data, &frame) != nil {
+		return ""
+	}
+	return frame.Error
+}
+
+func brokerUnavailableReason(code string) string {
+	switch code {
+	case "wayland_runtime_unavailable":
+		return "This Wayland login has no protected runtime directory to share."
+	case "wayland_bus_unavailable":
+		return "This Wayland login has no session bus. Sign out and back in, then reconnect."
+	case "wayland_display_unavailable":
+		return "No running Wayland compositor was found for this login. Sign out and back in, then reconnect."
+	case "wayland_display_ambiguous":
+		return "More than one Wayland compositor socket exists for this login; Zen will not guess which desktop to share."
+	case "wayland_greeter_unsupported":
+		return "Wayland login screens are not supported. The supported lock/login surface is SDDM X11."
+	case "wayland_session_locked":
+		return "This Wayland session is locked. Unlock the computer, then reconnect; Zen does not inject input into a Wayland lock screen."
+	default:
+		return "The current desktop session is unavailable."
+	}
+}
+
 // ServeUnattended consumes a freshly authenticated /desktop request. The caller
 // must pass actual Request.TLS provenance, never a proxy or JSON assertion.
 func ServeUnattended(conn *websocket.Conn, manager *auth.Manager, device *auth.TrustedDevice, tls bool, bindRetirement func(func())) {
@@ -158,7 +198,9 @@ func ServeUnattended(conn *websocket.Conn, manager *auth.Manager, device *auth.T
 	bindRetirement(func() { gate.Deny(true); _ = conn.Close() })
 	agent, request, err := openBroker(manager, device, gate)
 	if err != nil {
-		if err.Error() == "session_unavailable" || err.Error() == "broker_admission_failed" {
+		if code, ok := strings.CutPrefix(err.Error(), "session_unavailable:"); ok {
+			status("unsupported", brokerUnavailableReason(code))
+		} else if err.Error() == "session_unavailable" || err.Error() == "broker_admission_failed" {
 			status("disconnected", "The current desktop session is unavailable.")
 		} else {
 			status("unsupported", "The unattended host service is unavailable.")
@@ -167,7 +209,12 @@ func ServeUnattended(conn *websocket.Conn, manager *auth.Manager, device *auth.T
 	}
 	lease, err := gate.Open(request, nil, agent, time.Now())
 	if err != nil {
-		agent.Close()
+		surface, backend := agent.session.Surface, agent.session.Backend
+		_ = agent.Close()
+		if backend == "wayland-portal" && surface == Locked {
+			status("unsupported", "This Wayland session is locked. Unlock the computer, then reconnect; Zen does not inject input into a Wayland lock screen.")
+			return
+		}
 		status("denied", "Desktop authorization ended.")
 		return
 	}

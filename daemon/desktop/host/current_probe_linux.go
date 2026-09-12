@@ -43,14 +43,14 @@ func (b *broker) probeCurrentLocked(display string) probeResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if display != b.display || b.observeLocked(ctx) != nil {
+	if display != b.display || b.observeLocked(ctx) != nil || b.session.Backend != "x11" {
 		return fail("registered_session_unavailable")
 	}
 	before, err := InspectLinux(ctx)
 	if err != nil {
 		return fail("registered_session_unavailable")
 	}
-	channel, cmd, err := b.startAgentLocked(false)
+	channel, cmd, err := b.startAgentLocked(false, "desktop-probe")
 	if err != nil {
 		return fail("view_probe_agent_failed")
 	}

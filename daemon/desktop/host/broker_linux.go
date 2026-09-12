@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"sync"
@@ -94,6 +95,14 @@ type broker struct {
 	window       time.Time
 	attempts     int
 	proxyWorkers sync.WaitGroup
+	// Wayland user sessions are admitted through the compositor's portal, never
+	// through an X authority. The target is refreshed on every observation and
+	// is only meaningful while session.Backend is wayland-portal.
+	wayland      waylandTarget
+	portal       bool
+	observeError string
+	inspectLinux func(context.Context) (LinuxObservation, error)
+	discover     func(uid uint32) (waylandTarget, error)
 }
 
 // retireLocked must finish the old agent before a new generation is published.
@@ -169,19 +178,64 @@ func (b *broker) waitOwnerClear(ctx context.Context, deadline time.Time) bool {
 }
 
 func (b *broker) observeLocked(ctx context.Context) error {
-	observation, err := InspectLinux(ctx)
-	s := observation.Session
-	if err != nil || !b.monitorReady || b.faulted || b.authority == nil || observation.Display != b.display || s.Backend != "x11" || (s.Surface != Greeter && s.UID != b.config.OwnerUID) {
-		if err != nil {
-			log.Printf("desktop observation rejected: %v", err)
-		} else {
-			log.Printf("desktop session gate unavailable: monitor=%t fault=%t registration=%t displayMatch=%t x11=%t owner=%t", b.monitorReady, b.faulted, b.authority != nil, observation.Display == b.display, s.Backend == "x11", s.Surface == Greeter || s.UID == b.config.OwnerUID)
+	fail := func(reason string, detail ...any) error {
+		if len(detail) > 0 {
+			log.Printf("desktop session gate unavailable: %s %s", reason, fmt.Sprintf(detail[0].(string), detail[1:]...))
 		}
+		b.observeError = reason
 		b.retireLocked()
 		b.session = Session{}
-		return errors.New("session_unavailable")
+		b.wayland = waylandTarget{}
+		b.portal = false
+		return errors.New(reason)
 	}
-	// The registration is a root-issued X server capability; agent startup must
+	inspect := b.inspectLinux
+	if inspect == nil {
+		inspect = InspectLinux
+	}
+	observation, err := inspect(ctx)
+	s := observation.Session
+	if err != nil {
+		log.Printf("desktop observation rejected: %v", err)
+		return fail("session_unavailable")
+	}
+	if !b.monitorReady || b.faulted {
+		return fail("session_unavailable", "monitor=%t fault=%t", b.monitorReady, b.faulted)
+	}
+	// X11 lock/login still requires the root-issued display registration. A
+	// Wayland user desktop is admitted through the compositor portal instead;
+	// Wayland greeters and lock screens are not part of this host contract.
+	x11 := s.Backend == "x11" && b.authority != nil && observation.Display == b.display && (s.Surface == Greeter || s.UID == b.config.OwnerUID)
+	portal := false
+	var target waylandTarget
+	if s.Backend == "wayland" {
+		switch {
+		case observation.Class == "greeter":
+			return fail("wayland_greeter_unsupported", "class=greeter")
+		case s.UID != b.config.OwnerUID:
+			// fall through to the generic rejection below
+		case s.Surface == Locked:
+			return fail("wayland_session_locked", "locked=true")
+		case s.Surface == Desktop:
+			discover := b.discover
+			if discover == nil {
+				discover = discoverWaylandTarget
+			}
+			target, err = discover(s.UID)
+			if err != nil {
+				log.Printf("desktop wayland target unavailable: %v", err)
+				return fail(err.Error())
+			}
+			portal = true
+		}
+	}
+	if !x11 && !portal {
+		return fail("session_unavailable", "monitor=%t fault=%t registration=%t displayMatch=%t x11=%t owner=%t backend=%s", b.monitorReady, b.faulted, b.authority != nil, observation.Display == b.display, s.Backend == "x11", s.UID == b.config.OwnerUID, s.Backend)
+	}
+	if portal {
+		s.Backend = "wayland-portal"
+	}
+	// X11 registration is a root-issued X server capability; agent startup must
 	// additionally prove capture/control before the network publishes streaming.
 	s.Ready, s.Control = true, true
 	s.DisplayGeneration = b.generation
@@ -193,6 +247,9 @@ func (b *broker) observeLocked(ctx context.Context) error {
 	}
 	b.session = s
 	b.sessionPath = observation.Path
+	b.wayland = target
+	b.portal = portal
+	b.observeError = ""
 	return nil
 }
 
@@ -225,6 +282,24 @@ func sessionSignal(signal *dbus.Signal, path, id string) bool {
 		}
 	}
 	return false
+}
+
+// brokerErrorFrame lets the broker explain a refused observation to a newer
+// daemon without changing the signed admission contract. Older daemons fail
+// decoding it exactly like an unavailable session, so the frame is additive.
+type brokerErrorFrame struct {
+	Error string `json:"error"`
+}
+
+func sendBrokerError(conn *net.UnixConn, code string) {
+	if code == "" {
+		return
+	}
+	data, err := json.Marshal(brokerErrorFrame{Error: code})
+	if err != nil {
+		return
+	}
+	_ = SendCapability(conn, data, nil)
 }
 
 func (b *broker) register(conn *net.UnixConn) {
@@ -309,8 +384,10 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 		return
 	}
 	if b.observeLocked(ctx) != nil {
+		code := b.observeError
 		log.Print("desktop admission rejected: session_observation")
 		b.mu.Unlock()
+		sendBrokerError(conn, code)
 		return
 	}
 	var nonce [32]byte
@@ -336,17 +413,19 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 	}
 	payload, _ := json.Marshal(proof.Admission)
 	r := proof.Admission.Request
-	if !auth.VerifyDesktopHostAdmission(b.config.HostID, proof.PublicKey, payload, proof.Signature) || r.HostID != b.config.HostID || !r.TLS || r.Mode != Unattended || r.DeviceID == "" || r.ConnectionID == "" || r.Fingerprint == [32]byte{} || r.Generation != challenge.Generation {
+	if !auth.VerifyDesktopHostAdmission(b.config.HostID, proof.PublicKey, payload, proof.Signature) || r.HostID != b.config.HostID || !r.TLS || r.Mode != Unattended || r.DeviceID == "" || len(r.DeviceID) > 256 || r.ConnectionID == "" || r.Fingerprint == [32]byte{} || r.Generation != challenge.Generation {
 		log.Print("desktop admission rejected: signed_authority")
 		return
 	}
 	b.mu.Lock()
 	if b.owner != nil || b.observeLocked(ctx) != nil || b.generation != challenge.Generation || b.session != challenge.Session {
+		code := b.observeError
 		log.Print("desktop admission rejected: changed_generation")
 		b.mu.Unlock()
+		sendBrokerError(conn, code)
 		return
 	}
-	file, cmd, err := b.startAgentLocked(r.Control)
+	file, cmd, err := b.startAgentLocked(r.Control, r.DeviceID)
 	if err != nil {
 		log.Printf("desktop agent unavailable: %v", err)
 		b.mu.Unlock()
@@ -547,7 +626,7 @@ func (b *broker) isCanonicalOwner(ctx context.Context, peer *net.UnixConn) bool 
 	return true
 }
 
-func (b *broker) startAgentLocked(control bool) (*os.File, *exec.Cmd, error) {
+func (b *broker) startAgentLocked(control bool, deviceID string) (*os.File, *exec.Cmd, error) {
 	executable, err := OpenRootFile(InstalledBinary, 0755)
 	if err != nil {
 		return nil, nil, err
@@ -575,6 +654,9 @@ func (b *broker) startAgentLocked(control bool) (*os.File, *exec.Cmd, error) {
 	if control {
 		mode = "control"
 	}
+	if b.session.Backend == "wayland-portal" {
+		return b.startPortalHelperLocked(parent, child, executable, mode, deviceID, portalRestoreTokenPath(account.HomeDir), uint32(gid))
+	}
 	cmd := exec.Command("/proc/self/fd/5", desktop.RoleAgent, b.display, mode)
 	cmd.Env = []string{"PATH=/usr/bin", "LANG=C.UTF-8", "HOME=/nonexistent", "GST_REGISTRY_UPDATE=no", "GST_REGISTRY=/nonexistent/registry.bin", "GST_REGISTRY_FORK=no"}
 	cmd.ExtraFiles = []*os.File{child, b.authority, executable}
@@ -582,6 +664,50 @@ func (b *broker) startAgentLocked(control bool) (*os.File, *exec.Cmd, error) {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, io.Discard, io.Discard
 	if err := cmd.Start(); err != nil {
 		log.Printf("desktop agent exec failed: %v", err)
+		_ = parent.Close()
+		return nil, nil, errors.New("agent_start_failed")
+	}
+	return parent, cmd, nil
+}
+
+// portalRestoreTokenPath keeps the portal's opaque single-use token in the
+// owner's state directory, never in the broker config or a shared runtime path.
+// An unusable home refuses persistence but never blocks the session: the
+// helper then asks the computer for explicit consent on every connect.
+func portalRestoreTokenPath(home string) string {
+	if home == "" || home[0] != '/' {
+		return ""
+	}
+	return filepath.Join(home, ".zen", "desktop-portal-restore-token")
+}
+
+// startPortalHelperLocked runs the same UID-dropped helper as the current
+// session, but headless and paired: no local GTK window can steal focus from
+// the remote desktop, and the portal owns the OS consent UI. The helper's
+// stdin and stdout share one channel socket so the existing broker proxy needs
+// no Wayland-specific framing. fd 5 stays the verified installed executable.
+func (b *broker) startPortalHelperLocked(parent, child, executable *os.File, mode, deviceID, tokenPath string, gid uint32) (*os.File, *exec.Cmd, error) {
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		_ = parent.Close()
+		return nil, nil, errors.New("agent_start_failed")
+	}
+	defer devnull.Close()
+	args := []string{desktop.RoleHelper, "--device", deviceID, "--paired-session", "--wayland",
+		"--display", b.wayland.Display, "--bus-address", b.wayland.BusAddress, "--no-local-ui"}
+	if tokenPath != "" {
+		args = append(args, "--token-file", tokenPath)
+	}
+	if mode == "control" {
+		args = append(args, "--control")
+	}
+	cmd := exec.Command("/proc/self/fd/5", args...)
+	cmd.Env = []string{"PATH=/usr/bin", "LANG=C.UTF-8", "HOME=/nonexistent", "XDG_RUNTIME_DIR=" + b.wayland.RuntimeDir, "GST_REGISTRY_UPDATE=no", "GST_REGISTRY=/nonexistent/registry.bin", "GST_REGISTRY_FORK=no"}
+	cmd.ExtraFiles = []*os.File{child, devnull, executable}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: b.session.UID, Gid: gid, Groups: []uint32{}}, Pdeathsig: syscall.SIGTERM}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = child, child, io.Discard
+	if err := cmd.Start(); err != nil {
+		log.Printf("desktop portal agent exec failed: %v", err)
 		_ = parent.Close()
 		return nil, nil, errors.New("agent_start_failed")
 	}

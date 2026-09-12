@@ -198,7 +198,7 @@ func initLinuxConfig(fs *flag.FlagSet, configuredPath, stateDir, ownerUnit strin
 	fmt.Fprintf(stderr, "  review: %s desktop-host --plan --config %s\n", shellQuote(executable), shellQuote(path))
 	fmt.Fprintf(stderr, "  install: sudo %s desktop-host --install --config %s --binary-source %s --activate --register-current\n", shellQuote(executable), shellQuote(path), shellQuote(executable))
 	fmt.Fprintln(stderr, "  current-session access does not need this administrator step; boot/greeter access does.")
-	fmt.Fprintln(stderr, "  --register-current validates SDDM's current X11 display and verifies one discarded video frame; no restart or input.")
+	fmt.Fprintln(stderr, "  --register-current validates the current desktop session without restarting it or sending input.")
 	return nil
 }
 
@@ -207,13 +207,26 @@ var inspectInitHost = func() error {
 	if err != nil {
 		return fmt.Errorf("desktop setup: active seat0 session unavailable: %w", err)
 	}
-	if observation.Session.Backend != "x11" {
-		return errors.New("desktop setup: Wayland lock/login is unsupported; SDDM X11 is required")
+	switch observation.Session.Backend {
+	case "x11":
+		if _, _, _, err := sddmConfiguration(); err != nil {
+			return fmt.Errorf("desktop setup: SDDM X11 hooks unavailable or unsafe: %w", err)
+		}
+		return nil
+	case "wayland":
+		if observation.Class != "user" || observation.Session.UID != uint32(os.Getuid()) {
+			return errors.New("desktop setup: run inside the enrolled owner's unlocked Wayland desktop")
+		}
+		if observation.Session.Surface != Desktop {
+			return errors.New("desktop setup: unlock the Wayland desktop before setup")
+		}
+		if err := waylandHostQualification(observation.Session.UID); err != nil {
+			return fmt.Errorf("desktop setup: Wayland desktop qualification failed: %w", err)
+		}
+		return nil
+	default:
+		return errors.New("desktop setup: active seat0 session type is unsupported")
 	}
-	if _, _, _, err := sddmConfiguration(); err != nil {
-		return fmt.Errorf("desktop setup: SDDM X11 hooks unavailable or unsafe: %w", err)
-	}
-	return nil
 }
 
 func shellQuote(value string) string {

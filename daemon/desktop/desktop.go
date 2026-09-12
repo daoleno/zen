@@ -18,6 +18,13 @@ import (
 
 const MaxFrame = 4 << 20
 
+// PrintableRune reports whether code is a Unicode scalar that may travel as an
+// atomic text event. Control characters, DEL, the surrogate range and values
+// above U+10FFFF are rejected; Enter and Backspace have dedicated key events.
+func PrintableRune(code uint32) bool {
+	return code >= 0x20 && code != 0x7f && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff)
+}
+
 type Command struct {
 	Events  []Command `json:"events,omitempty"`
 	Type    string    `json:"type"`
@@ -37,7 +44,11 @@ func (c Command) ValidateInput(control bool) error {
 	}
 	switch c.Type {
 	case "text":
-		if c.Code < 0x20 || c.Code > 0x7e {
+		// Atomic character events carry a Unicode scalar value. Control
+		// characters stay on dedicated key events so an IME cannot smuggle
+		// them through the text path; the native agent maps the scalar to a
+		// keysym and reports what the host keymap cannot inject.
+		if !PrintableRune(c.Code) {
 			return errors.New("unsupported_text")
 		}
 	case "pointer":

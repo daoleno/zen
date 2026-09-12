@@ -4,6 +4,8 @@
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
 #include <X11/Xlib.h>
+#include <X11/XKBlib.h>
+#include <X11/keysym.h>
 #include <X11/extensions/XTest.h>
 #include <arpa/inet.h>
 #include <signal.h>
@@ -24,7 +26,8 @@ __attribute__((used)) const char zen_native_build_input[] = ZEN_NATIVE_BUILD_INP
 static Display *display;
 static GstElement *pipeline;
 static GtkWidget *window;
-static gboolean control, granted, paired_session;
+static gboolean control, granted, paired_session, no_local_ui, gtk_ready;
+static GMainLoop *main_loop;
 static gboolean keys[256], buttons[4];
 static int source_width, source_height;
 static const char *display_name;
@@ -32,6 +35,9 @@ static gboolean wayland, stopping;
 static ZenPortal portal = { .fd = -1 };
 static GDBusConnection *portal_bus;
 static const char *bus_address;
+static const char *token_path;
+static char stream_metadata[512];
+static gint64 input_notice_at;
 static int captured_width, captured_height;
 static GCancellable *media_cancel;
 
@@ -41,18 +47,25 @@ static void cancel_portal(void) {
   if (portal.cancel) g_cancellable_cancel(portal.cancel);
 }
 
+// One quit path for both the GTK main loop (local UI) and the plain GLib loop
+// used by the broker's headless paired helper.
+static void quit_main(void) {
+  if (gtk_ready) gtk_main_quit();
+  if (main_loop) g_main_loop_quit(main_loop);
+}
+
 static void portal_cancelled(GCancellable *cancel, gpointer unused) {
   (void)cancel; (void)unused;
   stopping = TRUE;
   if (media_cancel) g_cancellable_cancel(media_cancel);
-  gtk_main_quit();
+  quit_main();
 }
 
 static gboolean source_changed(gpointer unused) {
   (void)unused;
   if (wayland) {
     if (!portal.bus || portal.revoked || g_dbus_connection_is_closed(portal.bus)) {
-      cancel_portal(); gtk_main_quit(); return G_SOURCE_REMOVE;
+      cancel_portal(); quit_main(); return G_SOURCE_REMOVE;
     }
     return G_SOURCE_CONTINUE;
   }
@@ -60,7 +73,7 @@ static gboolean source_changed(gpointer unused) {
   if (!XGetWindowAttributes(display, DefaultRootWindow(display), &attrs) ||
       attrs.width != source_width || attrs.height != source_height) {
     cancel_portal();
-    gtk_main_quit();
+    quit_main();
     return G_SOURCE_REMOVE;
   }
   return G_SOURCE_CONTINUE;
@@ -72,6 +85,22 @@ static gboolean packet(unsigned char type, const void *data, size_t size) {
   return fwrite(&length, 4, 1, stdout) == 1 &&
     fwrite(&type, 1, 1, stdout) == 1 &&
     fwrite(data, 1, size, stdout) == size && fflush(stdout) == 0;
+}
+
+// Reports one rejected input without ending a healthy stream. The full
+// streaming metadata is resent with an optional inputError field so clients
+// that ignore the field keep their surface and control state. Bounded to one
+// notice per second and to fixed internal reason strings.
+static void notify_input_error(const char *reason) {
+  if (!granted || !stream_metadata[0] || !reason || !*reason) return;
+  gint64 now = g_get_monotonic_time();
+  if (input_notice_at && now - input_notice_at < G_TIME_SPAN_SECOND) return;
+  input_notice_at = now;
+  size_t length = strlen(stream_metadata);
+  char payload[768];
+  int written = g_snprintf(payload, sizeof(payload), "%.*s,\"inputError\":\"%s\"}",
+    (int)(length - 1), stream_metadata, reason);
+  if (written > 0 && (size_t)written < sizeof(payload)) packet(1, payload, (size_t)written);
 }
 
 static void release_input(void) {
@@ -95,7 +124,7 @@ static void release_input(void) {
 static gboolean stop_idle(gpointer unused) {
   (void)unused;
   cancel_portal();
-  gtk_main_quit();
+  quit_main();
   return G_SOURCE_REMOVE;
 }
 
@@ -128,6 +157,26 @@ static gboolean bus_message(GstBus *bus, GstMessage *message, gpointer unused) {
   return G_SOURCE_CONTINUE;
 }
 
+// X11 has no text-injection API: a character is its keymap keysym plus the
+// level's modifier. Characters the active keymap cannot produce are skipped
+// instead of remapping the user's keyboard state.
+static gboolean x11_text_key(unsigned code) {
+  if (code < 0x20 || code == 0x7f || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return FALSE;
+  KeySym keysym = (KeySym)(code < 0x100 ? code : (0x01000000u | code));
+  KeyCode key = XKeysymToKeycode(display, keysym);
+  if (!key) return FALSE;
+  int level = XkbKeycodeToKeysym(display, key, 0, 0) == keysym ? 0 :
+    XkbKeycodeToKeysym(display, key, 0, 1) == keysym ? 1 : -1;
+  if (level < 0) return FALSE;
+  release_input();
+  KeyCode shift = XKeysymToKeycode(display, XK_Shift_L);
+  if (level) XTestFakeKeyEvent(display, shift, True, CurrentTime);
+  XTestFakeKeyEvent(display, key, True, CurrentTime);
+  XTestFakeKeyEvent(display, key, False, CurrentTime);
+  if (level) XTestFakeKeyEvent(display, shift, False, CurrentTime);
+  return TRUE;
+}
+
 static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer unused) {
   (void)unused;
   if (condition & (G_IO_HUP | G_IO_ERR)) { stop_idle(NULL); return G_SOURCE_REMOVE; }
@@ -142,7 +191,9 @@ static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer
     if (sscanf(line, "%15s %lf %lf %u %7s %d", type, &x, &y, &code, down, &delta) == 6) {
       gboolean pressed = strcmp(down, "true") == 0;
       if (wayland) {
-        if (!zen_portal_input(&portal, type, x, y, code, pressed, delta, NULL)) stop_idle(NULL);
+        ZenPortalInputResult result = zen_portal_input(&portal, type, x, y, code, pressed, delta, NULL);
+        if (result == ZEN_PORTAL_INPUT_TERMINAL) stop_idle(NULL);
+        else if (result == ZEN_PORTAL_INPUT_REJECTED) notify_input_error("The computer could not apply that input.");
       } else if (!strcmp(type, "release")) release_input();
       else if (!strcmp(type, "pointer") && x >= 0 && x <= 1 && y >= 0 && y <= 1)
         XTestFakeMotionEvent(display, DefaultScreen(display), (int)(x * (source_width - 1)), (int)(y * (source_height - 1)), CurrentTime);
@@ -152,6 +203,10 @@ static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer
       } else if (!strcmp(type, "key")) {
         KeyCode key = XKeysymToKeycode(display, code);
         if (key) { keys[key] = pressed; XTestFakeKeyEvent(display, key, pressed, CurrentTime); }
+        else notify_input_error("This key is not available in the current keyboard layout.");
+      } else if (!strcmp(type, "text")) {
+        if (x11_text_key(code)) XFlush(display);
+        else notify_input_error("This character is not available in the current keyboard layout.");
       } else if (!strcmp(type, "scroll") && delta >= -10 && delta <= 10) {
         for (int i = 0; i < abs(delta); i++) {
           unsigned button = delta > 0 ? 5 : 4;
@@ -194,11 +249,17 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
   if (response != GTK_RESPONSE_ACCEPT) {
     const char *denied = "{\"state\":\"denied\",\"reason\":\"Desktop sharing was declined.\"}";
     packet(1, denied, strlen(denied));
-    gtk_main_quit(); return;
+    quit_main(); return;
   }
   if (dialog) gtk_widget_hide(GTK_WIDGET(dialog));
   if (wayland) {
     GError *error = NULL;
+    char *stored_token = NULL;
+    if (token_path) {
+      GError *token_error = NULL;
+      stored_token = zen_portal_restore_token_load(token_path, &token_error);
+      g_clear_error(&token_error);
+    }
     portal_bus = g_dbus_connection_new_for_address_sync(bus_address,
       G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT | G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION,
       NULL, NULL, &error);
@@ -206,13 +267,35 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
       zen_portal_init(&portal, portal_bus, NULL);
       g_cancellable_connect(portal.cancel, G_CALLBACK(portal_cancelled), NULL, NULL);
     }
-    if (!portal_bus || !zen_portal_open(&portal, control, "", &error) || stopping) {
-      const char *failure = error && g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)
-        ? "{\"state\":\"denied\",\"reason\":\"Desktop portal permission was cancelled or declined.\"}"
-        : "{\"state\":\"unsupported\",\"reason\":\"The configured portal did not grant the requested desktop access.\"}";
+    if (!portal_bus || !zen_portal_open(&portal, control, "", stored_token, &error) || stopping) {
+      if (stored_token) {
+        // No retry loop: a rejected token is dropped once and the next connect
+        // asks the computer for explicit consent again.
+        GError *clear_error = NULL;
+        zen_portal_restore_token_clear(token_path, &clear_error);
+        g_clear_error(&clear_error);
+      }
+      const char *failure;
+      if (stored_token && !stopping)
+        failure = "{\"state\":\"denied\",\"reason\":\"The saved screen-sharing permission is no longer valid. Approve the request on the computer to connect again.\"}";
+      else if (error && g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        failure = "{\"state\":\"denied\",\"reason\":\"Desktop sharing permission was cancelled or declined on the computer.\"}";
+      else if (zen_portal_error_is_unavailable(error))
+        failure = "{\"state\":\"unsupported\",\"reason\":\"This desktop session does not offer the RemoteDesktop portal. Restart the desktop portal inside the logged-in session, then reconnect.\"}";
+      else
+        failure = "{\"state\":\"unsupported\",\"reason\":\"The configured desktop portal did not grant screen sharing.\"}";
+      g_free(stored_token);
       packet(1, failure, strlen(failure));
-      g_clear_error(&error); gtk_main_quit(); return;
+      g_clear_error(&error); quit_main(); return;
     }
+    const char *issued = zen_portal_restore_token(&portal);
+    if (token_path && issued && *issued) {
+      GError *store_error = NULL;
+      if (!zen_portal_restore_token_store(token_path, issued, &store_error))
+        g_printerr("zen-desktop: portal token not stored: %s\n", store_error ? store_error->message : "unavailable");
+      g_clear_error(&store_error);
+    }
+    g_free(stored_token);
     source_width = portal.width; source_height = portal.height;
     g_timeout_add(1000, source_changed, NULL);
   }
@@ -229,7 +312,7 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
     g_printerr("zen-desktop: encoder selection failed: %s\n", error ? error->message : "cancelled");
     const char *failure = "{\"state\":\"unsupported\",\"reason\":\"No compatible H.264 encoder passed startup verification.\"}";
     if (!stopping) packet(1, failure, strlen(failure));
-    g_clear_error(&error); gtk_main_quit(); return;
+    g_clear_error(&error); quit_main(); return;
   }
   GstElement *codec = gst_bin_get_by_name(GST_BIN(selected.bin), "codec");
   GstElementFactory *factory = codec ? gst_element_get_factory(codec) : NULL;
@@ -247,7 +330,7 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
     for (guint i = 0; i < G_N_ELEMENTS(unowned); i++) if (unowned[i]) gst_object_unref(unowned[i]);
     const char *failure = "{\"state\":\"unsupported\",\"reason\":\"Required GStreamer capture plugins are unavailable.\"}";
     packet(1, failure, strlen(failure));
-    gtk_main_quit(); return;
+    quit_main(); return;
   }
   gst_bin_add_many(GST_BIN(pipeline), capture, rate, filter, queue, selected.bin, output, NULL);
   GstCaps *fps = gst_caps_new_simple("video/x-raw", "framerate", GST_TYPE_FRACTION, 30, 1, NULL);
@@ -258,13 +341,13 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
   gst_util_set_object_arg(G_OBJECT(queue), "leaky", "downstream");
   g_object_set(output, "emit-signals", TRUE, "sync", FALSE, "max-buffers", 2u, "drop", FALSE, NULL);
   if (!gst_element_link_many(capture, rate, filter, queue, selected.bin, output, NULL)) {
-    g_printerr("zen-desktop: capture pipeline link failed\n"); gtk_main_quit(); return;
+    g_printerr("zen-desktop: capture pipeline link failed\n"); quit_main(); return;
   }
   if (wayland) {
     if (!zen_portal_bind_source(&portal, capture, &error)) {
       const char *failure = "{\"state\":\"unsupported\",\"reason\":\"The portal PipeWire source could not be bound safely.\"}";
       packet(1, failure, strlen(failure));
-      g_clear_error(&error); gtk_main_quit(); return;
+      g_clear_error(&error); quit_main(); return;
     }
     GstPad *pad = gst_element_get_static_pad(capture, "src");
     gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, capture_caps, NULL, NULL);
@@ -275,17 +358,22 @@ static void approve(GtkDialog *dialog, gint response, gpointer unused) {
   gst_bus_add_watch(bus, bus_message, NULL);
   gst_object_unref(bus);
   char metadata[512];
-  snprintf(metadata, sizeof(metadata), "{\"state\":\"streaming\",\"width\":%d,\"height\":%d,\"codec\":\"h264\",\"encoder\":\"%s\",\"encoder_reason\":\"%s\",\"hardware\":%s,\"control\":%s}",
-    width, height, selected.name, selected.reason, selected.hardware ? "true" : "false", control ? "true" : "false");
+  snprintf(metadata, sizeof(metadata), "{\"state\":\"streaming\",\"width\":%d,\"height\":%d,\"codec\":\"h264\",\"encoder\":\"%s\",\"encoder_reason\":\"%s\",\"hardware\":%s,\"control\":%s,\"sensitiveInput\":%s}",
+    width, height, selected.name, selected.reason, selected.hardware ? "true" : "false", control ? "true" : "false", control ? "true" : "false");
+  snprintf(stream_metadata, sizeof(stream_metadata), "%s", metadata);
   if (!packet(1, metadata, strlen(metadata))) { stop_idle(NULL); return; }
-  window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-  gtk_window_set_title(GTK_WINDOW(window), "Zen Desktop Sharing");
-  gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
-  GtkWidget *stop = gtk_button_new_with_label(control ? "Stop desktop control" : "Stop desktop sharing");
-  gtk_container_add(GTK_CONTAINER(window), stop);
-  g_signal_connect(window, "destroy", G_CALLBACK(stop_clicked), NULL);
-  g_signal_connect(stop, "clicked", G_CALLBACK(stop_clicked), NULL);
-  gtk_widget_show_all(window);
+  if (gtk_ready && !wayland) {
+    // A persistent local window would steal keyboard focus on Wayland; the
+    // portal dialog is the local consent UI and the phone owns Stop.
+    window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window), "Zen Desktop Sharing");
+    gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
+    GtkWidget *stop = gtk_button_new_with_label(control ? "Stop desktop control" : "Stop desktop sharing");
+    gtk_container_add(GTK_CONTAINER(window), stop);
+    g_signal_connect(window, "destroy", G_CALLBACK(stop_clicked), NULL);
+    g_signal_connect(stop, "clicked", G_CALLBACK(stop_clicked), NULL);
+    gtk_widget_show_all(window);
+  }
   granted = TRUE;
   if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
     g_printerr("zen-desktop: capture pipeline failed to start\n");
@@ -301,12 +389,18 @@ int zen_desktop_helper_main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--device") && i + 1 < argc) device = argv[++i];
     else if (!strcmp(argv[i], "--control")) control = TRUE;
     else if (!strcmp(argv[i], "--paired-session")) paired_session = TRUE;
+    else if (!strcmp(argv[i], "--no-local-ui")) no_local_ui = TRUE;
     else if (!strcmp(argv[i], "--wayland")) wayland = TRUE;
     else if (!strcmp(argv[i], "--bus-address") && i + 1 < argc) bus_address = argv[++i];
+    else if (!strcmp(argv[i], "--token-file") && i + 1 < argc) token_path = argv[++i];
     else return 2;
   }
   if (!display_name || !device || strlen(device) > 256) return 2;
+  if (token_path && (token_path[0] != '/' || strlen(token_path) > 4096)) return 2;
   if (wayland && (!bus_address || !g_dbus_is_address(bus_address))) return 2;
+  // Headless mode exists only for the broker's unattended paired helper; an
+  // interactive session must keep its visible local consent surface.
+  if (no_local_ui && !paired_session) return 2;
   // Never inherit a different personal desktop or select Wayland implicitly.
   g_setenv(wayland ? "WAYLAND_DISPLAY" : "DISPLAY", display_name, TRUE);
   g_setenv("GDK_BACKEND", wayland ? "wayland" : "x11", TRUE);
@@ -315,7 +409,13 @@ int zen_desktop_helper_main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   gst_init(NULL, NULL);
   media_cancel = g_cancellable_new();
-  if (!gtk_init_check(NULL, NULL)) return 3;
+  if (no_local_ui) {
+    main_loop = g_main_loop_new(NULL, FALSE);
+  } else if (!gtk_init_check(NULL, NULL)) {
+    return 3;
+  } else {
+    gtk_ready = TRUE;
+  }
   if (!wayland) {
     display = XOpenDisplay(display_name);
     if (!display) return 3;
@@ -331,6 +431,12 @@ int zen_desktop_helper_main(int argc, char **argv) {
   g_io_channel_set_flags(input, G_IO_FLAG_NONBLOCK, NULL);
   g_io_add_watch(input, G_IO_IN | G_IO_HUP | G_IO_ERR, read_input, NULL);
   if (paired_session) {
+    if (wayland) {
+      // The OS portal dialog is separate from the per-connection device consent
+      // already granted to this phone. Tell the phone to show that state.
+      const char *requesting = "{\"state\":\"requesting\",\"reason\":\"Waiting for the system screen-sharing permission on the computer.\"}";
+      if (!packet(1, requesting, strlen(requesting))) quit_main();
+    }
     approve(NULL, GTK_RESPONSE_ACCEPT, NULL);
   } else {
     GtkWidget *dialog = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
@@ -346,7 +452,7 @@ int zen_desktop_helper_main(int argc, char **argv) {
     packet(1, requesting, strlen(requesting));
     gtk_widget_show_all(dialog);
   }
-  gtk_main();
+  if (main_loop) g_main_loop_run(main_loop); else gtk_main();
   if (!wayland) release_input();
   if (pipeline) { gst_element_set_state(pipeline, GST_STATE_NULL); gst_object_unref(pipeline); }
   g_object_unref(media_cancel);
@@ -354,6 +460,7 @@ int zen_desktop_helper_main(int argc, char **argv) {
   if (wayland) zen_portal_close(&portal);
   if (portal_bus) { g_dbus_connection_close_sync(portal_bus, NULL, NULL); g_object_unref(portal_bus); }
   if (display) XCloseDisplay(display);
+  if (main_loop) g_main_loop_unref(main_loop);
   return 0;
 }
 

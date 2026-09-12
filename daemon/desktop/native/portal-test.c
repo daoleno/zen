@@ -1,7 +1,10 @@
+#define _GNU_SOURCE
 #include "portal.h"
 #include "portal_capture.h"
 #include <fcntl.h>
+#include <glib/gstdio.h>
 #include <math.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define DEST "org.freedesktop.portal.Desktop"
@@ -10,7 +13,7 @@
 #define SCREEN "org.freedesktop.portal.ScreenCast"
 #define SESSION "/org/freedesktop/portal/desktop/session/mock/session"
 
-static GVariant *grant(guint devices, guint count, guint source_type, int width, int height) {
+static GVariant *grant(guint devices, guint count, guint source_type, int width, int height, const char *token) {
   GVariantBuilder result, streams;
   g_variant_builder_init(&result, G_VARIANT_TYPE_VARDICT);
   g_variant_builder_init(&streams, G_VARIANT_TYPE("a(ua{sv})"));
@@ -23,6 +26,7 @@ static GVariant *grant(guint devices, guint count, guint source_type, int width,
   }
   g_variant_builder_add(&result, "{sv}", "devices", g_variant_new_uint32(devices));
   g_variant_builder_add(&result, "{sv}", "streams", g_variant_builder_end(&streams));
+  if (token) g_variant_builder_add(&result, "{sv}", "restore_token", g_variant_new_string(token));
   return g_variant_ref_sink(g_variant_builder_end(&result));
 }
 
@@ -33,12 +37,12 @@ static void grant_bounds(void) {
                             {3,1,2,640,480}, {3,1,1,0,480}, {3,1,1,20000,480}};
   for (guint i = 0; i < G_N_ELEMENTS(invalid); i++) {
     GError *error = NULL;
-    GVariant *value = grant(invalid[i][0], invalid[i][1], invalid[i][2], invalid[i][3], invalid[i][4]);
+    GVariant *value = grant(invalid[i][0], invalid[i][1], invalid[i][2], invalid[i][3], invalid[i][4], NULL);
     g_assert_false(zen_portal_parse_grant(value, TRUE, &node, &width, &height, &error));
     g_assert_nonnull(error); g_clear_error(&error); g_variant_unref(value);
   }
   GError *error = NULL;
-  GVariant *value = grant(3, 1, 1, 640, 480);
+  GVariant *value = grant(3, 1, 1, 640, 480, NULL);
   g_assert_true(zen_portal_parse_grant(value, TRUE, &node, &width, &height, &error));
   g_assert_no_error(error); g_assert_cmpuint(node, ==, 17);
   g_assert_cmpint(width, ==, 640); g_assert_cmpint(height, ==, 480);
@@ -66,6 +70,25 @@ static void input_contract(void) {
   }
   value = zen_portal_input_parameters(SESSION, 17, 640, 480, "pointer", NAN, 0, 0, FALSE, 0, &method, &error);
   g_assert_null(value); g_assert_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT); g_clear_error(&error);
+  const struct { guint code; gint keysym; } characters[] = {
+    {'A', 'A'}, {0xe9, 0xe9},
+    {0x4e2d, (gint)(0x01000000u | 0x4e2d)}, {0x1f600, (gint)(0x01000000u | 0x1f600)},
+  };
+  for (guint i = 0; i < G_N_ELEMENTS(characters); i++) {
+    gboolean down;
+    gint keysym;
+    value = zen_portal_input_parameters(SESSION, 17, 640, 480, "text", 0, 0, characters[i].code, TRUE, 0, &method, &error);
+    g_assert_no_error(error); g_assert_cmpstr(method, ==, "NotifyKeyboardKeysym");
+    g_variant_get(value, "(&o@a{sv}iu)", &session, &opts, &keysym, &down);
+    g_assert_cmpint(keysym, ==, characters[i].keysym); g_assert_cmpuint(down, ==, 1);
+    g_variant_unref(opts); g_variant_unref(g_variant_ref_sink(value));
+  }
+  const guint bad_text[] = {0x0, 0x1f, 0x7f, 0xd800, 0x110000};
+  for (guint i = 0; i < G_N_ELEMENTS(bad_text); i++) {
+    error = NULL;
+    value = zen_portal_input_parameters(SESSION, 17, 640, 480, "text", 0, 0, bad_text[i], TRUE, 0, &method, &error);
+    g_assert_null(value); g_assert_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT); g_clear_error(&error);
+  }
 }
 
 typedef struct {
@@ -80,12 +103,22 @@ typedef struct {
   gboolean running;
   gint deny, wrong_session, hold_start, held_starts, unsupported_control, devices;
   gint input_count, close_count;
+  gint remote_version, screen_version, token_response, expect_restore, reject_input, deny_input;
 } Mock;
 
 static void method_call(GDBusConnection *bus, const char *sender, const char *path, const char *interface,
                          const char *method, GVariant *parameters, GDBusMethodInvocation *invocation, gpointer data) {
-  (void)path; (void)interface;
+  (void)path;
   Mock *mock = data;
+  if (!strcmp(interface, "org.freedesktop.DBus.Properties") && !strcmp(method, "Get")) {
+    const char *wanted, *property;
+    g_variant_get(parameters, "(&s&s)", &wanted, &property);
+    g_assert_cmpstr(property, ==, "version");
+    guint32 version = (guint32)(!strcmp(wanted, SCREEN)
+      ? g_atomic_int_get(&mock->screen_version) : g_atomic_int_get(&mock->remote_version));
+    g_dbus_method_invocation_return_value(invocation, g_variant_new("(v)", g_variant_new_uint32(version)));
+    return;
+  }
   if (!strcmp(interface, REMOTE) && !strcmp(method, "CreateSession") && g_atomic_int_get(&mock->unsupported_control)) {
     g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD, "RemoteDesktop is unavailable");
     return;
@@ -96,6 +129,15 @@ static void method_call(GDBusConnection *bus, const char *sender, const char *pa
     return;
   }
   if (g_str_has_prefix(method, "Notify")) {
+    if (g_atomic_int_get(&mock->reject_input)) {
+      g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
+        "The compositor cannot inject this symbol");
+      return;
+    }
+    if (g_atomic_int_get(&mock->deny_input)) {
+      g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_ACCESS_DENIED, "revoked");
+      return;
+    }
     g_atomic_int_inc(&mock->input_count);
     g_dbus_method_invocation_return_value(invocation, NULL);
     return;
@@ -115,13 +157,24 @@ static void method_call(GDBusConnection *bus, const char *sender, const char *pa
   char *request_path = g_strdup_printf("/org/freedesktop/portal/desktop/request/%s/%s", identity, token);
   g_free(identity);
   if (!strcmp(method, "SelectDevices")) {
-    guint types, persist;
+    guint types, persist = 0;
+    const char *restore = NULL;
     g_assert_true(g_variant_lookup(options, "types", "u", &types)); g_assert_cmpuint(types, ==, 3);
-    g_assert_true(g_variant_lookup(options, "persist_mode", "u", &persist)); g_assert_cmpuint(persist, ==, 0);
-    g_assert_null(g_variant_lookup_value(options, "restore_token", NULL));
+    gboolean has_persist = g_variant_lookup(options, "persist_mode", "u", &persist);
+    gboolean has_restore = g_variant_lookup(options, "restore_token", "&s", &restore);
+    if (g_atomic_int_get(&mock->remote_version) >= 2) {
+      g_assert_true(has_persist); g_assert_cmpuint(persist, ==, 2);
+      if (g_atomic_int_get(&mock->expect_restore)) {
+        g_assert_true(has_restore); g_assert_cmpstr(restore, ==, "stored-token");
+      } else g_assert_false(has_restore);
+    } else {
+      g_assert_false(has_persist);
+      g_assert_false(has_restore);
+    }
   }
   GVariant *result;
-  if (!strcmp(method, "Start")) result = grant(g_atomic_int_get(&mock->devices), 1, 1, 640, 480);
+  if (!strcmp(method, "Start")) result = grant(g_atomic_int_get(&mock->devices), 1, 1, 640, 480,
+    g_atomic_int_get(&mock->token_response) ? "issued-token" : NULL);
   else {
     GVariantBuilder builder; g_variant_builder_init(&builder, G_VARIANT_TYPE_VARDICT);
     if (!strcmp(method, "CreateSession")) {
@@ -162,7 +215,8 @@ static const char *xml =
   "<method name='Start'><arg type='o' direction='in'/><arg type='s' direction='in'/><arg type='a{sv}' direction='in'/><arg type='o' direction='out'/></method>"
   "<method name='SelectSources'><arg type='o' direction='in'/><arg type='a{sv}' direction='in'/><arg type='o' direction='out'/></method>"
   "<method name='OpenPipeWireRemote'><arg type='o' direction='in'/><arg type='a{sv}' direction='in'/><arg type='h' direction='out'/></method>"
-  "</interface><interface name='org.freedesktop.portal.Session'><method name='Close'/></interface></node>";
+  "</interface><interface name='org.freedesktop.portal.Session'><method name='Close'/></interface>"
+  "<interface name='org.freedesktop.DBus.Properties'><method name='Get'><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='v' direction='out'/></method></interface></node>";
 
 static gpointer mock_thread(gpointer data) {
   Mock *mock = data;
@@ -182,6 +236,10 @@ static gpointer mock_thread(gpointer data) {
       info->interfaces[i], &table, mock, NULL, &error), >, 0);
     g_assert_no_error(error);
   }
+  GDBusInterfaceInfo *properties = g_dbus_node_info_lookup_interface(info, "org.freedesktop.DBus.Properties");
+  g_assert_nonnull(properties);
+  g_assert_cmpuint(g_dbus_connection_register_object(mock->server, PATH, properties, &table, mock, NULL, &error), >, 0);
+  g_assert_no_error(error);
   g_mutex_lock(&mock->mutex); mock->running = TRUE; g_cond_signal(&mock->ready); g_mutex_unlock(&mock->mutex);
   g_main_loop_run(mock->loop);
   g_dbus_connection_close_sync(mock->server, NULL, NULL);
@@ -236,48 +294,79 @@ static void lifecycle(void) {
   ZenPortal portal;
   zen_portal_init(&portal, client, NULL);
   assert_no_capture_binding(&portal);
-  g_assert_false(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error)); g_clear_error(&error);
-  g_assert_true(zen_portal_open(&portal, TRUE, "", &error)); g_assert_no_error(error);
+  g_assert_cmpint(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_TERMINAL); g_clear_error(&error);
+  g_assert_true(zen_portal_open(&portal, TRUE, "", NULL, &error)); g_assert_no_error(error);
   assert_capture_binding(&portal);
   int fd = portal.fd;
   g_assert_cmpint(fcntl(fd, F_GETFD), >=, 0);
-  g_assert_true(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error));
-  g_assert_true(zen_portal_input(&portal, "button", 0, 0, 1, TRUE, 0, &error));
-  g_assert_true(zen_portal_input(&portal, "release", 0, 0, 0, FALSE, 0, &error)); g_assert_no_error(error);
-  g_assert_true(zen_portal_input(&portal, "pointer", .5, .5, 0, FALSE, 0, &error)); g_assert_no_error(error);
-  g_assert_true(zen_portal_input(&portal, "scroll", 0, 0, 0, FALSE, 3, &error)); g_assert_no_error(error);
+  g_assert_cmpint(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_OK);
+  g_assert_cmpint(zen_portal_input(&portal, "button", 0, 0, 1, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_OK);
+  g_assert_cmpint(zen_portal_input(&portal, "release", 0, 0, 0, FALSE, 0, &error), ==, ZEN_PORTAL_INPUT_OK); g_assert_no_error(error);
+  g_assert_cmpint(zen_portal_input(&portal, "pointer", .5, .5, 0, FALSE, 0, &error), ==, ZEN_PORTAL_INPUT_OK); g_assert_no_error(error);
+  g_assert_cmpint(zen_portal_input(&portal, "scroll", 0, 0, 0, FALSE, 3, &error), ==, ZEN_PORTAL_INPUT_OK); g_assert_no_error(error);
   g_assert_cmpint(g_atomic_int_get(&mock.input_count), ==, 6);
+  // A rejected single symbol keeps the session; revoked authorization ends it.
+  g_atomic_int_set(&mock.reject_input, TRUE);
+  g_assert_cmpint(zen_portal_input(&portal, "text", 0, 0, 0x4e2d, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_REJECTED);
+  g_assert_false(portal.revoked);
+  g_assert_nonnull(error); g_clear_error(&error);
+  g_atomic_int_set(&mock.reject_input, FALSE);
+  g_atomic_int_set(&mock.deny_input, TRUE);
+  g_assert_cmpint(zen_portal_input(&portal, "text", 0, 0, 0x4e2d, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_TERMINAL);
+  g_assert_true(portal.revoked);
+  g_clear_error(&error);
+  g_atomic_int_set(&mock.deny_input, FALSE);
   zen_portal_close(&portal); zen_portal_close(&portal);
   g_assert_cmpint(fcntl(fd, F_GETFD), ==, -1);
   g_assert_cmpint(g_atomic_int_get(&mock.close_count), ==, 1);
-  g_assert_false(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error)); g_clear_error(&error);
+  g_assert_cmpint(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_TERMINAL); g_clear_error(&error);
   g_atomic_int_set(&mock.deny, TRUE);
   zen_portal_init(&portal, client, NULL);
-  g_assert_false(zen_portal_open(&portal, TRUE, "", &error));
+  g_assert_false(zen_portal_open(&portal, TRUE, "", NULL, &error));
   g_assert_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED); g_clear_error(&error);
   g_assert_cmpint(portal.fd, ==, -1); zen_portal_close(&portal);
   assert_no_capture_binding(&portal);
   g_atomic_int_set(&mock.deny, FALSE);
   g_atomic_int_set(&mock.devices, 1);
   zen_portal_init(&portal, client, NULL);
-  g_assert_false(zen_portal_open(&portal, TRUE, "", &error));
+  g_assert_false(zen_portal_open(&portal, TRUE, "", NULL, &error));
   g_assert_error(error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED); g_clear_error(&error);
   assert_no_capture_binding(&portal); zen_portal_close(&portal);
   g_atomic_int_set(&mock.devices, 3);
   g_atomic_int_set(&mock.unsupported_control, TRUE);
   zen_portal_init(&portal, client, NULL);
-  g_assert_false(zen_portal_open(&portal, TRUE, "", &error));
+  g_assert_false(zen_portal_open(&portal, TRUE, "", NULL, &error));
   g_assert_nonnull(error); g_clear_error(&error);
   assert_no_capture_binding(&portal); zen_portal_close(&portal);
   g_atomic_int_set(&mock.unsupported_control, FALSE);
   zen_portal_init(&portal, client, NULL);
-  g_assert_true(zen_portal_open(&portal, FALSE, "", &error)); g_assert_no_error(error);
+  g_assert_true(zen_portal_open(&portal, FALSE, "", NULL, &error)); g_assert_no_error(error);
   assert_capture_binding(&portal);
-  g_assert_false(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error));
+  g_assert_cmpint(zen_portal_input(&portal, "key", 0, 0, 97, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_TERMINAL);
   g_assert_error(error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED); g_clear_error(&error);
   zen_portal_close(&portal);
+  // Version-gated persistence: a token is only requested from and returned by
+  // interfaces that advertise restore-token support (RemoteDesktop v2).
+  g_atomic_int_set(&mock.remote_version, 2);
+  g_atomic_int_set(&mock.screen_version, 4);
+  g_atomic_int_set(&mock.token_response, TRUE);
   zen_portal_init(&portal, client, NULL);
-  g_assert_true(zen_portal_open(&portal, TRUE, "", &error)); g_assert_no_error(error);
+  g_assert_true(zen_portal_open(&portal, TRUE, "", NULL, &error)); g_assert_no_error(error);
+  g_assert_cmpstr(zen_portal_restore_token(&portal), ==, "issued-token");
+  assert_capture_binding(&portal);
+  zen_portal_close(&portal);
+  g_assert_null(zen_portal_restore_token(&portal));
+  g_atomic_int_set(&mock.expect_restore, TRUE);
+  zen_portal_init(&portal, client, NULL);
+  g_assert_true(zen_portal_open(&portal, TRUE, "", "stored-token", &error)); g_assert_no_error(error);
+  g_assert_cmpstr(zen_portal_restore_token(&portal), ==, "issued-token");
+  zen_portal_close(&portal);
+  g_atomic_int_set(&mock.expect_restore, FALSE);
+  g_atomic_int_set(&mock.token_response, FALSE);
+  g_atomic_int_set(&mock.remote_version, 0);
+  g_atomic_int_set(&mock.screen_version, 0);
+  zen_portal_init(&portal, client, NULL);
+  g_assert_true(zen_portal_open(&portal, TRUE, "", NULL, &error)); g_assert_no_error(error);
   g_dbus_connection_emit_signal(mock.server, NULL, portal.session, "org.freedesktop.portal.Session", "Closed",
     g_variant_new("(a{sv})", NULL), NULL);
   gint64 deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
@@ -290,21 +379,21 @@ static void lifecycle(void) {
   g_assert_false(zen_portal_bind_source(&portal, source, &error));
   g_assert_error(error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED); g_clear_error(&error);
   gst_object_unref(source);
-  g_assert_false(zen_portal_input(&portal, "button", 0, 0, 1, TRUE, 0, &error)); g_clear_error(&error);
+  g_assert_cmpint(zen_portal_input(&portal, "button", 0, 0, 1, TRUE, 0, &error), ==, ZEN_PORTAL_INPUT_TERMINAL); g_clear_error(&error);
   zen_portal_close(&portal);
   g_atomic_int_set(&mock.wrong_session, FALSE);
   g_atomic_int_set(&mock.hold_start, TRUE);
   GCancellable *cancel = g_cancellable_new();
   zen_portal_init(&portal, client, cancel);
   g_timeout_add(20, cancel_pending, cancel);
-  g_assert_false(zen_portal_open(&portal, TRUE, "", &error));
+  g_assert_false(zen_portal_open(&portal, TRUE, "", NULL, &error));
   g_assert_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED); g_clear_error(&error);
   g_assert_cmpint(portal.fd, ==, -1);
   g_assert_cmpint(g_atomic_int_get(&mock.held_starts), ==, 1);
   zen_portal_close(&portal); g_object_unref(cancel);
   g_atomic_int_set(&mock.wrong_session, TRUE);
   zen_portal_init(&portal, client, NULL);
-  g_assert_false(zen_portal_open(&portal, TRUE, "", &error));
+  g_assert_false(zen_portal_open(&portal, TRUE, "", NULL, &error));
   g_assert_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA); g_clear_error(&error);
   zen_portal_close(&portal);
   g_dbus_connection_close_sync(client, NULL, NULL); g_object_unref(client);
@@ -312,6 +401,56 @@ static void lifecycle(void) {
   g_main_loop_unref(mock.loop); g_main_context_unref(mock.context);
   g_test_dbus_down(mock.test_bus); g_object_unref(mock.test_bus);
   g_cond_clear(&mock.ready); g_mutex_clear(&mock.mutex);
+}
+
+static void portal_availability(void) {
+  GError *remote = g_dbus_error_new_for_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", "no RemoteDesktop");
+  g_assert_true(zen_portal_error_is_unavailable(remote)); g_clear_error(&remote);
+  remote = g_dbus_error_new_for_dbus_error("org.freedesktop.DBus.Error.AccessDenied", "denied");
+  g_assert_false(zen_portal_error_is_unavailable(remote)); g_clear_error(&remote);
+  GError *local = g_error_new_literal(G_IO_ERROR, G_IO_ERROR_CANCELLED, "cancelled");
+  g_assert_false(zen_portal_error_is_unavailable(local)); g_clear_error(&local);
+  g_assert_false(zen_portal_error_is_unavailable(NULL));
+  // Terminal classification decides whether one rejected input ends the stream.
+  GError *access = g_dbus_error_new_for_dbus_error("org.freedesktop.DBus.Error.AccessDenied", "revoked");
+  g_assert_true(zen_portal_error_is_terminal(access)); g_clear_error(&access);
+  GError *invalid = g_dbus_error_new_for_dbus_error("org.freedesktop.portal.Error.InvalidArgument", "symbol");
+  g_assert_false(zen_portal_error_is_terminal(invalid)); g_clear_error(&invalid);
+  GError *unavailable_method = g_dbus_error_new_for_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", "no keysym");
+  g_assert_false(zen_portal_error_is_terminal(unavailable_method)); g_clear_error(&unavailable_method);
+  GError *cancelled = g_error_new_literal(G_IO_ERROR, G_IO_ERROR_CANCELLED, "cancelled");
+  g_assert_true(zen_portal_error_is_terminal(cancelled)); g_clear_error(&cancelled);
+  g_assert_false(zen_portal_error_is_terminal(NULL));
+}
+
+static void token_persistence(void) {
+  GError *error = NULL;
+  char *directory = g_dir_make_tmp("zen-portal-token-XXXXXX", &error);
+  g_assert_no_error(error); g_assert_nonnull(directory);
+  char *path = g_build_filename(directory, "token", NULL);
+  g_assert_null(zen_portal_restore_token_load(path, &error)); g_assert_no_error(error);
+  g_assert_true(zen_portal_restore_token_store(path, "token-abc.123", &error)); g_assert_no_error(error);
+  struct stat info;
+  g_assert_cmpint(stat(path, &info), ==, 0);
+  g_assert_cmpuint(info.st_mode & 0077, ==, 0);
+  char *loaded = zen_portal_restore_token_load(path, &error);
+  g_assert_no_error(error); g_assert_cmpstr(loaded, ==, "token-abc.123"); g_free(loaded);
+  g_assert_false(zen_portal_restore_token_store(path, "bad token", &error));
+  g_assert_nonnull(error); g_clear_error(&error);
+  g_assert_true(zen_portal_restore_token_clear(path, &error)); g_assert_no_error(error);
+  g_assert_null(zen_portal_restore_token_load(path, &error)); g_assert_no_error(error);
+  g_assert_true(zen_portal_restore_token_clear(path, &error)); g_assert_no_error(error);
+  // A symlink is never followed, so a tampered path cannot redirect the read.
+  char *target = g_build_filename(directory, "target", NULL);
+  g_assert_true(g_file_set_contents(target, "other", -1, &error)); g_assert_no_error(error);
+  g_assert_cmpint(symlink(target, path), ==, 0);
+  error = NULL;
+  g_assert_null(zen_portal_restore_token_load(path, &error));
+  g_assert_nonnull(error); g_clear_error(&error);
+  g_assert_true(zen_portal_restore_token_clear(path, &error)); g_assert_no_error(error);
+  unlink(target);
+  g_assert_cmpint(g_rmdir(directory), ==, 0);
+  g_free(target); g_free(path); g_free(directory);
 }
 
 int main(int argc, char **argv) {
@@ -324,6 +463,8 @@ int main(int argc, char **argv) {
   g_assert_no_error(error); g_assert_nonnull(plugin); gst_object_unref(plugin);
   g_test_add_func("/portal/grant-bounds", grant_bounds);
   g_test_add_func("/portal/input-contract", input_contract);
+  g_test_add_func("/portal/portal-availability", portal_availability);
+  g_test_add_func("/portal/token-persistence", token_persistence);
   g_test_add_func("/portal/private-bus-lifecycle", lifecycle);
   return g_test_run();
 }
