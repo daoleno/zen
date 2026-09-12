@@ -129,13 +129,27 @@ func applyPlan(plan []PlannedFile, io upgradeIO) error {
 	return nil
 }
 
+// transactionToken derives a per-upgrade token from the previous journal and
+// the new plan, so transaction-owned sidecars are unique even when versions
+// alternate (A -> B -> A -> C) and a later prune can never delete a sidecar
+// that the current rollback still references.
+func transactionToken(previousBytes []byte, plan []PlannedFile) string {
+	material := append([]byte(nil), previousBytes...)
+	for _, file := range plan {
+		material = append(material, file.Path...)
+		material = append(material, 0)
+		material = append(material, file.Content...)
+		material = append(material, 0)
+	}
+	return digest(material)[:16]
+}
+
 // upgradeTransaction records how to restore the current installation and copies
 // every previous file that the plan will overwrite. Small files stay inline in
-// the journal; larger files go to a collision-safe sidecar path (a fixed one
-// could overwrite the still-referenced backup of an earlier upgrade before the
-// new journal is on disk). Created sidecars are returned
-// so the caller can remove them if the transaction never starts.
-func upgradeTransaction(plan []PlannedFile, io upgradeIO) (installJournal, []string, error) {
+// the journal; larger files go to a transaction-owned sidecar path. Created
+// sidecars are returned so the caller can remove them if the transaction never
+// starts, and every failure path removes only files this transaction created.
+func upgradeTransaction(plan []PlannedFile, token string, io upgradeIO) (installJournal, []string, error) {
 	var sidecars []string
 	fail := func(reason string) (installJournal, []string, error) {
 		for _, path := range sidecars {
@@ -159,7 +173,7 @@ func upgradeTransaction(plan []PlannedFile, io upgradeIO) (installJournal, []str
 			if len(current) <= inlineBackupLimit {
 				entry.Before = current
 			} else {
-				sidecar := file.Path + ".zen-previous." + digest(current)[:12]
+				sidecar := file.Path + ".zen-previous." + token
 				if writeErr := io.write(sidecar, current, file.Mode); writeErr != nil {
 					return fail("install_backup_failed")
 				}
@@ -296,8 +310,16 @@ func upgradeWithIO(previousBytes []byte, plan []PlannedFile, io upgradeIO) (inst
 	if err := io.write(backup, previousBytes, 0600); err != nil {
 		return installJournal{}, err
 	}
-	journal, sidecars, err := upgradeTransaction(plan, io)
+	// Only this attempt's own backup may be discarded on failure; a backup the
+	// current journal still references is retained.
+	discardBackup := func() {
+		if current, loadErr := loadJournalWithIO(io); loadErr != nil || current.Previous != backup {
+			_ = io.remove(backup)
+		}
+	}
+	journal, sidecars, err := upgradeTransaction(plan, transactionToken(previousBytes, plan), io)
 	if err != nil {
+		discardBackup()
 		return installJournal{}, err
 	}
 	journal.Previous = backup
@@ -306,6 +328,7 @@ func upgradeWithIO(previousBytes []byte, plan []PlannedFile, io upgradeIO) (inst
 		for _, sidecar := range sidecars {
 			_ = io.remove(sidecar)
 		}
+		discardBackup()
 		return installJournal{}, err
 	}
 	if err := applyPlan(plan, io); err != nil {
@@ -320,10 +343,28 @@ func upgradeWithIO(previousBytes []byte, plan []PlannedFile, io upgradeIO) (inst
 // commitUpgrade keeps the immediately previous journal and its sidecar
 // backups so an explicit rollback can restore a coherent managed installation,
 // and prunes only the older generation that the previous journal references.
-// It runs even when the previous generation has no sidecars (first upgrade).
+// A path still referenced by the current or retained journal is never removed,
+// and the call runs even when the previous generation has no sidecars (first
+// upgrade).
 func commitUpgrade(previous installJournal, io upgradeIO) error {
 	if previous.Previous == "" {
 		return nil
+	}
+	live := map[string]bool{}
+	if current, err := loadJournalWithIO(io); err == nil {
+		for _, entry := range current.Files {
+			if entry.BeforePath != "" {
+				live[entry.BeforePath] = true
+			}
+		}
+		if current.Previous != "" {
+			live[current.Previous] = true
+		}
+	}
+	for _, entry := range previous.Files {
+		if entry.BeforePath != "" {
+			live[entry.BeforePath] = true
+		}
 	}
 	olderBytes, err := io.read(previous.Previous, 0600)
 	if err != nil {
@@ -334,9 +375,12 @@ func commitUpgrade(previous installJournal, io upgradeIO) error {
 		return nil
 	}
 	for _, entry := range older.Files {
-		if entry.BeforePath != "" {
+		if entry.BeforePath != "" && !live[entry.BeforePath] {
 			_ = io.remove(entry.BeforePath)
 		}
+	}
+	if live[previous.Previous] {
+		return nil
 	}
 	return io.remove(previous.Previous)
 }

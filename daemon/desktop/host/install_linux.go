@@ -321,15 +321,24 @@ func rollbackWithIO(io upgradeIO) error {
 	if err != nil {
 		return err
 	}
+	// Preflight every required restore input before the first write: a missing
+	// or malformed previous journal must not leave the installed files changed.
+	previousBytes := []byte(nil)
+	if journal.Previous != "" {
+		previousBytes, err = io.read(journal.Previous, 0600)
+		if err != nil {
+			return errors.New("previous_install_journal_missing")
+		}
+		var parsed installJournal
+		if decodeMessage(previousBytes, &parsed) != nil || parsed.Version != 1 {
+			return errors.New("invalid_previous_install_journal")
+		}
+	}
 	restored, err := restoreJournalWithBackups(journal, io)
 	if err != nil {
 		return err
 	}
 	if journal.Previous != "" {
-		previousBytes, err := io.read(journal.Previous, 0600)
-		if err != nil {
-			return err
-		}
 		var previous installJournal
 		if decodeMessage(previousBytes, &previous) != nil || previous.Version != 1 {
 			return errors.New("invalid_previous_install_journal")

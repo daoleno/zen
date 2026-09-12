@@ -72,7 +72,7 @@ func TestUpgradeBacksUpPreviousFilesAndRestoresThem(t *testing.T) {
 		{Path: "/usr/libexec/zen/sddm-start", Mode: 0755, Content: "new-start"},
 	}
 	io := fs.io()
-	journal, sidecars, err := upgradeTransaction(plan, io)
+	journal, sidecars, err := upgradeTransaction(plan, "test-token", io)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestUpgradePartialWriteRollsBackPreviousState(t *testing.T) {
 		{Path: InstalledBinary, Mode: 0755, Content: "new-elf"},
 	}
 	io := fs.io()
-	journal, _, err := upgradeTransaction(plan, io)
+	journal, _, err := upgradeTransaction(plan, "test-token", io)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestUpgradeRefusesAdministratorDrift(t *testing.T) {
 	fs.files["/etc/sddm.conf"] = []byte("old-conf")
 	plan := []PlannedFile{{Path: "/etc/sddm.conf", Mode: 0644, Content: "new-conf"}}
 	io := fs.io()
-	journal, _, err := upgradeTransaction(plan, io)
+	journal, _, err := upgradeTransaction(plan, "test-token", io)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestUpgradeBackupFailureLeavesInstallationUntouched(t *testing.T) {
 	fs.files[InstalledBinary] = old
 	fs.failWritePrefix = InstalledBinary + ".zen-previous"
 	plan := []PlannedFile{{Path: InstalledBinary, Mode: 0755, Content: "new-elf"}}
-	if _, sidecars, err := upgradeTransaction(plan, fs.io()); err == nil || !strings.Contains(err.Error(), "install_backup_failed") || len(sidecars) != 0 {
+	if _, sidecars, err := upgradeTransaction(plan, "test-token", fs.io()); err == nil || !strings.Contains(err.Error(), "install_backup_failed") || len(sidecars) != 0 {
 		t.Fatalf("backup failure not surfaced: %v %v", err, sidecars)
 	}
 	if !bytes.Equal(fs.files[InstalledBinary], old) {
@@ -241,7 +241,7 @@ func TestRestoreJournalValidatesBackupsBeforeAnyWrite(t *testing.T) {
 		{Path: "/b", Mode: 0644, Content: "new-b"},
 	}
 	io := fs.io()
-	journal, sidecars, err := upgradeTransaction(plan, io)
+	journal, sidecars, err := upgradeTransaction(plan, "test-token", io)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestRestoreJournalMidFailureStaysRetryable(t *testing.T) {
 	fs.files["/x"] = old
 	plan := []PlannedFile{{Path: "/x", Mode: 0644, Content: "new-x"}}
 	io := fs.io()
-	journal, sidecars, err := upgradeTransaction(plan, io)
+	journal, sidecars, err := upgradeTransaction(plan, "test-token", io)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestSecondUpgradeJournalFailureKeepsOldBackup(t *testing.T) {
 	fs.files[InstalledBinary+".zen-previous"] = original
 	plan := []PlannedFile{{Path: InstalledBinary, Mode: 0755, Content: "v3-new"}}
 	io := fs.io()
-	_, sidecars, err := upgradeTransaction(plan, io)
+	_, sidecars, err := upgradeTransaction(plan, "test-token", io)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestRestorePreviousInstallWritesPreviousJournal(t *testing.T) {
 	fs.files["/x"] = old
 	plan := []PlannedFile{{Path: "/x", Mode: 0644, Content: "new-x"}}
 	io := fs.io()
-	journal, _, err := upgradeTransaction(plan, io)
+	journal, _, err := upgradeTransaction(plan, "test-token", io)
 	if err != nil {
 		t.Fatal(err)
 	}
