@@ -88,13 +88,13 @@ func (e env) checkDesktop() DesktopCheck {
 	check.Summary += ". Unattended desktop uses identity-bound TLS created at zen start"
 	switch {
 	case check.HostBroker:
-		check.Summary += ". Lock and login after reboot are available through the reviewed host install"
+		check.Summary += ". Broker socket is reachable; this does not verify display registration, capture, input, or boot persistence"
 	case check.CurrentSession:
-		check.Summary += ". Current logged-in session desktop is available. Lock and login after reboot still need one zen desktop-host --install"
+		check.Summary += ". Current-session display environment is present; capture is not yet verified. Optional lock/login setup starts with zen desktop-host --init-config"
 	default:
 		check.Status = StatusWarn
 		check.Remediation = RemediationDesktopHostSetup
-		check.Summary += ". No current session display. Lock and login after reboot need one zen desktop-host --install; a development watcher is not that service"
+		check.Summary += ". No current session display. For optional SDDM X11 lock/login setup run zen desktop-host --init-config as the existing daemon owner; a development watcher is not a boot service"
 	}
 	return check
 }

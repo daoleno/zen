@@ -545,10 +545,18 @@ target=$INSTALL_DIR/zen
 INSTALL_TEMP=$(mktemp "$INSTALL_DIR/.zen-install.XXXXXX") || die "could not create an installation file beside $target"
 cp "$EXTRACTED_ZEN" "$INSTALL_TEMP" || die "could not stage the Zen executable"
 chmod 0755 "$INSTALL_TEMP" || die "could not set executable permissions"
+if ! "$INSTALL_TEMP" --help >"$WORK_DIR/help-check" 2>&1; then
+  if [ "$PLATFORM" = linux-amd64 ]; then
+    warn "Desktop-capable Linux builds require GTK3, GStreamer app/video, GIO, X11 and XTest shared libraries before even doctor can run."
+    warn "Debian/Ubuntu: sudo apt install libgtk-3-0 libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 libx11-6 libxtst6"
+    warn "Arch/Manjaro: sudo pacman -S --needed gtk3 gstreamer gst-plugins-base libx11 libxtst"
+    warn "For capture plugins and other distributions see docs/remote-desktop.md. No packages were installed."
+  fi
+  sed -n '1,4p' "$WORK_DIR/help-check" >&2
+  die "the staged executable failed its safe --help check; the previous installation is unchanged"
+fi
 mv -f "$INSTALL_TEMP" "$target" || die "could not atomically install $target"
 INSTALL_TEMP=
-
-"$target" --help >/dev/null 2>&1 || die "the installed executable failed its safe --help check"
 
 IMMEDIATE_PATH_COMMAND=
 PROFILE_UPDATED=

@@ -8,15 +8,18 @@ composition are outside this feature.
 
 ## Quick Start
 
-For an already logged-in Linux X11 desktop, run the same desktop-capable Zen
-ELF from that desktop session:
+For an already logged-in Linux X11 desktop, build a stable local ELF once
+(native build prerequisites below), then run it from that desktop session.
+This does not replace a developer's existing `zen` symlink to the DEV child:
 
 ```sh
-./bin/zen --lan
+./scripts/build-zen-local.sh "$HOME/.local/bin/zen-release"
+"$HOME/.local/bin/zen-release" --lan
 ```
 
-Then pair the phone once with the link printed by Zen and open **Remote
-Desktop**. `zen-dev` uses the same runtime and native roles while
+Then run the pairing command printed by Zen, scan the resulting link once,
+and open **Remote Desktop**. Do not start this alongside a daemon that already
+owns the same state/port. `zen-dev` uses the same runtime and native roles while
 automatically rebuilding its child when source files change:
 
 ```sh
@@ -69,17 +72,38 @@ boot/greeter path. Zen does not install packages or run `sudo`.
 Build and inspect a local ELF:
 
 ```sh
-./scripts/build-zen-local.sh bin/zen
-./bin/zen desktop-identity
-./bin/zen doctor
+"$HOME/.local/bin/zen-release" desktop-identity
+"$HOME/.local/bin/zen-release" doctor
+gst-inspect-1.0 --exists ximagesrc openh264enc h264parse videoconvert appsink
 ```
 
 `desktop-identity` prints the resolved executable, SHA-256, native-role flag,
 and native build input. `doctor` lists the ELF's dynamic dependencies and
 reports the current display, broker, TLS identity, and desktop readiness. If a
 desktop-capable ELF is missing a dynamic library, the loader may reject it
-before `zen doctor` can start; install the OS development/runtime packages
-and rebuild. A CGO-disabled archive remains daemon-only.
+before `zen doctor` can start. The installer validates the staged executable
+before replacing the old one and reports package prerequisites on failure.
+Installing runtime libraries does not require a rebuild of a native-linked
+ELF. A CGO-disabled archive remains daemon-only.
+
+Arch/Manjaro build and runtime dependencies:
+
+```sh
+sudo pacman -S --needed base-devel go pkgconf tmux gtk3 gstreamer \
+  gst-plugins-base gst-plugins-good gst-plugins-bad libx11 libxtst
+```
+
+Debian/Ubuntu build and runtime dependencies:
+
+```sh
+sudo apt install build-essential golang pkg-config tmux libgtk-3-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libxtst-dev \
+  gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+```
+
+SDDM is an additional requirement only for optional greeter setup. Installing
+a display manager can change system defaults; do not replace an existing one
+just to enable current-session access.
 
 ## Pairing And Trust
 
@@ -137,7 +161,7 @@ does not run root commands, install packages, change SDDM, start a service, or
 change the daemon:
 
 ```sh
-zen desktop-host --init-config
+"$HOME/.local/bin/zen-release" desktop-host --init-config
 ```
 
 The default file is `$HOME/.zen/desktop-host.json`. Use `--state-dir DIR`
@@ -145,12 +169,14 @@ when the daemon uses another state directory, or `--config PATH` when a
 reviewed location is required. The generated config has only `version`,
 `hostId`, `ownerUid`, `seat`, and an optional explicitly supplied
 `ownerUnit`. A second run with the same identity is a no-op. A changed
-existing file is refused.
+existing file is refused. Missing daemon identities, symlinks, unsafe config
+ownership/modes, inactive/non-graphical seat0, unsupported Wayland, and unsafe
+or missing SDDM hooks are refused without generating a config.
 
 Review the exact transaction before applying it:
 
 ```sh
-zen desktop-host --plan --config "$HOME/.zen/desktop-host.json"
+"$HOME/.local/bin/zen-release" desktop-host --plan --config "$HOME/.zen/desktop-host.json"
 ```
 
 The plan is output only. It names the root-owned config, same-binary broker
@@ -163,10 +189,10 @@ Use a reviewed, desktop-capable ELF. The preparation command prints the exact
 absolute command for the current executable. The generic form is:
 
 ```sh
-sudo /absolute/path/to/zen desktop-host \
+sudo "$HOME/.local/bin/zen-release" desktop-host \
   --install \
   --config "$HOME/.zen/desktop-host.json" \
-  --binary-source /absolute/path/to/zen \
+  --binary-source "$HOME/.local/bin/zen-release" \
   --activate
 ```
 
@@ -179,12 +205,21 @@ device database. The broker admits only the configured owner account and the
 existing daemon identity; an optional `ownerUnit` adds system-unit cgroup
 binding.
 
+Installing hooks does not retroactively register the running display. A
+subsequent normal SDDM display start registers it automatically. For an already
+running greeter, registration requires administrator-verified display and
+Xauthority metadata through the existing `desktop-host --register start`
+API; a reachable broker socket alone is not capture readiness. Never guess
+`:0`, select the first Xorg process, restart SDDM to make a probe pass, or copy
+Xauthority cookies into config. Zen currently does not automate this live
+registration step.
+
 After activation, keep the canonical daemon running with its original state
 and identity. If it must start after reboot, use the optional user-owned boot
 unit for that same daemon:
 
 ```sh
-zen boot install --binary /absolute/path/to/zen \
+zen boot install --binary "$HOME/.local/bin/zen-release" \
   --state-dir "$HOME/.zen" --lan
 zen boot status
 ```
@@ -213,7 +248,7 @@ Rollback is explicit, root-only, and conservative:
 
 ```sh
 sudo systemctl disable --now zen-desktop-host.service
-sudo /absolute/path/to/zen desktop-host --rollback
+sudo "$HOME/.local/bin/zen-release" desktop-host --rollback
 ```
 
 Rollback refuses to overwrite an administrator edit made after installation.

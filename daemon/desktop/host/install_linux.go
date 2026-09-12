@@ -145,7 +145,7 @@ func sddmConfiguration() (*ini.File, string, string, error) {
 			if err != nil {
 				return nil, "", "", err
 			}
-			err = merged.Append(file)
+			err = appendSDDMConfig(merged, file)
 			file.Close()
 			if err != nil {
 				return nil, "", "", err
@@ -189,6 +189,16 @@ func sddmConfiguration() (*ini.File, string, string, error) {
 		f.Close()
 	}
 	return main, start, stop, nil
+}
+
+func appendSDDMConfig(merged *ini.File, reader io.Reader) error {
+	// ini.Append reloads every retained source. Keep bounded bytes, not file
+	// handles that close before the next fragment is appended.
+	data, err := io.ReadAll(io.LimitReader(reader, 65537))
+	if err != nil || len(data) > 65536 {
+		return errors.New("sddm_config_too_large")
+	}
+	return merged.Append(data)
 }
 
 // InstallLinux installs one reviewed zen ELF as the broker/agent identity, but never

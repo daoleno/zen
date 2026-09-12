@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +37,9 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 	agentSource := fs.String("agent-source", "", "Legacy alias; must match --binary-source / --broker-source")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected desktop-host arguments")
 	}
 	if *initConfig {
 		return initLinuxConfig(fs, *configPath, *stateDir, *ownerUnit, stderr)
@@ -136,8 +138,11 @@ func initLinuxConfig(fs *flag.FlagSet, configuredPath, stateDir, ownerUnit strin
 			return errors.New("--init-config cannot be combined with install, rollback, activate, plan, register, or binary source flags")
 		}
 	}
-	if runtime.GOOS != "linux" || !nativebind.NativeLinked {
+	if !nativebind.NativeLinked {
 		return errors.New("desktop host setup requires a Linux desktop-capable zen ELF (CGO and -tags zen_desktop)")
+	}
+	if os.Getuid() == 0 {
+		return errors.New("run --init-config as the unprivileged Zen owner, not sudo")
 	}
 	if strings.TrimSpace(stateDir) == "" {
 		var err error
@@ -145,6 +150,20 @@ func initLinuxConfig(fs *flag.FlagSet, configuredPath, stateDir, ownerUnit strin
 		if err != nil {
 			return fmt.Errorf("locate Zen state directory: %w", err)
 		}
+	}
+	stateDir, err := filepath.Abs(stateDir)
+	if err != nil {
+		return err
+	}
+	if info, err := os.Lstat(filepath.Join(stateDir, "identity.json")); err != nil || !info.Mode().IsRegular() {
+		return errors.New("existing daemon identity required; use the same --state-dir as the running Zen")
+	}
+	executable, err := desktop.CurrentExecutable()
+	if err != nil {
+		return fmt.Errorf("locate current zen executable: %w", err)
+	}
+	if err := inspectInitHost(); err != nil {
+		return err
 	}
 	manager, err := auth.NewManager(stateDir)
 	if err != nil {
@@ -154,14 +173,14 @@ func initLinuxConfig(fs *flag.FlagSet, configuredPath, stateDir, ownerUnit strin
 	if !flagWasSet(fs, "config") {
 		path = filepath.Join(stateDir, "desktop-host.json")
 	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return err
+	}
 	config := HostConfig{Version: 1, HostID: manager.DaemonID(), OwnerUID: uint32(os.Getuid()), Seat: "seat0", OwnerUnit: strings.TrimSpace(ownerUnit)}
 	created, err := InitializeConfig(path, config)
 	if err != nil {
 		return err
-	}
-	executable, err := desktop.CurrentExecutable()
-	if err != nil {
-		return fmt.Errorf("locate current zen executable: %w", err)
 	}
 	if created {
 		fmt.Fprintf(stderr, "Zen desktop host config created: %s\n", path)
@@ -169,10 +188,29 @@ func initLinuxConfig(fs *flag.FlagSet, configuredPath, stateDir, ownerUnit strin
 		fmt.Fprintf(stderr, "Zen desktop host config already matches this daemon: %s\n", path)
 	}
 	fmt.Fprintf(stderr, "  owner account: uid %d, seat0\n", config.OwnerUID)
-	fmt.Fprintf(stderr, "  review: zen desktop-host --plan --config %q\n", path)
-	fmt.Fprintf(stderr, "  install: sudo %q desktop-host --install --config %q --binary-source %q --activate\n", executable, path, executable)
+	fmt.Fprintf(stderr, "  review: %s desktop-host --plan --config %s\n", shellQuote(executable), shellQuote(path))
+	fmt.Fprintf(stderr, "  install: sudo %s desktop-host --install --config %s --binary-source %s --activate\n", shellQuote(executable), shellQuote(path), shellQuote(executable))
 	fmt.Fprintln(stderr, "  current-session access does not need this administrator step; boot/greeter access does.")
+	fmt.Fprintln(stderr, "  activation preserves the running SDDM session; its current X11 display must be registered before capture.")
 	return nil
+}
+
+var inspectInitHost = func() error {
+	observation, err := InspectLinux(context.Background())
+	if err != nil {
+		return fmt.Errorf("desktop setup: active seat0 session unavailable: %w", err)
+	}
+	if observation.Session.Backend != "x11" {
+		return errors.New("desktop setup: Wayland lock/login is unsupported; SDDM X11 is required")
+	}
+	if _, _, _, err := sddmConfiguration(); err != nil {
+		return fmt.Errorf("desktop setup: SDDM X11 hooks unavailable or unsafe: %w", err)
+	}
+	return nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {

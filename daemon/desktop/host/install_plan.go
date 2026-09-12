@@ -70,7 +70,7 @@ WantedBy=multi-user.target
 	}, Requirements: []string{
 		"Build and audit the executable broker and UID-dropped X11 agent; rendered service files alone are not an installation.",
 		"Verify root-owned immutable binaries and all parent directories; no user-writable executable, helper path or library search path. The installed zen ELF is the only broker/agent identity.",
-		"Verify kernel peer UID with fresh device/scope proof, including synchronous revocation. When ownerUnit is configured, additionally require membership in that root-enrolled system unit's cgroup.",
+		"The socket authenticates the enrolled UID; same-UID processes share the account trust boundary. The daemon vouches for fresh device/scope and TLS admission. When ownerUnit is configured, membership in its root-enrolled system-unit cgroup is also required.",
 		"Create the broker socket mode 0600 owned by the configured owner UID inside the root-owned runtime directory; keep all other runtime state root-only.",
 		"Approve boot service ownership for the existing unprivileged Zen daemon with unchanged identity, state directory and network settings; do not start a duplicate owner.",
 		"Use the journaled installer to preserve existing SDDM X11 display hooks and register verified display metadata with an Xauthority FD, never cookies in logs or user config.",
@@ -97,6 +97,11 @@ func PrintInstallPlan(w io.Writer, plan InstallPlan) {
 	for _, file := range plan.Files {
 		fmt.Fprintf(w, "\nFILE %s mode=%04o\n%s", file.Path, file.Mode, file.Content)
 	}
+	fmt.Fprintln(w, "\nINSTALL ALSO WRITES (validated at install):")
+	fmt.Fprintln(w, "/usr/libexec/zen/zen mode=0755 (one supplied desktop-capable ELF)")
+	fmt.Fprintln(w, "/usr/libexec/zen/sddm-start and sddm-stop mode=0755 (preserve effective Xsetup/Xstop)")
+	fmt.Fprintln(w, "/etc/sddm.conf mode=0644 (two X11 hook keys; original retained for rollback)")
+	fmt.Fprintln(w, "/etc/zen/desktop-install.json mode=0600 (rollback journal), desktop-install.lock mode=0600")
 	fmt.Fprintln(w, "\nREQUIREMENTS")
 	for _, requirement := range plan.Requirements {
 		fmt.Fprintf(w, "- %s\n", requirement)

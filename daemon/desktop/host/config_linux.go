@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // InitializeConfig writes the user-owned input for the reviewed host install.
@@ -19,22 +20,41 @@ func InitializeConfig(path string, config HostConfig) (created bool, err error) 
 	if err := config.Validate(); err != nil {
 		return false, err
 	}
+	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
+		info, err := os.Lstat(parent)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return false, errors.New("unsafe_host_config_parent")
+		}
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || (owner.Uid != 0 && owner.Uid != uint32(os.Getuid())) || info.Mode().Perm()&0022 != 0 && info.Mode()&os.ModeSticky == 0 {
+			return false, errors.New("unsafe_host_config_parent")
+		}
+		if parent == "/" {
+			break
+		}
+	}
 	body, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return false, fmt.Errorf("encode host config: %w", err)
 	}
 	body = append(body, '\n')
 
-	if current, readErr := os.ReadFile(path); readErr == nil {
-		var existing HostConfig
+	if info, statErr := os.Lstat(path); statErr == nil {
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || owner.Uid != uint32(os.Getuid()) || info.Size() > 32768 {
+			return false, errors.New("unsafe_host_config")
+		}
+		current, readErr := os.ReadFile(path)
 		parsed, parseErr := ReadHostConfig(bytes.NewReader(current))
-		if parseErr != nil ||
-			json.Unmarshal(current, &existing) != nil || parsed != existing || existing != config {
+		if readErr != nil || parseErr != nil || parsed != config {
 			return false, errors.New("host_config_exists_and_differs")
 		}
 		return false, nil
-	} else if !os.IsNotExist(readErr) {
-		return false, readErr
+	} else if !os.IsNotExist(statErr) {
+		return false, statErr
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -61,8 +81,18 @@ func InitializeConfig(path string, config HostConfig) (created bool, err error) 
 	if err := tmp.Close(); err != nil {
 		return false, fmt.Errorf("close host config: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	// Linking the complete staged file publishes without overwriting a config
+	// concurrently created by another setup or administrator review.
+	if err := os.Link(tmpPath, path); err != nil {
 		return false, fmt.Errorf("install host config: %w", err)
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return true, err
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return true, err
 	}
 	return true, nil
 }

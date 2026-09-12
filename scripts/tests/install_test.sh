@@ -107,7 +107,7 @@ make_archive() {
   cat > "$package/zen" <<'EOF'
 #!/bin/sh
 case ${1:-} in
-  --help) printf 'Zen fixture help\n'; exit 0 ;;
+  --help) printf 'Zen fixture help\n'; exit "${FAKE_HELP_STATUS:-0}" ;;
   doctor) printf 'fixture doctor\n'; exit "${FAKE_DOCTOR_STATUS:-0}" ;;
   update) printf 'fixture update\n'; exit 0 ;;
   *) exit 2 ;;
@@ -394,6 +394,20 @@ test_doctor_failure_is_not_corruption() {
   pass "treats doctor dependency failures as host guidance, not installer corruption"
 }
 
+test_native_loader_failure_keeps_previous_install() {
+  new_case native-loader-failure
+  make_archive
+  mkdir -p "$HOME_DIR/install"
+  printf 'previous healthy binary\n' > "$HOME_DIR/install/zen"
+  expect_failure ZEN_VERSION=v1.2.3 ZEN_INSTALL_DIR="$HOME_DIR/install" FAKE_HELP_STATUS=127
+  assert_contains "$HOME_DIR/install/zen" "previous healthy binary"
+  assert_contains "$CASE_DIR/output" "previous installation is unchanged"
+  assert_contains "$CASE_DIR/output" "sudo pacman -S --needed"
+  assert_contains "$CASE_DIR/output" "before even doctor can run"
+  assert_not_exists "$HOME_DIR/.zshrc"
+  pass "native dependency failure retains the previous binary and supplies package guidance"
+}
+
 if [[ ${1:-} == --smoke ]]; then
   printf 'TAP version 13\n'
   test_fixed_version_and_atomic_replacement
@@ -414,4 +428,5 @@ test_install_dir_selection
 test_profile_idempotency_and_no_mutation
 test_missing_tools
 test_doctor_failure_is_not_corruption
+test_native_loader_failure_keeps_previous_install
 printf '1..%d\n' "$PASS"

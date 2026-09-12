@@ -1,16 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { AppState, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, router, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useCurrentServer } from "../store/currentServer";
 import { useAppColors } from "../constants/tokens";
 import { prepareDesktopConnection } from "../services/remoteDesktop";
-import { desktopKey, desktopPoint, desktopTextEdits, desktopStart, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopPanState } from "../services/remoteDesktopModel";
+import { desktopKey, desktopPoint, desktopTextEdits, beginDesktopPan, advanceDesktopPan, type DesktopInput, type DesktopPanState } from "../services/remoteDesktopModel";
 import { NativeDesktopView, type DesktopState } from "../modules/zen-remote-desktop/src";
 import { DesktopCommandQueue, type DesktopCommandTarget } from "../services/remoteDesktopCommands";
 import { DesktopConnectionUnavailable, DesktopPreflightError } from "../services/desktopConnectionCheck";
-import { PAIRING_SCOPE_COPY } from "../services/pairingScope";
 
 export default function RemoteDesktopScreen() {
   const { currentServer } = useCurrentServer();
@@ -91,6 +90,8 @@ function DesktopSession() {
   };
   const connect = async (automatic = false) => {
     if (!currentServer) return;
+    if (reconnect.current) clearTimeout(reconnect.current);
+    reconnect.current = null;
     if (!automatic) reconnectAttempts.current = 0;
     reconnectAllowed.current = true;
     const epoch = ++generation.current;
@@ -118,11 +119,7 @@ function DesktopSession() {
       }
     } finally { if (epoch === generation.current) setPreparing(false); }
   };
-  const grantDesktop = () => {
-    Alert.alert("Grant unattended desktop", PAIRING_SCOPE_COPY,
-      [{ text: "Cancel", style: "cancel" },
-        { text: "Scan pairing link", onPress: () => router.push({ pathname: "/settings", params: { pairMode: "scanner" } }) }]);
-  };
+  const grantDesktop = () => router.push({ pathname: "/settings", params: { pairMode: "scanner" } });
   const pointer = (x: number, y: number) => desktopPoint(
     (x - size.width / 2 - offset.x) / zoom + size.width / 2,
     (y - size.height / 2 - offset.y) / zoom + size.height / 2,
@@ -191,17 +188,18 @@ function DesktopSession() {
     <View style={styles.viewport} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
         <NativeDesktopView ref={native} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
-          if (commands.currentGeneration !== inputGeneration) return;
+          if (!inputGeneration || commands.currentGeneration !== inputGeneration) return;
+          if (nativeEvent.state === "sources") {
+            stop();
+            setStatus({ state: "unsupported", reason: "This server requested attended sharing. Update Zen on the computer." });
+            return;
+          }
           if (["disconnected", "denied", "unsupported"].includes(nativeEvent.state)) {
             const retry = nativeEvent.state === "disconnected" && reconnectAllowed.current && reconnectAttempts.current < 6;
             stop(retry);
             if (retry) scheduleReconnect();
           }
           if (nativeEvent.state === "connected") reconnectAttempts.current = 0;
-          if (nativeEvent.state === "sources") {
-            const start = desktopStart(nativeEvent.source, true);
-            if (start) send(start);
-          }
           if (nativeEvent.state === "streaming" || nativeEvent.state === "connected") setControl(nativeEvent.control === true);
           if (nativeEvent.surface === "greeter" || nativeEvent.surface === "locked") {
             textRef.current = ""; setText(""); setKeyboard(false);
@@ -211,7 +209,7 @@ function DesktopSession() {
       </View> : null}
       {connected ? <View style={StyleSheet.absoluteFill} {...responder.panHandlers} /> : <View style={styles.empty}>
         <Ionicons name="desktop-outline" size={40} color="#b9bec5" />
-        <Text style={styles.message}>{status.reason || (status.state === "sources" ? status.source === "wayland" ? "Wayland portal desktop" : "Selected X11 desktop" : status.state === "requesting" ? "Awaiting host permission" : status.state === "streaming" ? "Waiting for video" : preparing ? "Connecting" : "Connect")}</Text>
+        {status.reason ? <Text style={styles.message}>{status.reason}</Text> : null}
         {!preparing && !["requesting", "streaming", "sources"].includes(status.state) ? <>
           <Pressable accessibilityRole="button" disabled={!currentServer} onPress={() => void connect()} style={styles.action}><Text style={styles.actionText}>Connect</Text></Pressable>
           {status.reason?.includes("terminal access only") ? <Pressable accessibilityRole="button" onPress={grantDesktop} style={styles.action}><Text style={styles.actionText}>Grant unattended desktop</Text></Pressable> : null}
@@ -223,6 +221,7 @@ function DesktopSession() {
       {tool("hand-left-outline", "Pan desktop", () => { setPanMode(!panMode); setDragMode(false); }, panMode, !connected)}
       {tool("move-outline", "Drag pointer", () => { setDragMode(!dragMode); setPanMode(false); }, dragMode, !connected || !control)}
       {tool("contract-outline", "Reset zoom", () => { setZoom(1); setOffset({ x: 0, y: 0 }); }, false, !connected)}
+      {size.width < 360 ? <View style={styles.toolbarBreak} /> : null}
       {tool("keypad-outline", "Keyboard", () => { textRef.current = ""; setText(""); setKeyboard(!keyboard); }, keyboard, !connected || !control || status.surface === "greeter" || status.surface === "locked")}
       {tool("lock-closed-outline", "OS password", () => {
         textRef.current = ""; setText(""); setKeyboard(false);
@@ -256,6 +255,7 @@ const styles = StyleSheet.create({
   action: { backgroundColor: "#edf1f4", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 6 },
   actionText: { color: "#182024", fontSize: 15, fontWeight: "600" },
   toolbar: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-evenly", borderTopWidth: StyleSheet.hairlineWidth, padding: 4 },
+  toolbarBreak: { width: "100%" },
   tool: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 6 },
   keyboard: { flexDirection: "row", padding: 8, alignItems: "center" },
   textInput: { flex: 1, minWidth: 0, height: 44, borderWidth: 1, borderRadius: 6, paddingHorizontal: 12 },

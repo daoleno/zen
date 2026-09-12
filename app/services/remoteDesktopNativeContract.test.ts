@@ -82,6 +82,8 @@ describe("Remote desktop native lifecycle source contracts", () => {
     expect(route).not.toContain("Attended unencrypted LAN (not lock/login)");
     expect(route).not.toContain("Allow unencrypted LAN desktop");
     expect(route).toContain("Grant unattended desktop");
+    expect(route).toContain('This server requested attended sharing. Update Zen on the computer.');
+    expect(route).not.toContain('desktopStart(');
     expect(prepare).toContain('mode: "unattended"');
     expect(prepare).toContain("desktopPinnedIdentityPlan");
     expect(prepare).toContain('throw new Error("Unattended desktop cannot use unencrypted LAN transport.")');
