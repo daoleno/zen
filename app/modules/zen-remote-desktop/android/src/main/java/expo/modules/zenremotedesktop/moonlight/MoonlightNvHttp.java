@@ -333,6 +333,13 @@ public class MoonlightNvHttp implements MoonlightPairingHttp, MoonlightHost {
     }
 
     @Override
+    public void cancelInFlight() {
+        httpClientLongConnectTimeout.dispatcher().cancelAll();
+        httpClientShortConnectTimeout.dispatcher().cancelAll();
+        httpClientLongConnectNoReadTimeout.dispatcher().cancelAll();
+    }
+
+    @Override
     public void unpair() throws IOException {
         openHttpConnectionToString(httpClientLongConnectTimeout, baseUrlHttp, "unpair", null);
     }

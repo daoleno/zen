@@ -21,6 +21,9 @@ public interface MoonlightHost {
 
     void unpair() throws IOException;
 
+    /** Cancels in-flight HTTP calls so revoke does not wait on the network. */
+    void cancelInFlight();
+
     /**
      * The host accepted /launch or /resume. Establishment is separate: the C
      * core reports connectionStarted after the stream is actually up.

@@ -45,6 +45,28 @@ class ZenRemoteDesktopModule : Module() {
       AsyncFunction("focus") { view: DesktopKeyboardView -> view.focusInput() }
       AsyncFunction("clear") { view: DesktopKeyboardView -> view.clearInput() }
     }
+    View(MoonlightDesktopView::class) {
+      Events("onState")
+      Prop("connection") { view: MoonlightDesktopView, value: String -> view.connect(value) }
+      AsyncFunction("disconnect") { view: MoonlightDesktopView, generation: Int -> view.disconnect(generation) }
+      AsyncFunction("revoke") { view: MoonlightDesktopView, generation: Int -> view.revoke(generation) }
+      AsyncFunction("sendKey") { view: MoonlightDesktopView, generation: Int, keyCode: Int, keyAction: Int, modifiers: Int, flags: Int ->
+        view.sendKey(generation, keyCode, keyAction, modifiers, flags)
+      }
+      AsyncFunction("sendText") { view: MoonlightDesktopView, generation: Int, value: String ->
+        view.sendText(generation, value)
+      }
+      AsyncFunction("sendPointerMove") { view: MoonlightDesktopView, generation: Int, deltaX: Int, deltaY: Int ->
+        view.sendPointerMove(generation, deltaX, deltaY)
+      }
+      AsyncFunction("sendPointerButton") { view: MoonlightDesktopView, generation: Int, button: Int, action: Int ->
+        view.sendPointerButton(generation, button, action)
+      }
+      AsyncFunction("sendScroll") { view: MoonlightDesktopView, generation: Int, clicks: Int ->
+        view.sendScroll(generation, clicks)
+      }
+      OnViewDestroys { view: MoonlightDesktopView -> view.destroy() }
+    }
   }
 }
 

@@ -157,7 +157,53 @@ describe("Moonlight client core integration contract", () => {
     expect(session).toContain("remoteInputAesIv = riIv");
     expect(session).toContain("pairing_required");
     expect(session).toContain("launch_rejected");
-    expect(session).toContain("no_common_video_format");
+    expect(session).toContain("invalid_video_formats");
     expect(session).toContain("startAccepted = startResult == 0");
+  });
+
+  test("paired renderer wiring and Review1121 corrections stay in production", () => {
+    const session = read(
+      "android/src/main/java/expo/modules/zenremotedesktop/moonlight/ZenMoonlightSession.kt",
+    );
+    // Defect 1: saved pin installed before the first authenticated request.
+    expect(session.indexOf("host.setServerCert(saved)")).toBeGreaterThan(-1);
+    expect(session.indexOf("host.setServerCert(saved)")).toBeLessThan(session.indexOf("host.fetchServerInfo()"));
+    expect(session).toContain("trust_store_corrupt");
+    // Defect 2: epoch fence and explicit revoke report.
+    expect(session).toContain("attemptAlive");
+    expect(session).toContain("cancelInFlight");
+    expect(session).toContain("RevokeReport");
+    expect(session).toContain("inMemoryPin");
+    // Defect 3: upstream launch/resume/foreign-busy policy.
+    expect(session).toContain("VERB_RESUME");
+    expect(session).toContain("host_busy_foreign_app");
+    // Defect 4: renderable decoder formats, never a raw SCM intersection.
+    expect(session).toContain("MoonlightVideoFormats.isRenderable");
+    expect(session).not.toContain("serverCodecModeSupport().toInt() == 0");
+    const formats = read(
+      "android/src/main/java/expo/modules/zenremotedesktop/moonlight/MoonlightVideoFormats.kt",
+    );
+    expect(formats).toContain("const val AV1_MAIN8 = 0x1000");
+    expect(formats).toContain("const val SCM_AV1_MAIN8 = 0x00010000");
+    const core = read("android/src/main/java/expo/modules/zenremotedesktop/MoonlightCore.kt");
+    expect(core).toContain("const val VIDEO_FORMAT_AV1_MAIN8 = 0x1000");
+
+    // Actual module -> MediaCodec/Surface + input/disconnect wiring.
+    const module = read("android/src/main/java/expo/modules/zenremotedesktop/ZenRemoteDesktopModule.kt");
+    expect(module).toContain("View(MoonlightDesktopView::class)");
+    for (const fn of ["disconnect", "revoke", "sendKey", "sendText", "sendPointerMove", "sendPointerButton", "sendScroll"]) {
+      expect(module).toContain(`AsyncFunction("${fn}")`);
+    }
+    const view = read("android/src/main/java/expo/modules/zenremotedesktop/MoonlightDesktopView.kt");
+    expect(view).toContain('MediaCodec.createDecoderByType("video/avc")');
+    expect(view).toContain("setOnFrameRenderedListener");
+    expect(view).toContain("MAX_QUEUED_FRAMES");
+    expect(view).toContain('"start_accepted"');
+    expect(view).toContain('publish("frame", "first")');
+    expect(view).toContain("sendUtf8TextEvent");
+    expect(view).toContain("revoke(activeHost)");
+    const index = read("src/index.ts");
+    expect(index).toContain("NativeMoonlightDesktopView");
+    expect(index).toContain("MoonlightDesktopApi");
   });
 });

@@ -45,7 +45,17 @@ public final class ZenHostTrustStore {
             pemWriter.writeObject(certificate);
         }
         String pem = writer.toString().replace("\r", "");
-        Files.write(certFile.toPath(), pem.getBytes(StandardCharsets.US_ASCII));
+        // Atomic replace: a crashed write never leaves a half certificate that
+        // the next connect would reject as corrupt.
+        java.nio.file.Path temp = java.nio.file.Paths.get(certFile.getPath() + ".tmp");
+        Files.write(temp, pem.getBytes(StandardCharsets.US_ASCII));
+        try {
+            Files.move(temp, certFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(temp, certFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     public void clear() throws IOException {

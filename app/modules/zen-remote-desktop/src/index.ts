@@ -61,3 +61,60 @@ export const NativeDesktopKeyboard: ComponentType<DesktopKeyboardProps> | null =
     return null;
   }
 })();
+
+export interface MoonlightDesktopState {
+  state:
+    | "connecting"
+    | "start_accepted"
+    | "start_failed"
+    | "stage"
+    | "connected"
+    | "status"
+    | "frame"
+    | "rejected"
+    | "failed"
+    | "disconnected"
+    | "revoked";
+  reason?: string;
+  generation?: number;
+  width?: number;
+  height?: number;
+  presented?: number;
+  dropped?: number;
+  connected?: boolean;
+}
+
+export interface MoonlightDesktopApi {
+  disconnect(generation: number): Promise<boolean>;
+  revoke(generation: number): Promise<boolean>;
+  sendKey(generation: number, keyCode: number, keyAction: number, modifiers: number, flags: number): Promise<boolean>;
+  sendText(generation: number, value: string): Promise<boolean>;
+  sendPointerMove(generation: number, deltaX: number, deltaY: number): Promise<boolean>;
+  sendPointerButton(generation: number, button: number, action: number): Promise<boolean>;
+  sendScroll(generation: number, clicks: number): Promise<boolean>;
+}
+
+export interface MoonlightDesktopProps {
+  style?: StyleProp<ViewStyle>;
+  /** JSON connection document: host/ports/uniqueId/appId/pin/resolution. */
+  connection: string;
+  onState: (event: { nativeEvent: MoonlightDesktopState }) => void;
+  ref?: Ref<MoonlightDesktopApi>;
+}
+
+/**
+ * Paired Moonlight view. Null on native shells that predate the view; callers
+ * then keep using the existing WebSocket route.
+ */
+export const NativeMoonlightDesktopView: ComponentType<MoonlightDesktopProps> | null = (() => {
+  try {
+    const expo = (globalThis as {
+      expo?: { getViewConfig?: (module: string, view?: string) => unknown };
+    }).expo;
+    if (!expo || typeof expo.getViewConfig !== "function" ||
+        expo.getViewConfig("ZenRemoteDesktop", "MoonlightDesktopView") == null) return null;
+    return requireNativeViewManager<MoonlightDesktopProps>("ZenRemoteDesktop", "MoonlightDesktopView");
+  } catch {
+    return null;
+  }
+})();

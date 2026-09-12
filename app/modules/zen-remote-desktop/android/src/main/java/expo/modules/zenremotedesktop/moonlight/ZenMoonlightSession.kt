@@ -4,16 +4,26 @@ import expo.modules.zenremotedesktop.MoonlightAudioConfiguration
 import expo.modules.zenremotedesktop.MoonlightCore
 import expo.modules.zenremotedesktop.MoonlightKeyMaterial
 import java.security.SecureRandom
+import java.security.cert.CertificateException
+import java.security.cert.X509Certificate
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One connected path: upstream pairing/serverinfo/launch drives the pinned C
  * core, which owns the stream and reports establishment through its callbacks.
  *
- * Provider identity, host addresses and ports are constructed by the caller
- * from Zen-scoped storage; this class only sequences the upstream application
- * layer and the core, persists the paired certificate and hands the negotiated
- * RI key material to the core. `Started.startAccepted` means the bridge accepted
- * the start call; `connectionStarted` from the core is the establishment proof.
+ * Cancellation/ownership: every connect attempt is bound to an epoch. stop()
+ * and revoke() advance the epoch, cancel in-flight HTTP and drop the in-memory
+ * pin, so a launch that returns after disconnect/revoke can never start the
+ * core or write trust. No lock is held across blocking network calls.
+ *
+ * Trust: an existing pinned certificate is installed into the host client
+ * BEFORE the first authenticated request. A corrupt or unreadable saved trust
+ * is reported as a result instead of silently resetting the identity.
+ *
+ * Host policy (upstream NvConnection semantics): idle host -> launch; host
+ * already running the requested app -> resume; a different running app is
+ * reported explicitly and never terminated to manufacture a success.
  */
 class ZenMoonlightSession(
   private val trustStore: ZenHostTrustStore,
@@ -34,6 +44,7 @@ class ZenMoonlightSession(
     val bitrateKbps: Int,
     val packetSize: Int,
     val audioConfiguration: Int,
+    /** Decoder-supported VIDEO_FORMAT_* bits; never a host SCM mask. */
     val supportedVideoFormats: Int,
     val streamingRemotely: Int = -1,
     val enableSops: Boolean = true,
@@ -48,20 +59,71 @@ class ZenMoonlightSession(
       val serverInfo: MoonlightServerInfo,
       val pairState: PairingManager.PairState?,
       val launchAccepted: Boolean,
+      val launchVerb: String,
       val rtspSessionUrl: String?,
       val startAccepted: Boolean,
     ) : Result()
   }
 
+  /** Report with explicit failures; a swallowed quit/unpair is not success. */
+  data class RevokeReport(
+    val stopResult: Int,
+    val quitSucceeded: Boolean,
+    val unpairSucceeded: Boolean,
+    val trustCleared: Boolean,
+    val failures: List<String>,
+  ) {
+    val complete: Boolean
+      get() = failures.isEmpty()
+  }
+
+  private val epoch = AtomicLong(0)
   private val random = SecureRandom()
 
+  @Volatile
+  private var inMemoryPin: X509Certificate? = null
+
+  private fun attemptAlive(attempt: Long): Boolean = epoch.get() == attempt
+
+  /** Cancels the current attempt without touching the core. */
+  fun cancel(host: MoonlightHost): Long {
+    val next = epoch.incrementAndGet()
+    inMemoryPin = null
+    host.setServerCert(null)
+    host.cancelInFlight()
+    return next
+  }
+
   fun connect(host: MoonlightHost, plan: Plan, pin: String?): Result {
+    val attempt = epoch.get()
+
+    // 1. Install existing trust before the first authenticated request.
+    val saved: X509Certificate? = try {
+      trustStore.load()
+    } catch (error: CertificateException) {
+      return Result.Rejected(null, "trust_store_corrupt")
+    } catch (error: Exception) {
+      return Result.Rejected(null, "trust_store_unreadable")
+    }
+    if (saved != null) {
+      host.setServerCert(saved)
+      inMemoryPin = saved
+    }
+    if (!attemptAlive(attempt)) {
+      return Result.Rejected(null, "revoked")
+    }
+
+    // 2. Server info (pinned HTTPS when trust exists, HTTP fallback otherwise).
     val serverInfo = try {
       host.fetchServerInfo()
     } catch (error: Exception) {
-      return Result.Rejected(null, "serverinfo_failed:${error.javaClass.simpleName}")
+      return Result.Rejected(null, if (attemptAlive(attempt)) "serverinfo_failed:${error.javaClass.simpleName}" else "revoked")
+    }
+    if (!attemptAlive(attempt)) {
+      return Result.Rejected(serverInfo, "revoked")
     }
 
+    // 3. Pair when the host reports it is not paired yet.
     var pairState: PairingManager.PairState? = null
     if (!serverInfo.paired()) {
       if (pin.isNullOrBlank()) {
@@ -70,33 +132,51 @@ class ZenMoonlightSession(
       pairState = try {
         host.pairingManager.pair(serverInfo.rawXml(), pin)
       } catch (error: Exception) {
-        return Result.Rejected(serverInfo, "pairing_failed:${error.javaClass.simpleName}")
+        return Result.Rejected(serverInfo, if (attemptAlive(attempt)) "pairing_failed:${error.javaClass.simpleName}" else "revoked")
+      }
+      if (!attemptAlive(attempt)) {
+        return Result.Rejected(serverInfo, "revoked")
       }
       if (pairState != PairingManager.PairState.PAIRED) {
         return Result.Rejected(serverInfo, "pairing_${pairState.name.lowercase()}")
       }
     }
 
-    // A paired host must have a pinned certificate; never continue unpinned.
-    val pinned = host.serverCert ?: trustStore.load()
+    // 4. Persist and install the pin; never continue unpinned.
+    val pinned = host.serverCert ?: saved
     if (pinned == null) {
       return Result.Rejected(serverInfo, "missing_pinned_certificate")
     }
+    if (!attemptAlive(attempt)) {
+      return Result.Rejected(serverInfo, "revoked")
+    }
+    host.setServerCert(pinned)
+    inMemoryPin = pinned
     try {
       trustStore.save(pinned)
     } catch (error: Exception) {
-      return Result.Rejected(serverInfo, "trust_store_failed:${error.javaClass.simpleName}")
+      return Result.Rejected(serverInfo, if (attemptAlive(attempt)) "trust_store_failed:${error.javaClass.simpleName}" else "revoked")
+    }
+    if (!attemptAlive(attempt)) {
+      return Result.Rejected(serverInfo, "revoked")
     }
 
-    // Actual supported formats: the plan must intersect the host's codec mask.
+    // 5. Actual decoder-supported formats only; no SCM intersection.
+    if (!MoonlightVideoFormats.isRenderable(plan.supportedVideoFormats)) {
+      return Result.Rejected(serverInfo, "invalid_video_formats")
+    }
     if (!MoonlightAudioConfiguration.isValid(plan.audioConfiguration)) {
       return Result.Rejected(serverInfo, "invalid_audio_configuration")
     }
-    if (plan.supportedVideoFormats and serverInfo.serverCodecModeSupport().toInt() == 0) {
-      return Result.Rejected(serverInfo, "no_common_video_format")
-    }
     if (plan.width <= 0 || plan.height <= 0 || plan.fps <= 0) {
       return Result.Rejected(serverInfo, "invalid_resolution")
+    }
+
+    // 6. Upstream launch/resume policy. Foreign busy state is explicit.
+    val verb = when {
+      serverInfo.runningGameId() == 0 -> MoonlightLaunchRequest.VERB_LAUNCH
+      serverInfo.runningGameId() == plan.appId -> MoonlightLaunchRequest.VERB_RESUME
+      else -> return Result.Rejected(serverInfo, "host_busy_foreign_app")
     }
 
     val riKey = MoonlightKeyMaterial.generateKey()
@@ -113,7 +193,7 @@ class ZenMoonlightSession(
       MoonlightAudioConfiguration.channelCount(plan.audioConfiguration)
 
     val request = MoonlightLaunchRequest.Builder()
-      .verb(MoonlightLaunchRequest.VERB_LAUNCH)
+      .verb(verb)
       .appId(plan.appId)
       .resolution(plan.width, plan.height, plan.fps)
       .riKey(riKey, riKeyId)
@@ -125,7 +205,11 @@ class ZenMoonlightSession(
     val outcome = try {
       host.launchOrResume(request)
     } catch (error: Exception) {
-      return Result.Rejected(serverInfo, "launch_failed:${error.javaClass.simpleName}")
+      return Result.Rejected(serverInfo, if (attemptAlive(attempt)) "launch_failed:${error.javaClass.simpleName}" else "revoked")
+    }
+    if (!attemptAlive(attempt)) {
+      // A stop/revoke happened while the launch was in flight: never start.
+      return Result.Rejected(serverInfo, "revoked")
     }
     if (!outcome.accepted()) {
       return Result.Rejected(serverInfo, "launch_rejected")
@@ -155,24 +239,55 @@ class ZenMoonlightSession(
       serverInfo = serverInfo,
       pairState = pairState,
       launchAccepted = true,
+      launchVerb = verb,
       rtspSessionUrl = outcome.rtspSessionUrl(),
       startAccepted = startResult == 0,
     )
   }
 
-  /** Stops the core session. Host-enforced revoke is [revoke]. */
-  fun stop(): Int = core.stop()
+  /** Disconnect: invalidates in-flight attempts and stops the core session. */
+  fun stop(host: MoonlightHost? = null): Int {
+    epoch.incrementAndGet()
+    inMemoryPin = null
+    if (host != null) {
+      host.setServerCert(null)
+      host.cancelInFlight()
+    }
+    return core.stop()
+  }
 
   /**
-   * Client-side revoke: stop the stream, ask the host to cancel the session and
-   * drop the pairing, and clear the pinned certificate so the next connection
-   * must pair again. Host-enforced termination remains the host's authority.
+   * Client-side revoke: invalidate attempts, drop in-memory trust, stop the
+   * stream, ask the host to cancel the session and drop the pairing, and clear
+   * the pinned certificate. Failures are reported, not swallowed.
    */
-  fun revoke(host: MoonlightHost): Int {
+  fun revoke(host: MoonlightHost): RevokeReport {
+    cancel(host)
+    val failures = mutableListOf<String>()
     val stopResult = core.stop()
-    runCatching { host.quitApp() }
-    runCatching { host.unpair() }
-    runCatching { trustStore.clear() }
-    return stopResult
+    val quitSucceeded = try {
+      host.quitApp()
+    } catch (error: Exception) {
+      failures += "quit:${error.javaClass.simpleName}"
+      false
+    }
+    val unpairSucceeded = try {
+      host.unpair()
+      true
+    } catch (error: Exception) {
+      failures += "unpair:${error.javaClass.simpleName}"
+      false
+    }
+    val trustCleared = try {
+      trustStore.clear()
+      true
+    } catch (error: Exception) {
+      failures += "trust:${error.javaClass.simpleName}"
+      false
+    }
+    return RevokeReport(stopResult, quitSucceeded, unpairSucceeded, trustCleared, failures)
   }
+
+  /** Last pin installed in memory; cleared by stop/revoke. */
+  fun inMemoryPin(): X509Certificate? = inMemoryPin
 }

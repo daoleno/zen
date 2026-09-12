@@ -229,10 +229,23 @@ open class MoonlightCore {
     const val STATE_FLAG_CALLBACK_FAILED = 0x20
 
     // Upstream constants used by callers; kept in sync with src/Limelight.h.
+    // VIDEO_FORMAT_* are client decoder bits; SCM_* are host codec-mode bits.
+    // They are different masks (AV1_MAIN8 is 0x1000 vs SCM_AV1_MAIN8 0x10000).
     const val VIDEO_FORMAT_H264 = 0x0001
+    const val VIDEO_FORMAT_H264_HIGH8_444 = 0x0004
     const val VIDEO_FORMAT_H265 = 0x0100
     const val VIDEO_FORMAT_H265_MAIN10 = 0x0200
-    const val VIDEO_FORMAT_AV1_MAIN8 = 0x10000
+    const val VIDEO_FORMAT_H265_REXT8_444 = 0x0400
+    const val VIDEO_FORMAT_H265_REXT10_444 = 0x0800
+    const val VIDEO_FORMAT_AV1_MAIN8 = 0x1000
+    const val VIDEO_FORMAT_AV1_MAIN10 = 0x2000
+    const val VIDEO_FORMAT_AV1_HIGH8_444 = 0x4000
+    const val VIDEO_FORMAT_AV1_HIGH10_444 = 0x8000
+    const val VIDEO_FORMAT_MASK_H264 = 0x000F
+    const val VIDEO_FORMAT_MASK_H265 = 0x0F00
+    const val VIDEO_FORMAT_MASK_AV1 = 0xF000
+    const val VIDEO_FORMAT_MASK_10BIT = 0xAA00
+    const val VIDEO_FORMAT_MASK_YUV444 = 0xCC04
 
     const val FRAME_TYPE_PFRAME = 0x00
     const val FRAME_TYPE_IDR = 0x01
@@ -248,6 +261,9 @@ open class MoonlightCore {
 
     const val SERVER_CODEC_MODE_H264 = 0x00000001
     const val SERVER_CODEC_MODE_HEVC = 0x00000100
+    const val SERVER_CODEC_MODE_HEVC_MAIN10 = 0x00000200
+    const val SERVER_CODEC_MODE_AV1_MAIN8 = 0x00010000
+    const val SERVER_CODEC_MODE_AV1_MAIN10 = 0x00020000
 
     /** Non-null when the production native library could not be loaded upfront. */
     @Volatile
