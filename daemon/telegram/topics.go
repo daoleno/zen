@@ -518,13 +518,17 @@ func sessionStatusText(projection brain.SessionProjection) string {
 
 // enqueueTopicText enqueues a topic-scoped plain text message split into safe
 // chunks. The same row identity is shared across re-enqueues.
-func (m *Manager) enqueueTopicText(id, text string, threadID, reply int64) {
+func (m *Manager) enqueueTopicText(id, text string, threadID, reply int64, buttons ...InlineKeyboardButton) {
 	_ = m.store.mutate(func(state *durableState) error {
 		enqueueTopicTextLocked(state, id, threadID, text, m.now().UTC())
 		for i := range state.Outbox {
 			if state.Outbox[i].ID == id+":0" {
 				state.Outbox[i].ReplyMessageID = reply
-				state.Outbox[i].ReplyMarkup = navigationKeyboard()
+				state.Outbox[i].ReplyMarkup = navigationKeyboard(*state, threadID)
+				if len(buttons) > 0 {
+					keyboard := state.Outbox[i].ReplyMarkup
+					keyboard.InlineKeyboard = append([][]InlineKeyboardButton{buttons}, keyboard.InlineKeyboard...)
+				}
 				if mapping, ok := topicMappingByThread(*state, threadID); ok {
 					state.Outbox[i].SessionID = mapping.SessionID
 				}
@@ -557,12 +561,11 @@ func (m *Manager) handleSessionTopicMessage(ctx context.Context, token string, m
 	state := m.store.snapshot()
 	command, _ := parseCommand(message.Text)
 	if command == "/brain" {
-		_ = m.store.mutate(func(s *durableState) error { s.BrainReplyTopicID = 0; return nil })
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Brain", 0)
+		m.returnToBrain(fmt.Sprintf("command:%d", updateID), message.MessageThreadID, message.MessageID)
 		return "command"
 	}
 	if command == "/sessions" {
-		m.enqueueSessionList(updateID, 0)
+		m.enqueueSessionList(updateID, message.MessageID, message.MessageThreadID)
 		return "command"
 	}
 	if m.brain == nil {
@@ -1061,7 +1064,7 @@ func (m *Manager) applyCreateTopicResult(state *durableState, op topicOpRecord, 
 			state.BrainTopicID = topic.MessageThreadID
 		}
 		state.BrainTopics = append(state.BrainTopics, topic.MessageThreadID)
-		enqueue(state, outboxRecord{ID: "topic:brain:welcome", Kind: "send", MessageThreadID: topic.MessageThreadID, Text: "Brain", ReplyMarkup: navigationKeyboard(), CreatedAt: now})
+		enqueue(state, outboxRecord{ID: "topic:brain:welcome", Kind: "send", MessageThreadID: topic.MessageThreadID, Text: "Brain", ReplyMarkup: navigationKeyboard(*state, topic.MessageThreadID), CreatedAt: now})
 		return nil
 	}
 	for index := range state.Topics {

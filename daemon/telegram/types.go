@@ -94,6 +94,7 @@ type SendRequest struct {
 
 type InlineKeyboardButton struct {
 	Text         string `json:"text"`
+	URL          string `json:"url,omitempty"`
 	CallbackData string `json:"callback_data,omitempty"`
 }
 

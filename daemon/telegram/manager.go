@@ -349,10 +349,15 @@ func (m *Manager) Status() Status {
 	if m.brain != nil {
 		status.BrainThreadID, _ = m.brain.ChatThreadID()
 	}
-	if state.FallbackSessionID != "" && m.brain != nil {
-		if projection, err := m.brain.SessionProjection(state.FallbackSessionID); err == nil {
-			status.RecipientLabel = projection.Label
+	if !state.TopicsAvailable && state.FallbackSessionID != "" {
+		status.RecipientLabel = state.FallbackSessionID + " (unavailable)"
+		if m.brain != nil {
+			if projection, err := m.brain.SessionProjection(state.FallbackSessionID); err == nil && projection.Present {
+				status.RecipientLabel = sessionStatusLabel(projection)
+			}
 		}
+	} else {
+		status.RecipientID = ""
 	}
 	for _, row := range state.Outbox {
 		if row.State == "ambiguous" {
@@ -377,7 +382,7 @@ func (m *Manager) Status() Status {
 	case !state.Enabled:
 		status.State = StateDisabled
 	case state.WebhookConflict || state.LastError != "" || status.AmbiguousDelivery > 0 ||
-		status.TopicAmbiguousOps > 0 || status.TopicFailedMessages > 0:
+		status.TopicAmbiguousOps > 0 || status.TopicFailedOps > 0 || status.TopicFailedMessages > 0:
 		status.State = StateDegraded
 	case state.OwnerID == 0 || state.ChatID == 0:
 		status.State = StateSetupPending
@@ -721,7 +726,7 @@ func (m *Manager) tryBind(message Message, state durableState) string {
 			current.BrainTopicID = message.MessageThreadID
 			current.BrainTopics = append(current.BrainTopics, message.MessageThreadID)
 		}
-		enqueue(current, outboxRecord{ID: "binding:connected", Kind: "send", MessageThreadID: message.MessageThreadID, Text: "Brain connected.", ReplyMarkup: navigationKeyboard(), CreatedAt: m.now().UTC()})
+		enqueue(current, outboxRecord{ID: "binding:connected", Kind: "send", MessageThreadID: message.MessageThreadID, Text: "Brain connected.", ReplyMarkup: navigationKeyboard(*current, message.MessageThreadID), CreatedAt: m.now().UTC()})
 		return nil
 	})
 	if err != nil {
@@ -731,47 +736,49 @@ func (m *Manager) tryBind(message Message, state durableState) string {
 }
 
 func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message Message, updateID int64) string {
+	reply := func(id, text string) {
+		m.enqueueTopicText(id, text, message.MessageThreadID, message.MessageID)
+	}
 	command, _ := parseCommand(message.Text)
 	switch command {
 	case "/help", "/start":
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), ownerHelpText, message.MessageID)
+		reply(fmt.Sprintf("command:%d", updateID), ownerHelpText)
 		return "command"
 	case "/status":
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), m.ownerStatusText(), message.MessageID)
+		reply(fmt.Sprintf("command:%d", updateID), m.ownerStatusText())
 		return "command"
 	case "/new":
 		if m.brain == nil {
 			return "not_submitted"
 		}
 		if _, err := m.brain.NewChat(); err != nil {
-			m.enqueueText(fmt.Sprintf("command:%d", updateID), "Zen could not start a fresh Brain chat.", message.MessageID)
+			reply(fmt.Sprintf("command:%d", updateID), "Zen could not start a fresh Brain chat.")
 			return "not_submitted"
 		}
 		m.clearFallbackRecipient()
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Started a fresh Brain chat.", message.MessageID)
+		reply(fmt.Sprintf("command:%d", updateID), "Started a fresh Brain chat.")
 		return "command"
 	case "/brain":
-		_ = m.store.mutate(func(s *durableState) error { s.BrainReplyTopicID = 0; return nil })
-		if m.clearFallbackRecipient() {
-			m.enqueueText(fmt.Sprintf("command:%d", updateID), "You are back in Zen Brain. Send a message to continue the current Brain chat.", message.MessageID)
-		} else {
-			m.enqueueText(fmt.Sprintf("command:%d", updateID), "You are already in Zen Brain.", message.MessageID)
-		}
+		m.returnToBrain(fmt.Sprintf("command:%d", updateID), message.MessageThreadID, message.MessageID)
 		return "command"
 	case "/sessions":
-		m.enqueueSessionList(updateID, message.MessageID)
+		m.enqueueSessionList(updateID, message.MessageID, message.MessageThreadID)
 		return "command"
 	case "/use", "/session":
 		argument := strings.TrimSpace(parseCommandArgument(message.Text))
 		if argument == "" {
-			m.enqueueText(fmt.Sprintf("command:%d", updateID), "Choose a Session with /sessions, then send /use <number>.", message.MessageID)
+			reply(fmt.Sprintf("command:%d", updateID), "Choose a Session with /sessions, then send /use <number>.")
 			return "command"
 		}
-		m.selectFallbackRecipient(argument, updateID, message.MessageID)
+		if m.store.snapshot().TopicsAvailable {
+			m.enqueueSessionList(updateID, message.MessageID, message.MessageThreadID)
+		} else {
+			m.selectFallbackRecipient(argument, updateID, message.MessageID)
+		}
 		return "command"
 	}
 	if message.hasUnsupportedMedia() {
-		m.enqueueText(fmt.Sprintf("unsupported:%d", updateID), "This connection currently supports text and captions only. Send the content as text.", message.MessageID)
+		reply(fmt.Sprintf("unsupported:%d", updateID), "This connection currently supports text and captions only. Send the content as text.")
 		return "unsupported_media"
 	}
 	body := strings.TrimSpace(message.Text)
@@ -806,12 +813,12 @@ func (m *Manager) handleOwnerMessage(ctx context.Context, token string, message 
 		m.startTyping(ctx, token)
 		return "accepted"
 	case brain.ExternalInputUncertain:
-		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Zen could not prove whether Brain received this message. It was not replayed.", message.MessageID)
+		reply(fmt.Sprintf("ack:%d", updateID), "Zen could not prove whether Brain received this message. It was not replayed.")
 		return "uncertain"
 	case brain.ExternalInputPending:
 		return "pending"
 	default:
-		m.enqueueText(fmt.Sprintf("ack:%d", updateID), "Zen did not submit this message. Send it again when Brain is available.", message.MessageID)
+		reply(fmt.Sprintf("ack:%d", updateID), "Zen did not submit this message. Send it again when Brain is available.")
 		return "not_submitted"
 	}
 }
@@ -828,10 +835,13 @@ func parseCommandArgument(value string) string {
 
 func (m *Manager) ownerStatusText() string {
 	state := m.store.snapshot()
-	if !state.TopicsAvailable && state.FallbackSessionID != "" && m.brain != nil {
-		if projection, err := m.brain.SessionProjection(state.FallbackSessionID); err == nil && projection.Present {
-			return "Telegram is connected. Recipient: " + sessionStatusLabel(projection) + ". Use /brain to return to Brain."
+	if !state.TopicsAvailable && state.FallbackSessionID != "" {
+		if m.brain != nil {
+			if projection, err := m.brain.SessionProjection(state.FallbackSessionID); err == nil && projection.Present {
+				return sessionStatusText(projection)
+			}
 		}
+		return "Recipient: Session " + state.FallbackSessionID + " (unavailable). Choose /brain or /sessions."
 	}
 	if !state.TopicsAvailable {
 		return "Telegram is connected to Zen Brain. Threaded mode is unavailable; use /sessions to choose a Session."
@@ -877,7 +887,7 @@ func sessionListText(sessions []brain.WorkerRef, topicMode bool) string {
 func (m *Manager) selectFallbackRecipient(argument string, updateID, replyID int64) {
 	state := m.store.snapshot()
 	if state.TopicsAvailable {
-		m.enqueueSessionList(updateID, replyID)
+		m.enqueueSessionList(updateID, replyID, brainDestination(state))
 		return
 	}
 	if m.brain == nil {
@@ -941,18 +951,23 @@ func (m *Manager) handleCallback(ctx context.Context, token string, query Callba
 	if state.OwnerID == 0 || query.From.ID != state.OwnerID || query.Message.Chat.ID != state.ChatID {
 		return "callback_rejected"
 	}
+	reply := func(text string) {
+		m.enqueueTopicText("callback:"+query.ID, text, query.Message.MessageThreadID, query.Message.MessageID)
+	}
 	switch query.Data {
 	case "brain":
-		_ = m.store.mutate(func(s *durableState) error { s.BrainReplyTopicID = 0; return nil })
-		m.clearFallbackRecipient()
-		m.enqueueText("callback:"+query.ID, "Brain", 0)
+		m.returnToBrain("callback:"+query.ID, query.Message.MessageThreadID, query.Message.MessageID)
 		return "callback_brain"
 	case "sessions":
-		m.enqueueSessionList(updateID, 0)
+		m.enqueueSessionList(updateID, query.Message.MessageID, query.Message.MessageThreadID)
 		return "callback_sessions"
 	case "new":
+		if _, sessionTopic := topicMappingByThread(state, query.Message.MessageThreadID); sessionTopic {
+			reply(sessionNewResponseText)
+			return "callback_rejected"
+		}
 		_ = m.store.mutate(func(current *durableState) error {
-			enqueue(current, outboxRecord{ID: "callback:" + query.ID, Kind: "send", Text: "Start a new Brain conversation?", MessageThreadID: brainDestination(*current), ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{{Text: "New Chat", CallbackData: "new_confirm"}, {Text: "Cancel", CallbackData: "brain"}}}}, CreatedAt: m.now().UTC()})
+			enqueue(current, outboxRecord{ID: "callback:" + query.ID, Kind: "send", Text: "Start a new Brain conversation?", MessageThreadID: query.Message.MessageThreadID, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{{Text: "New Chat", CallbackData: "new_confirm"}, {Text: "Cancel", CallbackData: "brain"}}}}, CreatedAt: m.now().UTC()})
 			return nil
 		})
 		return "callback_confirm"
@@ -960,7 +975,7 @@ func (m *Manager) handleCallback(ctx context.Context, token string, query Callba
 		if _, sessionTopic := topicMappingByThread(state, query.Message.MessageThreadID); sessionTopic {
 			return "callback_rejected"
 		}
-		return m.handleOwnerMessage(ctx, token, Message{Text: "/new"}, updateID)
+		return m.handleOwnerMessage(ctx, token, Message{Text: "/new", MessageThreadID: query.Message.MessageThreadID}, updateID)
 	}
 	if state.TopicsAvailable && !strings.HasPrefix(query.Data, "session:") {
 		return "callback_topic_mode"
@@ -971,48 +986,62 @@ func (m *Manager) handleCallback(ctx context.Context, token string, query Callba
 	}
 	sessionID, ok := state.CallbackRoutes[strings.TrimPrefix(query.Data, prefix)]
 	if !ok || strings.TrimSpace(sessionID) == "" || m.brain == nil {
-		m.enqueueText("callback:"+query.ID, "That Session choice has expired. Run /sessions again.", query.Message.MessageID)
+		reply("That Session choice has expired. Run /sessions again.")
 		return "callback_stale"
 	}
 	sessions, err := m.brain.DelegatedSessions()
 	if err != nil {
-		m.enqueueText("callback:"+query.ID, "Sessions are temporarily unavailable. Run /sessions again shortly.", query.Message.MessageID)
+		reply("Sessions are temporarily unavailable. Run /sessions again shortly.")
 		return "callback_unavailable"
 	}
 	for _, session := range sessions {
 		if session.ID == sessionID {
 			if state.TopicsAvailable {
 				for _, mapping := range state.Topics {
-					if mapping.SessionID == sessionID && mapping.State != topicStateStale {
-						m.enqueueTopicText("callback:"+query.ID, sessionStatusText(brain.SessionProjection{SessionID: sessionID, Label: session.Name, Status: session.Status}), mapping.MessageThreadID, 0)
-						return "callback_opened"
+					if mapping.ChatID == state.ChatID && mapping.SessionID == sessionID && mapping.State != topicStateStale {
+						projection, err := m.brain.SessionProjection(sessionID)
+						if err != nil || !projection.Present {
+							reply("That Session is unavailable. Run /sessions again.")
+							return "callback_unavailable"
+						}
+						var buttons []InlineKeyboardButton
+						if link := topicURL(state, mapping.MessageThreadID); link != "" {
+							buttons = append(buttons, InlineKeyboardButton{Text: "Open Session", URL: link})
+						}
+						m.enqueueTopicText("callback:"+query.ID, sessionStatusText(projection), query.Message.MessageThreadID, query.Message.MessageID, buttons...)
+						return "callback_topic_link"
 					}
 				}
-				_ = m.ensureSessionTopic(session, m.now().UTC())
+				if err := m.ensureSessionTopic(session, m.now().UTC()); err != nil {
+					reply("The Session topic is unavailable. Run /sessions again shortly.")
+					return "callback_unavailable"
+				}
+				reply("The Session topic is not ready yet. Run /sessions again shortly.")
 				return "callback_topic_pending"
 			}
 			m.setFallbackRecipient(sessionID, updateID, query.Message.MessageID, sessions)
 			return "callback_selected"
 		}
 	}
-	m.enqueueText("callback:"+query.ID, "That Session is no longer available. Run /sessions again.", query.Message.MessageID)
+	reply("That Session is no longer available. Run /sessions again.")
 	return "callback_stale"
 }
 
-func (m *Manager) enqueueSessionList(updateID, replyID int64) {
+func (m *Manager) enqueueSessionList(updateID, replyID, threadID int64) {
 	if m.brain == nil {
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Sessions are currently unavailable.", replyID)
+		m.enqueueTopicText(fmt.Sprintf("command:%d", updateID), "Sessions are currently unavailable.", threadID, replyID)
 		return
 	}
 	sessions, err := m.brain.DelegatedSessions()
 	if err != nil {
-		m.enqueueText(fmt.Sprintf("command:%d", updateID), "Sessions are currently unavailable.", replyID)
+		m.enqueueTopicText(fmt.Sprintf("command:%d", updateID), "Sessions are currently unavailable.", threadID, replyID)
 		return
 	}
 	if len(sessions) > maxCallbackRoutes {
 		sessions = sessions[:maxCallbackRoutes]
 	}
-	text := sessionListText(sessions, m.store.snapshot().TopicsAvailable)
+	connection := m.store.snapshot()
+	text := sessionListText(sessions, connection.TopicsAvailable)
 	routes := make(map[string]string, len(sessions))
 	rows := make([][]InlineKeyboardButton, 0, len(sessions))
 	for _, session := range sessions {
@@ -1021,7 +1050,16 @@ func (m *Manager) enqueueSessionList(updateID, replyID int64) {
 		}
 		key := digestText(session.ID)
 		routes[key] = session.ID
-		rows = append(rows, []InlineKeyboardButton{{Text: topicLabel(session), CallbackData: "session:" + key}})
+		button := InlineKeyboardButton{Text: topicLabel(session), CallbackData: "session:" + key}
+		for _, mapping := range connection.Topics {
+			if mapping.ChatID == connection.ChatID && mapping.SessionID == session.ID && mapping.State != topicStateStale {
+				if link := topicURL(connection, mapping.MessageThreadID); link != "" {
+					button.URL, button.CallbackData = link, ""
+				}
+				break
+			}
+		}
+		rows = append(rows, []InlineKeyboardButton{button})
 	}
 	_ = m.store.mutate(func(state *durableState) error {
 		state.CallbackRoutes = routes
@@ -1032,11 +1070,11 @@ func (m *Manager) enqueueSessionList(updateID, replyID int64) {
 		chunks := chunkRichText(richText{Text: text}, maxMessageText)
 		for i, chunk := range chunks {
 			var keyboard *InlineKeyboardMarkup
-			if i == len(chunks)-1 && len(rows) > 0 {
-				keyboard = &InlineKeyboardMarkup{InlineKeyboard: rows}
+			if i == len(chunks)-1 {
+				keyboard = &InlineKeyboardMarkup{InlineKeyboard: append(rows, navigationKeyboard(*state, threadID).InlineKeyboard...)}
 			}
 			enqueue(state, outboxRecord{ID: fmt.Sprintf("command:%d:%d", updateID, i), Kind: "send", Text: chunk.Text,
-				MessageThreadID: brainDestination(*state), ReplyMessageID: replyID, ReplyMarkup: keyboard, CreatedAt: m.now().UTC()})
+				MessageThreadID: threadID, ReplyMessageID: replyID, ReplyMarkup: keyboard, CreatedAt: m.now().UTC()})
 		}
 		return nil
 	})
@@ -1178,7 +1216,7 @@ func (m *Manager) stopTyping() {
 func (m *Manager) enqueueText(id, text string, reply int64) {
 	_ = m.store.mutate(func(state *durableState) error {
 		for index, chunk := range chunkRichText(richText{Text: strings.TrimSpace(text)}, maxMessageText) {
-			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk.Text, MessageThreadID: brainDestination(*state), ReplyMessageID: reply, ReplyMarkup: navigationKeyboard(), CreatedAt: m.now().UTC()})
+			enqueue(state, outboxRecord{ID: fmt.Sprintf("%s:%d", id, index), Kind: "send", Text: chunk.Text, MessageThreadID: brainDestination(*state), ReplyMessageID: reply, ReplyMarkup: navigationKeyboard(*state, brainDestination(*state)), CreatedAt: m.now().UTC()})
 		}
 		return nil
 	})

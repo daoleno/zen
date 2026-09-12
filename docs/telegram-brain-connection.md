@@ -65,8 +65,17 @@ Session topics are keyed by exact current delegated Session ID and private chat
 ID. Names are display-only. Hidden Brain hosts and manual/nondelegated Sessions
 do not enter the Telegram inventory.
 
-- `/sessions` lists the current inventory. Inline choices either open the exact
-  existing Session topic with its status or select its private-chat fallback.
+- `/sessions` lists the current inventory in the topic where it was requested.
+  Existing topic choices use URL buttons with Telegram's forum-topic link form
+  `https://t.me/<bot>/<topic-id>?thread=<topic-id>`, not callback acknowledgements
+  pretending to switch the client's view. Private-chat fallback still uses
+  owner-validated callbacks to select the exact Session.
+- Old topic-selection callbacks return the current Session/Turn/Work status and
+  an Open Session link in the source topic. A topic not yet provisioned reports
+  that state explicitly. Brain navigation offers the primary topic link;
+  `/brain` acknowledges in the source topic, without retargeting that topic's
+  Session identity. Clients without topic-link navigation can use Telegram's
+  native topic list. No private `t.me/c/<user-id>` or callback game URL is used.
 - Native topic messages route only to the mapped Session through
   `SubmitExternalSessionInput` and the watcher's generic receipt-owned input
   queue. There are no Telegram-specific provider commands or byte checks.
@@ -74,6 +83,10 @@ do not enter the Telegram inventory.
   when the private-chat recipient has since changed.
 - `/status` reports Session/Turn/Work state. `/brain` and `/sessions`
   navigate without starting work. `/new` in a Session topic does not reset Brain.
+  Session keyboards omit New Chat; old Session New Chat callbacks are rejected.
+  A missing private-chat recipient stays visibly unavailable in `/status` and
+  Settings until an explicit selection. Failed topic operations degrade the
+  connection status rather than appearing healthy.
 - Assistant output is projected after the mapping/reconnect boundary, using
   stable event/chunk IDs. Partial output edits the existing message.
 - Completion markers follow canonical Turn and Work facts. A current active
@@ -155,6 +168,8 @@ or device; an Expo export is only a bundle check.
 ## Official References
 
 - [Bot forums and General behavior](https://core.telegram.org/api/forum#bot-forums)
+- [Forum topic links](https://core.telegram.org/api/links#forum-topic-links)
+- [Inline URL buttons](https://core.telegram.org/bots/api#inlinekeyboardbutton)
 - [Bot API](https://core.telegram.org/bots/api), especially getMe, Message,
   CallbackQuery, sendMessage, createForumTopic, editForumTopic and closeForumTopic
 - [Bot FAQ and flood control](https://core.telegram.org/bots/faq)

@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -61,9 +63,43 @@ func brainDestination(state durableState) int64 {
 	return 0
 }
 
-func navigationKeyboard() *InlineKeyboardMarkup {
-	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{
-		{{Text: "Brain", CallbackData: "brain"}, {Text: "Sessions", CallbackData: "sessions"}},
-		{{Text: "New Chat", CallbackData: "new"}},
-	}}
+func topicURL(state durableState, threadID int64) string {
+	if !state.TopicsAvailable || state.BotUsername == "" || threadID <= generalTopicThreadID {
+		return ""
+	}
+	id := strconv.FormatInt(threadID, 10)
+	link := url.URL{Scheme: "https", Host: "t.me", Path: "/" + state.BotUsername + "/" + id,
+		RawQuery: url.Values{"thread": {id}}.Encode()}
+	return link.String()
+}
+
+func navigationKeyboard(state durableState, threadID int64) *InlineKeyboardMarkup {
+	button := InlineKeyboardButton{Text: "Brain", CallbackData: "brain"}
+	if link := topicURL(state, state.BrainTopicID); link != "" {
+		button.URL, button.CallbackData = link, ""
+	}
+	rows := [][]InlineKeyboardButton{{button, {Text: "Sessions", CallbackData: "sessions"}}}
+	_, sessionTopic := topicMappingByThread(state, threadID)
+	if !sessionTopic && (isGeneralThread(threadID) || slices.Contains(state.BrainTopics, threadID)) {
+		rows = append(rows, []InlineKeyboardButton{{Text: "New Chat", CallbackData: "new"}})
+	}
+	return &InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (m *Manager) returnToBrain(id string, sourceThread, replyID int64) {
+	if err := m.store.mutate(func(state *durableState) error {
+		removePendingFallbackRows(state, state.FallbackSessionID)
+		state.FallbackSessionID = ""
+		state.FallbackStartedAt = time.Time{}
+		state.BrainReplyTopicID = 0
+		return nil
+	}); err != nil {
+		m.enqueueTopicText(id, "Brain could not be selected. Try again.", sourceThread, replyID)
+		return
+	}
+	text := "Recipient: Brain."
+	if m.store.snapshot().TopicsAvailable {
+		text = "Brain"
+	}
+	m.enqueueTopicText(id, text, sourceThread, replyID)
 }
