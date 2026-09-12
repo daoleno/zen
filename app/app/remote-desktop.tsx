@@ -60,6 +60,8 @@ function DesktopSession() {
   const moonlightSession = useRef<{ generation: number; ended: boolean } | null>(null);
   const moonlightPoint = useRef({ x: 0, y: 0 });
   const moonlightButtons = useRef(new Set<number>());
+  const moonlightFrame = useRef({ width: 1280, height: 720 });
+  const moonlightKey = useRef("");
   const [moonlightPin, setMoonlightPin] = useState("");
   const [commands] = useState(() => new DesktopCommandQueue(() => native.current, (reason) => {
     generation.current++;
@@ -87,10 +89,15 @@ function DesktopSession() {
     if (!view || !session || session.ended) return;
     for (const event of events) {
       if (event.type === "pointer") {
-        const dx = Math.round(event.x - moonlightPoint.current.x);
-        const dy = Math.round(event.y - moonlightPoint.current.y);
+        // desktopPoint returns normalized 0..1 letterboxed coordinates; the
+        // native API wants absolute frame pixels plus the frame reference.
+        const frame = moonlightFrame.current;
+        const px = Math.round(event.x * frame.width);
+        const py = Math.round(event.y * frame.height);
         moonlightPoint.current = { x: event.x, y: event.y };
-        if (dx || dy) void view.sendPointerMove(session.generation, dx, dy).catch(() => undefined);
+        void view.sendPointerPosition(session.generation, px, py, frame.width, frame.height).catch(() => undefined);
+      } else if (event.type === "scroll") {
+        void view.sendScroll(session.generation, event.delta).catch(() => undefined);
       } else if (event.type === "button") {
         if (event.down) moonlightButtons.current.add(event.code);
         else moonlightButtons.current.delete(event.code);
@@ -130,17 +137,32 @@ function DesktopSession() {
     }
     input(desktopNamedKey(key));
   };
-  const stop = useCallback((keepReconnect = false) => {
+  const revokeMoonlight = useCallback((reason: string) => {
     const session = moonlightSession.current;
     if (session && !session.ended) {
-      const view = moonlight.current;
-      if (view) {
-        if (keepReconnect) void view.disconnect(session.generation).catch(() => undefined);
-        else void view.revoke(session.generation).catch(() => undefined);
-      }
+      void moonlight.current?.revoke(session.generation).catch(() => undefined);
       session.ended = true;
       moonlightSession.current = null;
     }
+    moonlightKey.current = "";
+    moonlightButtons.current.clear();
+    setMoonlightPin("");
+    setConnection("");
+    setTransport("");
+    setControl(false);
+    setStatus({ state: "disconnected", reason });
+  }, []);
+  // Ordinary Stop (and background/focus loss) disconnects while retaining the
+  // pairing; explicit device/trust removal (daemon revocation) calls
+  // revokeMoonlight and is the only path that unpairs.
+  const stop = useCallback((keepReconnect = false) => {
+    const session = moonlightSession.current;
+    if (session && !session.ended) {
+      void moonlight.current?.disconnect(session.generation).catch(() => undefined);
+      session.ended = true;
+      moonlightSession.current = null;
+    }
+    moonlightKey.current = "";
     moonlightButtons.current.clear();
     setMoonlightPin("");
     reconnectAllowed.current = keepReconnect;
@@ -211,10 +233,12 @@ function DesktopSession() {
           // The client generates the pairing PIN; the host operator enters it
           // in Sunshine's Web UI for the matching request.
           const pin = String(Math.floor(1000 + Math.random() * 9000));
+          const doc = JSON.stringify({ ...parsed.moonlight, pin });
           moonlightSession.current = null;
+          moonlightKey.current = doc;
           setMoonlightPin(pin);
           setTransport("moonlight");
-          setConnection(JSON.stringify({ ...parsed.moonlight, pin }));
+          setConnection(doc);
         } else {
           setMoonlightPin("");
           setTransport(parsed.transport ?? "");
@@ -232,6 +256,9 @@ function DesktopSession() {
             ? (error.recovery || error.message)
             : error instanceof Error ? error.message : "Connection failed.",
         });
+        if (error instanceof DesktopPreflightError && error.code === "device_revoked") {
+          revokeMoonlight("This device's desktop trust was removed.");
+        }
         scheduleReconnect();
       }
     } finally { if (epoch === generation.current) setPreparing(false); }
@@ -334,6 +361,9 @@ function DesktopSession() {
       {connection ? <View style={[StyleSheet.absoluteFill, { transform: [{ translateX: offset.x }, { translateY: offset.y }, { scale: zoom }] }]}>
         {transport === "moonlight" && NativeMoonlightDesktopView ? (
           <NativeMoonlightDesktopView ref={moonlight} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {
+            // The closure captures the connection document it was mounted
+            // with; events from an unmounted/previous View are ignored.
+            if (moonlightKey.current !== connection) return;
             const event = nativeEvent as MoonlightDesktopState & { generation?: number };
             const generationValue = event.generation ?? 0;
             if (generationValue > 0) {
@@ -348,17 +378,19 @@ function DesktopSession() {
               const current = moonlightSession.current;
               if (current) current.ended = true;
               moonlightSession.current = null;
+              moonlightKey.current = "";
               setMoonlightPin("");
               setConnection(""); setTransport(""); setControl(false);
               setStatus({ state: "disconnected", reason: event.reason });
               return;
             }
             if (event.state === "connected" || event.state === "frame") {
+              if (event.width && event.height) moonlightFrame.current = { width: event.width, height: event.height };
               setStatus({ state: "connected", width: event.width, height: event.height, presented: event.presented, dropped: event.dropped });
-            } else if (event.state === "connecting" || event.state === "start_accepted" || event.state === "start_failed") {
+            } else if (event.state === "connecting" || event.state === "start_accepted") {
               setStatus({ state: "requesting" });
-            } else if (event.state === "rejected" || event.state === "failed") {
-              setStatus({ state: "disconnected", reason: event.reason });
+            } else if (event.state === "start_failed") {
+              setStatus({ state: "disconnected", reason: event.reason || "Stream start failed." });
             }
           }} />
         ) : <NativeDesktopView ref={native} key={connection} style={styles.root} connection={connection} onState={({ nativeEvent }) => {

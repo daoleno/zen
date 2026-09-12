@@ -16,15 +16,6 @@ import (
 // The capability endpoint only advertises Moonlight when this runtime reports a
 // configured host, so existing servers keep the old route until Sunshine is
 // explicitly enabled.
-type SunshineRuntimeSnapshot struct {
-	Configured bool   `json:"configured"`
-	Running    bool   `json:"running"`
-	HostKey    string `json:"host_key"`
-	HTTPPort   int    `json:"http_port"`
-	HTTPSPort  int    `json:"https_port"`
-	AppID      int    `json:"app_id"`
-}
-
 type sunshineRuntimeConfig struct {
 	BinaryPath string `json:"binary_path"`
 	StateDir   string `json:"state_dir"`
@@ -35,10 +26,11 @@ type sunshineRuntimeConfig struct {
 }
 
 var (
-	sunshineRuntimeMu      sync.Mutex
-	sunshineRuntimeHost    *SunshineHost
-	sunshineRuntimeOptions SunshineHostOptions
-	sunshineRuntimeCfg     sunshineRuntimeConfig
+	sunshineRuntimeMu        sync.Mutex
+	sunshineRuntimeHost      *SunshineHost
+	sunshineRuntimeOptions   SunshineHostOptions
+	sunshineRuntimeCfg       sunshineRuntimeConfig
+	sunshineRuntimeActiveCfg sunshineRuntimeConfig
 )
 
 // SunshineConfigPath is the Zen-owned explicit configuration file.
@@ -94,10 +86,12 @@ func EnsureSunshineRuntime(spawner SunshineSpawner) (SunshineRuntimeSnapshot, er
 	sunshineRuntimeMu.Lock()
 	defer sunshineRuntimeMu.Unlock()
 
-	sunshineRuntimeCfg = cfg
 	if sunshineRuntimeHost != nil && sunshineRuntimeHost.Running() {
+		// The running process keeps its started identity; a config edit on disk
+		// is not published as the running host until a restart.
 		return sunshineSnapshotLocked(), nil
 	}
+	sunshineRuntimeCfg = cfg
 
 	stateFile := filepath.Join(cfg.StateDir, "sunshine_state.json")
 	// Sunshine derives HTTPS (base-5), HTTP (base) and RTSP (base+21) ports
@@ -114,6 +108,7 @@ func EnsureSunshineRuntime(spawner SunshineSpawner) (SunshineRuntimeSnapshot, er
 	}
 	sunshineRuntimeHost = host
 	sunshineRuntimeOptions = opts
+	sunshineRuntimeActiveCfg = cfg
 	return sunshineSnapshotLocked(), nil
 }
 
@@ -121,12 +116,21 @@ func EnsureSunshineRuntime(spawner SunshineSpawner) (SunshineRuntimeSnapshot, er
 func StopSunshineRuntime(ctx context.Context) error {
 	sunshineRuntimeMu.Lock()
 	host := sunshineRuntimeHost
-	sunshineRuntimeHost = nil
 	sunshineRuntimeMu.Unlock()
 	if host == nil {
 		return nil
 	}
-	return host.Stop(ctx)
+	if err := host.Stop(ctx); err != nil {
+		// Keep the handle so a retry can signal the still-running process.
+		return err
+	}
+	sunshineRuntimeMu.Lock()
+	if sunshineRuntimeHost == host {
+		sunshineRuntimeHost = nil
+		sunshineRuntimeActiveCfg = sunshineRuntimeConfig{}
+	}
+	sunshineRuntimeMu.Unlock()
+	return nil
 }
 
 // SunshineSnapshot reports the configured/running state for capability
@@ -143,13 +147,17 @@ func SunshineSnapshot() SunshineRuntimeSnapshot {
 }
 
 func sunshineSnapshotLocked() SunshineRuntimeSnapshot {
+	running := sunshineRuntimeHost != nil && sunshineRuntimeHost.Running()
 	cfg := sunshineRuntimeCfg
+	if running {
+		cfg = sunshineRuntimeActiveCfg
+	}
 	if cfg.HostKey == "" && cfg.BinaryPath == "" {
 		return SunshineRuntimeSnapshot{}
 	}
 	return SunshineRuntimeSnapshot{
 		Configured: true,
-		Running:    sunshineRuntimeHost != nil && sunshineRuntimeHost.Running(),
+		Running:    running,
 		HostKey:    cfg.HostKey,
 		HTTPPort:   cfg.HTTPPort,
 		HTTPSPort:  cfg.HTTPPort - 5,
@@ -163,7 +171,6 @@ func RevokeSunshineRuntime(ctx context.Context) error {
 	sunshineRuntimeMu.Lock()
 	host := sunshineRuntimeHost
 	opts := sunshineRuntimeOptions
-	sunshineRuntimeHost = nil
 	sunshineRuntimeMu.Unlock()
 	if host == nil {
 		if opts.StateFilePath == "" {
@@ -175,5 +182,15 @@ func RevokeSunshineRuntime(ctx context.Context) error {
 		}
 		return nil
 	}
-	return host.Revoke(ctx)
+	if err := host.Revoke(ctx); err != nil {
+		// Keep the handle: a failed revoke must remain retryable.
+		return err
+	}
+	sunshineRuntimeMu.Lock()
+	if sunshineRuntimeHost == host {
+		sunshineRuntimeHost = nil
+		sunshineRuntimeActiveCfg = sunshineRuntimeConfig{}
+	}
+	sunshineRuntimeMu.Unlock()
+	return nil
 }

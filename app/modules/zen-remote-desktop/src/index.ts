@@ -90,6 +90,7 @@ export interface MoonlightDesktopApi {
   sendKey(generation: number, keyCode: number, keyAction: number, modifiers: number, flags: number): Promise<boolean>;
   sendText(generation: number, value: string): Promise<boolean>;
   sendPointerMove(generation: number, deltaX: number, deltaY: number): Promise<boolean>;
+  sendPointerPosition(generation: number, x: number, y: number, referenceWidth: number, referenceHeight: number): Promise<boolean>;
   sendPointerButton(generation: number, button: number, action: number): Promise<boolean>;
   sendScroll(generation: number, clicks: number): Promise<boolean>;
 }

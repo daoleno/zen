@@ -10,7 +10,7 @@ const DesktopCapabilityPurpose = "zen-desktop-capability"
 
 // BuildDesktopCapabilityPayload binds the identity TLS pin to the paired daemon.
 // Host readiness is not included; clients must not treat unsigned JSON as encryption.
-func BuildDesktopCapabilityPayload(daemonID, publicKeyHex, pin string, identityTLS bool) []byte {
+func BuildDesktopCapabilityPayload(daemonID, publicKeyHex, pin string, identityTLS bool, moonlightBinding string) []byte {
 	flag := "false"
 	if identityTLS {
 		flag = "true"
@@ -20,20 +20,21 @@ func BuildDesktopCapabilityPayload(daemonID, publicKeyHex, pin string, identityT
 		normalizeHex(publicKeyHex),
 		normalizeHex(pin),
 		flag,
+		strings.TrimSpace(moonlightBinding),
 	}, "\n"))
 }
 
-func (m *Manager) SignDesktopCapability(pin string, identityTLS bool) string {
+func (m *Manager) SignDesktopCapability(pin string, identityTLS bool, moonlightBinding string) string {
 	if !identityTLS {
 		pin = ""
 	}
 	signature := ed25519.Sign(m.privateKey, desktopCapabilitySignaturePayload(
-		BuildDesktopCapabilityPayload(m.daemonID, m.PublicKeyHex(), pin, identityTLS),
+		BuildDesktopCapabilityPayload(m.daemonID, m.PublicKeyHex(), pin, identityTLS, moonlightBinding),
 	))
 	return hex.EncodeToString(signature)
 }
 
-func VerifyDesktopCapabilitySignature(publicKeyHex, daemonID, pin string, identityTLS bool, signatureHex string) bool {
+func VerifyDesktopCapabilitySignature(publicKeyHex, daemonID, pin string, identityTLS bool, moonlightBinding, signatureHex string) bool {
 	publicKey, err := decodeFixedHex(publicKeyHex, ed25519.PublicKeySize)
 	if err != nil {
 		return false
@@ -44,7 +45,7 @@ func VerifyDesktopCapabilitySignature(publicKeyHex, daemonID, pin string, identi
 	}
 	return ed25519.Verify(
 		ed25519.PublicKey(publicKey),
-		desktopCapabilitySignaturePayload(BuildDesktopCapabilityPayload(daemonID, publicKeyHex, pin, identityTLS)),
+		desktopCapabilitySignaturePayload(BuildDesktopCapabilityPayload(daemonID, publicKeyHex, pin, identityTLS, moonlightBinding)),
 		signature,
 	)
 }

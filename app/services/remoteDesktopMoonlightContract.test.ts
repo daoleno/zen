@@ -212,12 +212,12 @@ describe("Moonlight client core integration contract", () => {
     expect(route).toContain("NativeMoonlightDesktopView");
     expect(route).toContain('transport === "moonlight"');
     expect(route).toContain("moonlightInput");
-    expect(route).toContain("sendPointerMove");
+    expect(route).toContain("sendPointerPosition");
     expect(route).toContain("sendPointerButton");
     expect(route).toContain("sendText");
     expect(route).toContain("sendKey");
-    expect(route).toContain("view.revoke");
-    expect(route).toContain("view.disconnect");
+    expect(route).toContain("moonlight.current?.revoke");
+    expect(route).toContain("moonlight.current?.disconnect");
     expect(route).toContain("moonlightPin");
     const service = read("../../services/remoteDesktop.ts");
     expect(service).toContain("capability.moonlight?.available");

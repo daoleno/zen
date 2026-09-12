@@ -32,6 +32,7 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/codexctl"
 	"github.com/daoleno/zen/daemon/desktop"
+	"github.com/daoleno/zen/daemon/desktop/host"
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/push"
 	skillmgmt "github.com/daoleno/zen/daemon/skills"
@@ -444,6 +445,11 @@ func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) 
 		<-runtimeCtx.Done()
 		s.shutdownAuthenticatedClients()
 		_ = srv.Shutdown(context.Background())
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := moonlightStopRuntime(stopCtx); err != nil {
+			log.Printf("moonlight stop on shutdown: %v", err)
+		}
+		stopCancel()
 	}()
 
 	if onReady != nil {
@@ -555,8 +561,23 @@ func (s *Server) detachAuthenticatedClient(
 	s.completeClientDetach(work)
 }
 
+// Moonlight engine hooks are injectable for tests. Revoking a device also
+// terminates the Zen-owned single-session Sunshine host and removes its pairing
+// state, so a revoked device cannot keep an independent engine pairing.
+var moonlightRevokeRuntime = host.RevokeSunshineRuntime
+var moonlightStopRuntime = host.StopSunshineRuntime
+
+func revokeSunshineForDeviceRevocation(ctx context.Context) error {
+	return moonlightRevokeRuntime(ctx)
+}
+
 func (s *Server) revokeAuthenticatedDevice(deviceID string) {
 	s.desktop.Revoke(deviceID)
+	revokeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := revokeSunshineForDeviceRevocation(revokeCtx); err != nil {
+		log.Printf("moonlight revoke after device revocation: %v", err)
+	}
+	cancel()
 	normalizedID := strings.TrimSpace(deviceID)
 	if normalizedID == "" {
 		return

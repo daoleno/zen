@@ -16,12 +16,13 @@ const pair = nacl.sign.keyPair.fromSeed(seed);
 const server = { daemonId: "a".repeat(64), daemonPublicKey: bytesToHex(pair.publicKey) };
 const pin = "ab".repeat(32);
 
-function signCapability(identityTls: boolean, transportPin = pin) {
+function signCapability(identityTls: boolean, transportPin = pin, moonlightBinding = "") {
   const payload = new TextEncoder().encode([
     server.daemonId,
     server.daemonPublicKey,
     identityTls ? transportPin : "",
     identityTls ? "true" : "false",
+    moonlightBinding,
   ].join("\n"));
   const domain = new TextEncoder().encode("zen-desktop-capability-v1\u0000");
   const signed = new Uint8Array(domain.length + payload.length);
@@ -175,41 +176,63 @@ test("forged capability pin signatures fail closed", async () => {
   })).rejects.toThrow("capability proof");
 });
 
-test("moonlight bootstrap is typed and invalid blocks fail closed", async () => {
-  function proofWithMoonlight(moonlight: Record<string, unknown>): DesktopProofDependencies {
-    return {
-      authorization: async () => "token",
-      verify: (input) => input.signatureHex === input.purpose && input.nonceHex === "c".repeat(32),
-      fetch: async (url: string) => {
-        const body = {
-          ...server, daemon_id: server.daemonId, daemon_public_key: server.daemonPublicKey,
-          assertion_timestamp: new Date().toISOString(), assertion_nonce: "c".repeat(32),
-          assertion_signature: "zen-desktop-capability", ok: true,
-          device_trust: "paired_unattended", desktop_scope_version: 1,
-          transport: { identity_tls: true, transport_pin: pin },
-          host: { status: "ready", broker: true },
-          connect: { unattended: true },
-          moonlight,
-          capability_signature: signCapability(true),
-        };
-        return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify(body)).body };
-      },
-    };
-  }
+function moonlightBindingOf(moonlight: Record<string, unknown>): string {
+  return [
+    String(moonlight.available === true),
+    String(moonlight.http_port ?? ""),
+    String(moonlight.https_port ?? ""),
+    String(moonlight.app_id ?? ""),
+    typeof moonlight.host_key === "string" ? moonlight.host_key : "",
+    typeof moonlight.identity_key === "string" ? moonlight.identity_key : "",
+  ].join("\n");
+}
 
-  const valid = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
-    proofWithMoonlight({ available: true, host: "192.168.110.223", http_port: 47989, https_port: 47984, app_id: 3, host_key: "zen-host-1", identity_key: "dev-42" }));
+function proofWithMoonlight(moonlight: Record<string, unknown>, signedBinding?: string): DesktopProofDependencies {
+  return {
+    authorization: async () => "token",
+    verify: (input) => input.signatureHex === input.purpose && input.nonceHex === "c".repeat(32),
+    fetch: async (url: string) => {
+      const body = {
+        ...server, daemon_id: server.daemonId, daemon_public_key: server.daemonPublicKey,
+        assertion_timestamp: new Date().toISOString(), assertion_nonce: "c".repeat(32),
+        assertion_signature: "zen-desktop-capability", ok: true,
+        device_trust: "paired_unattended", desktop_scope_version: 1,
+        transport: { identity_tls: true, transport_pin: pin },
+        host: { status: "ready", broker: true },
+        connect: { unattended: true },
+        moonlight,
+        capability_signature: signCapability(true, pin, signedBinding ?? moonlightBindingOf(moonlight)),
+      };
+      return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify(body)).body };
+    },
+  };
+}
+
+const validMoonlight = { available: true, http_port: 47989, https_port: 47984, app_id: 3, host_key: "zen-host-1", identity_key: "dev-42" };
+
+test("moonlight bootstrap is signed, typed and invalid blocks fail closed", async () => {
+  const valid = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop", proofWithMoonlight(validMoonlight));
   expect(valid.moonlight).toEqual({
-    host: "192.168.110.223", httpPort: 47989, httpsPort: 47984, appId: 3,
+    httpPort: 47989, httpsPort: 47984, appId: 3,
     hostKey: "zen-host-1", identityKey: "dev-42", available: true,
   });
 
   for (const invalid of [
-    { available: true, host: "192.168.110.223", http_port: 0, https_port: 47984, host_key: "zen-host-1", identity_key: "dev-42" },
-    { available: true, host: "192.168.110.223", http_port: 47989, https_port: 47984, host_key: "bad key!", identity_key: "dev-42" },
-    { available: true, host: "192.168.110.223", http_port: 47989, https_port: 47984, host_key: "zen-host-1", identity_key: "../escape" },
+    { available: true, http_port: 0, https_port: 47984, host_key: "zen-host-1", identity_key: "dev-42" },
+    { available: true, http_port: 47989, https_port: 47984, host_key: "bad key!", identity_key: "dev-42" },
+    { available: true, http_port: 47989, https_port: 47984, host_key: "zen-host-1", identity_key: "../escape" },
   ]) {
     const parsed = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop", proofWithMoonlight(invalid));
     expect(parsed.moonlight).toBeNull();
   }
+});
+
+test("an injected or altered moonlight block fails the capability signature", async () => {
+  // Signature made over the no-moonlight binding, then a block is injected.
+  await expect(fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
+    proofWithMoonlight(validMoonlight, ""))).rejects.toThrow("capability proof");
+  // Signature valid for one block, fields altered.
+  const altered = { ...validMoonlight, host_key: "injected-host", identity_key: "different-device" };
+  await expect(fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
+    proofWithMoonlight(altered, moonlightBindingOf(validMoonlight)))).rejects.toThrow("capability proof");
 });

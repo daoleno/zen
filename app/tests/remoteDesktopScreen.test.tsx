@@ -62,6 +62,9 @@ if (!process.env.ZEN_DESKTOP_SCREEN_CHILD) {
       }));
       return React.createElement("native-desktop", props);
     }),
+    // The existing suite exercises the WebSocket route; the Moonlight view is
+    // deliberately absent so the route keeps its previous branch.
+    NativeMoonlightDesktopView: null,
   }));
   const { default: RemoteDesktopScreen } = await import("../app/remote-desktop");
   const { DesktopPreflightError } = await import("../services/desktopConnectionCheck");

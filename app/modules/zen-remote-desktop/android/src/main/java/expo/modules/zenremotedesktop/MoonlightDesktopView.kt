@@ -59,8 +59,13 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
 
   private var codec: MediaCodec? = null
 
+  // Blocking connect runs on `background`; cancel/stop/revoke run on `control`
+  // so a pairing that waits for a PIN can always be cancelled promptly.
   private val background = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
     Thread(runnable, "zen-moonlight-session")
+  }
+  private val control = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "zen-moonlight-control")
   }
 
   private inner class Connection(val attempt: Long) {
@@ -83,6 +88,7 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
     var height = 720
     var presented = 0
     var dropped = 0
+    var framesSinceCodecStart = 0
   }
 
   private fun alive(conn: Connection): Boolean =
@@ -265,9 +271,9 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
   fun revoke(generationValue: Int): Boolean {
     val conn = currentConnection(generationValue) ?: return false
     invalidate(conn)
-    // Blocking host cleanup runs off the UI thread; the terminal result is
-    // still emitted for this attempt.
-    background.execute {
+    // Blocking host cleanup runs off the UI thread on the control executor, so
+    // it is never queued behind a blocked connect.
+    control.execute {
       val hostClient = conn.host
       val activeSession = conn.session
       val detail = if (activeSession != null && hostClient != null) {
@@ -300,6 +306,18 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
     return conn.core.sendMouseMove(deltaX.toShort(), deltaY.toShort()) == 0
   }
 
+  /** Absolute pointer position in the streamed frame's coordinate space. */
+  fun sendPointerPosition(generationValue: Int, x: Int, y: Int, referenceWidth: Int, referenceHeight: Int): Boolean {
+    val conn = currentConnection(generationValue) ?: return false
+    if (!conn.connected || referenceWidth <= 0 || referenceHeight <= 0) return false
+    return conn.core.sendMousePosition(
+      x.coerceIn(0, 32767).toShort(),
+      y.coerceIn(0, 32767).toShort(),
+      referenceWidth.coerceIn(1, 32767).toShort(),
+      referenceHeight.coerceIn(1, 32767).toShort(),
+    ) == 0
+  }
+
   fun sendPointerButton(generationValue: Int, button: Int, action: Int): Boolean {
     val conn = currentConnection(generationValue) ?: return false
     if (!conn.connected) return false
@@ -323,6 +341,8 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
       currentAttempt = ++attemptSeq
       connection = null
     }
+    // Promptly cancel any blocked HTTP/pairing call on the connect thread.
+    conn.host?.cancelInFlight()
   }
 
   private fun disconnectCurrent() {
@@ -335,7 +355,7 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
   private fun stopConnectionDetached(conn: Connection) {
     val hostClient = conn.host
     val activeSession = conn.session
-    background.execute {
+    control.execute {
       if (activeSession != null) {
         activeSession.stop(hostClient)
       } else {
@@ -367,6 +387,11 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
           drainQueue(conn)
         } finally {
           conn.drainScheduled.set(false)
+          // Re-check after clearing the flag: frames queued during the drain
+          // would otherwise be lost until the next submit.
+          if (alive(conn) && synchronized(conn.queue) { conn.queue.isNotEmpty() }) {
+            scheduleDrain(conn)
+          }
         }
       }) {
       conn.drainScheduled.set(false)
@@ -382,9 +407,6 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
       val next = synchronized(conn.queue) { if (conn.queue.isEmpty()) null else conn.queue.removeFirst() } ?: return
       if (!alive(conn)) return
       decode(conn, next.first, next.second)
-    }
-    if (alive(conn) && synchronized(conn.queue) { conn.queue.isNotEmpty() }) {
-      scheduleDrain(conn)
     }
   }
 
@@ -459,7 +481,15 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
       format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
     }
     val created = MediaCodec.createDecoderByType("video/avc")
-    created.configure(format, target, null, 0)
+    try {
+      created.configure(format, target, null, 0)
+    } catch (error: Exception) {
+      try {
+        created.release()
+      } catch (_: Exception) {
+      }
+      throw error
+    }
     created.setOnFrameRenderedListener({ _, _, _ ->
       if (!alive(conn)) return@setOnFrameRenderedListener
       conn.presented++
@@ -468,8 +498,17 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
         publish(conn, "frame", "first")
       }
     }, decoder)
-    created.start()
+    try {
+      created.start()
+    } catch (error: Exception) {
+      try {
+        created.release()
+      } catch (_: Exception) {
+      }
+      throw error
+    }
     codec = created
+    conn.framesSinceCodecStart = 0
     conn.waitingIdr = true
     conn.surfaceReady = target.isValid
     return created
@@ -574,15 +613,18 @@ class MoonlightDesktopView(context: Context, appContext: AppContext) :
       currentAttempt = ++attemptSeq
       old
     }
-    conn?.let {
-      it.session?.stop(it.host)
-      it.core.stop()
+    // Cleanup is queued on the control executor so an already requested revoke
+    // (which keeps the pinned certificate until its authenticated quit) runs
+    // first and is not cleared by destruction.
+    control.execute {
+      conn?.session?.stop(conn.host) ?: conn?.core?.stop()
+      control.shutdown()
+      background.shutdown()
     }
     decoder.post {
       releaseCodecLocked()
       thread.quitSafely()
     }
-    background.shutdown()
   }
 
   override fun surfaceCreated(holder: SurfaceHolder) {

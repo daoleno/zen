@@ -1,7 +1,7 @@
 package server
 
 import (
-	"net"
+	"fmt"
 	"net/http"
 
 	"github.com/daoleno/zen/daemon/auth"
@@ -101,21 +101,32 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 			"reason":     reason,
 			"recovery":   recovery,
 		},
-		"capability_signature": s.auth.SignDesktopCapability(pin, identityTLS),
 	}
+	moonlightBinding := ""
 	if scoped && (readiness.Broker || readiness.CurrentSession) {
-		if moonlight := moonlightBootstrap(device, requestHost); moonlight != nil {
+		if moonlight := moonlightBootstrap(device); moonlight != nil {
 			payload["moonlight"] = moonlight
+			moonlightBinding = moonlightBindingString(moonlight)
 		}
 	}
+	payload["capability_signature"] = s.auth.SignDesktopCapability(pin, identityTLS, moonlightBinding)
 	return payload
+}
+
+// moonlightBindingString is the canonical, newline-joined form of the emitted
+// block. Both sides sign this exact string so an injected or altered block
+// invalidates the capability signature.
+func moonlightBindingString(block map[string]any) string {
+	return fmt.Sprintf("%v\n%v\n%v\n%v\n%v\n%v",
+		block["available"], block["http_port"], block["https_port"],
+		block["app_id"], block["host_key"], block["identity_key"])
 }
 
 // moonlightBootstrap advertises the explicitly configured Sunshine host. The
 // identity key is the authenticated Zen device id; the host key is the
 // Zen-owned Sunshine host identity, so private storage never falls back to a
 // lossy hostname and the app keeps using signed desktop-scope authorization.
-func moonlightBootstrap(device *auth.TrustedDevice, requestHost string) map[string]any {
+func moonlightBootstrap(device *auth.TrustedDevice) map[string]any {
 	snapshot := moonlightSnapshot()
 	if !snapshot.Configured {
 		return nil
@@ -125,16 +136,13 @@ func moonlightBootstrap(device *auth.TrustedDevice, requestHost string) map[stri
 			snapshot = updated
 		}
 	}
-	hostname, _, err := net.SplitHostPort(requestHost)
-	if err != nil {
-		hostname = requestHost
-	}
-	if hostname == "" || snapshot.HostKey == "" || snapshot.HTTPPort <= 0 {
+	if snapshot.HostKey == "" || snapshot.HTTPPort <= 0 {
 		return nil
 	}
+	// No host in the block: the client must use its own verified, directly
+	// reachable server endpoint; request Host/forwarded headers are not proof.
 	return map[string]any{
 		"available":    snapshot.Running,
-		"host":         hostname,
 		"http_port":    snapshot.HTTPPort,
 		"https_port":   snapshot.HTTPSPort,
 		"app_id":       snapshot.AppID,

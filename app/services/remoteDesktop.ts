@@ -39,15 +39,21 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
   }
   const authorization = await buildAuthorizationHeader({ daemonId: server.daemonId, purpose: "zen-desktop" });
   if (capability.moonlight?.available && capability.scopeVersion > 0) {
-    if (signal?.aborted) throw new Error("Desktop connection cancelled.");
-    // The daemon advertised an explicitly configured Sunshine host under the
-    // signed desktop scope; the native view consumes this bootstrap directly.
-    return JSON.stringify({
-      transport: "moonlight",
-      authorization,
-      inputGeneration,
-      moonlight: capability.moonlight,
-    });
+    const directHost = new URL(server.url).hostname;
+    // The native engine speaks RTSP/UDP directly; a pinned link/tunnel or a
+    // loopback relay cannot carry it, so keep the existing WS route there
+    // instead of advertising native transport through an unreachable path.
+    const direct = !identityLan && server.transportKind !== "link" &&
+      !/^(127\.|10\.0\.2\.2$|localhost$|\[?::1)/i.test(directHost);
+    if (direct) {
+      if (signal?.aborted) throw new Error("Desktop connection cancelled.");
+      return JSON.stringify({
+        transport: "moonlight",
+        authorization,
+        inputGeneration,
+        moonlight: { ...capability.moonlight, host: directHost },
+      });
+    }
   }
   return JSON.stringify({ ...plan, authorization, inputGeneration, mode: "unattended" });
 }

@@ -21,7 +21,6 @@ export interface DesktopProofDependencies {
 }
 
 export interface MoonlightHostBootstrap {
-  host: string;
   httpPort: number;
   httpsPort: number;
   appId: number;
@@ -78,11 +77,23 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
   const connect = asRecord(payload.connect);
   const pin = typeof transport.transport_pin === "string" ? transport.transport_pin.toLowerCase() : "";
   const identityTls = transport.identity_tls === true;
+  // The Moonlight block is part of the signed binding: an injected or altered
+  // block keeps the domain signature valid but fails this verification.
+  const rawMoonlight = asRecord(payload.moonlight);
+  const moonlightBinding = Object.keys(rawMoonlight).length === 0 ? "" : [
+    String(rawMoonlight.available === true),
+    String(rawMoonlight.http_port ?? ""),
+    String(rawMoonlight.https_port ?? ""),
+    String(rawMoonlight.app_id ?? ""),
+    typeof rawMoonlight.host_key === "string" ? rawMoonlight.host_key : "",
+    typeof rawMoonlight.identity_key === "string" ? rawMoonlight.identity_key : "",
+  ].join("\n");
   const binding = new TextEncoder().encode([
     server.daemonId.trim().toLowerCase(),
     server.daemonPublicKey.trim().toLowerCase(),
     identityTls ? pin : "",
     identityTls ? "true" : "false",
+    moonlightBinding,
   ].join("\n"));
   if (!verifyDesktopCapabilitySignature({
     daemonPublicKey: server.daemonPublicKey,
@@ -95,20 +106,17 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     throw new Error("The desktop identity pin is invalid.");
   }
   const reason = typeof connect.reason === "string" ? connect.reason : "";
-  const moonlightRaw = asRecord(payload.moonlight);
-  const moonlight = typeof moonlightRaw.host === "string" && moonlightRaw.host.length <= 253 &&
-    Number.isInteger(Number(moonlightRaw.http_port)) && Number(moonlightRaw.http_port) > 0 && Number(moonlightRaw.http_port) <= 65535 &&
-    Number.isInteger(Number(moonlightRaw.https_port)) && Number(moonlightRaw.https_port) > 0 && Number(moonlightRaw.https_port) <= 65535 &&
-    typeof moonlightRaw.host_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(moonlightRaw.host_key) &&
-    typeof moonlightRaw.identity_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(moonlightRaw.identity_key)
+  const moonlight = Number.isInteger(Number(rawMoonlight.http_port)) && Number(rawMoonlight.http_port) > 0 && Number(rawMoonlight.http_port) <= 65535 &&
+    Number.isInteger(Number(rawMoonlight.https_port)) && Number(rawMoonlight.https_port) > 0 && Number(rawMoonlight.https_port) <= 65535 &&
+    typeof rawMoonlight.host_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(rawMoonlight.host_key) &&
+    typeof rawMoonlight.identity_key === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(rawMoonlight.identity_key)
     ? {
-        host: moonlightRaw.host,
-        httpPort: Number(moonlightRaw.http_port),
-        httpsPort: Number(moonlightRaw.https_port),
-        appId: Number.isInteger(Number(moonlightRaw.app_id)) ? Number(moonlightRaw.app_id) : 1,
-        hostKey: moonlightRaw.host_key,
-        identityKey: moonlightRaw.identity_key,
-        available: moonlightRaw.available === true,
+        httpPort: Number(rawMoonlight.http_port),
+        httpsPort: Number(rawMoonlight.https_port),
+        appId: Number.isInteger(Number(rawMoonlight.app_id)) ? Number(rawMoonlight.app_id) : 1,
+        hostKey: rawMoonlight.host_key,
+        identityKey: rawMoonlight.identity_key,
+        available: rawMoonlight.available === true,
       }
     : null;
   return {

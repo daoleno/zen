@@ -59,6 +59,9 @@ class ZenRemoteDesktopModule : Module() {
       AsyncFunction("sendPointerMove") { view: MoonlightDesktopView, generation: Int, deltaX: Int, deltaY: Int ->
         view.sendPointerMove(generation, deltaX, deltaY)
       }
+      AsyncFunction("sendPointerPosition") { view: MoonlightDesktopView, generation: Int, x: Int, y: Int, referenceWidth: Int, referenceHeight: Int ->
+        view.sendPointerPosition(generation, x, y, referenceWidth, referenceHeight)
+      }
       AsyncFunction("sendPointerButton") { view: MoonlightDesktopView, generation: Int, button: Int, action: Int ->
         view.sendPointerButton(generation, button, action)
       }

@@ -179,10 +179,10 @@ func TestBDD_DesktopConnectionContract(t *testing.T) {
 		if transport["identity_tls"] != true || transport["transport_pin"] != identity.SPKISHA256 {
 			t.Fatalf("pin not advertised: %v", transport)
 		}
-		if !auth.VerifyDesktopCapabilitySignature(manager.PublicKeyHex(), manager.DaemonID(), identity.SPKISHA256, true, payload["capability_signature"].(string)) {
+		if !auth.VerifyDesktopCapabilitySignature(manager.PublicKeyHex(), manager.DaemonID(), identity.SPKISHA256, true, "", payload["capability_signature"].(string)) {
 			t.Fatal("capability pin was not daemon-signed")
 		}
-		if auth.VerifyDesktopCapabilitySignature(manager.PublicKeyHex(), manager.DaemonID(), strings.Repeat("ff", 32), true, payload["capability_signature"].(string)) {
+		if auth.VerifyDesktopCapabilitySignature(manager.PublicKeyHex(), manager.DaemonID(), strings.Repeat("ff", 32), true, "", payload["capability_signature"].(string)) {
 			t.Fatal("forged pin verified")
 		}
 		connect, _ := payload["connect"].(map[string]any)
