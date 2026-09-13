@@ -1,0 +1,23 @@
+--- a/app/services/remoteDesktop.ts
++++ b/app/services/remoteDesktop.ts
+@@ -48,11 +48,17 @@
+-    const payload = response.body ? JSON.parse(await new Response(response.body).text()) : {};
++    const text = response.body ? await new Response(response.body).text() : "";
+     if (!response.ok) {
+-      const reason = typeof payload?.reason === "string" ? payload.reason : `http_${response.status}`;
++      let reason = text.trim() || `http_${response.status}`;
++      try {
++        const payload = JSON.parse(text);
++        reason = typeof payload?.reason === "string" ? payload.reason : `http_${response.status}`;
++      } catch {
++        // The endpoint uses http.Error text for unsuccessful responses.
++      }
+       const error = new Error(reason);
+       (error as Error & { status?: number }).status = response.status;
+       throw error;
+     }
+-    return payload;
++    return text ? JSON.parse(text) : {};
+   } finally {
+     clearTimeout(timer);
+     signal?.removeEventListener("abort", abort);

@@ -68,6 +68,14 @@ managed workspace, and normal Host activation delivers the re-read instruction;
 no manual Brain restart is needed. This delivery mechanism does not prove a
 model followed the guidance. See [evaluation](brain-engineering-evaluation.md).
 
+The executable historical caller case in that evaluation exercises a narrower
+claim: endpoint-shaped evidence can contradict a green service harness and
+identify the next useful correction. It does not add standing instructions or
+alter delegation delivery. Existing guidance already calls for this behavior;
+its selection and application remain Brain's responsibility. A disposable
+reference repair is not a remote-desktop product change or proof of general
+engineering effectiveness.
+
 ## Sources and boundaries
 
 This is an independently worded adaptation of engineering methods, not a copy or
