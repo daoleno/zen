@@ -125,6 +125,50 @@ func TestSubmitDelegatedInputActivityMismatchPreservesControlOwner(t *testing.T)
 	}
 }
 
+func TestSignalProtocolProviderCompletionAwaitsControlFinalization(t *testing.T) {
+	io := newFakeSessionInputIO()
+	ledger := newFakeTurnLedger()
+	ledger.providerSignalHints = true
+	now := time.Date(2026, 8, 11, 3, 32, 0, 0, time.UTC)
+	sessionID := "zen-worker-signal-provider-first:@1"
+	identity := testSessionInputIdentity("codex")
+	turnID := sessionID + ":turn:1"
+	ledger.seed(sessionID, TurnSnapshot{
+		SessionID: sessionID, TurnID: turnID, Status: TurnRunning,
+		AcceptedAt: now.Add(-time.Minute), ActivityID: "activity-canonical",
+		ProcessIdentity: delegatedTurnIdentity(identity), PaneGeneration: io.paneValue.generation,
+		SignalProtocol: true,
+	})
+	owner := newLedgerSessionInputOwner(io, ledger)
+	decision, err := owner.reconcileSubmissionActivity(sessionID, ledger.snapshot(sessionID), ProviderActivityObservation{
+		ID: "activity-canonical", Status: "completed", StartedAt: now.Add(-time.Minute),
+		SettledAt: now, Structured: true,
+	})
+	if err != nil {
+		t.Fatalf("provider-first SignalProtocol completion = %v, want recoverable awaiting-finalization", err)
+	}
+	if decision.ExistingTurn.Status != TurnRunning || decision.ExistingTurn.ControlState == TurnControlOwnershipLost {
+		t.Fatalf("provider-first completion changed ownership/status: %+v", decision.ExistingTurn)
+	}
+	if got := ledger.snapshot(sessionID); got.Status != TurnRunning || got.ControlState == TurnControlOwnershipLost {
+		t.Fatalf("provider-first completion changed canonical turn: %+v", got)
+	}
+	if len(ledger.applied) != 1 || ledger.applied[0].Kind != "done" {
+		t.Fatalf("provider completion fact = %+v, want one non-actionable hint fact", ledger.applied)
+	}
+
+	// Exact prompt-carried Control completion remains authoritative.
+	if _, err := ledger.ApplyDelegatedTurnProgress(TurnFact{
+		SessionID: sessionID, TurnID: turnID, Class: EvidenceControl, Kind: "done",
+		SourceID: "control\x00" + turnID, At: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ledger.snapshot(sessionID); got.Status != TurnDone {
+		t.Fatalf("Control completion did not finalize turn: %+v", got)
+	}
+}
+
 func TestSubmitDelegatedInputActivityMismatchPreservesCompletedOutcome(t *testing.T) {
 	io := newFakeSessionInputIO()
 	ledger := newFakeTurnLedger()

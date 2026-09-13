@@ -1200,12 +1200,24 @@ func (owner *sessionInputOwner) reconcileSubmissionActivity(
 		return decision, nil
 	case "completed":
 		if snapshot.Status != TurnDone {
+			// SignalProtocol turns are finalized by the exact prompt-carried
+			// Control terminal. Provider completion is only a recoverable hint;
+			// it must not be promoted into an ownership mismatch while that
+			// control signal is still in flight.
+			if turn.SignalProtocol && !TurnTerminal(snapshot.Status) {
+				decision.ExistingTurn = snapshot
+				return decision, nil
+			}
 			return decision, fmt.Errorf("provider completion did not settle the canonical turn")
 		}
 		decision.ExistingTurn = snapshot
 		return decision, nil
 	case "failed", "interrupted", "cancelled":
 		if snapshot.Status != TurnFailed {
+			if turn.SignalProtocol && !TurnTerminal(snapshot.Status) {
+				decision.ExistingTurn = snapshot
+				return decision, nil
+			}
 			return decision, fmt.Errorf("provider failure did not settle the canonical turn")
 		}
 		decision.ExistingTurn = snapshot

@@ -398,16 +398,17 @@ func testTurnDraft(id string, acceptedAt time.Time, identity targetProcessIdenti
 // turns immutable) so the submission boundary can be tested without the
 // Brain store; the full transition table is tested in daemon/brain.
 type fakeTurnLedger struct {
-	mu          sync.Mutex
-	turns       map[string]TurnSnapshot
-	admitted    map[string]AdmittedTurn
-	submissions map[string]InputAdmission
-	applied     []TurnFact
-	prepareHook func(InputAdmission)
-	admitErr    error
-	prepareErr  error
-	resolveErr  error
-	abortErr    error
+	mu                  sync.Mutex
+	turns               map[string]TurnSnapshot
+	admitted            map[string]AdmittedTurn
+	submissions         map[string]InputAdmission
+	applied             []TurnFact
+	prepareHook         func(InputAdmission)
+	admitErr            error
+	prepareErr          error
+	resolveErr          error
+	abortErr            error
+	providerSignalHints bool
 }
 
 func newFakeTurnLedger() *fakeTurnLedger {
@@ -627,6 +628,11 @@ func (l *fakeTurnLedger) ApplyTurnFact(fact TurnFact) (TurnSnapshot, bool, error
 				changed = true
 			}
 		case "done", "failed":
+			if turn.SignalProtocol && l.providerSignalHints {
+				// Provider terminal evidence is only a hint for delegated
+				// signal turns; exact Control completion owns finalization.
+				return turn, false, nil
+			}
 			// The frozen binding gate: terminal facts apply only when they
 			// carry the recorded admission tuple with a monotone cursor, or
 			// prove the turn's own activity identity, or adopt an Admitted
