@@ -79,6 +79,13 @@ func TestEngineeringGuidanceGeneratedAndLazy(t *testing.T) {
 	if !strings.Contains(agents, "## Engineering Judgment") || len(agents) > 6500 {
 		t.Fatalf("standing guidance missing or oversized: %d bytes", len(agents))
 	}
+	if len(catalog.Playbooks) != 5 {
+		t.Fatalf("expected five lazy playbooks, got %d", len(catalog.Playbooks))
+	}
+	methodMarkers := map[string][]string{
+		"slice-work":     {"small relevant sample of actual session evidence", "navigation or information-access gaps", "missing or wrong tests", "inappropriate task decomposition", "ineffective instructions", "available, adequate guidance needs no rewrite"},
+		"delegate-brief": {"minimum useful redacted excerpts", "preserving status, symptom and failing assertion", "tokens, cookies and secret URLs", "before reporting or persisting", "avoid captures that echo secrets", "narrower safe reproduction"},
+	}
 	detailMarkers := map[string]string{
 		"align":          "suggested implementation",
 		"wayfind":        "licensing",
@@ -100,6 +107,11 @@ func TestEngineeringGuidanceGeneratedAndLazy(t *testing.T) {
 		if !strings.Contains(file.Content, marker) || len(file.Content) > 3500 {
 			t.Fatalf("%s missing method or oversized: %d bytes", entry.Path, len(file.Content))
 		}
+		for _, detail := range methodMarkers[entry.Name] {
+			if !strings.Contains(file.Content, detail) || strings.Contains(agents, detail) || strings.Contains(productDelegationPolicy, detail) {
+				t.Fatalf("%s detail missing or duplicated in standing guidance: %q", entry.Path, detail)
+			}
+		}
 		delete(detailMarkers, entry.Name)
 	}
 	if len(detailMarkers) != 0 {
@@ -117,7 +129,7 @@ func TestEngineeringGuidanceGeneratedAndLazy(t *testing.T) {
 				if !strings.Contains(prompt, "AGENTS.md") || !work.IsPrivateHostPrompt(prompt) {
 					t.Fatalf("%s lost guidance pointer or privacy", name)
 				}
-				for _, excluded := range []string{"fail-before/pass-after", "licensing", ".agents/zen-verification", "/private/project/secret", "pstack"} {
+				for _, excluded := range []string{"fail-before/pass-after", "licensing", "minimum useful redacted excerpts", "actual session evidence", ".agents/zen-verification", "/private/project/secret", "pstack"} {
 					if strings.Contains(prompt, excluded) {
 						t.Fatalf("%s eagerly loaded or leaked %q", name, excluded)
 					}
@@ -128,6 +140,65 @@ func TestEngineeringGuidanceGeneratedAndLazy(t *testing.T) {
 			}
 			t.Logf("%s: AGENTS=%d bootstrap=%d activation=%d handoff=%d bytes", provider, len(agents), len(bootstrap), len(activation), len(handoff))
 		})
+	}
+}
+
+func TestEngineeringMethodDeltaSeedDelivery(t *testing.T) {
+	for _, name := range []string{"slice-work.md", "delegate-brief.md"} {
+		for _, repair := range []string{"startup", "housekeeping"} {
+			for _, variant := range []string{"known-old", "whitespace-edit", "custom-note", "unknown", "empty", "missing"} {
+				t.Run(name+"/"+repair+"/"+variant, func(t *testing.T) {
+					root := t.TempDir()
+					store, err := NewStore(root)
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := store.playbookPath(name)
+					want := mustReadFile(t, path)
+					old := mustReadFile(t, filepath.Join("testdata", "engineering-v2", name))
+					preserve := false
+					switch variant {
+					case "whitespace-edit":
+						old = append(old, ' ')
+						preserve = true
+					case "custom-note":
+						old = append(old, []byte("\nUser-owned override.\n")...)
+						preserve = true
+					case "unknown":
+						old = []byte("# Older unrecognized playbook\n")
+						preserve = true
+					case "empty":
+						old = []byte(" \n")
+					}
+					if variant == "missing" {
+						err = os.Remove(path)
+					} else {
+						err = os.WriteFile(path, old, 0o600)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if repair == "startup" {
+						store, err = NewStore(root)
+					} else {
+						_, err = NewService(store, nil, nil).Housekeeping()
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if preserve {
+						want = old
+					}
+					if got := mustReadFile(t, path); !bytes.Equal(got, want) {
+						t.Fatal("seed delivery did not preserve ownership or install current default")
+					}
+					report, err := NewService(store, nil, nil).Housekeeping()
+					if err != nil || len(report.ChangedPaths) != 0 || !bytes.Equal(mustReadFile(t, path), want) {
+						t.Fatalf("repeat repair not idempotent: %+v, %v", report, err)
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -217,7 +288,7 @@ func TestEngineeringGuidanceRefreshesExistingHost(t *testing.T) {
 
 func TestHostContractDigestTracksReleaseGuidance(t *testing.T) {
 	original := brainHostContractDigest()
-	for _, source := range []*string{&productWorkspaceInstructions, &productDelegationPolicy, &productEnginePolicy, &productHandoffPolicy, &seedPlaybooks[1].initial} {
+	for _, source := range []*string{&productWorkspaceInstructions, &productDelegationPolicy, &productEnginePolicy, &productHandoffPolicy, &seedPlaybooks[1].initial, &seedPlaybooks[2].initial, &seedPlaybooks[3].initial, &seedPlaybooks[4].initial} {
 		before := *source
 		*source += "\nChanged release guidance.\n"
 		changed := brainHostContractDigest()

@@ -13,6 +13,21 @@ before accepting the full outcome, including integration and authorized delivery
 Repeated failures are a reason to reconsider assumptions or tooling, not merely
 to add another patch. Clear small tasks need no planning ceremony.
 
+When work stalls, `slice-work` narrows that reconsideration to a small relevant
+sample of actual session evidence: navigation or information access, missing or
+wrong tests, task decomposition, and ineffective instructions. The next action
+should correct the relevant environment or caller, or run a discriminating
+experiment. Adequate available guidance needs no rewrite; evidence may instead
+justify deleting or clarifying an instruction. This is on demand, not a recurring
+retrospective, new playbook, or mandatory review agent.
+
+`delegate-brief` asks for minimum useful redacted diagnostic excerpts, retaining
+status, symptom and the failing assertion. Tokens, cookies and secret URLs are
+replaced before reporting or persistence; commands refer to credentials rather
+than embedding them, and captures must not echo secrets. If redaction hides the
+signal, narrow the reproduction safely. This is a briefing requirement, not a
+runtime sanitizer or a guarantee of model compliance.
+
 ## Instruction ownership
 
 The release template `daemon/brain/templates/AGENTS.md` owns the short principle
@@ -54,6 +69,12 @@ must explicitly recognize a prior shipped version, not infer user ownership
 from a heading or filename. Customized playbooks may intentionally retain old
 methods; the managed principle/routing layer still updates.
 
+The method delta also recognizes the exact `slice-work` and `delegate-brief`
+seeds from `7d1349b830d6283c5d9bb33009642b8e413fe04c`, in addition to those older
+seeds. Their frozen fixtures are in `daemon/brain/testdata/engineering-v2/`.
+Startup and housekeeping upgrade recognized defaults directly to the latest
+text; unknown versions, whitespace edits and user notes remain untouched.
+
 Bootstrap and executor handoff already reference `AGENTS.md`; they do not embed
 the playbook manual. The existing activation receipt now hashes release-owned
 instructions, policies and default playbooks, as well as the compact activation
@@ -77,6 +98,16 @@ reference repair is not a remote-desktop product change or proof of general
 engineering effectiveness.
 
 ## Sources and boundaries
+
+The bounded retrospective lens and diagnostic-evidence requirement are
+independently worded adaptations of Matt Pocock's MIT-licensed
+[`retro`](https://github.com/mattpocock/skills/blob/3cca18b368ae95cdbdebbff572ccafa662551015/skills/in-progress/retro/SKILL.md)
+and [`diagnosing-bugs`](https://github.com/mattpocock/skills/blob/3cca18b368ae95cdbdebbff572ccafa662551015/skills/engineering/diagnosing-bugs/SKILL.md).
+The former is an in-progress draft, not a released workflow. No upstream code,
+reviewer-only standards, compulsory worktrees, agent topology or Skill tool
+requirement is imported. The
+[license](https://github.com/mattpocock/skills/blob/3cca18b368ae95cdbdebbff572ccafa662551015/LICENSE)
+attributes copyright to Matt Pocock (2026).
 
 This is an independently worded adaptation of engineering methods, not a copy or
 installation of pstack. Lauren Tan's MIT-licensed

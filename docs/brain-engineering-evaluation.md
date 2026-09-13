@@ -33,6 +33,17 @@ and captured submission payloads. The provider/terminal boundary is a test fake;
 there are no model calls. String assertions prove delivery and ownership, not
 reasoning quality, UI behavior or task completion by a real Worker.
 
+`TestEngineeringMethodDeltaSeedDelivery` additionally exercises both startup and
+housekeeping for the exact pre-delta slice-work/delegate-brief seeds, missing and
+empty files, whitespace edits, custom notes and unknown versions, then checks
+idempotence. Existing tests retain older-seed, symlink, private-overlay and Host
+refresh coverage. Catalog reads assert the bounded retrospective and safe
+diagnostic-evidence requirements are in the two lazy methods, not standing
+policy or provider bootstrap/handoff prompts. These checks neither redact a
+model's output nor demonstrate that Brain chooses a better next action. The
+historical caller replay below is unchanged and is not proof of this new text's
+effectiveness.
+
 ## Model walkthrough
 
 Give a reviewer the generated standing guidance and each case's user/context

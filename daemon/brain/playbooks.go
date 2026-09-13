@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -177,18 +178,24 @@ func ensurePlaybookFile(path, initial string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(raw)) == "" || fmt.Sprintf("%x", sha256.Sum256(raw)) == legacyPlaybookDigests[filepath.Base(path)] {
+	if strings.TrimSpace(string(raw)) == "" || slices.Contains(legacyPlaybookDigests[filepath.Base(path)], fmt.Sprintf("%x", sha256.Sum256(raw))) {
 		return writeAtomic(path, []byte(initial), 0o600)
 	}
 	return nil
 }
 
 // Only byte-identical shipped seeds may be upgraded. Unmarked edits belong to the user.
-var legacyPlaybookDigests = map[string]string{
-	"align.md":          "6fd71ab61bcc85cf89124f3402d9f2dd9dd5ed007e0302b4ffa78f61b2badf8e",
-	"delegate-brief.md": "30c87bc60bded178f68c6eb91139db695034b03cb7f53d731feecf77e2a06e09",
-	"slice-work.md":     "4e03dadce6efc85d5f36ee70a78da39c38a0aba7f52e305d2409a3a57b89513a",
-	"wayfind.md":        "608144c76be0298aa26cc66583bd5a7db98b8b9dba7a5dc512813711058bdf5e",
+var legacyPlaybookDigests = map[string][]string{
+	"align.md": {"6fd71ab61bcc85cf89124f3402d9f2dd9dd5ed007e0302b4ffa78f61b2badf8e"},
+	"delegate-brief.md": {
+		"30c87bc60bded178f68c6eb91139db695034b03cb7f53d731feecf77e2a06e09",
+		"946f49be659a684f66f9ca240dc93dd3519d43d891de867d01b866220dc17af3",
+	},
+	"slice-work.md": {
+		"4e03dadce6efc85d5f36ee70a78da39c38a0aba7f52e305d2409a3a57b89513a",
+		"b19639c92d621913b196be7b81e057733c09aafb39f934831078aa5b7be12026",
+	},
+	"wayfind.md": {"608144c76be0298aa26cc66583bd5a7db98b8b9dba7a5dc512813711058bdf5e"},
 }
 
 func parsePlaybookDescription(content string) string {
@@ -278,6 +285,8 @@ Specify the outcome, cwd, necessary context, acceptance criteria, safety constra
 
 Design proof around what the user does and what must happen. For a reproduced bug, require fail-before/pass-after regression evidence. For UI or cross-layer claims, exercise the actual interaction and contract, checking observable state and side effects on affected platforms. A compilation, file check, mock or green helper proves only its tested surface, not a screen or complete delivery. Prefer existing test tools with owned isolation and exact cleanup; do not invent a verifier framework for each task. Real model/API calls require a justified bounded budget and authority, not a ritual for unrelated changes.
 
+For diagnostic evidence, request the minimum useful redacted excerpts, preserving status, symptom and failing assertion. Replace literal tokens, cookies and secret URLs with <REDACTED> before reporting or persisting; use credential references in commands and avoid captures that echo secrets. If redaction hides the signal, choose a narrower safe reproduction, not secret disclosure.
+
 Use one coherent concern per Worker. Return the report in the Worker result; explicitly name private worklog or product documentation paths when persistence is required. Follow policies/delegation.md for reuse and review.
 
 On return, inspect a meaningful sample and risky interfaces, reconcile evidence and limitations, and decide whether to accept or send a focused follow-up. Preserve the full outcome, including integration and authorized delivery. A Worker saying done is evidence to review, not acceptance. Await new results while it works instead of repeatedly polling.
@@ -293,7 +302,7 @@ Name the full user outcome, then the smallest end-to-end step that tests the app
 
 Find the unknown most likely to invalidate the approach. Use the smallest discriminating experiment or prototype that can settle it before expanding implementation. Decide what observation would favor or reject the approach; a prototype without a decision to make is unnecessary. Try the caller-facing interface against real types and behavior. Prefer fewer modules that hide meaningful complexity over shallow wrappers, generic adapters and speculative architecture. Do not fragment one concern merely to create parallel work or default to multi-agent review.
 
-Repeated failures, accumulating workarounds or a test tool that cannot observe the user's problem are evidence about the approach. Name the shared assumption, inspect the failing boundary and choose a different experiment, interface or scope instead of another compensating patch. Keep valid evidence, discard obsolete plans and continue toward the original outcome. Seek a new decision only when changed scope or authority requires it. Milestones, reports and extra gates are not completion.
+When work stalls or failures repeat, inspect a small relevant sample of actual session evidence. Distinguish navigation or information-access gaps, missing or wrong tests, inappropriate task decomposition and ineffective instructions. Correct the relevant environment or caller, or choose an executable experiment that changes the next action. Delete or clarify an instruction only when the evidence supports it; available, adequate guidance needs no rewrite. Keep valid evidence and the full outcome, discard obsolete plans, and seek a new decision only when changed scope or authority requires it. Milestones, reports and extra gates are not completion.
 `
 
 const defaultWayfindPlaybook = `---
