@@ -247,13 +247,18 @@ func (l *logindInhibitor) alive() bool {
 
 // screenSaverInhibitor holds the owner session's ScreenSaver inhibit cookie.
 // The session bus connection is kept open: KDE releases the inhibition when the
-// client disconnects, and UnInhibit is sent on explicit release.
+// client disconnects, and UnInhibit is sent on explicit release. A restart of
+// the screen-saver service invalidates the cookie (its D-Bus owner changes), so
+// the leg reports itself stale and the next reconcile re-acquires it.
 type screenSaverInhibitor struct {
 	uid     uint32
 	address string // test seam; empty resolves the owner runtime bus
+	mu      sync.Mutex
 	conn    *dbus.Conn
 	cookie  uint32
 	open    bool
+	stale   bool
+	done    chan struct{}
 }
 
 func (s *screenSaverInhibitor) busAddress() (string, error) {
@@ -280,26 +285,68 @@ func (s *screenSaverInhibitor) acquire(ctx context.Context) error {
 		_ = conn.Close()
 		return errors.New("screen_saver_inhibit_rejected")
 	}
-	s.conn, s.cookie, s.open = conn, cookie, true
+	done := make(chan struct{})
+	s.mu.Lock()
+	s.conn, s.cookie, s.open, s.stale, s.done = conn, cookie, true, false, done
+	s.mu.Unlock()
+	go s.watchOwnerChanges(conn, done)
 	return nil
 }
 
+// watchOwnerChanges marks the held cookie stale when the screen-saver service
+// name changes owner, because a restarted service no longer knows the cookie.
+func (s *screenSaverInhibitor) watchOwnerChanges(conn *dbus.Conn, done chan struct{}) {
+	if err := conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0,
+		"type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.ScreenSaver'").Err; err != nil {
+		return
+	}
+	signals := make(chan *dbus.Signal, 8)
+	conn.Signal(signals)
+	defer conn.RemoveSignal(signals)
+	for {
+		select {
+		case <-done:
+			return
+		case signal, ok := <-signals:
+			if !ok {
+				return
+			}
+			if signal.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(signal.Body) < 3 {
+				continue
+			}
+			if name, _ := signal.Body[0].(string); name != "org.freedesktop.ScreenSaver" {
+				continue
+			}
+			s.mu.Lock()
+			s.stale = true
+			s.mu.Unlock()
+		}
+	}
+}
+
 func (s *screenSaverInhibitor) release() {
-	if s.open && s.conn != nil {
+	s.mu.Lock()
+	conn, cookie, open, done := s.conn, s.cookie, s.open, s.done
+	s.open, s.cookie, s.conn, s.done, s.stale = false, 0, nil, nil, false
+	s.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+	if open && conn != nil {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = s.conn.Object("org.freedesktop.ScreenSaver", "/ScreenSaver").
-			CallWithContext(releaseCtx, "org.freedesktop.ScreenSaver.UnInhibit", 0, s.cookie).Err
+		_ = conn.Object("org.freedesktop.ScreenSaver", "/ScreenSaver").
+			CallWithContext(releaseCtx, "org.freedesktop.ScreenSaver.UnInhibit", 0, cookie).Err
 		cancel()
 	}
-	s.open, s.cookie = false, 0
-	if s.conn != nil {
-		_ = s.conn.Close()
-		s.conn = nil
+	if conn != nil {
+		_ = conn.Close()
 	}
 }
 
 func (s *screenSaverInhibitor) alive() bool {
-	return s.open && s.conn != nil && s.conn.Connected()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.open && !s.stale && s.conn != nil && s.conn.Connected()
 }
 
 // ownerSessionBusAddress resolves the owner's session bus from the systemd user

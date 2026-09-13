@@ -162,3 +162,46 @@ func TestScreenSaverInhibitorHoldsRealCookieOverBus(t *testing.T) {
 		t.Fatalf("UnInhibit was not called for cookie %d", cookie)
 	}
 }
+
+func TestScreenSaverInhibitorInvalidatesCookieOnServiceRestart(t *testing.T) {
+	address := startPrivateBus(t)
+	service, err := dbus.Connect(address)
+	if err != nil {
+		t.Skipf("private bus connect: %v", err)
+	}
+	defer service.Close()
+	exportFakeInhibitServices(t, service)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	leg := &screenSaverInhibitor{uid: uint32(os.Getuid()), address: address}
+	if err := leg.acquire(ctx); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if !leg.alive() {
+		t.Fatal("fresh cookie not alive")
+	}
+	// A restarted screen-saver service takes the name from a new connection.
+	restarted, err := dbus.Connect(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if reply, err := service.ReleaseName("org.freedesktop.ScreenSaver"); err != nil || reply != dbus.ReleaseNameReplyReleased {
+		t.Fatalf("release name: reply=%v err=%v", reply, err)
+	}
+	if err := restarted.Export(&fakeScreenSaver{released: map[uint32]bool{}}, dbus.ObjectPath("/ScreenSaver"), "org.freedesktop.ScreenSaver"); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := restarted.RequestName("org.freedesktop.ScreenSaver", dbus.NameFlagDoNotQueue); err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+		t.Fatalf("re-request name: reply=%v err=%v", reply, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for leg.alive() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if leg.alive() {
+		t.Fatal("stale cookie was still reported alive after the service restarted")
+	}
+	leg.release()
+}
