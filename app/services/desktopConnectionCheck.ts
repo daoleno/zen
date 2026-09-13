@@ -95,6 +95,7 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     typeof rawMoonlight.host_key === "string" ? rawMoonlight.host_key : "",
     typeof rawMoonlight.identity_key === "string" ? rawMoonlight.identity_key : "",
     typeof rawMoonlight.admission === "string" ? rawMoonlight.admission : "",
+    String(transport.trusted_ingress === true),
   ].join("\n");
   const binding = new TextEncoder().encode([
     server.daemonId.trim().toLowerCase(),

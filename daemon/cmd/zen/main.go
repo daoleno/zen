@@ -2341,6 +2341,11 @@ func desktopTrustedBind(addr string) bool {
 	if ip == nil {
 		return false
 	}
+	// cloudflared reaches the documented default `zen` origin on loopback; this
+	// is the operator's deliberate local connector path, not a wildcard bind.
+	if ip.IsLoopback() {
+		return true
+	}
 	if v4 := ip.To4(); v4 != nil {
 		switch {
 		case v4[0] == 10:

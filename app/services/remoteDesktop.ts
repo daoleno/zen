@@ -29,6 +29,32 @@ function randomHex(bytes: number): string {
   return Array.from(getRandomBytes(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Bounded abortable text read: stops accepting bytes past the limit. */
+async function readBoundedText(body: ReadableStream<Uint8Array>, limit: number): Promise<string> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("enrollment_response_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  const merged = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(merged);
+}
+
 export function moonlightReceiptKey(server: Pick<StoredServer, "daemonId">,
   moonlight: Pick<MoonlightHostBootstrap, "hostKey" | "identityKey">, fingerprint: string): string {
   return [server.daemonId, moonlight.hostKey, moonlight.identityKey, fingerprint].join(":");
@@ -56,9 +82,10 @@ async function postControl(server: StoredServer, resolved: string, proof: Deskto
     if (response.redirected || (response.url && response.url !== endpoint.toString())) {
       throw new Error("Desktop endpoint redirects are not allowed.");
     }
-    // Read bounded text first: the daemon can answer with a plain-text error
-    // (for example the 409 "enrollment_pending" body), never a JSON parse crash.
-    const raw = response.body ? (await new Response(response.body).text()).slice(0, 8192) : "";
+    // Read bounded text BEFORE accepting bytes past the limit: the daemon can
+    // also answer with a plain-text error (for example a 409 pending body), so
+    // a JSON parse crash is never the outcome.
+    const raw = response.body ? await readBoundedText(response.body, 8192) : "";
     let payload: Record<string, unknown> = {};
     try {
       payload = raw ? JSON.parse(raw) : {};
@@ -154,7 +181,17 @@ export async function completeMoonlightEnrollment(server: StoredServer, handle: 
     const complete = await postControl(server, resolved, proof, "/desktop/moonlight/enroll/complete", {
       attempt: handle.attempt, nonce: handle.nonce, client_cert_pem: handle.certPem, signature: handle.signature,
     }, signal);
-    return complete.enrolled === true ? "verified" : "pending";
+    if (complete.enrolled !== true) return "pending";
+    // Bind the receipt to this exact attempt/certificate/host: a generic
+    // assertion or a different device's success is not enough.
+    if (complete.attempt !== handle.attempt || complete.fingerprint !== handle.fingerprint) {
+      throw new Error("enrollment_receipt_mismatch");
+    }
+    if (typeof complete.host_key === "string" && complete.host_key) {
+      const expected = handle.receipt.split(":")[1] ?? "";
+      if (expected && complete.host_key !== expected) throw new Error("enrollment_receipt_host_mismatch");
+    }
+    return "verified";
   } catch (error) {
     if ((error as Error).message === "enrollment_pending") return "pending";
     throw error;
@@ -178,8 +215,11 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
   await verifyDesktopServer(server, resolved, proof, signal);
   const capability = await fetchDesktopCapability(server, resolved, proof, signal);
   const blocking = desktopPreflightError(capability);
-  const identityLan = capability.identityTls && !!desktopLanOrigin(server) && server.transportKind !== "link"
-    && capability.scopeVersion === 1 && capability.unattended;
+  // A server-verified trusted deployment uses the direct trusted-LAN plan even
+  // when Zen also offers optional identity TLS; the extra pinned tunnel is only
+  // for deployments that actually require it.
+  const identityLan = !capability.trustedIngress && capability.identityTls && !!desktopLanOrigin(server)
+    && server.transportKind !== "link" && capability.scopeVersion === 1 && capability.unattended;
   const authorization = await buildAuthorizationHeader({ daemonId: server.daemonId, purpose: "zen-desktop" });
   // The control channel may go through a local pinned tunnel while the native
   // engine needs its own directly reachable computer IP. Prefer Moonlight when

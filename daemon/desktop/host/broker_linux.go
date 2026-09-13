@@ -413,7 +413,7 @@ func (b *broker) admit(ctx context.Context, conn *net.UnixConn) {
 	}
 	payload, _ := json.Marshal(proof.Admission)
 	r := proof.Admission.Request
-	if !auth.VerifyDesktopHostAdmission(b.config.HostID, proof.PublicKey, payload, proof.Signature) || r.HostID != b.config.HostID || !r.TLS || r.Mode != Unattended || r.DeviceID == "" || len(r.DeviceID) > 256 || r.ConnectionID == "" || r.Fingerprint == [32]byte{} || r.Generation != challenge.Generation {
+	if !auth.VerifyDesktopHostAdmission(b.config.HostID, proof.PublicKey, payload, proof.Signature) || r.HostID != b.config.HostID || (!r.TLS && !r.LANApproved) || r.Mode != Unattended || r.DeviceID == "" || len(r.DeviceID) > 256 || r.ConnectionID == "" || r.Fingerprint == [32]byte{} || r.Generation != challenge.Generation {
 		log.Print("desktop admission rejected: signed_authority")
 		return
 	}

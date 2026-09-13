@@ -107,3 +107,16 @@ test("negatives fail closed: other device, forged assertion, insecure transport,
   expect(fetchCalls).toBe(1);
   expect(observedSignal?.aborted).toBe(true);
 });
+
+test("trusted deployment grants scope without a local tunnel", async () => {
+  const lan = { id: "srv-2", url: "ws://192.168.1.6:9876/ws", transportKind: "manual" } as StoredServer;
+  let tunnelCalls = 0;
+  const tunnels: DesktopGrantTunnelFactory = {
+    start: async () => { tunnelCalls++; return { port: 1 }; },
+    stop: async () => {},
+  };
+  const trusted = await desktopGrantTransport(lan, "ws://192.168.1.6:9876/ws",
+    { identityTls: true, transportPin: "ab".repeat(32), trustedIngress: true }, tunnels);
+  expect(trusted.origin).toBe("http://192.168.1.6:9876");
+  expect(tunnelCalls).toBe(0);
+});

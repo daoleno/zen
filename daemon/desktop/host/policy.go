@@ -84,7 +84,9 @@ func ReadHostConfig(r io.Reader) (HostConfig, error) {
 }
 
 // Channel facts must come from fresh existing device-signature verification and
-// actual inner TLS, not JSON, URL schemes, loopback addresses or proxy headers.
+// the daemon's verified deployment provenance: actual TLS or the operator
+// trusted-network/connector decision derived from listener and peer, never JSON,
+// URL schemes or proxy headers.
 type Request struct {
 	HostID       string
 	DeviceID     string
@@ -198,7 +200,7 @@ func (g *Gate) authorized(r Request, consent *Consent) bool {
 	if r.Mode == Attended {
 		return s.Surface == Desktop && s.UID == g.config.OwnerUID && (r.TLS || r.LANApproved) && consent != nil && !consent.used && consent.Request == r
 	}
-	if r.Mode != Unattended || !r.TLS || !g.scoped(r.DeviceID, r.Fingerprint) {
+	if r.Mode != Unattended || (!r.TLS && !r.LANApproved) || !g.scoped(r.DeviceID, r.Fingerprint) {
 		return false
 	}
 	switch s.Surface {

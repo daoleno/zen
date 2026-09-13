@@ -17,5 +17,6 @@ test("prepareDesktopConnection selects Moonlight on direct engine with real proo
   const result = JSON.parse(stdout.trim().split("\n").pop() || "{}");
   expect(result.moonlight).toBe("moonlight");
   expect(result.legacy).toBe("pinned-link");
+  expect(result.trusted).toBe("trusted-lan");
   expect(result.tunnelCalls).toBe(1);
 });

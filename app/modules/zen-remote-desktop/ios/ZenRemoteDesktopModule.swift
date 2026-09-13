@@ -344,6 +344,10 @@ final class DesktopView: ExpoView {
     if config["transport"] == "pinned-link", let port = url.port {
       return PinnedEndpointRegistry.contains(port: port, pin: config["transportPin"] ?? "")
     }
+    // An operator-approved trusted deployment may use sensitive input; the
+    // native transport policy already enforced the private numeric origin and
+    // same-origin plan before opening the connection.
+    if config["transport"] == "trusted-lan" { return url.scheme == "ws" }
     return false
   }
 

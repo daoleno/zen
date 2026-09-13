@@ -5,6 +5,19 @@ import okhttp3.HttpUrl
 import okhttp3.Request
 
 internal object DesktopTransportPolicy {
+  /**
+   * Whether this authorized connection may carry OS sensitive input. The
+   * trusted-lan decision is the server's verified deployment fact; the view
+   * separately enforces scope, surface, owner and generation.
+   */
+  fun sensitiveInputAllowed(transport: String, tlsConnected: Boolean, pinnedRegistered: Boolean): Boolean =
+    when (transport) {
+      "tls" -> tlsConnected
+      "pinned-link" -> pinnedRegistered
+      "trusted-lan" -> true
+      else -> false
+    }
+
   fun privateAddress(bytes: ByteArray): Boolean {
     val b = bytes.map { it.toInt() and 255 }
     if (b.size == 16 && b.take(10).all { it == 0 } && b[10] == 255 && b[11] == 255) {

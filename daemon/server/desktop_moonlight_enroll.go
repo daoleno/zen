@@ -215,9 +215,15 @@ func (s *Server) handleMoonlightEnrollComplete(w http.ResponseWriter, r *http.Re
 	}
 	challenge.Consumed = true
 	mu.Unlock()
+	// Echo the exact attempt and certificate fingerprint that were verified so
+	// the client can bind the receipt to this local attempt instead of trusting
+	// a generic assertion as a response-body signature.
 	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, map[string]any{
-		"enrolled":  true,
-		"uuid":      uuid,
-		"device_id": device.ID,
+		"enrolled":    true,
+		"uuid":        uuid,
+		"device_id":   device.ID,
+		"attempt":     raw.Attempt,
+		"fingerprint": fingerprint,
+		"host_key":    moonlightHostKey(),
 	})
 }

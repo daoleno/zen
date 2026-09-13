@@ -190,7 +190,7 @@ test("forged capability pin signatures fail closed", async () => {
   })).rejects.toThrow("capability proof");
 });
 
-function moonlightBindingOf(moonlight: Record<string, unknown>): string {
+function moonlightBindingOf(moonlight: Record<string, unknown>, trustedIngress = false): string {
   return [
     String(moonlight.available === true),
     String(moonlight.http_port ?? ""),
@@ -199,10 +199,11 @@ function moonlightBindingOf(moonlight: Record<string, unknown>): string {
     typeof moonlight.host_key === "string" ? moonlight.host_key : "",
     typeof moonlight.identity_key === "string" ? moonlight.identity_key : "",
     typeof moonlight.admission === "string" ? moonlight.admission : "",
+    String(trustedIngress === true),
   ].join("\n");
 }
 
-function proofWithMoonlight(moonlight: Record<string, unknown>, options: { v2Binding?: string; includeV2?: boolean } = {}): DesktopProofDependencies {
+function proofWithMoonlight(moonlight: Record<string, unknown>, options: { v2Binding?: string; includeV2?: boolean; trustedIngress?: boolean } = {}): DesktopProofDependencies {
   return {
     authorization: async () => "token",
     verify: (input) => input.signatureHex === input.purpose && input.nonceHex === "c".repeat(32),
@@ -213,12 +214,12 @@ function proofWithMoonlight(moonlight: Record<string, unknown>, options: { v2Bin
         assertion_timestamp: new Date().toISOString(), assertion_nonce: "c".repeat(32),
         assertion_signature: "zen-desktop-capability", ok: true,
         device_trust: "paired_unattended", desktop_scope_version: 1,
-        transport: { identity_tls: true, transport_pin: pin },
+        transport: { identity_tls: true, transport_pin: pin, trusted_ingress: options.trustedIngress === true },
         host: { status: "ready", broker: true },
         connect: { unattended: true },
         moonlight,
         capability_signature: signCapability(true),
-        ...(includeV2 ? { capability_signature_v2: signCapabilityV2(true, pin, options.v2Binding ?? moonlightBindingOf(moonlight)) } : {}),
+        ...(includeV2 ? { capability_signature_v2: signCapabilityV2(true, pin, options.v2Binding ?? moonlightBindingOf(moonlight, options.trustedIngress === true)) } : {}),
       };
       return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify(body)).body };
     },

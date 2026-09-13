@@ -116,7 +116,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIn
 				moonlight["admission"] = "unavailable"
 			}
 			payload["moonlight"] = moonlight
-			moonlightBinding = moonlightBindingString(moonlight)
+			moonlightBinding = moonlightBindingString(moonlight, trustedIngress)
 		}
 	}
 	// v1 stays byte-identical for installed clients; the Moonlight bootstrap is
@@ -131,10 +131,15 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIn
 // moonlightBindingString is the canonical, newline-joined form of the emitted
 // block. Both sides sign this exact string so an injected or altered block
 // invalidates the capability signature.
-func moonlightBindingString(block map[string]any) string {
-	return fmt.Sprintf("%v\n%v\n%v\n%v\n%v\n%v\n%v",
+func moonlightBindingString(block map[string]any, trustedIngress bool) string {
+	return fmt.Sprintf("%v\n%v\n%v\n%v\n%v\n%v\n%v\n%v",
 		block["available"], block["http_port"], block["https_port"],
-		block["app_id"], block["host_key"], block["identity_key"], block["admission"])
+		block["app_id"], block["host_key"], block["identity_key"], block["admission"],
+		trustedIngress)
+}
+
+func moonlightHostKey() string {
+	return moonlightSnapshot().HostKey
 }
 
 func moonlightAvailabilityReason() string {

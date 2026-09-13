@@ -22,17 +22,18 @@ const sign = (bytes: Uint8Array) => Buffer.from(nacl.sign.detached(bytes, pair.s
 const timestamp = new Date().toISOString();
 const nonce = "d".repeat(32);
 const assertion = (purpose: string) => sign(md.buildServerAssertionPayload(purpose, daemonId, timestamp, nonce));
-const bindingOf = (block: Record<string, unknown>) => [
+const bindingOf = (block: Record<string, unknown>, trustedIngress = false) => [
   String(block.available === true), String(block.http_port), String(block.https_port),
   String(block.app_id), String(block.host_key), String(block.identity_key), String(block.admission ?? ""),
+  String(trustedIngress),
 ].join("\n");
 const signDomain = (domain: string, fields: string[]) =>
   sign(Buffer.concat([Buffer.from(domain), Buffer.from(fields.join("\n"))]));
 const v1Fields = [daemonId, publicKey, pin, "true"];
 const moonlight = { available: true, http_port: 47989, https_port: 47984, app_id: 1, host_key: "zen-host", identity_key: "device-1", admission: "verified" };
-const v2Fields = [...v1Fields, bindingOf(moonlight)];
+const v2Fields = [...v1Fields, bindingOf(moonlight, true)];
 
-let scenario: "moonlight" | "legacy" = "moonlight";
+let scenario: "moonlight" | "legacy" | "trusted-lan" = "moonlight";
 let tunnelCalls = 0;
 const server = {
   id: "owned", name: "Owned", url: "ws://192.168.1.50:9876/ws",
@@ -44,10 +45,19 @@ const bodies = () => {
     ok: true, daemon_id: daemonId, daemon_public_key: publicKey,
     assertion_timestamp: timestamp, assertion_nonce: nonce,
     device_trust: "paired_unattended", desktop_scope_version: 1,
-    transport: { request_encrypted: false, identity_tls: true, transport_pin: pin },
+    transport: { request_encrypted: false, identity_tls: true, transport_pin: pin, trusted_ingress: false },
     host: { status: "ready", broker: true, current_session: true },
     connect: { unattended: true },
   };
+  if (scenario === "trusted-lan") {
+    return {
+      "/health": { ...base, assertion_signature: assertion("zen-health") },
+      "/auth-check": { ...base, assertion_signature: assertion("zen-probe") },
+      "/desktop/capability": { ...base, assertion_signature: assertion("zen-desktop-capability"),
+        capability_signature: signDomain("zen-desktop-capability-v1\u0000", v1Fields),
+        transport: { identity_tls: true, transport_pin: pin, trusted_ingress: true } },
+    };
+  }
   if (scenario === "legacy") {
     return {
       "/health": { ...base, assertion_signature: assertion("zen-health") },
@@ -141,4 +151,10 @@ assert.deepEqual(controlCalls.map((call) => call.path), [
 assert.equal(controlCalls[1].body.signature, "test-signature");
 assert.equal(controlCalls[1].body.client_cert_pem, "test-cert-pem");
 
-console.log(JSON.stringify({ moonlight: "moonlight", legacy: "pinned-link", tunnelCalls, enrollment, controlCalls: controlCalls.length }));
+scenario = "trusted-lan";
+tunnelCalls = 0;
+const trustedPlan = JSON.parse(await prepareDesktopConnection(server as never, "gen-3"));
+assert.equal(trustedPlan.transport, "trusted-lan");
+assert.equal(tunnelCalls, 0);
+
+console.log(JSON.stringify({ moonlight: "moonlight", legacy: "pinned-link", trusted: "trusted-lan", tunnelCalls, enrollment, controlCalls: controlCalls.length }));

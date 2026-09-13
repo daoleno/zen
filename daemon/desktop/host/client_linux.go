@@ -81,7 +81,7 @@ func (a *brokerAgent) heartbeat() {
 	}
 }
 
-func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (*brokerAgent, Request, error) {
+func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate, tls bool, trusted bool) (*brokerAgent, Request, error) {
 	conn, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: OwnerSocket, Net: "unixpacket"})
 	if err != nil {
 		return nil, Request{}, errors.New("broker_unavailable")
@@ -115,7 +115,8 @@ func openBroker(manager *auth.Manager, device *auth.TrustedDevice, gate *Gate) (
 	if err != nil || !manager.HasDesktopScope(device.ID, device.PublicKeyHex) {
 		return nil, Request{}, errors.New("desktop_scope_required")
 	}
-	request := Request{HostID: manager.DaemonID(), DeviceID: device.ID, Fingerprint: sha256.Sum256(key), ConnectionID: challenge.Nonce, Generation: challenge.Generation, Mode: Unattended, Control: true, TLS: true}
+	// Truthful provenance only: never fabricate TLS for a trusted HTTP path.
+	request := Request{HostID: manager.DaemonID(), DeviceID: device.ID, Fingerprint: sha256.Sum256(key), ConnectionID: challenge.Nonce, Generation: challenge.Generation, Mode: Unattended, Control: true, TLS: tls, LANApproved: trusted}
 	admission := Admission{Challenge: challenge, Request: request}
 	payload, _ := json.Marshal(admission)
 	proof := signedAdmission{Admission: admission, PublicKey: manager.PublicKeyHex(), Signature: manager.SignDesktopHostAdmission(payload)}
@@ -198,7 +199,7 @@ func ServeUnattended(conn *websocket.Conn, manager *auth.Manager, device *auth.T
 	}
 	defer cleanup()
 	bindRetirement(func() { gate.Deny(true); _ = conn.Close() })
-	agent, request, err := openBroker(manager, device, gate)
+	agent, request, err := openBroker(manager, device, gate, tls, trusted)
 	if err != nil {
 		if code, ok := strings.CutPrefix(err.Error(), "session_unavailable:"); ok {
 			status("unsupported", brokerUnavailableReason(code))

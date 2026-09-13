@@ -335,11 +335,11 @@ class DesktopView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun encryptedTransport(): Boolean {
     return try {
       val config = JSONObject(pendingConnection)
-      when (config.getString("transport")) {
-        "tls" -> tlsConnected
-        "pinned-link" -> PinnedEndpointRegistry.contains(java.net.URI(config.getString("url")).port, config.getString("transportPin"))
-        else -> false
-      }
+      DesktopTransportPolicy.sensitiveInputAllowed(
+        config.getString("transport"),
+        tlsConnected,
+        PinnedEndpointRegistry.contains(java.net.URI(config.getString("url")).port, config.getString("transportPin")),
+      )
     } catch (_: Exception) { false }
   }
 

@@ -47,16 +47,21 @@ function httpOrigin(value: string): string {
 export async function desktopGrantTransport(
   server: StoredServer,
   resolved: string,
-  capability: Pick<DesktopCapability, "identityTls" | "transportPin">,
+  capability: Pick<DesktopCapability, "identityTls" | "transportPin" | "trustedIngress">,
   tunnels?: DesktopGrantTunnelFactory,
 ): Promise<{ origin: string; release: () => Promise<void> }> {
-  if (!capability.identityTls || !/^[0-9a-f]{64}$/i.test(capability.transportPin)) {
+  if (!capability.trustedIngress && (!capability.identityTls || !/^[0-9a-f]{64}$/i.test(capability.transportPin))) {
     throw new Error("Remote desktop requires this computer's identity-bound encrypted connection.");
   }
   if (server.transportKind === "link") {
     return { origin: httpOrigin(resolved), release: async () => {} };
   }
   const source = new URL(server.url);
+  if (capability.trustedIngress) {
+    // The daemon verified this request as arriving over the operator's trusted
+    // deployment; no redundant local TLS tunnel and no certificate are needed.
+    return { origin: httpOrigin(resolved), release: async () => {} };
+  }
   if (desktopLanOrigin(server)) {
     const factory = tunnels ?? (await nativeTunnels());
     const key = `desktop-grant:${server.id}`;
