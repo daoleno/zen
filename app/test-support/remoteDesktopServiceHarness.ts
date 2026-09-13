@@ -142,7 +142,8 @@ scenario = "legacy";
 tunnelCalls = 0;
 const legacyPlan = JSON.parse(await prepareDesktopConnection(server as never, "gen-2"));
 assert.equal(legacyPlan.transport, "pinned-link");
-assert.equal(tunnelCalls, 1);
+const legacyTunnelCalls = tunnelCalls;
+assert.equal(legacyTunnelCalls, 1);
 
 scenario = "moonlight";
 const moonlightTyped = {
@@ -162,6 +163,8 @@ scenario = "trusted-lan";
 tunnelCalls = 0;
 const trustedPlan = JSON.parse(await prepareDesktopConnection(server as never, "gen-3"));
 assert.equal(trustedPlan.transport, "trusted-lan");
-assert.equal(tunnelCalls, 0);
+const trustedTunnelCalls = tunnelCalls;
+assert.equal(trustedTunnelCalls, 0);
 
-console.log(JSON.stringify({ moonlight: "moonlight", legacy: "pinned-link", trusted: "trusted-lan", tunnelCalls, enrollment, controlCalls: controlCalls.length }));
+console.log(JSON.stringify({ moonlight: "moonlight", legacy: "pinned-link", trusted: "trusted-lan",
+  legacyTunnelCalls, trustedTunnelCalls, enrollment, controlCalls: controlCalls.length }));
