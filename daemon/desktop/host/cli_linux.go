@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +35,8 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 	activate := fs.Bool("activate", false, "Enable/start the installed broker; do not restart SDDM or the owner")
 	verbose := fs.Bool("verbose", false, "Print verified probe details and rollback instructions; the default success stays brief")
 	planOnly := fs.Bool("plan", false, "Print the reviewed install manifest without changing the host")
+	status := fs.Bool("status", false, "Print the read-only desktop authorization/inhibitor status")
+	statusJSON := fs.Bool("json", false, "With --status: print machine-readable JSON")
 	binarySource := fs.String("binary-source", "", "Reviewed desktop-capable zen ELF used for every role")
 	brokerSource := fs.String("broker-source", "", "Legacy alias; must match --binary-source / --agent-source")
 	agentSource := fs.String("agent-source", "", "Legacy alias; must match --binary-source / --broker-source")
@@ -45,6 +48,15 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 	}
 	if *registerCurrent && (!*install || !*activate || *rollback || *planOnly || *initConfig || *register != "") {
 		return errors.New("--register-current requires --install --activate and cannot be combined with init-config, plan, rollback or register")
+	}
+	if *statusJSON && !*status {
+		return errors.New("--json requires --status")
+	}
+	if *status {
+		if *install || *rollback || *activate || *planOnly || *initConfig || *register != "" || *registerCurrent {
+			return errors.New("--status is read-only and cannot be combined with init-config, plan, install, rollback, activate or register")
+		}
+		return printAuthorizationStatus(stderr, *statusJSON, *stateDir)
 	}
 	if *initConfig {
 		return initLinuxConfig(fs, *configPath, *stateDir, *ownerUnit, stderr)
@@ -136,6 +148,43 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 		}
 		return err
 	}
+	return nil
+}
+
+// printAuthorizationStatus is the read-only operator surface for the scoped
+// authorization lifecycle. It acquires nothing and changes no state.
+func printAuthorizationStatus(out io.Writer, asJSON bool, stateDir string) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	report := InspectAuthorizationReport(ctx, stateDir)
+	if asJSON {
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(report)
+	}
+	freshness := "stale"
+	if report.StatusFresh {
+		freshness = "fresh"
+	}
+	status := report.Status
+	fmt.Fprintln(out, "Zen desktop authorization status (read-only; no inhibitor acquired)")
+	fmt.Fprintf(out, "  persisted authorization: %d device(s) with desktop scope\n", report.PersistedDevices)
+	if report.PersistedError != "" {
+		fmt.Fprintf(out, "  persisted authorization error: %s\n", report.PersistedError)
+	}
+	fmt.Fprintf(out, "  daemon status record: %s pid=%d reason=%s active=%t\n", freshness, status.PID, status.Reason, status.Active)
+	if report.StatusError != "" {
+		fmt.Fprintf(out, "  status record error: %s\n", report.StatusError)
+	}
+	fmt.Fprintf(out, "  inhibitor: idle=%s sleep=%s lock=%s\n", status.Inhibitors.LogindIdle, status.Inhibitors.LogindSleep, status.Inhibitors.ScreenSaver)
+	if status.Session != nil {
+		fmt.Fprintf(out, "  session: %s %s uid=%d %s\n", status.Session.Backend, status.Session.Display, status.Session.UID, status.Session.Seat)
+	}
+	fmt.Fprintf(out, "  live logind inhibitor: idle=%t sleep=%t pid=%d\n", report.LiveLogind.Idle, report.LiveLogind.Sleep, report.LiveLogind.PID)
+	if report.LiveError != "" {
+		fmt.Fprintf(out, "  live logind error: %s\n", report.LiveError)
+	}
+	fmt.Fprintf(out, "  status record path: %s\n", report.StatusPath)
 	return nil
 }
 

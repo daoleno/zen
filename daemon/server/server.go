@@ -126,6 +126,8 @@ type Server struct {
 	runtimeClosing             bool
 	terminalCleanup            terminalCleanupOwner
 	desktopTransport           DesktopTransport
+	desktopAuthorization       desktopAuthorizationController
+	desktopAuthorizationWake   chan struct{}
 
 	workSubID                   int
 	workSub                     <-chan work.Event
@@ -457,6 +459,14 @@ func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) 
 		stopCancel()
 	}()
 
+	if s.auth != nil && s.desktopAuthorization != nil {
+		runtime.Add(1)
+		go func() {
+			defer runtime.Done()
+			s.runDesktopAuthorization(runtimeCtx)
+		}()
+	}
+
 	if onReady != nil {
 		onReady()
 	} else {
@@ -597,6 +607,9 @@ func (s *Server) revokeAuthenticatedDevice(deviceID string) {
 		log.Printf("moonlight revoke after device revocation: %v", err)
 	}
 	cancel()
+	// A revocation that leaves no authorized device releases the scoped
+	// idle/suspend inhibitor; the background reconciler applies it.
+	s.nudgeDesktopAuthorization()
 	var revoked []clientDetachWork
 	s.mu.Lock()
 	for conn, owner := range s.clients {

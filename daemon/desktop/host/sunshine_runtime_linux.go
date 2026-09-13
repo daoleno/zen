@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SunshineRuntime is the production entry point for the supervised Sunshine
@@ -34,6 +35,7 @@ var (
 	sunshineRuntimeOptions   SunshineHostOptions
 	sunshineRuntimeCfg       sunshineRuntimeConfig
 	sunshineRuntimeActiveCfg sunshineRuntimeConfig
+	sunshineRuntimeError     string
 )
 
 // SunshineConfigPath is the Zen-owned explicit configuration file.
@@ -143,10 +145,25 @@ func SunshineAvailable() bool {
 	return true
 }
 
+// SunshineAvailabilityReason reports the last supervised-host start failure so
+// the capability endpoint explains why Moonlight is unavailable instead of
+// claiming a generic binding problem.
+func SunshineAvailabilityReason() string {
+	sunshineRuntimeMu.Lock()
+	defer sunshineRuntimeMu.Unlock()
+	if sunshineRuntimeError != "" {
+		return sunshineRuntimeError
+	}
+	return "admin_binding_unavailable"
+}
+
 // EnsureSunshineRuntime is the production caller: it starts the supervised
 // Sunshine host once when explicit configuration exists. The spawner is
-// injectable for tests; production passes nil for the default spawner.
-func EnsureSunshineRuntime(spawner SunshineSpawner) (SunshineRuntimeSnapshot, error) {
+// injectable for tests; production passes nil for the default spawner. When the
+// daemon was started outside the owner desktop session (for example over SSH),
+// the owner session is discovered from logind and its environment is passed to
+// the supervised process so it attaches to the same KDE session.
+func EnsureSunshineRuntime(ctx context.Context, spawner SunshineSpawner) (SunshineRuntimeSnapshot, error) {
 	cfg, err := loadSunshineRuntimeConfig()
 	if err != nil {
 		return SunshineRuntimeSnapshot{}, nil
@@ -170,15 +187,43 @@ func EnsureSunshineRuntime(spawner SunshineSpawner) (SunshineRuntimeSnapshot, er
 	opts.PKeyPath = filepath.Join(cfg.StateDir, "sunshine.key")
 	opts.CertPath = filepath.Join(cfg.StateDir, "sunshine.crt")
 	opts.AppsFilePath = filepath.Join(cfg.StateDir, "apps.json")
+	sessionEnv, sessionErr := sessionEnvironmentForHost(uint32(os.Getuid()))
+	if sessionErr != nil {
+		sunshineRuntimeError = sessionErr.Error()
+		return sunshineSnapshotLocked(), fmt.Errorf("start sunshine runtime: %w", sessionErr)
+	}
+	opts.SessionEnv = sessionEnv
 	host, err := StartSunshineHost(opts, spawner)
 	if err != nil {
+		sunshineRuntimeError = err.Error()
 		return sunshineSnapshotLocked(), fmt.Errorf("start sunshine runtime: %w", err)
 	}
 	sunshineRuntimeHost = host
 	sunshineRuntimeOptions = opts
 	sunshineRuntimeActiveCfg = cfg
+	sunshineRuntimeError = ""
 	return sunshineSnapshotLocked(), nil
 }
+
+// sessionEnvironmentForHost returns the owner desktop session environment when
+// this process is not already running inside that session. A daemon that
+// already carries the display environment keeps it unchanged.
+func sessionEnvironmentForHost(uid uint32) ([]string, error) {
+	if strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != "" || strings.TrimSpace(os.Getenv("DISPLAY")) != "" {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	session, err := discoverHostSession(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	return session.Environment(), nil
+}
+
+// discoverHostSession is injectable so unit tests do not depend on the
+// developer's live desktop session.
+var discoverHostSession = DiscoverOwnerSession
 
 // StopSunshineRuntime stops the supervised host. Idempotent.
 func StopSunshineRuntime(ctx context.Context) error {

@@ -2,11 +2,13 @@ package host
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/desktop/nativebind"
@@ -164,5 +166,55 @@ func TestInitConcurrentDifferentIdentitiesCannotOverwrite(t *testing.T) {
 	one, two := <-results, <-results
 	if (one == nil) == (two == nil) {
 		t.Fatalf("exactly one init must win: %v / %v", one, two)
+	}
+}
+
+func TestStatusCLIReadsAuthorizationReportWithoutSideEffects(t *testing.T) {
+	stateDir := t.TempDir()
+	devices := `{"devices":[{"id":"dev-1","desktop_scope_version":1},{"id":"dev-2"}]}`
+	if err := os.WriteFile(filepath.Join(stateDir, "trusted-devices.json"), []byte(devices), 0600); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(t.TempDir(), "authorization-status.json")
+	record := AuthorizationStatus{
+		Version: 1, Active: true, Reason: "authorization_active", AuthorizedDevices: 1,
+		Inhibitors: InhibitorStatus{Active: true, IdleInhibited: true, SuspendInhibited: true, LockInhibited: true, LogindIdle: "active", LogindSleep: "active", ScreenSaver: "active"},
+		UpdatedAt:  time.Now().UTC(), PID: os.Getpid(),
+	}
+	body, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statusPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZEN_DESKTOP_AUTHORIZATION_STATUS", statusPath)
+
+	var human bytes.Buffer
+	if err := RunLinuxCLI([]string{"--status", "--state-dir", stateDir}, &human); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	rendered := human.String()
+	if !strings.Contains(rendered, "persisted authorization: 1 device(s)") || !strings.Contains(rendered, "daemon status record: fresh pid=") || !strings.Contains(rendered, "inhibitor: idle=active sleep=active lock=active") {
+		t.Fatalf("status output:\n%s", rendered)
+	}
+
+	var jsonOut bytes.Buffer
+	if err := RunLinuxCLI([]string{"--status", "--json", "--state-dir", stateDir}, &jsonOut); err != nil {
+		t.Fatalf("status json: %v", err)
+	}
+	var report AuthorizationReport
+	if err := json.Unmarshal(jsonOut.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, jsonOut.String())
+	}
+	if report.PersistedDevices != 1 || !report.StatusFresh || report.Status.PID != os.Getpid() || !report.Status.Active {
+		t.Fatalf("report = %+v", report)
+	}
+
+	if err := RunLinuxCLI([]string{"--status", "--install", "--state-dir", stateDir}, &bytes.Buffer{}); err == nil {
+		t.Fatal("--status combined with --install was accepted")
+	}
+	if err := RunLinuxCLI([]string{"--json", "--state-dir", stateDir}, &bytes.Buffer{}); err == nil {
+		t.Fatal("--json without --status was accepted")
 	}
 }

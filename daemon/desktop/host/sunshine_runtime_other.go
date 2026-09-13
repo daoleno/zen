@@ -14,9 +14,11 @@ func SunshineAvailable() bool { return false }
 
 func SunshineSnapshot() SunshineRuntimeSnapshot { return SunshineRuntimeSnapshot{} }
 
-func EnsureSunshineRuntime(SunshineSpawner) (SunshineRuntimeSnapshot, error) {
+func EnsureSunshineRuntime(context.Context, SunshineSpawner) (SunshineRuntimeSnapshot, error) {
 	return SunshineRuntimeSnapshot{}, nil
 }
+
+func SunshineAvailabilityReason() string { return "unsupported_platform" }
 
 func StopSunshineRuntime(context.Context) error { return nil }
 

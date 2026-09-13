@@ -53,4 +53,7 @@ func (s *Server) handleDesktopScope(w http.ResponseWriter, r *http.Request) {
 		"device_id":             granted.ID,
 		"desktop_scope_version": granted.DesktopScopeVersion,
 	})
+	// The explicit unattended authorization now exists: ask the background
+	// reconciler to hold the scoped idle/suspend inhibitor for it.
+	s.nudgeDesktopAuthorization()
 }

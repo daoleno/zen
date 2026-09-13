@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -21,10 +22,17 @@ func writeSunshineRuntimeConfig(t *testing.T, dir string, cfg sunshineRuntimeCon
 	t.Setenv("ZEN_SUNSHINE_CONFIG", path)
 }
 
+func stubHostSession(t *testing.T, session OwnerSession, err error) {
+	t.Helper()
+	previous := discoverHostSession
+	discoverHostSession = func(context.Context, uint32) (OwnerSession, error) { return session, err }
+	t.Cleanup(func() { discoverHostSession = previous })
+}
+
 func TestSunshineRuntimeNotConfiguredStartsNothing(t *testing.T) {
 	t.Setenv("ZEN_SUNSHINE_CONFIG", filepath.Join(t.TempDir(), "missing.json"))
 	spawned := 0
-	snapshot, err := EnsureSunshineRuntime(func(string, []string, string) (SunshineProcess, error) {
+	snapshot, err := EnsureSunshineRuntime(context.Background(), func(string, []string, string, []string) (SunshineProcess, error) {
 		spawned++
 		return newFakeSunshineProcess(1), nil
 	})
@@ -49,13 +57,16 @@ func TestSunshineRuntimeStartsOnceAndStopsIdempotently(t *testing.T) {
 		HTTPPort:   47989,
 		AppID:      1,
 	})
+	stubHostSession(t, OwnerSession{UID: uint32(os.Getuid()), ID: "2", Seat: "seat0", Backend: "wayland", Display: "wayland-0", BusAddress: "unix:path=/run/user/1000/bus", RuntimeDir: "/run/user/1000"}, nil)
 	process := newFakeSunshineProcess(4242)
 	spawned := 0
-	spawner := func(string, []string, string) (SunshineProcess, error) {
+	var spawnedEnv []string
+	spawner := func(_ string, _ []string, _ string, env []string) (SunshineProcess, error) {
 		spawned++
+		spawnedEnv = append([]string(nil), env...)
 		return process, nil
 	}
-	snapshot, err := EnsureSunshineRuntime(spawner)
+	snapshot, err := EnsureSunshineRuntime(context.Background(), spawner)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -65,8 +76,14 @@ func TestSunshineRuntimeStartsOnceAndStopsIdempotently(t *testing.T) {
 	if snapshot.HTTPSPort != 47984 {
 		t.Fatalf("https port = %d", snapshot.HTTPSPort)
 	}
+	// The SSH-started daemon binds the supervised host to the discovered owner
+	// KDE session instead of its own login environment.
+	joined := strings.Join(spawnedEnv, " ")
+	if !strings.Contains(joined, "WAYLAND_DISPLAY=wayland-0") || !strings.Contains(joined, "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus") || !strings.Contains(joined, "XDG_RUNTIME_DIR=/run/user/1000") {
+		t.Fatalf("session env = %v", spawnedEnv)
+	}
 	// Second ensure reuses the running host.
-	again, err := EnsureSunshineRuntime(spawner)
+	again, err := EnsureSunshineRuntime(context.Background(), spawner)
 	if err != nil || spawned != 1 || !again.Running {
 		t.Fatalf("second ensure: %+v spawned=%d err=%v", again, spawned, err)
 	}
@@ -94,8 +111,9 @@ func TestSunshineRuntimeRevokeRemovesOnlyStateFile(t *testing.T) {
 		HTTPPort:   47989,
 		AppID:      1,
 	})
+	stubHostSession(t, OwnerSession{UID: uint32(os.Getuid()), ID: "2", Seat: "seat0", Backend: "wayland", Display: "wayland-0", BusAddress: "unix:path=/run/user/1000/bus", RuntimeDir: "/run/user/1000"}, nil)
 	process := newFakeSunshineProcess(7)
-	if _, err := EnsureSunshineRuntime(func(string, []string, string) (SunshineProcess, error) {
+	if _, err := EnsureSunshineRuntime(context.Background(), func(string, []string, string, []string) (SunshineProcess, error) {
 		return process, nil
 	}); err != nil {
 		t.Fatal(err)

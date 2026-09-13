@@ -54,6 +54,12 @@ type SunshineHostOptions struct {
 	Port int
 	// StopGrace bounds SIGTERM before SIGKILL. Zero uses the default.
 	StopGrace time.Duration
+	// SessionEnv is the owner desktop session environment appended to the
+	// daemon environment. It is resolved from logind and the owner runtime
+	// directory when the daemon was started outside the desktop session (for
+	// example over SSH), so the supervised host attaches to the same session
+	// instead of creating a replacement one.
+	SessionEnv []string
 }
 
 // DefaultSunshineHostOptions builds the private layout Zen owns under stateDir.
@@ -174,10 +180,14 @@ func WriteSunshineConfig(opts SunshineHostOptions) (created bool, err error) {
 // DefaultSunshineSpawner starts the reviewed binary in its own process group so
 // stop signals reach the whole supervised tree and never the daemon's group.
 // No guessed environment variables are used for isolation: the config file
-// binds every state path.
-func DefaultSunshineSpawner(binary string, args []string, dir string) (SunshineProcess, error) {
+// binds every state path. An explicit session env is appended after the daemon
+// environment so it wins over an unrelated SSH login environment.
+func DefaultSunshineSpawner(binary string, args []string, dir string, env []string) (SunshineProcess, error) {
 	command := exec.Command(binary, args...)
 	command.Dir = dir
+	if len(env) > 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -232,7 +242,7 @@ func StartSunshineHost(opts SunshineHostOptions, spawner SunshineSpawner) (*Suns
 		spawner = DefaultSunshineSpawner
 	}
 	args := []string{opts.ConfigPath}
-	process, err := spawner(opts.BinaryPath, args, opts.StateDir)
+	process, err := spawner(opts.BinaryPath, args, opts.StateDir, opts.SessionEnv)
 	if err != nil {
 		return nil, err
 	}

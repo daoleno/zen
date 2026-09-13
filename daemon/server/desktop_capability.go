@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/desktop/host"
@@ -20,6 +22,35 @@ var moonlightEnsure = host.EnsureSunshineRuntime
 var moonlightAvailable = host.SunshineAvailable
 var moonlightAdmission = host.SunshineAdmission
 
+// desktopAuthorizationController is the scoped idle/suspend inhibitor owner.
+// It is nil until the production entry point enables it, so unit tests never
+// touch the developer's real D-Bus session.
+type desktopAuthorizationController interface {
+	Reconcile(ctx context.Context, input host.AuthorizationInput) host.AuthorizationStatus
+	Release() host.AuthorizationStatus
+	Status() host.AuthorizationStatus
+}
+
+// EnableDesktopAuthorization wires the production inhibitor controller.
+func (s *Server) EnableDesktopAuthorization(controller desktopAuthorizationController) {
+	s.desktopAuthorization = controller
+	if s.desktopAuthorizationWake == nil {
+		s.desktopAuthorizationWake = make(chan struct{}, 1)
+	}
+}
+
+// nudgeDesktopAuthorization asks the background reconciler to apply the
+// persisted authorization without blocking a request on D-Bus.
+func (s *Server) nudgeDesktopAuthorization() {
+	if s.desktopAuthorization == nil || s.desktopAuthorizationWake == nil {
+		return
+	}
+	select {
+	case s.desktopAuthorizationWake <- struct{}{}:
+	default:
+	}
+}
+
 func actualRequestTLS(r *http.Request) bool {
 	return r.TLS != nil && r.TLS.HandshakeComplete
 }
@@ -33,10 +64,11 @@ func (s *Server) handleDesktopCapability(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, s.desktopCapability(device, s.desktopIngressOf(r)))
+	s.nudgeDesktopAuthorization()
+	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, s.desktopCapability(r.Context(), device, s.desktopIngressOf(r)))
 }
 
-func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIngress) map[string]any {
+func (s *Server) desktopCapability(ctx context.Context, device *auth.TrustedDevice, ingress desktopIngress) map[string]any {
 	scoped := s.auth.HasDesktopScope(device.ID, device.PublicKeyHex)
 	trust := "legacy_terminal"
 	if scoped {
@@ -50,6 +82,12 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIn
 		pin = s.desktopTransport.Pin
 	}
 	readiness := inspectHostReadiness()
+	// The supervised host engine may be explicitly configured while this zen
+	// process was started outside the desktop session (for example over SSH).
+	// The owner session is then discovered per start and per authorization
+	// reconcile, so a configured host is a real desktop path, not setup failure.
+	moonlightConfigured := moonlightSnapshot().Configured
+	hostReady := readiness.Broker || readiness.CurrentSession || moonlightConfigured
 	reason := ""
 	recovery := ""
 	unattended := false
@@ -64,7 +102,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIn
 	case readiness.Status == host.ReadinessUnsupported:
 		reason = "host_setup_required"
 		recovery = "Unattended desktop is not implemented on this host platform yet."
-	case !readiness.Broker && !readiness.CurrentSession:
+	case !hostReady:
 		reason = "host_setup_required"
 		recovery = "No current desktop session is available to this zen process. Start zen from the logged-in session, or run one OS-admin zen desktop-host --install for lock and login after reboot."
 	case !requestTLS && identityTLS && !trustedIngress:
@@ -102,14 +140,17 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIn
 			"session":         readiness.Session,
 		},
 		"connect": map[string]any{
-			"unattended": unattended && scoped && (requestTLS || identityTLS || trustedIngress) && (readiness.Broker || readiness.CurrentSession),
+			"unattended": unattended && scoped && (requestTLS || identityTLS || trustedIngress) && hostReady,
 			"reason":     reason,
 			"recovery":   recovery,
 		},
 	}
+	if s.desktopAuthorization != nil {
+		payload["host"].(map[string]any)["authorization"] = authorizationCapabilityBlock(s.desktopAuthorization.Status())
+	}
 	moonlightBinding := ""
-	if scoped && (readiness.Broker || readiness.CurrentSession) {
-		if moonlight := moonlightBootstrap(device); moonlight != nil {
+	if scoped && hostReady {
+		if moonlight := moonlightBootstrap(ctx, device); moonlight != nil {
 			if admission, err := moonlightAdmission(device.ID); err == nil {
 				moonlight["admission"] = admission
 			} else {
@@ -133,6 +174,26 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIn
 	return payload
 }
 
+// authorizationCapabilityBlock is the additive, truthful host-side view of the
+// scoped authorization inhibitor. It is not part of the signed v1/v2 payload;
+// the phone uses it for status and recovery copy only.
+func authorizationCapabilityBlock(status host.AuthorizationStatus) map[string]any {
+	updated := ""
+	if !status.UpdatedAt.IsZero() {
+		updated = status.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	return map[string]any{
+		"active":             status.Active,
+		"reason":             status.Reason,
+		"idle_inhibited":     status.Inhibitors.IdleInhibited,
+		"suspend_inhibited":  status.Inhibitors.SuspendInhibited,
+		"lock_inhibited":     status.Inhibitors.LockInhibited,
+		"authorized_devices": status.AuthorizedDevices,
+		"host_configured":    status.HostConfigured,
+		"updated_at":         updated,
+	}
+}
+
 // moonlightBindingString is the canonical, newline-joined form of the emitted
 // block. Both sides sign this exact string so an injected or altered block
 // invalidates the capability signature.
@@ -151,20 +212,20 @@ func moonlightAvailabilityReason() string {
 	if moonlightAvailable() {
 		return ""
 	}
-	return "admin_binding_unavailable"
+	return host.SunshineAvailabilityReason()
 }
 
 // moonlightBootstrap advertises the explicitly configured Sunshine host. The
 // identity key is the authenticated Zen device id; the host key is the
 // Zen-owned Sunshine host identity, so private storage never falls back to a
 // lossy hostname and the app keeps using signed desktop-scope authorization.
-func moonlightBootstrap(device *auth.TrustedDevice) map[string]any {
+func moonlightBootstrap(ctx context.Context, device *auth.TrustedDevice) map[string]any {
 	snapshot := moonlightSnapshot()
 	if !snapshot.Configured {
 		return nil
 	}
 	if !snapshot.Running {
-		if updated, err := moonlightEnsure(nil); err == nil {
+		if updated, err := moonlightEnsure(ctx, nil); err == nil {
 			snapshot = updated
 		}
 	}

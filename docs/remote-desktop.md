@@ -47,6 +47,85 @@ Current-session access ends with that desktop session. Lock-screen, greeter,
 logout, and boot-before-login access require the optional Linux host install
 below. A user daemon cannot grant itself pre-login access.
 
+## SSH-Started KDE Host And Unattended Authorization
+
+A KDE Wayland owner desktop can also be prepared and supervised from an SSH
+login while the owner is already logged into the desktop. The daemon resolves
+the active owner session from logind (seat0, owner UID, unlocked) and the
+owner's protected runtime directory; it never guesses a DISPLAY, never reuses
+an unrelated login environment, and never creates a replacement X11 or xrdp
+session. Reboot, SDDM pre-login handoff and remote login-screen unlock are out
+of scope for this path; it covers the same logged-in session that is already
+running.
+
+The supervised host engine is the explicitly configured, Zen-owned host
+binary. Zen never guesses a binary or touches a personal Sunshine install.
+Write the reviewed configuration once:
+
+```json
+{
+  "binary_path": "/absolute/path/to/the/reviewed/host/binary",
+  "state_dir": "/home/<owner>/.zen/desktop/sunshine",
+  "host_key": "<the host identity the phone verifies>",
+  "http_port": 47989,
+  "app_id": 1,
+  "web_ui_username": "<Zen-owned Web UI account>",
+  "web_ui_password": "<Zen-owned Web UI secret>"
+}
+```
+
+at `$HOME/.zen/desktop/sunshine.json` with mode 0600 in a 0700 directory. The
+state directory holds only Zen-owned certificates, keys, credentials, apps and
+pairing state. The daemon starts the host on the first authenticated
+capability/connect request and passes the discovered owner session environment
+(`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`) to it, so the
+host attaches to that same KDE session.
+
+### The One Explicit Authorization
+
+The unattended authorization remains the existing per-device
+`desktop_scope_version: 1` grant: the phone opens **Remote Desktop** and chooses
+**Enable remote desktop**, confirms once, and the daemon commits the scope to
+the same canonical device record. No QR, re-pair, host install or root step is
+involved, and cancelling changes nothing. While at least one trusted device
+holds that grant and the supervised host is configured, the daemon holds a
+scoped authorization/idle/suspend inhibitor tied to the authorization
+lifecycle:
+
+| Leg | Supported API | Effect while authorized |
+| --- | --- | --- |
+| idle | systemd-logind `Inhibit("idle", ..., "block")` | the session never reaches the idle action |
+| sleep | systemd-logind `Inhibit("sleep", ..., "block")` | the machine is not suspended |
+| lock | KDE `org.freedesktop.ScreenSaver.Inhibit` on the owner session bus | the compositor's automatic lock does not lock the authorized session |
+
+This does not fake input, does not disable the lock or suspend policy, does not
+weaken PAM, does not store an OS password, and does not create a second session.
+A manual lock (the lock key or `loginctl lock-session`) still works and still
+ends remote access, exactly as before. The inhibitor exists so an overnight idle
+or a temporary phone disconnect does not lock or suspend the desktop that the
+authorized phone will reconnect to.
+
+### Status, Stop And Revoke
+
+Check the exact authorization and inhibitor state over SSH at any time; the
+command is read-only and acquires nothing:
+
+```sh
+zen desktop-host --status
+zen desktop-host --status --json
+```
+
+The daemon publishes an owner-only status record and the command cross-checks
+the live kernel-level logind inhibitor. `active` is true only when every leg is
+held; each leg is reported separately, and a missing KDE screen-saver interface
+or a logind rejection is reported truthfully instead of being hidden.
+
+Revoking the device in the app, or stopping the supervised host, releases every
+leg and restores the previous system policy; nothing else in the system was
+changed. If the session is locked, a greeter, or belongs to another account, the
+daemon releases every leg and re-acquires only when the owner desktop is active
+and unlocked again.
+
 ## What Is Distributed
 
 There is one distribution executable: a desktop-capable Linux amd64 `zen`
@@ -189,9 +268,19 @@ The app clears frames, pending input, and sensitive editor contents on
 disconnect, backgrounding, server change, lock/greeter transitions, and
 revocation. Control is never silently resumed across a generation change.
 
+The capability response also carries an additive, truthful `host.authorization`
+block for the scoped inhibitor: `active`, per-leg `idle_inhibited` /
+`suspend_inhibited` / `lock_inhibited`, `authorized_devices`, `reason` and
+`updated_at`. It is not part of the signed v1/v2 payload; installed clients
+ignore it, so no new app build is required for the host-side inhibitor.
+
 ## Optional Linux Host Setup
 
 ### Prepare And Review
+
+The optional SDDM/boot host install below is only for lock-screen, greeter and
+boot-before-login access. The SSH-started current-session flow above does not
+need it and does not run root commands.
 
 The preparation command detects the current Linux desktop-capable ELF, reads
 the canonical daemon identity from the selected state directory, uses the

@@ -166,7 +166,7 @@ func TestStartUsesPositionalConfigPathAndPrivateWorkingDir(t *testing.T) {
 	var gotBinary string
 	var gotArgs []string
 	var gotDir string
-	host, err := StartSunshineHost(opts, func(binary string, args []string, dir string) (SunshineProcess, error) {
+	host, err := StartSunshineHost(opts, func(binary string, args []string, dir string, env []string) (SunshineProcess, error) {
 		gotBinary, gotArgs, gotDir = binary, append([]string(nil), args...), dir
 		return process, nil
 	})
@@ -192,7 +192,7 @@ func TestStartUsesPositionalConfigPathAndPrivateWorkingDir(t *testing.T) {
 
 func TestSpawnerErrorSurfaces(t *testing.T) {
 	opts := sunshineTestOptions(t)
-	_, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+	_, err := StartSunshineHost(opts, func(string, []string, string, []string) (SunshineProcess, error) {
 		return nil, errors.New("boom")
 	})
 	if err == nil {
@@ -203,7 +203,7 @@ func TestSpawnerErrorSurfaces(t *testing.T) {
 func TestRunningReflectsRealProcessExit(t *testing.T) {
 	opts := sunshineTestOptions(t)
 	process := newFakeSunshineProcess(7)
-	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+	host, err := StartSunshineHost(opts, func(string, []string, string, []string) (SunshineProcess, error) {
 		return process, nil
 	})
 	if err != nil {
@@ -226,7 +226,7 @@ func TestRunningReflectsRealProcessExit(t *testing.T) {
 func TestStopIsBoundedAndIdempotent(t *testing.T) {
 	opts := sunshineTestOptions(t)
 	process := newFakeSunshineProcess(7)
-	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+	host, err := StartSunshineHost(opts, func(string, []string, string, []string) (SunshineProcess, error) {
 		return process, nil
 	})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestStopEscalatesWhenTermIsIgnored(t *testing.T) {
 	opts := sunshineTestOptions(t)
 	process := newFakeSunshineProcess(9)
 	process.ignoreTerm = true
-	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+	host, err := StartSunshineHost(opts, func(string, []string, string, []string) (SunshineProcess, error) {
 		return process, nil
 	})
 	if err != nil {
@@ -270,7 +270,7 @@ func TestFailedStopKeepsHandleForRetry(t *testing.T) {
 	process := newFakeSunshineProcess(13)
 	process.ignoreTerm = true
 	process.signalFail = true
-	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+	host, err := StartSunshineHost(opts, func(string, []string, string, []string) (SunshineProcess, error) {
 		return process, nil
 	})
 	if err != nil {
@@ -297,7 +297,7 @@ func TestFailedStopKeepsHandleForRetry(t *testing.T) {
 func TestRevokeRemovesOnlyUpstreamStateFile(t *testing.T) {
 	opts := sunshineTestOptions(t)
 	process := newFakeSunshineProcess(11)
-	host, err := StartSunshineHost(opts, func(string, []string, string) (SunshineProcess, error) {
+	host, err := StartSunshineHost(opts, func(string, []string, string, []string) (SunshineProcess, error) {
 		return process, nil
 	})
 	if err != nil {

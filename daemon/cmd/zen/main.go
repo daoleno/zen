@@ -24,6 +24,7 @@ import (
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
+	"github.com/daoleno/zen/daemon/desktop/host"
 	"github.com/daoleno/zen/daemon/doctor"
 	"github.com/daoleno/zen/daemon/link"
 	"github.com/daoleno/zen/daemon/modelprofiles"
@@ -332,6 +333,10 @@ func runDaemon(args []string, stderr io.Writer) error {
 		InputReadyBudget: work.DefaultScheduledInputReadyBudget,
 	}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
+	// The scoped idle/suspend inhibitor is tied to the persisted unattended
+	// authorization; the production entry point owns it so tests never touch a
+	// developer session bus.
+	srv.EnableDesktopAuthorization(host.NewAuthorizationController(uint32(os.Getuid())))
 	// Trusted-deployment opt-in: --lan or an explicit private/tailnet-bound
 	// origin. Forwarded headers and client JSON never enable this.
 	srv.SetDesktopTrustedNetwork(cfg.lan || desktopTrustedBind(cfg.addr))

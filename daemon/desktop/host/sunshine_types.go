@@ -11,7 +11,10 @@ type SunshineProcess interface {
 	PID() int
 }
 
-type SunshineSpawner func(binary string, args []string, dir string) (SunshineProcess, error)
+// SunshineSpawner starts the reviewed host binary. env carries the owner
+// desktop session environment when the daemon was started outside the session
+// (for example over SSH); an empty env inherits the daemon environment.
+type SunshineSpawner func(binary string, args []string, dir string, env []string) (SunshineProcess, error)
 
 // SunshineRuntimeSnapshot is the capability-visible view of the supervised host.
 type SunshineRuntimeSnapshot struct {

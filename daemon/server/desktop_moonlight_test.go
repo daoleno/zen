@@ -19,7 +19,7 @@ func stubMoonlightWithAvailability(t *testing.T, snapshot host.SunshineRuntimeSn
 	previousSnapshot, previousEnsure, previousAvailable := moonlightSnapshot, moonlightEnsure, moonlightAvailable
 	moonlightSnapshot = func() host.SunshineRuntimeSnapshot { return snapshot }
 	moonlightAvailable = func() bool { return available }
-	moonlightEnsure = func(host.SunshineSpawner) (host.SunshineRuntimeSnapshot, error) {
+	moonlightEnsure = func(context.Context, host.SunshineSpawner) (host.SunshineRuntimeSnapshot, error) {
 		calls++
 		if ensureErr != nil {
 			return snapshot, ensureErr
@@ -37,7 +37,7 @@ func stubMoonlightWithAvailability(t *testing.T, snapshot host.SunshineRuntimeSn
 
 func TestMoonlightBootstrapRequiresExplicitConfiguration(t *testing.T) {
 	calls := stubMoonlight(t, host.SunshineRuntimeSnapshot{}, nil)
-	if got := moonlightBootstrap(&auth.TrustedDevice{ID: "dev-1"}); got != nil {
+	if got := moonlightBootstrap(context.Background(), &auth.TrustedDevice{ID: "dev-1"}); got != nil {
 		t.Fatalf("unconfigured bootstrap = %+v", got)
 	}
 	if *calls != 0 {
@@ -53,7 +53,7 @@ func TestMoonlightBootstrapBindsZenIdentityAndHostKey(t *testing.T) {
 		HTTPSPort:  47984,
 		AppID:      3,
 	}, nil, true)
-	got := moonlightBootstrap(&auth.TrustedDevice{ID: "dev-42"})
+	got := moonlightBootstrap(context.Background(), &auth.TrustedDevice{ID: "dev-42"})
 	if got == nil {
 		t.Fatal("expected bootstrap")
 	}
@@ -81,7 +81,7 @@ func TestMoonlightBootstrapStaysClosedWithoutAdminBinding(t *testing.T) {
 		HTTPPort:   47989,
 		HTTPSPort:  47984,
 	}, nil, false)
-	got := moonlightBootstrap(&auth.TrustedDevice{ID: "dev-42"})
+	got := moonlightBootstrap(context.Background(), &auth.TrustedDevice{ID: "dev-42"})
 	if got == nil || got["available"] != false || got["reason"] != "admin_binding_unavailable" {
 		t.Fatalf("bootstrap = %+v", got)
 	}
@@ -94,7 +94,7 @@ func TestMoonlightBootstrapUnavailableWhenRuntimeCannotStart(t *testing.T) {
 		HTTPPort:   47989,
 		HTTPSPort:  47984,
 	}, errRuntimeUnavailable{})
-	got := moonlightBootstrap(&auth.TrustedDevice{ID: "dev-42"})
+	got := moonlightBootstrap(context.Background(), &auth.TrustedDevice{ID: "dev-42"})
 	if got == nil || got["available"] != false {
 		t.Fatalf("bootstrap = %+v", got)
 	}
