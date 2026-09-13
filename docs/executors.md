@@ -68,6 +68,11 @@ configuration. Selecting a model connection does not change the Brain executor.
 
 Any `[[executors]]` entry with `name` + `command` overrides or extends the map. Unknown tools are treated as custom tmux-backed agents.
 
+[Amp's external CLI handoff](amp.md) documents its Free Agent and BYOK contracts,
+including the OpenCode Go credential boundary. Amp is not a built-in Zen
+provider; a custom terminal entry does not add structured chat or subscription
+routing, and must not change the delegated executor or model defaults.
+
 ## Delegated resource lifecycle
 
 Visible Brain-delegated sessions and Calendar-launched work run inside a Zen-owned resource boundary. User-created ordinary tmux sessions and the hidden Brain host are not adopted or killed by this boundary.
