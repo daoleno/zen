@@ -21,7 +21,7 @@ func (s *Server) handleDesktopScope(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !actualRequestTLS(r) {
+	if ingress := s.desktopIngressOf(r); !ingress.TLS && !ingress.Trusted {
 		http.Error(w, "desktop_tls_required", http.StatusForbidden)
 		return
 	}

@@ -35,7 +35,10 @@ pairing. On X11 the daemon starts the selected desktop source itself. On
 Wayland the compositor shows its own system permission dialog unless the user
 previously granted persistent access there; Zen stores only the portal's
 opaque single-use restore token in the owner's state directory and still
-requires the paired device scope and encrypted transport on every connection.
+requires the paired device scope and a supported deployment boundary on every
+connection (built-in TLS/Zen Link, an operator-trusted private network such as
+`zen --lan` or a tailnet-bound origin, or a local proxy connector such as
+`cloudflared`).
 The app shows contextual failure states and keeps the secure OS-password
 editor, disconnect, pan, pointer, keyboard, and scroll controls behind the
 connection's reported capabilities.
@@ -137,17 +140,29 @@ real TLS and never accepts a target device from the request body, so a device
 cannot grant another device and terminal-only records stay terminal-only until
 their owner consents.
 
-Unattended desktop requires actual encrypted transport: identity-bound TLS,
-the existing pinned Zen Link, or another verified `wss` origin. The daemon's
-existing identity creates the certificate and SPKI pin; no certificate file,
-domain, helper path, or `ZEN_DESKTOP_HELPER` setting is needed. Numeric private
-addresses do not prove encryption. The app rejects redirects, forged proxy
-headers, identity mismatches, and secure-to-plain downgrades.
+Unattended desktop requires a supported deployment boundary: identity-bound
+TLS, the existing pinned Zen Link, another verified `wss` origin, or an
+operator-trusted private network that Zen itself verified. The daemon reports
+that decision truthfully per request (`trusted_ingress`) from its configured
+`--lan`/tailnet bind and the actual peer address; the app never trusts proxy or
+forwarded headers, hostnames, or client JSON as proof. Built-in TLS remains an
+option, not a compulsory second tunnel or certificate.
 
-The legacy plaintext private-LAN path remains attended-only in the transport
-policy and cannot carry OS passwords or open lock/login surfaces. It is an
-advanced compatibility capability, not part of the normal Remote Desktop
-Connect flow. Its explicit network acknowledgement, if used by an older or
+- Same trusted Wi-Fi (`zen --lan`): deliberately unencrypted application HTTP/WS
+  on the private network. Device pairing, scope, enrollment proof and
+  revocation still apply. Use only on a network you trust.
+- Tailscale (`zen -addr "$(tailscale ip -4):9876"`): plain application HTTP
+  carried inside Tailscale's WireGuard encryption. Tailnet membership and
+  grants are the access boundary.
+- Cloudflare Tunnel (public HTTPS -> `http://127.0.0.1:9876`): Cloudflare
+  protects the public hop; the local connector hop is HTTP. Zen verifies the
+  request as arriving over the trusted loopback/local connector path. A working
+  control/WS route does not by itself prove that Sunshine's native UDP media
+  ports are reachable through the tunnel; use LAN/tailnet for the native engine
+  or expect the reported native-media limitation.
+
+Untrusted public HTTP without one of these deployment facts stays refused,
+including requests that merely set proxy or forwarded headers.
 specialized client, remains bound to the exact daemon identity and origin.
 
 ## Capability States
@@ -158,7 +173,7 @@ authorization error:
 | State | Meaning | Action |
 | --- | --- | --- |
 | `desktop_scope_required` | Device is legacy terminal-only | Choose **Enable remote desktop** in the app and confirm once; no re-pair or host change |
-| `desktop_tls_required` | The attempted path is not encrypted to this daemon | Use identity TLS or pinned Link; do not enable plaintext for passwords |
+| `desktop_tls_required` | The request is neither encrypted nor on an operator-trusted deployment path | Use TLS/Zen Link, or start Zen with `--lan`/a tailnet bind trusted for this network |
 | `host_setup_required` | Neither this process's current display nor the broker is available | Start Zen inside the logged-in desktop session, or complete host install |
 | `connected` | Native decoder has presented the current generation | Use desktop controls; a received sample alone is not connected proof |
 | `connected` + `inputError` | The computer rejected one character or key in the current layout | Keep using the stream and adjust the layout, or use the OS password action; only a revoked or closed portal ends control |

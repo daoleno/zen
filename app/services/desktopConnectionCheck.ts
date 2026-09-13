@@ -36,6 +36,7 @@ export interface DesktopCapability {
   deviceTrust: string;
   scopeVersion: number;
   requestEncrypted: boolean;
+  trustedIngress?: boolean;
   identityTls: boolean;
   identityServerName: string;
   transportPin: string;
@@ -152,6 +153,9 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
     deviceTrust: typeof payload.device_trust === "string" ? payload.device_trust : "",
     scopeVersion: Number(payload.desktop_scope_version) || 0,
     requestEncrypted: transport.request_encrypted === true,
+    // Truthful operator/peer deployment fact from the server; never inferred
+    // from forwarded headers or hostnames.
+    trustedIngress: transport.trusted_ingress === true,
     identityTls,
     identityServerName: typeof transport.identity_server_name === "string" ? transport.identity_server_name : "",
     transportPin: identityTls ? pin : "",
@@ -169,11 +173,14 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
 }
 
 export function desktopPreflightError(capability: DesktopCapability): DesktopPreflightError | null {
-  if (capability.unattended && (capability.requestEncrypted || capability.identityTls) && capability.scopeVersion === 1) {
+  // Trusted LAN, tailnet or a local proxy connector is an accepted deployment
+  // boundary; built-in TLS remains optional, not a second requirement.
+  if (capability.unattended && (capability.requestEncrypted || capability.identityTls || capability.trustedIngress) &&
+      capability.scopeVersion === 1) {
     return null;
   }
   const code = capability.reason || (!capability.scopeVersion ? "desktop_scope_required" :
-    !capability.identityTls && !capability.requestEncrypted ? "desktop_tls_required" : "host_setup_required");
+    !capability.identityTls && !capability.requestEncrypted && !capability.trustedIngress ? "desktop_tls_required" : "host_setup_required");
   return new DesktopPreflightError(code, PREFLIGHT_MESSAGES[code] || "Desktop is not ready.", capability.recovery);
 }
 

@@ -47,7 +47,8 @@ export function hasDesktopLanConsent(server: StoredServer): boolean {
   return !!normalizeDesktopLanConsent(server.desktopLanConsent, server);
 }
 
-export function desktopTransportPlan(server: StoredServer, resolved: string) {
+export function desktopTransportPlan(server: StoredServer, resolved: string,
+  options: { trustedIngress?: boolean } = {}) {
   const source = endpoint(server.url);
   const target = endpoint(resolved);
   let transport: "tls" | "pinned-link" | "trusted-lan";
@@ -60,7 +61,11 @@ export function desktopTransportPlan(server: StoredServer, resolved: string) {
   } else if (source.protocol === "wss:" && target.protocol === "wss:" && source.origin === target.origin) {
     transport = "tls";
   } else if (source.protocol === "ws:" && source.origin === target.origin && desktopLanOrigin(server)) {
-    if (!hasDesktopLanConsent(server)) throw new Error("Review and allow unencrypted desktop access for this paired LAN server first.");
+    // The server-side verified deployment fact is authoritative; the legacy
+    // per-connection LAN consent remains accepted for old clients.
+    if (!options.trustedIngress && !hasDesktopLanConsent(server)) {
+      throw new Error("Review and allow unencrypted desktop access for this paired LAN server first.");
+    }
     transport = "trusted-lan";
   } else {
     throw new Error("Use a secure endpoint or a numeric private-network address for desktop access. Secure connections are never downgraded.");

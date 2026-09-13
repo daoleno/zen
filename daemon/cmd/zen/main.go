@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -331,6 +332,9 @@ func runDaemon(args []string, stderr io.Writer) error {
 		InputReadyBudget: work.DefaultScheduledInputReadyBudget,
 	}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
+	// Trusted-deployment opt-in: --lan or an explicit private/tailnet-bound
+	// origin. Forwarded headers and client JSON never enable this.
+	srv.SetDesktopTrustedNetwork(cfg.lan || desktopTrustedBind(cfg.addr))
 	telegramManager, err := telegramchannel.NewManagerWithOptions(authManager.StorageDir(), brainService, telegramchannel.Options{Attachments: srv.AttachmentStore()})
 	if err != nil {
 		return fmt.Errorf("initialize Telegram connection: %w", err)
@@ -2323,4 +2327,32 @@ func withAuthRuntimeOwnerWait(
 				)
 		}
 	}
+}
+
+// desktopTrustedBind reports whether the operator bound an explicit private or
+// tailnet address (documented trusted deployments). Wildcard/public binds stay
+// untrusted unless --lan was chosen.
+func desktopTrustedBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		switch {
+		case v4[0] == 10:
+			return true
+		case v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31:
+			return true
+		case v4[0] == 192 && v4[1] == 168:
+			return true
+		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127:
+			return true
+		}
+		return false
+	}
+	return ip[0]&0xfe == 0xfc
 }

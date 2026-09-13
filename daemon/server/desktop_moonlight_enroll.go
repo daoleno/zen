@@ -58,7 +58,8 @@ func (s *Server) handleMoonlightEnrollBegin(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) || !actualRequestTLS(r) {
+	ingress := s.desktopIngressOf(r)
+	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) || (!ingress.TLS && !ingress.Trusted) {
 		http.Error(w, "desktop_scope_required", http.StatusForbidden)
 		return
 	}
@@ -113,7 +114,8 @@ func (s *Server) handleMoonlightEnrollComplete(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) || !actualRequestTLS(r) {
+	ingress := s.desktopIngressOf(r)
+	if !s.auth.HasDesktopScope(device.ID, device.PublicKeyHex) || (!ingress.TLS && !ingress.Trusted) {
 		http.Error(w, "desktop_scope_required", http.StatusForbidden)
 		return
 	}

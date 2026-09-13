@@ -178,15 +178,17 @@ func brokerUnavailableReason(code string) string {
 }
 
 // ServeUnattended consumes a freshly authenticated /desktop request. The caller
-// must pass actual Request.TLS provenance, never a proxy or JSON assertion.
-func ServeUnattended(conn *websocket.Conn, manager *auth.Manager, device *auth.TrustedDevice, tls bool, bindRetirement func(func())) {
+// must pass actual transport provenance: Request.TLS and the operator-configured
+// trusted-deployment decision derived from the peer listener. A proxy or client
+// assertion is never accepted as either.
+func ServeUnattended(conn *websocket.Conn, manager *auth.Manager, device *auth.TrustedDevice, tls bool, trusted bool, bindRetirement func(func())) {
 	defer conn.Close()
 	status := func(state, reason string) {
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = conn.WriteJSON(map[string]any{"state": state, "reason": reason})
 	}
-	if !tls || !manager.HasDesktopScope(device.ID, device.PublicKeyHex) {
-		status("denied", "Encrypted transport and expanded pairing scope are required.")
+	if (!tls && !trusted) || !manager.HasDesktopScope(device.ID, device.PublicKeyHex) {
+		status("denied", "A trusted deployment network or encrypted transport, plus expanded pairing scope, is required.")
 		return
 	}
 	gate, cleanup, err := NewManagedGate(HostConfig{Version: 1, HostID: manager.DaemonID(), OwnerUID: uint32(os.Getuid()), Seat: "seat0"}, manager)

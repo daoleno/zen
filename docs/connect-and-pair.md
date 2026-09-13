@@ -68,6 +68,8 @@ This is the shortest route when the phone and computer are on the same trusted W
 
 The phone must be able to reach the host address and port `9876`; host firewalls and Wi-Fi client/AP isolation can block it. Plain LAN HTTP is not encrypted, so use this route only on a private network you trust. `zen --lan` listens on every IPv4 interface, not only Wi-Fi.
 
+Remote Desktop uses this same trusted LAN HTTP/WS path without requiring an extra Zen certificate or local TLS tunnel; pairing, device scope, engine-key enrollment proof and revocation still apply. It is not a public-internet transport.
+
 ## 2. Tailscale across networks
 
 Use Tailscale when the phone should connect privately from cellular, another Wi-Fi network, or another location.
@@ -82,7 +84,7 @@ Use Tailscale when the phone should connect privately from cellular, another Wi-
 
    The [`tailscale ip -4`](https://tailscale.com/docs/reference/tailscale-cli#ip) command returns the host's address. Before pairing, confirm the phone can load `/health` at the origin Zen printed. Then run the corresponding `zen pair` command in another terminal and scan or import the result on the phone.
 
-Direct Tailscale HTTP stays inside Tailscale's encrypted network and is not public internet traffic. Tailnet membership and grants remain the access boundary. Binding the Tailscale address specifically avoids also exposing port `9876` on the local LAN.
+Direct Tailscale HTTP stays inside Tailscale's encrypted network and is not public internet traffic. Tailnet membership and grants remain the access boundary. Binding the Tailscale address specifically avoids also exposing port `9876` on the local LAN. Remote Desktop uses this tailnet HTTP path directly (no redundant Zen TLS tunnel); pairing, scope, enrollment and revocation are unchanged.
 
 ## 3. Stable HTTPS with Cloudflare Tunnel
 
@@ -111,6 +113,8 @@ Use this route when the phone needs a stable HTTPS domain and installing Tailsca
    ```bash
    zen pair https://zen.example.com
    ```
+
+Cloudflare protects the public HTTPS hop while the connector reaches Zen over local HTTP at `127.0.0.1:9876`; Zen verifies that local/operator deployment path from the actual listener and peer, never from forwarded headers. Remote Desktop keeps its device checks, and note that a working public control/WS route does not by itself make Sunshine's native UDP media reachable — use the LAN/tailnet routes for the native engine or expect the reported native-media limitation.
 
 Cloudflare Tunnel uses outbound connector traffic, so the host does not need a public inbound port. The published hostname is nevertheless internet-reachable unless you add a compatible access layer. Zen exposes unauthenticated `/health` metadata; pairing and normal control routes require short-lived pairing credentials or enrolled-device signatures. Keep pairing links private. A Cloudflare login page is not supported by the Zen mobile client.
 

@@ -377,3 +377,36 @@ func TestMoonlightEnrollmentTLSBeginThenHTTPCompleteIsRefused(t *testing.T) {
 		t.Fatalf("tls complete status=%d body=%v", status, complete)
 	}
 }
+
+func TestMoonlightEnrollmentAllowsTrustedDeploymentHTTP(t *testing.T) {
+	t.Setenv("ZEN_STATE_DIR", t.TempDir())
+	manager, key, deviceID := sessionFileAuthFixture(t)
+	publicHex := hex.EncodeToString(key.Public().(ed25519.PublicKey))
+	if _, err := manager.GrantDesktopScope(deviceID, publicHex, auth.DesktopScopeVersion); err != nil {
+		t.Fatal(err)
+	}
+	s := New(manager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(s.shutdownAuthenticatedClients)
+	// Operator explicitly trusts this deployment; the loopback peer is its
+	// local connector. No r.TLS is fabricated.
+	s.SetDesktopTrustedNetwork(true)
+	server := httptest.NewServer(s.Handler())
+	t.Cleanup(server.Close)
+
+	client := newEnrollClient(t)
+	writeEnrollState(t, os.Getenv("ZEN_STATE_DIR"), map[string]any{
+		"name": "phone", "cert": client.certPEM, "uuid": "host-uuid-trusted", "enabled": true,
+	})
+	attempt := hex.EncodeToString(bytes.Repeat([]byte{0x88}, 16))
+	status, begin := postEnroll(t, server, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt})
+	if status != http.StatusOK {
+		t.Fatalf("trusted begin status=%d", status)
+	}
+	nonce, _ := begin["nonce"].(string)
+	status, complete := postEnroll(t, server, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attempt, "nonce": nonce, "client_cert_pem": client.certPEM, "signature": client.sign(t, attempt, nonce),
+	})
+	if status != http.StatusOK || complete["uuid"] != "host-uuid-trusted" {
+		t.Fatalf("trusted complete status=%d body=%v", status, complete)
+	}
+}

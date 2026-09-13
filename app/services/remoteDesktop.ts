@@ -212,8 +212,9 @@ export async function prepareDesktopConnection(server: StoredServer, inputGenera
     const tunnel = await startPinnedTunnel(`desktop:${server.id}`, source.hostname, port, capability.transportPin, "on-demand");
     plan = desktopPinnedIdentityPlan(`ws://127.0.0.1:${tunnel.port}`, `wss://${source.hostname}:${port}`, capability.transportPin);
   } else {
-    plan = desktopTransportPlan(server, resolved);
-    if (plan.transport === "trusted-lan") {
+    plan = desktopTransportPlan(server, resolved, { trustedIngress: capability.trustedIngress });
+    if (plan.transport === "trusted-lan" && !capability.trustedIngress) {
+      // Only an untrusted deployment needs the legacy encrypted transport.
       throw new Error("Unattended desktop cannot use unencrypted LAN transport.");
     }
   }

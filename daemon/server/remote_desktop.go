@@ -24,7 +24,8 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mode != "attended" {
-		if !actualRequestTLS(r) {
+		ingress := s.desktopIngressOf(r)
+		if !ingress.TLS && !ingress.Trusted {
 			http.Error(w, "desktop_tls_required", http.StatusForbidden)
 			return
 		}
@@ -48,8 +49,9 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	} else {
 		readiness := inspectHostReadiness()
 		if readiness.Broker {
+			ingress := s.desktopIngressOf(r)
 			s.desktop.ServeExternal(conn, device.ID, func(bind func(func())) {
-				host.ServeUnattended(conn, s.auth, device, actualRequestTLS(r), bind)
+				host.ServeUnattended(conn, s.auth, device, ingress.TLS, ingress.Trusted, bind)
 			})
 			return
 		}

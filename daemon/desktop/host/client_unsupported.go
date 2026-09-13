@@ -9,7 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func ServeUnattended(conn *websocket.Conn, _ *auth.Manager, _ *auth.TrustedDevice, _ bool, _ func(func())) {
+func ServeUnattended(conn *websocket.Conn, _ *auth.Manager, _ *auth.TrustedDevice, _ bool, _ bool, _ func(func())) {
 	defer conn.Close()
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	_ = conn.WriteJSON(map[string]string{"state": "unsupported", "reason": "Unattended hosting is not implemented on this platform."})

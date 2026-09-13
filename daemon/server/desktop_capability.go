@@ -33,15 +33,17 @@ func (s *Server) handleDesktopCapability(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, s.desktopCapability(device, actualRequestTLS(r), r.Host))
+	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, s.desktopCapability(device, s.desktopIngressOf(r)))
 }
 
-func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, requestHost string) map[string]any {
+func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIngress) map[string]any {
 	scoped := s.auth.HasDesktopScope(device.ID, device.PublicKeyHex)
 	trust := "legacy_terminal"
 	if scoped {
 		trust = "paired_unattended"
 	}
+	requestTLS := ingress.TLS
+	trustedIngress := ingress.Trusted && !ingress.TLS
 	identityTLS := s.desktopTransport.TLSConfig != nil && len(s.desktopTransport.Pin) == 64
 	pin := ""
 	if identityTLS {
@@ -56,7 +58,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 	case !scoped:
 		reason = "desktop_scope_required"
 		recovery = "Enable remote desktop in the Zen app on this phone."
-	case !requestTLS && !identityTLS:
+	case !requestTLS && !identityTLS && !trustedIngress:
 		reason = "desktop_tls_required"
 		recovery = "Unattended desktop needs this computer's identity-bound encrypted transport. The unencrypted LAN switch is only for attended assistance and cannot carry OS passwords."
 	case readiness.Status == host.ReadinessUnsupported:
@@ -65,7 +67,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 	case !readiness.Broker && !readiness.CurrentSession:
 		reason = "host_setup_required"
 		recovery = "No current desktop session is available to this zen process. Start zen from the logged-in session, or run one OS-admin zen desktop-host --install for lock and login after reboot."
-	case !requestTLS && identityTLS:
+	case !requestTLS && identityTLS && !trustedIngress:
 		reason = "desktop_tls_required"
 		recovery = "Connect using this computer's pairing identity pin. Zen starts encrypted desktop on the same address without a public certificate."
 		unattended = true
@@ -84,6 +86,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 		"desktop_scope_version": device.DesktopScopeVersion,
 		"transport": map[string]any{
 			"request_encrypted":         requestTLS,
+			"trusted_ingress":           trustedIngress,
 			"identity_tls":              identityTLS,
 			"identity_server_name":      link.DesktopIdentityServerName,
 			"transport_pin":             pin,
@@ -99,7 +102,7 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, requestTLS bool, 
 			"session":         readiness.Session,
 		},
 		"connect": map[string]any{
-			"unattended": unattended && scoped && (requestTLS || identityTLS) && (readiness.Broker || readiness.CurrentSession),
+			"unattended": unattended && scoped && (requestTLS || identityTLS || trustedIngress) && (readiness.Broker || readiness.CurrentSession),
 			"reason":     reason,
 			"recovery":   recovery,
 		},
