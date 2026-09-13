@@ -1,5 +1,5 @@
 import type { DaemonAssertionInput } from "./auth";
-import { normalizeFixedHex, verifyDesktopCapabilitySignature, verifyDesktopCapabilitySignatureV2 } from "./protocolCrypto";
+import { normalizeFixedHex, verifyDesktopCapabilitySignature, verifyDesktopCapabilitySignatureV2, verifyDesktopDeploymentProof } from "./protocolCrypto";
 import type { StoredServer } from "./storedServerContract";
 
 export class DesktopConnectionUnavailable extends Error {
@@ -112,6 +112,26 @@ export async function fetchDesktopCapability(server: Pick<StoredServer, "daemonI
   }
   if (identityTls && !/^[0-9a-f]{64}$/.test(pin)) {
     throw new Error("The desktop identity pin is invalid.");
+  }
+  // Deployment evidence is authenticated independently of the optional
+  // Moonlight block: a raw trusted_ingress flag is never trusted.
+  const trustedFlag = transport.trusted_ingress === true;
+  if (trustedFlag) {
+    const deploymentSignature = typeof payload.deployment_proof === "string" ? payload.deployment_proof : "";
+    const deploymentBinding = new TextEncoder().encode([
+      server.daemonId.trim().toLowerCase(),
+      server.daemonPublicKey.trim().toLowerCase(),
+      identityTls ? pin : "",
+      identityTls ? "true" : "false",
+      "trusted_ingress=true",
+    ].join("\n"));
+    if (!deploymentSignature || !verifyDesktopDeploymentProof({
+      daemonPublicKey: server.daemonPublicKey,
+      bindingPayload: deploymentBinding,
+      signatureHex: deploymentSignature,
+    })) {
+      throw new Error("The desktop capability proof did not match this paired computer.");
+    }
   }
   const v2Signature = typeof payload.capability_signature_v2 === "string" ? payload.capability_signature_v2 : "";
   const moonlightProven = moonlightBinding !== "" && v2Signature !== "" &&

@@ -219,6 +219,7 @@ func (s *Server) handleMoonlightEnrollComplete(w http.ResponseWriter, r *http.Re
 	// the client can bind the receipt to this local attempt instead of trusting
 	// a generic assertion as a response-body signature.
 	s.writeJSONWithAssertion(w, http.StatusOK, auth.DesktopCapabilityPurpose, map[string]any{
+		"daemon_id":   s.auth.DaemonID(),
 		"enrolled":    true,
 		"uuid":        uuid,
 		"device_id":   device.ID,

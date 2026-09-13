@@ -30,6 +30,21 @@ function signCapability(identityTls: boolean, transportPin = pin) {
   return bytesToHex(nacl.sign.detached(signed, pair.secretKey));
 }
 
+function signDeploymentProof(identityTls: boolean, transportPin: string) {
+  const payload = new TextEncoder().encode([
+    server.daemonId,
+    server.daemonPublicKey,
+    identityTls ? transportPin : "",
+    identityTls ? "true" : "false",
+    "trusted_ingress=true",
+  ].join("\n"));
+  const domain = new TextEncoder().encode("zen-desktop-capability-deployment-v1\u0000");
+  const signed = new Uint8Array(domain.length + payload.length);
+  signed.set(domain);
+  signed.set(payload, domain.length);
+  return bytesToHex(nacl.sign.detached(signed, pair.secretKey));
+}
+
 function signCapabilityV2(identityTls: boolean, transportPin: string, moonlightBinding: string) {
   const payload = new TextEncoder().encode([
     server.daemonId,
@@ -215,6 +230,7 @@ function proofWithMoonlight(moonlight: Record<string, unknown>, options: { v2Bin
         assertion_signature: "zen-desktop-capability", ok: true,
         device_trust: "paired_unattended", desktop_scope_version: 1,
         transport: { identity_tls: true, transport_pin: pin, trusted_ingress: options.trustedIngress === true },
+        ...(options.trustedIngress === true ? { deployment_proof: signDeploymentProof(true, pin) } : {}),
         host: { status: "ready", broker: true },
         connect: { unattended: true },
         moonlight,
@@ -263,4 +279,31 @@ test("legacy v1 servers are accepted with Moonlight disabled", async () => {
   expect(legacy.moonlight).toBeNull();
   expect(legacy.scopeVersion).toBe(1);
   expect(legacy.transportPin).toBe(pin);
+});
+
+test("trusted ingress requires its independent deployment proof", async () => {
+  // Valid proof: accepted.
+  const trusted = await fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop",
+    proofWithMoonlight({}, { trustedIngress: true }));
+  expect(trusted.trustedIngress).toBe(true);
+  // Missing or tampered proof: rejected, regardless of the Moonlight block.
+  const body = (proof: DesktopProofDependencies) => proof;
+  void body;
+  const withoutProof: DesktopProofDependencies = {
+    authorization: async () => "token",
+    verify: (input) => input.signatureHex === input.purpose && input.nonceHex === "c".repeat(32),
+    fetch: async (url) => ({
+      ok: true, status: 200, url, redirected: false,
+      body: new Response(JSON.stringify({
+        ...server, daemon_id: server.daemonId, daemon_public_key: server.daemonPublicKey,
+        assertion_timestamp: new Date().toISOString(), assertion_nonce: "c".repeat(32),
+        assertion_signature: "zen-desktop-capability", ok: true, desktop_scope_version: 1,
+        transport: { identity_tls: true, transport_pin: pin, trusted_ingress: true },
+        host: { status: "ready", broker: true }, connect: { unattended: true },
+        capability_signature: signCapability(true),
+      })).body,
+    }),
+  };
+  await expect(fetchDesktopCapability(server, "ws://192.168.110.223:9876/desktop", withoutProof))
+    .rejects.toThrow("capability proof");
 });

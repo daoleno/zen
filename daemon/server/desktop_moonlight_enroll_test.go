@@ -410,3 +410,33 @@ func TestMoonlightEnrollmentAllowsTrustedDeploymentHTTP(t *testing.T) {
 		t.Fatalf("trusted complete status=%d body=%v", status, complete)
 	}
 }
+
+func TestMoonlightEnrollCompleteReturnsDaemonIdentity(t *testing.T) {
+	t.Setenv("ZEN_STATE_DIR", t.TempDir())
+	manager, key, deviceID := sessionFileAuthFixture(t)
+	publicHex := hex.EncodeToString(key.Public().(ed25519.PublicKey))
+	if _, err := manager.GrantDesktopScope(deviceID, publicHex, auth.DesktopScopeVersion); err != nil {
+		t.Fatal(err)
+	}
+	s := New(manager, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(s.shutdownAuthenticatedClients)
+	server := httptest.NewTLSServer(s.Handler())
+	t.Cleanup(server.Close)
+	client := newEnrollClient(t)
+	writeEnrollState(t, os.Getenv("ZEN_STATE_DIR"), map[string]any{
+		"name": "phone", "cert": client.certPEM, "uuid": "host-uuid-a", "enabled": true,
+	})
+	attempt := hex.EncodeToString(bytes.Repeat([]byte{0x99}, 16))
+	status, begin := postEnroll(t, server, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/begin", map[string]any{"attempt": attempt})
+	if status != http.StatusOK || begin["daemon_id"] != manager.DaemonID() {
+		t.Fatalf("begin = %d %v", status, begin)
+	}
+	nonce, _ := begin["nonce"].(string)
+	status, complete := postEnroll(t, server, key, manager.DaemonID(), deviceID, "/desktop/moonlight/enroll/complete", map[string]any{
+		"attempt": attempt, "nonce": nonce, "client_cert_pem": client.certPEM, "signature": client.sign(t, attempt, nonce),
+	})
+	if status != http.StatusOK || complete["daemon_id"] != manager.DaemonID() || complete["device_id"] != deviceID ||
+		complete["attempt"] != attempt {
+		t.Fatalf("complete = %d %v", status, complete)
+	}
+}

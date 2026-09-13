@@ -156,7 +156,11 @@ option, not a compulsory second tunnel or certificate.
   grants are the access boundary.
 - Cloudflare Tunnel (public HTTPS -> `http://127.0.0.1:9876`): Cloudflare
   protects the public hop; the local connector hop is HTTP. Zen verifies the
-  request as arriving over the trusted loopback/local connector path. A working
+  request as arriving over the trusted loopback/local connector path.
+  Trusted HTTP admission on the WS/broker path requires the matching updated
+  daemon **and** broker: an older installed broker that predates the trusted
+  ingress field rejects it (it still accepts TLS/Zen Link). Updating the root
+  broker is a separate approved step; Zen never reports TLS for a plain route. A working
   control/WS route does not by itself prove that Sunshine's native UDP media
   ports are reachable through the tunnel; use LAN/tailnet for the native engine
   or expect the reported native-media limitation.

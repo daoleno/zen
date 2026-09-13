@@ -31,7 +31,7 @@ const signDomain = (domain: string, fields: string[]) =>
   sign(Buffer.concat([Buffer.from(domain), Buffer.from(fields.join("\n"))]));
 const v1Fields = [daemonId, publicKey, pin, "true"];
 const moonlight = { available: true, http_port: 47989, https_port: 47984, app_id: 1, host_key: "zen-host", identity_key: "device-1", admission: "verified" };
-const v2Fields = [...v1Fields, bindingOf(moonlight, true)];
+const v2Fields = [...v1Fields, bindingOf(moonlight, false)];
 
 let scenario: "moonlight" | "legacy" | "trusted-lan" = "moonlight";
 let tunnelCalls = 0;
@@ -55,6 +55,7 @@ const bodies = () => {
       "/auth-check": { ...base, assertion_signature: assertion("zen-probe") },
       "/desktop/capability": { ...base, assertion_signature: assertion("zen-desktop-capability"),
         capability_signature: signDomain("zen-desktop-capability-v1\u0000", v1Fields),
+        deployment_proof: signDomain("zen-desktop-capability-deployment-v1\u0000", [...v1Fields, "trusted_ingress=true"]),
         transport: { identity_tls: true, transport_pin: pin, trusted_ingress: true } },
     };
   }
@@ -108,14 +109,16 @@ mock.module("expo/fetch", () => ({
       controlCalls.push({ path, body: parsed });
       if (path === "/desktop/moonlight/enroll/begin") {
         return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({
-          nonce: "b".repeat(64), daemon_id: daemonId, assertion_timestamp: timestamp, assertion_nonce: nonce,
-          assertion_signature: assertion("zen-desktop-capability"),
+          nonce: "b".repeat(64), daemon_id: daemonId, device_id: "device-1", assertion_timestamp: timestamp,
+          assertion_nonce: nonce, assertion_signature: assertion("zen-desktop-capability"),
         })).body };
       }
       if (path === "/desktop/moonlight/enroll/complete") {
         return { ok: true, status: 200, url, redirected: false, body: new Response(JSON.stringify({
-          enrolled: true, uuid: "host-uuid", daemon_id: daemonId, assertion_timestamp: timestamp,
-          assertion_nonce: nonce, assertion_signature: assertion("zen-desktop-capability"),
+          enrolled: true, uuid: "host-uuid", daemon_id: daemonId, device_id: "device-1",
+          attempt: parsed.attempt, fingerprint: "test-fingerprint", host_key: "",
+          assertion_timestamp: timestamp, assertion_nonce: nonce,
+          assertion_signature: assertion("zen-desktop-capability"),
         })).body };
       }
       return { ok: false, status: 404, url, redirected: false, body: new Response(JSON.stringify({ reason: "not_found" })).body };
@@ -142,7 +145,11 @@ assert.equal(legacyPlan.transport, "pinned-link");
 assert.equal(tunnelCalls, 1);
 
 scenario = "moonlight";
-const enrollment = await enrollMoonlightConnection(server as never, { ...moonlight } as never);
+const moonlightTyped = {
+  httpPort: 47989, httpsPort: 47984, appId: 1, hostKey: "zen-host", identityKey: "device-1",
+  available: true, admission: "pending",
+};
+const enrollment = await enrollMoonlightConnection(server as never, moonlightTyped as never);
 assert.equal(enrollment.state, "verified");
 assert.deepEqual(controlCalls.map((call) => call.path), [
   "/desktop/moonlight/enroll/begin",

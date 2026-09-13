@@ -133,6 +133,7 @@ async function postControl(server: StoredServer, resolved: string, proof: Deskto
  * 401/403/rejected/expired attempts are surfaced and never treated as enrolled.
  */
 export interface MoonlightEnrollmentHandle {
+  deviceID: string;
   attempt: string;
   nonce: string;
   signature: string;
@@ -158,10 +159,13 @@ export async function beginMoonlightEnrollment(server: StoredServer, moonlight: 
   const begin = await postControl(server, resolved, proof, "/desktop/moonlight/enroll/begin", { attempt }, signal);
   const nonce = typeof begin.nonce === "string" ? begin.nonce : "";
   if (!nonce) throw new Error("enrollment_challenge_missing");
+  // The daemon's authenticated device must be the identity this app is using.
+  if (begin.device_id !== moonlight.identityKey) throw new Error("enrollment_device_mismatch");
   if (signal?.aborted) throw new Error("Desktop connection cancelled.");
   const signature = await MoonlightEnrollment.moonlightSignEnrollment(moonlight.identityKey, attempt, nonce);
   if (signal?.aborted) throw new Error("Desktop connection cancelled.");
   return {
+    deviceID: moonlight.identityKey,
     attempt, nonce, signature, certPem: identity.certPem, fingerprint: identity.fingerprint,
     receipt: moonlightReceiptKey(server, moonlight, identity.fingerprint),
   };
@@ -187,6 +191,7 @@ export async function completeMoonlightEnrollment(server: StoredServer, handle: 
     if (complete.attempt !== handle.attempt || complete.fingerprint !== handle.fingerprint) {
       throw new Error("enrollment_receipt_mismatch");
     }
+    if (complete.device_id !== handle.deviceID) throw new Error("enrollment_device_mismatch");
     if (typeof complete.host_key === "string" && complete.host_key) {
       const expected = handle.receipt.split(":")[1] ?? "";
       if (expected && complete.host_key !== expected) throw new Error("enrollment_receipt_host_mismatch");

@@ -122,6 +122,11 @@ func (s *Server) desktopCapability(device *auth.TrustedDevice, ingress desktopIn
 	// v1 stays byte-identical for installed clients; the Moonlight bootstrap is
 	// covered by a separate v2 signature so old clients keep working.
 	payload["capability_signature"] = s.auth.SignDesktopCapability(pin, identityTLS)
+	if trustedIngress {
+		// Deployment evidence is authenticated independently of the optional
+		// Moonlight block so ordinary WS/scope paths are protected too.
+		payload["deployment_proof"] = s.auth.SignDesktopDeploymentProof(pin, identityTLS, true)
+	}
 	if moonlightBinding != "" {
 		payload["capability_signature_v2"] = s.auth.SignDesktopCapabilityV2(pin, identityTLS, moonlightBinding)
 	}

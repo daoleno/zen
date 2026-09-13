@@ -40,3 +40,24 @@ func TestDesktopCapabilitySignatureBindsPinAndRejectsForgery(t *testing.T) {
 		t.Fatal("legacy v1 signature changed by v2 support")
 	}
 }
+
+func TestDeploymentProofIsIndependentAndBound(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := strings.Repeat("ab", 32)
+	proof := manager.SignDesktopDeploymentProof(pin, true, true)
+	if !VerifyDesktopDeploymentProof(manager.PublicKeyHex(), manager.DaemonID(), pin, true, true, proof) {
+		t.Fatal("valid trusted deployment proof rejected")
+	}
+	if VerifyDesktopDeploymentProof(manager.PublicKeyHex(), manager.DaemonID(), pin, true, false, proof) {
+		t.Fatal("deployment flag bit was not bound")
+	}
+	if VerifyDesktopDeploymentProof(manager.PublicKeyHex(), manager.DaemonID(), strings.Repeat("cd", 32), true, true, proof) {
+		t.Fatal("deployment proof accepted for another pin")
+	}
+	if VerifyDesktopCapabilitySignature(manager.PublicKeyHex(), manager.DaemonID(), pin, true, proof) {
+		t.Fatal("deployment proof accepted as a v1 capability signature")
+	}
+}
