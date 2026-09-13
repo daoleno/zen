@@ -249,15 +249,23 @@ func (l *logindInhibitor) alive() bool {
 // The session bus connection is kept open: KDE releases the inhibition when the
 // client disconnects, and UnInhibit is sent on explicit release.
 type screenSaverInhibitor struct {
-	uid    uint32
-	conn   *dbus.Conn
-	cookie uint32
-	open   bool
+	uid     uint32
+	address string // test seam; empty resolves the owner runtime bus
+	conn    *dbus.Conn
+	cookie  uint32
+	open    bool
+}
+
+func (s *screenSaverInhibitor) busAddress() (string, error) {
+	if s.address != "" {
+		return s.address, nil
+	}
+	return ownerSessionBusAddress(s.uid)
 }
 
 func (s *screenSaverInhibitor) acquire(ctx context.Context) error {
 	s.release()
-	address, err := ownerSessionBusAddress(s.uid)
+	address, err := s.busAddress()
 	if err != nil {
 		return err
 	}
