@@ -127,6 +127,23 @@ key, or treat a mock/direct upstream completion as Amp acceptance.
 
 ## External Launch Handoff
 
+Zen exposes **Settings > External agents > Amp** on Android and iOS using a
+shared responsive sheet. **Copy command** copies the fixed command below;
+it never starts a session. Clipboard refusal/failure
+is shown as unavailable, not success. The command remains selectable.
+
+This entry is an **External handoff**, not a provider or executor registration.
+It works without a paired/online server. **Launch unavailable** reflects the
+absence of a verified Amp-specific launch capability in the client contract;
+ordinary Terminal and custom-executor flows remain unchanged. The sheet closes
+and clears pending feedback when the current server changes.
+
+Amp account/BYOK status is **Not verified in Zen**. The entry does not query Amp
+or infer login, CLI installation, BYOK connectivity or OpenCode Go routing from
+Zen's provider credentials. It must not project the previously checked empty
+Amp connections as live status on every host. There is no key field, credential
+transfer, account login, model selection or default-executor change here.
+
 An authenticated Amp CLI can run on the current daemon host from an ordinary
 terminal using its native configuration:
 
