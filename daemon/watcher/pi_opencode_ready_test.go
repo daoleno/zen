@@ -44,6 +44,17 @@ func TestPiAndOpenCodeInputReadyPredicates(t *testing.T) {
 	if !isPiInputReady(piReady) {
 		t.Fatal("expected pi ready pane")
 	}
+	for _, overlay := range []string{
+		"Select a model",
+		"Sign in to continue",
+		"API key required",
+		"Permission required",
+		"Working...",
+	} {
+		if isPiInputReady(piReady + "\n" + overlay + "\n") {
+			t.Fatalf("Pi overlay %q must block readiness", overlay)
+		}
+	}
 	piDraft := `
  pi v0.73.1
 ────────────────────────────────────────────────────────────────────────────────

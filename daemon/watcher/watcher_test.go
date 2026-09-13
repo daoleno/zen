@@ -1064,6 +1064,68 @@ func TestCodexWorkspaceTrustPromptAdvancesOnce(t *testing.T) {
 	}
 }
 
+func TestPiProjectTrustPromptAdvancesSessionOnly(t *testing.T) {
+	trust := `
+────────────────────────────────────────────────────────────────────────
+
+ Trust project folder?
+ /home/daoleno/workspace/zen
+
+ This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.
+
+ → Trust
+   Trust parent folder (/home/daoleno/workspace)
+   Trust (this session only)
+   Do not trust
+   Do not trust (this session only)
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────
+`
+	if !isPiProjectTrustPrompt("pi --session /tmp/owned.jsonl --no-extensions", trust) {
+		t.Fatal("captured Pi project trust prompt was not recognized")
+	}
+	if isPiInputReady(trust) {
+		t.Fatal("Pi trust picker must not be input-ready")
+	}
+	var sent string
+	advanced, didAdvance, ok := advanceStartupTrustPromptOnce(
+		false,
+		"pi --session /tmp/owned.jsonl --no-extensions",
+		trust,
+		"",
+		func() error { return nil },
+		func(key string) error { sent = key; return nil },
+	)
+	if !ok || !advanced || !didAdvance || sent != piProjectTrustSessionKey {
+		t.Fatalf("Pi trust advance = (%v, %v, %v), key=%q", advanced, didAdvance, ok, sent)
+	}
+	consumed := trust + `
+ pi v0.85.1
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────
+`
+	if isPiProjectTrustPrompt("pi --session /tmp/owned.jsonl --no-extensions", consumed) {
+		t.Fatal("consumed Pi trust picker in scrollback must not be advanced again")
+	}
+}
+
+func TestPiProjectTrustPromptRejectsIncompleteOrForeignSurface(t *testing.T) {
+	base := "Trust project folder?\nThis allows pi to load .pi settings and resources\n"
+	for _, content := range []string{
+		base,
+		base + "Trust parent folder (/workspace)\nTrust (this session only)\nDo not trust (this session only)\n",
+		base + "Trust parent folder (/workspace)\nTrust (this session only)\nDo not trust (this session only)\nnavigate enter select\nescape/ctrl+c cancel\n pi v0.85.1\nescape interrupt\n",
+	} {
+		if isPiProjectTrustPrompt("codex", content) {
+			t.Fatalf("foreign/incomplete trust surface accepted: %q", content)
+		}
+	}
+}
+
 func TestCodexWorkspaceTrustPromptIdentityChangePreventsAdvance(t *testing.T) {
 	trust := "> You are in /workspace/future\n\n" +
 		"  Do you trust the contents of this directory?\n\n" +

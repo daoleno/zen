@@ -61,6 +61,8 @@ var grokPromptReadyRe = regexp.MustCompile(`(?m)[│┃]\s*❯|^\s*❯`)
 var piVersionRe = regexp.MustCompile(`(?im)\bpi\s+v\d+\.\d+\.\d+\b`)
 var piEditorBorderRe = regexp.MustCompile(`(?m)^─{16,}$`)
 var piChromeRe = regexp.MustCompile(`(?im)(escape interrupt|/ commands|! bash)`)
+var piProjectTrustTitleRe = regexp.MustCompile(`(?im)^\s*Trust project folder\?\s*$`)
+var piBlockedOverlayRe = regexp.MustCompile(`(?im)(select a model|choose a model|model picker|sign[ -]?in|log[ -]?in|authentication required|api key|oauth|permission required|press enter to confirm|working\.\.\.|thinking\.\.\.)`)
 
 // OpenCode TUI ready: empty composer placeholder, agent/model line, and idle
 // footer chrome. Two footer shapes are accepted, both anchored to a filesystem
@@ -3404,7 +3406,14 @@ func (w *Watcher) waitForInputReadyGuarded(
 			paneCWD,
 			guard,
 			func(key string) error {
-				return tmuxCommand(socket, "send-keys", "-t", sessionID, key).Run()
+				keys := []string{key}
+				if key == piProjectTrustSessionKey {
+					// Pi's trust picker defaults to the persistent "Trust" entry.
+					// Choose the explicitly session-only entry so admission never
+					// mutates Pi's project trust configuration.
+					keys = []string{"Down", "Down", "Enter"}
+				}
+				return tmuxCommand(socket, append([]string{"send-keys", "-t", sessionID}, keys...)...).Run()
 			},
 		)
 		if !ok {
@@ -3424,6 +3433,8 @@ func (w *Watcher) waitForInputReadyGuarded(
 	}
 }
 
+const piProjectTrustSessionKey = "__zen_pi_trust_session__"
+
 func advanceStartupTrustPromptOnce(
 	alreadyAdvanced bool,
 	command string,
@@ -3437,6 +3448,8 @@ func advanceStartupTrustPromptOnce(
 	}
 	key := ""
 	switch {
+	case isPiProjectTrustPrompt(command, content):
+		key = piProjectTrustSessionKey
 	case isCursorWorkspaceTrustPrompt(command, content):
 		key = "a"
 	case isCodexWorkspaceTrustPrompt(command, content, paneCWD):
@@ -3451,6 +3464,38 @@ func advanceStartupTrustPromptOnce(
 		return false, false, false
 	}
 	return true, true, true
+}
+
+// isPiProjectTrustPrompt recognizes Pi's startup project trust picker. The
+// full option set and action footer are required so arbitrary pane text or a
+// stale transcript cannot cause an input key sequence to be sent. A later Pi
+// header/chrome means the picker has already been consumed and must not be
+// revisited from scrollback.
+func isPiProjectTrustPrompt(command, content string) bool {
+	if !isPiCommand(command) {
+		return false
+	}
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	titleMatches := piProjectTrustTitleRe.FindAllStringIndex(normalized, -1)
+	if len(titleMatches) == 0 {
+		return false
+	}
+	start := titleMatches[len(titleMatches)-1][0]
+	current := normalized[start:]
+	lower := strings.ToLower(current)
+	for _, required := range []string{
+		"this allows pi to load .pi settings and resources",
+		"trust parent folder (",
+		"trust (this session only)",
+		"do not trust (this session only)",
+		"navigate  enter select",
+		"escape/ctrl+c cancel",
+	} {
+		if !strings.Contains(lower, required) {
+			return false
+		}
+	}
+	return !piVersionRe.MatchString(current) && !piChromeRe.MatchString(current)
 }
 
 func capturePaneWorkingDirectory(socket, sessionID string) string {
@@ -3688,6 +3733,14 @@ func isPiInputReady(content string) bool {
 	}
 	if !piVersionRe.MatchString(content) && !piChromeRe.MatchString(content) {
 		return false
+	}
+	// Evaluate overlays only in the latest Pi UI epoch. Older transcript and
+	// startup scrollback may contain these words after the provider is idle.
+	if headers := piVersionRe.FindAllStringIndex(content, -1); len(headers) > 0 {
+		current := content[headers[len(headers)-1][0]:]
+		if piBlockedOverlayRe.MatchString(current) {
+			return false
+		}
 	}
 	borders := piEditorBorderRe.FindAllStringIndex(content, -1)
 	if len(borders) < 2 {
