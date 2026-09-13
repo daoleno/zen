@@ -1,6 +1,21 @@
 import type { BrainExecutorRef } from "../../store/brain";
+import { AMP_DELEGATION_LIMITATION, isAmpExecutor } from "../../services/ampAgent";
 
 export type ExecutorTarget = "brain" | "workers";
+
+export type BrainExecutorOption = BrainExecutorRef & { unavailableReason?: string };
+
+// The absent Amp row is display-only. It never enters the daemon catalog or
+// store, and every selector rejects unavailable options before a callback.
+export function brainExecutorOptions(executors: readonly BrainExecutorRef[]): BrainExecutorOption[] {
+  const options: BrainExecutorOption[] = executors.map((executor) => isAmpExecutor(executor)
+    ? { ...executor, unavailableReason: AMP_DELEGATION_LIMITATION }
+    : executor);
+  if (!executors.some(isAmpExecutor)) {
+    options.push({ id: "amp", name: "Amp", unavailableReason: AMP_DELEGATION_LIMITATION });
+  }
+  return options;
+}
 
 export function brainProviderLabel(value?: string): string {
   const normalized = value?.trim().toLowerCase();
@@ -13,6 +28,8 @@ export function brainProviderLabel(value?: string): string {
       return "Grok";
     case "claude":
       return "Claude Code";
+    case "amp":
+      return "Amp";
     case "tmux":
       return "tmux";
     default:
@@ -24,6 +41,7 @@ export function brainAdapterLabel(adapter?: BrainExecutorRef | null): string {
   if (!adapter) {
     return "";
   }
+  if (isAmpExecutor(adapter) && adapter.id.trim().toLowerCase() === "amp") return "Amp";
   if (adapter.name?.trim()) {
     return adapter.name.trim();
   }
@@ -37,6 +55,7 @@ export function brainAdapterLabel(adapter?: BrainExecutorRef | null): string {
 export function brainAdapterProviderKey(
   adapter?: BrainExecutorRef | null,
 ): string {
+  if (isAmpExecutor(adapter)) return "amp";
   const normalized = adapter?.provider?.trim().toLowerCase();
   if (
     normalized === "codex" ||

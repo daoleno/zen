@@ -1,8 +1,10 @@
-# Amp: External CLI And BYOK Boundaries
+# Amp: Agent Interface And BYOK Boundaries
 
 Contract checked on 2026-09-13 against Amp's official documentation and CLI
 `0.0.1789257698-g25321c`. Amp is an external coding agent, not a Zen model
-provider. This document does not install an adapter, register an executor, change
+provider. The app presents Amp alongside the other agents, with unavailable
+launch and delegation controls rather than a Settings handoff. This does not
+install an adapter, register an executor, change
 the delegated executor or model defaults, or transfer credentials.
 
 ## Free Agent Is A Billing Policy
@@ -125,24 +127,48 @@ Amp-side connection already exists, stop with this blocker. Do not add a
 nonfunctional provider, silently switch to Amp credits or a DeepSeek direct
 key, or treat a mock/direct upstream completion as Amp acceptance.
 
-## External Launch Handoff
+## Peer Agent Selection
 
-Zen exposes **Settings > External agents > Amp** on Android and iOS using a
-shared responsive sheet. **Copy command** copies the fixed command below;
-it never starts a session. Clipboard refusal/failure
-is shown as unavailable, not success. The command remains selectable.
+Amp appears in the existing **Session** quick-launch list, **Brain > Executors**
+sheet (both Brain and Workers), and executor mention picker on Android and iOS.
+There is no Amp Settings card, clipboard handoff or second Agent UI.
 
-This entry is an **External handoff**, not a provider or executor registration.
-It works without a paired/online server. **Launch unavailable** reflects the
-absence of a verified Amp-specific launch capability in the client contract;
-ordinary Terminal and custom-executor flows remain unchanged. The sheet closes
-and clears pending feedback when the current server changes.
+The narrowest existing daemon contract is **custom executor / tmux**. It
+supports a process cwd, terminal input/output and terminal cancellation, but
+tmux creation is not proof that the Amp CLI is installed, authenticated or ready.
+Zen has no Amp launch-readiness/exit verification, conversation reader, or
+provider-confirmed turn admission/completion adapter. Official JSON streaming
+does not automatically implement these local ownership and lifecycle contracts.
 
-Amp account/BYOK status is **Not verified in Zen**. The entry does not query Amp
-or infer login, CLI installation, BYOK connectivity or OpenCode Go routing from
-Zen's provider credentials. It must not project the previously checked empty
-Amp connections as live status on every host. There is no key field, credential
-transfer, account login, model selection or default-executor change here.
+Consequently Amp is a **disabled peer**, not an enabled launch or Chat provider:
+
+| Surface | Visible limitation / behavior |
+| --- | --- |
+| Session preset | Launch unavailable: Amp CLI readiness and exit handling are not verified by Zen |
+| Brain host, Workers, mentions | Delegation unavailable: no Amp turn admission or completion reader in Zen |
+| Account | CLI and Amp account: not verified; no query or inferred credential readiness |
+| Structured events and tools | No Zen Chat or structured tool events; Amp's own terminal tools are not Zen tool-event support |
+| Native threads/resume | No Zen native thread binding, resume, fork or search |
+| Existing Amp terminal | Shared Session list, icon and Terminal surface; no fabricated transcript or lifecycle events |
+
+Disabled controls reject their selection callback and create no Session, turn,
+optimistic message, executor switch or provider request. A loaded custom Amp
+catalog entry (including a direct-command alias) does not override this gate.
+Absent Amp entries are display-only options, not invented daemon registrations.
+The existing current-server catalog remains the sole owner; changing servers
+recomputes the display without carrying old catalog entries or status across.
+
+Missing CLI, missing login, BYOK absence and router entitlement cannot be
+distinguished by this client contract. They remain **not verified**, not
+"installed", "connected", "missing" or "using Go". There is no key field,
+credential transfer, account login, model selection or default-executor change.
+Pi and OpenCode commands and defaults remain unchanged.
+
+Enabling launch later requires a daemon-owned, credential-free readiness and
+exit contract plus owned-process evidence for cwd, output, interruption,
+cancellation, early exit and missing CLI/account states. Enabling delegation
+additionally requires an owned Amp thread, authoritative input admission and
+completion/error evidence. Until those gates are met, keep the controls disabled.
 
 An authenticated Amp CLI can run on the current daemon host from an ordinary
 terminal using its native configuration:
@@ -155,8 +181,9 @@ This keeps native mode and billing selection; it does not enable Go or guarantee
 free inference. Amp owns permissions, tool execution, cancellation, thread
 storage and cross-client access. It may sync private threads to Amp.
 
-For a later explicitly authorized catalog change, Zen's existing custom-executor
-mechanism can append a terminal-only entry:
+For a separately authorized manual terminal-only catalog change, Zen's existing
+custom-executor mechanism can append this credential-free entry. It does not
+enable the disabled app selections or add structured lifecycle support:
 
 ```toml
 [[executors]]

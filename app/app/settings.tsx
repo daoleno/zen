@@ -81,7 +81,6 @@ import { connectionIssueAccent } from "../services/connectionIssue";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
 import { RisingSheet } from "../components/ui/RisingSheet";
 import { TelegramConnectionPanel } from "../components/settings/TelegramConnectionPanel";
-import { AmpHandoffEntry } from "../components/terminal/AmpHandoffEntry";
 import { cancelCalendarNotifications } from "../services/calendarNotifications";
 import { useCurrentServer } from "../store/currentServer";
 import {
@@ -752,13 +751,6 @@ export default function SettingsScreen() {
               />
             </AnimatedPressable>
           </View>
-
-          <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              External agents
-            </Text>
-          </View>
-          <AmpHandoffEntry key={currentServerId || "no-current-server"} />
 
           <View style={styles.sectionHeaderStandalone}>
             <Text style={styles.sectionLabel} accessibilityRole="header">

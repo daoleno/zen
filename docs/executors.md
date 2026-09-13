@@ -68,10 +68,15 @@ configuration. Selecting a model connection does not change the Brain executor.
 
 Any `[[executors]]` entry with `name` + `command` overrides or extends the map. Unknown tools are treated as custom tmux-backed agents.
 
-[Amp's external CLI handoff](amp.md) documents its Free Agent and BYOK contracts,
-including the OpenCode Go credential boundary. Amp is not a built-in Zen
-provider; a custom terminal entry does not add structured chat or subscription
-routing, and must not change the delegated executor or model defaults.
+[Amp's peer Agent interface](amp.md) appears in the existing Session and Brain
+executor selectors as a disabled terminal-only choice. The Session picker names
+the missing Amp CLI readiness/exit verification; Brain host, Worker and mention
+pickers name the missing turn admission/completion reader. CLI and account
+status are not verified, and selection creates no Session or executor switch.
+An explicit custom terminal entry does not add structured chat, native resume,
+tool events or subscription routing. Amp is not a Model Profiles provider;
+its Free Agent policy and OpenCode Go BYOK credential boundary remain separate.
+No delegated executor, Pi or OpenCode default is changed.
 
 ## Delegated resource lifecycle
 

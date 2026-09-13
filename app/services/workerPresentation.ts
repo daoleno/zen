@@ -1,13 +1,13 @@
 import type { Worker } from '../store/workers';
 import { displayPathSubtitle } from './pathDisplay';
-import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
+import { isAmpCommand, isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
 import {
   detectTerminalFlavor,
   terminalFlavorLabel,
   type TerminalFlavor,
 } from './terminalFlavor';
 
-export type AgentKind = 'terminal' | 'claude' | 'codex' | 'cursor' | 'grok' | 'pi' | 'opencode';
+export type AgentKind = 'terminal' | 'claude' | 'codex' | 'cursor' | 'grok' | 'pi' | 'opencode' | 'amp';
 export type WorkerTitleSource = 'alias' | 'explicit_name' | 'default';
 export type { TerminalFlavor };
 
@@ -70,6 +70,7 @@ function detectAgentKind(agent: Pick<Worker, 'name' | 'project' | 'cwd' | 'comma
   if (isGrokCommand(agent.command)) return 'grok';
   if (isPiCommand(agent.command)) return 'pi';
   if (isOpenCodeCommand(agent.command)) return 'opencode';
+  if (isAmpCommand(agent.command)) return 'amp';
   return 'terminal';
 }
 
@@ -88,6 +89,7 @@ function isGenericWorkerTitle(name: string, kind: AgentKind): boolean {
   if (kind === 'grok' && (lower === 'grok' || lower === 'grok cli' || lower === 'xai grok')) return true;
   if (kind === 'pi' && (lower === 'pi' || lower === 'pi coding agent')) return true;
   if (kind === 'opencode' && (lower === 'opencode' || lower === 'open code')) return true;
+  if (kind === 'amp' && lower === 'amp') return true;
   if (
     lower === 'zsh' ||
     lower === 'bash' ||
@@ -127,6 +129,8 @@ function normalize(value?: string): string {
 
 function defaultTitle(kind: AgentKind): string {
   switch (kind) {
+    case 'amp':
+      return 'Amp';
     case 'claude':
       return 'Claude';
     case 'codex':
@@ -146,6 +150,8 @@ function defaultTitle(kind: AgentKind): string {
 
 function shortDefaultTitle(kind: AgentKind): string {
   switch (kind) {
+    case 'amp':
+      return 'Amp';
     case 'claude':
       return 'Claude';
     case 'codex':
@@ -165,6 +171,8 @@ function shortDefaultTitle(kind: AgentKind): string {
 
 function typeLabel(kind: AgentKind, terminalFlavor: TerminalFlavor): string {
   switch (kind) {
+    case 'amp':
+      return 'Amp (Terminal)';
     case 'claude':
       return 'Claude Code';
     case 'codex':

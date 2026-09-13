@@ -176,6 +176,10 @@ function renderContent({
     return <OpenCode size={iconSize} color={theme.isLight ? '#000' : '#fff'} />;
   }
 
+  if (kind === 'amp') {
+    return <Ionicons name="flash-outline" size={iconSize} color={theme.colors.textSecondary} />;
+  }
+
   if (flavor !== 'shell') {
     const presentation = FLAVOR_PRESENTATION[flavor];
 

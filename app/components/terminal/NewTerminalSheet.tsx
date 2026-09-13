@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Keyboard, StyleSheet } from "react-native";
 import { wsClient } from "../../services/websocket";
+import { isAmpCommand } from "../../services/agentCommands";
 import { useCurrentServer } from "../../store/currentServer";
 import { DirectoryPickerContent } from "./DirectoryPickerContent";
 import {
@@ -139,7 +140,7 @@ export function NewTerminalSheet({
   };
 
   const handlePresetTap = (preset: NewTerminalLaunchPreset) => {
-    if (!canSubmit) return;
+    if (!canSubmit || preset.unavailableReason) return;
     Keyboard.dismiss();
     setForm((current) => ({ ...current, command: preset.command }));
     if (form.advanced) {
@@ -153,7 +154,7 @@ export function NewTerminalSheet({
   };
 
   const handleAdvancedSubmit = () => {
-    if (!canSubmit) return;
+    if (!canSubmit || isAmpCommand(form.command)) return;
     Keyboard.dismiss();
     submitLaunch({
       cwd: form.cwd.trim(),
@@ -205,6 +206,7 @@ export function NewTerminalSheet({
       onClose={handleSheetDismiss}
       maxHeight="68%"
       cardStyle={styles.sheetCard}
+      contentStyle={styles.sheetContent}
       keyboardAvoiding
     >
       {form.panel === "directory" ? (
@@ -253,6 +255,10 @@ export function NewTerminalSheet({
 }
 
 const styles = StyleSheet.create({
+  sheetContent: {
+    flexShrink: 1,
+    minHeight: 0,
+  },
   sheetCard: {
     paddingHorizontal: 14,
     paddingTop: 10,

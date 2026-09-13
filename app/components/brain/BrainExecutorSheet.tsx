@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
@@ -19,8 +19,10 @@ import { BrainExecutorIcon } from "./BrainExecutorIcon";
 import {
   brainAdapterLabel,
   brainProviderLabel,
+  brainExecutorOptions,
   type ExecutorTarget,
 } from "./brainPresentation";
+import { AMP_ACCOUNT_STATUS, AMP_CAPABILITY_SUMMARY } from "../../services/ampAgent";
 
 export type { ExecutorTarget };
 
@@ -73,6 +75,7 @@ export function BrainExecutorSheet({
       onClose={onClose}
       keyboardAvoiding
       maxHeight="72%"
+      contentStyle={styles.sheetContent}
     >
       <Text style={styles.title}>Executors</Text>
       <Text style={styles.lead}>
@@ -102,8 +105,9 @@ export function BrainExecutorSheet({
         />
       </View>
 
-      <View style={styles.list}>
-        {executors.map((adapter) => {
+      <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
+        {brainExecutorOptions(executors).map((adapter) => {
+          const disabled = interactionLocked || Boolean(adapter.unavailableReason);
           const active = adapter.id === activeAdapterId;
           const rowShowsSpinner =
             interactionLocked &&
@@ -123,22 +127,23 @@ export function BrainExecutorSheet({
               key={adapter.id}
               accessibilityRole="button"
               accessibilityState={{
-                disabled: interactionLocked,
+                disabled,
                 busy: rowShowsSpinner,
               }}
               accessibilityLabel={
-                target === "brain"
+                adapter.unavailableReason ? `${label}. ${adapter.unavailableReason}` : target === "brain"
                   ? `Set Brain host to ${label}`
                   : `Set Worker executor to ${label}`
               }
-              disabled={interactionLocked}
+              disabled={disabled}
               preset="press"
               scale={0.98}
               style={[
                 styles.row,
                 {
+                  ...(adapter.unavailableReason ? { opacity: 1 } : {}),
                   borderColor: active ? colors.accent : themed.border,
-                  backgroundColor: interactionLocked
+                  backgroundColor: disabled
                     ? colors.disabledSurface
                     : active
                       ? colors.surfaceActive
@@ -146,7 +151,7 @@ export function BrainExecutorSheet({
                 },
               ]}
               onPress={() => {
-                if (interactionLocked) {
+                if (disabled) {
                   return;
                 }
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -163,15 +168,23 @@ export function BrainExecutorSheet({
                 </Text>
                 <Text
                   style={[styles.rowMeta, { color: metaColor }]}
-                  numberOfLines={1}
                 >
-                  {provider}
-                  {adapter.runtime?.trim()
+                  {adapter.unavailableReason ? "Custom executor / tmux" : provider}
+                  {!adapter.unavailableReason && adapter.runtime?.trim()
                     ? ` · ${adapter.runtime.trim()}`
                     : ""}
                 </Text>
+                {adapter.unavailableReason ? (
+                  <>
+                    <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>{adapter.unavailableReason}</Text>
+                    <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>{AMP_CAPABILITY_SUMMARY}</Text>
+                    <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>{AMP_ACCOUNT_STATUS}</Text>
+                  </>
+                ) : null}
               </View>
-              {rowShowsSpinner ? (
+              {adapter.unavailableReason ? (
+                <Ionicons name="lock-closed-outline" size={18} color={colors.textSecondary} />
+              ) : rowShowsSpinner ? (
                 <ActivityIndicator size="small" color={colors.accent} />
               ) : active ? (
                 <Ionicons
@@ -195,7 +208,7 @@ export function BrainExecutorSheet({
             </AnimatedPressable>
           );
         })}
-      </View>
+      </ScrollView>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </BottomSheetFrame>
@@ -273,6 +286,10 @@ function TargetChip({
 function createStyles(theme: ResolvedZenTheme) {
   const colors = theme.colors;
   return StyleSheet.create({
+    sheetContent: {
+      flexShrink: 1,
+      minHeight: 0,
+    },
     title: {
       ...UiTextMetrics,
       ...TypeScale.title,

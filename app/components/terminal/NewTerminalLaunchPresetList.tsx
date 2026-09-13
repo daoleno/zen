@@ -1,4 +1,5 @@
 import React, { useMemo } from "react";
+import { Ionicons } from "@expo/vector-icons";
 import {
   StyleSheet,
   TouchableOpacity,
@@ -13,7 +14,9 @@ import {
   GROK_COMMAND,
   OPENCODE_COMMAND,
   PI_COMMAND,
+  AMP_COMMAND,
 } from "../../services/agentCommands";
+import { AMP_ACCOUNT_STATUS, AMP_CAPABILITY_SUMMARY, AMP_LAUNCH_LIMITATION } from "../../services/ampAgent";
 import { AgentKindIcon } from "./AgentKindIcon";
 import { AppText } from "../ui";
 
@@ -22,6 +25,7 @@ export type NewTerminalLaunchPreset = {
   kind: AgentKind;
   label: string;
   command: string;
+  unavailableReason?: string;
 };
 
 const LAUNCH_PRESETS: readonly NewTerminalLaunchPreset[] = [
@@ -37,6 +41,7 @@ const LAUNCH_PRESETS: readonly NewTerminalLaunchPreset[] = [
   { key: "grok", kind: "grok", label: "Grok", command: GROK_COMMAND },
   { key: "pi", kind: "pi", label: "Pi", command: PI_COMMAND },
   { key: "opencode", kind: "opencode", label: "OpenCode", command: OPENCODE_COMMAND },
+  { key: "amp", kind: "amp", label: "Amp", command: AMP_COMMAND, unavailableReason: AMP_LAUNCH_LIMITATION },
 ];
 
 interface NewTerminalLaunchPresetListProps {
@@ -60,20 +65,27 @@ export function NewTerminalLaunchPresetList({
   );
 
   return (
-    <View style={styles.presetGrid}>
+    <View>
+      <View style={styles.presetGrid}>
       {LAUNCH_PRESETS.map((preset) => {
-        const active = activePreset === preset.key;
+        const active = !preset.unavailableReason && activePreset === preset.key;
+        const disabled = !canSubmit || Boolean(preset.unavailableReason);
         return (
           <TouchableOpacity
             key={preset.key}
+            accessibilityRole="button"
+            accessibilityLabel={preset.unavailableReason ? `${preset.label}. ${preset.unavailableReason}` : preset.label}
+            accessibilityState={{ disabled, selected: active }}
             style={[
               styles.presetCard,
               preset.key === "shell" && styles.presetCardWide,
               active && styles.presetCardActive,
-              submitting && styles.presetCardDisabled,
+              (submitting || disabled) && styles.presetCardDisabled,
             ]}
-            onPress={() => onPresetPress(preset)}
-            disabled={!canSubmit}
+            onPress={() => {
+              if (!disabled) onPresetPress(preset);
+            }}
+            disabled={disabled}
             activeOpacity={0.82}
           >
             <View style={styles.presetIcon}>
@@ -86,9 +98,16 @@ export function NewTerminalLaunchPresetList({
             >
               {preset.label}
             </AppText>
+            {preset.unavailableReason ? <Ionicons name="lock-closed-outline" size={14} color={colors.textSecondary} /> : null}
           </TouchableOpacity>
         );
       })}
+      </View>
+      <View style={styles.limitation}>
+        <AppText variant="caption" tone="secondary">Amp: {AMP_LAUNCH_LIMITATION}</AppText>
+        <AppText variant="caption" tone="secondary">{AMP_CAPABILITY_SUMMARY}</AppText>
+        <AppText variant="caption" tone="secondary">{AMP_ACCOUNT_STATUS}</AppText>
+      </View>
     </View>
   );
 }
@@ -126,12 +145,17 @@ function createStyles(colors: typeof Colors) {
     },
     presetIcon: {
       width: 28,
+      flexShrink: 0,
       alignItems: "center",
       justifyContent: "center",
     },
     presetLabel: {
       flex: 1,
       minWidth: 0,
+    },
+    limitation: {
+      marginTop: 10,
+      gap: 4,
     },
   });
 }

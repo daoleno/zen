@@ -9,7 +9,8 @@ import {
 } from "../../constants/tokens";
 import type { BrainExecutorRef } from "../../store/brain";
 import { BrainExecutorIcon } from "./BrainExecutorIcon";
-import { brainAdapterLabel, brainProviderLabel } from "./brainPresentation";
+import { brainAdapterLabel, brainExecutorOptions, brainProviderLabel } from "./brainPresentation";
+import { AMP_ACCOUNT_STATUS } from "../../services/ampAgent";
 
 interface BrainExecutorMentionPickerProps {
   executors: BrainExecutorRef[];
@@ -29,7 +30,7 @@ export function BrainExecutorMentionPicker({
   const styles = useMemo(() => createStyles(chrome), [chrome]);
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const candidates = executors.filter((adapter) => adapter.id.trim());
+    const candidates = brainExecutorOptions(executors).filter((adapter) => adapter.id.trim());
     if (!needle) {
       return candidates;
     }
@@ -64,8 +65,12 @@ export function BrainExecutorMentionPicker({
           return (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Mention ${brainAdapterLabel(item)}`}
-              onPress={() => onSelect(item)}
+              accessibilityLabel={item.unavailableReason ? `${brainAdapterLabel(item)}. ${item.unavailableReason}` : `Mention ${brainAdapterLabel(item)}`}
+              accessibilityState={{ disabled: Boolean(item.unavailableReason) }}
+              disabled={Boolean(item.unavailableReason)}
+              onPress={() => {
+                if (!item.unavailableReason) onSelect(item);
+              }}
               style={({ pressed }) => [
                 styles.chip,
                 active ? styles.chipActive : null,
@@ -76,7 +81,9 @@ export function BrainExecutorMentionPicker({
               <Text style={styles.handle} numberOfLines={1}>
                 @{item.id}
               </Text>
-              {active ? (
+              {item.unavailableReason ? (
+                <Text style={styles.meta}>unavailable</Text>
+              ) : active ? (
                 <Text style={styles.meta} numberOfLines={1}>
                   host
                 </Text>
@@ -89,6 +96,11 @@ export function BrainExecutorMentionPicker({
           );
         }}
       />
+      {filtered.some((item) => item.unavailableReason) ? (
+        <Text style={styles.limitation}>
+          Amp: {filtered.find((item) => item.unavailableReason)?.unavailableReason} {AMP_ACCOUNT_STATUS}.
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -134,6 +146,8 @@ function createStyles(chrome: TerminalThemeChrome) {
       ...UiTextMetrics,
       ...TypeScale.label,
       color: chrome.text,
+      flexShrink: 1,
+      minWidth: 0,
     },
     meta: {
       ...UiTextMetrics,
@@ -141,6 +155,13 @@ function createStyles(chrome: TerminalThemeChrome) {
       color: chrome.textMuted,
       fontFamily: Typography.uiFont,
       fontWeight: "400",
+    },
+    limitation: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: chrome.textMuted,
+      paddingHorizontal: 10,
+      paddingBottom: 8,
     },
   });
 }
