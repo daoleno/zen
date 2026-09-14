@@ -150,6 +150,31 @@ func TestSunshineStateDirAndConfigArePrivateAndNeverOverwritten(t *testing.T) {
 	}
 }
 
+func TestStartCreatesZenDesktopAppsFile(t *testing.T) {
+	opts := sunshineTestOptions(t)
+	process := newFakeSunshineProcess(99)
+	host, err := StartSunshineHost(opts, func(string, []string, string, []string) (SunshineProcess, error) {
+		return process, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(opts.AppsFilePath)
+	if err != nil {
+		t.Fatalf("apps file: %v", err)
+	}
+	if string(body) != defaultSunshineApps {
+		t.Fatalf("apps file = %q", body)
+	}
+	info, err := os.Stat(opts.AppsFilePath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("apps mode = %v err=%v", info.Mode().Perm(), err)
+	}
+	if err := host.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnsafeSunshineStateDirRejected(t *testing.T) {
 	opts := sunshineTestOptions(t)
 	if err := os.MkdirAll(opts.StateDir, 0o755); err != nil {

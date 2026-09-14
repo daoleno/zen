@@ -230,12 +230,36 @@ type SunshineHost struct {
 	exited  bool
 }
 
+// defaultSunshineApps is the single Zen-owned desktop application. Sunshine
+// normally copies this file from its install prefix on first start, but the
+// reviewed launcher is intentionally relocatable and has no shared
+// /usr/local/assets tree. Keeping the file in the private state directory
+// makes app id 1 (the Desktop route) deterministic without touching a user's
+// existing Sunshine installation.
+const defaultSunshineApps = `{"env":{},"apps":[{"name":"Desktop","cmd":""}]}
+`
+
+func ensureSunshineAppsFile(opts SunshineHostOptions) error {
+	if _, err := os.Lstat(opts.AppsFilePath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat sunshine apps: %w", err)
+	}
+	if err := os.WriteFile(opts.AppsFilePath, []byte(defaultSunshineApps), 0o600); err != nil {
+		return fmt.Errorf("write sunshine apps: %w", err)
+	}
+	return nil
+}
+
 // StartSunshineHost prepares the private state and starts exactly one process.
 func StartSunshineHost(opts SunshineHostOptions, spawner SunshineSpawner) (*SunshineHost, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
 	if _, err := WriteSunshineConfig(opts); err != nil {
+		return nil, err
+	}
+	if err := ensureSunshineAppsFile(opts); err != nil {
 		return nil, err
 	}
 	if spawner == nil {
