@@ -201,9 +201,9 @@ func TestDesktopCapabilityAdvertisesConfiguredHostOutsideSession(t *testing.T) {
 	// supervised host is explicitly configured.
 	stubReadiness(t, host.Readiness{Status: host.ReadinessSetupRequired, Surface: string(host.Unavailable)})
 	stubSunshineConfigured(t, true)
-	stubMoonlight(t, host.SunshineRuntimeSnapshot{
+	stubMoonlightWithAvailability(t, host.SunshineRuntimeSnapshot{
 		Configured: true, Running: true, HostKey: "zen-host-1", HTTPPort: 47989, HTTPSPort: 47984, AppID: 1,
-	}, nil)
+	}, nil, true)
 	s := New(manager, nil, nil, nil, nil, nil, nil)
 	defer s.shutdownAuthenticatedClients()
 	payload := s.desktopCapability(context.Background(), &auth.TrustedDevice{ID: deviceID, PublicKeyHex: devicePublicKey}, desktopIngress{Trusted: true})
@@ -213,5 +213,29 @@ func TestDesktopCapabilityAdvertisesConfiguredHostOutsideSession(t *testing.T) {
 	}
 	if _, ok := payload["moonlight"]; !ok {
 		t.Fatalf("configured host was not advertised: %+v", payload)
+	}
+}
+
+func TestDesktopCapabilityBlocksLegacyFallbackWhenConfiguredSunshineUnavailable(t *testing.T) {
+	manager, key, deviceID := sessionFileAuthFixture(t)
+	devicePublicKey := hex.EncodeToString(key.Public().(ed25519.PublicKey))
+	if _, err := manager.GrantDesktopScope(deviceID, devicePublicKey, auth.DesktopScopeVersion); err != nil {
+		t.Fatalf("grant scope: %v", err)
+	}
+	stubReadiness(t, host.Readiness{Status: host.ReadinessSetupRequired, Surface: string(host.Unavailable)})
+	stubSunshineConfigured(t, true)
+	stubMoonlightWithAvailability(t, host.SunshineRuntimeSnapshot{
+		Configured: true, HostKey: "zen-headless", HTTPPort: 47989, HTTPSPort: 47984, AppID: 1,
+	}, nil, false)
+	s := New(manager, nil, nil, nil, nil, nil, nil)
+	defer s.shutdownAuthenticatedClients()
+	payload := s.desktopCapability(context.Background(), &auth.TrustedDevice{ID: deviceID, PublicKeyHex: devicePublicKey}, desktopIngress{Trusted: true})
+	connect, _ := payload["connect"].(map[string]any)
+	if connect["unattended"] != false || connect["reason"] != "host_setup_required" {
+		t.Fatalf("connect = %+v", connect)
+	}
+	moonlight, _ := payload["moonlight"].(map[string]any)
+	if moonlight["available"] != false {
+		t.Fatalf("moonlight = %+v", moonlight)
 	}
 }

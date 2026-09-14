@@ -84,10 +84,26 @@ func (s *Server) desktopCapability(ctx context.Context, device *auth.TrustedDevi
 	readiness := inspectHostReadiness()
 	// The supervised host engine may be explicitly configured while this zen
 	// process was started outside the desktop session (for example over SSH).
-	// The owner session is then discovered per start and per authorization
-	// reconcile, so a configured host is a real desktop path, not setup failure.
+	// The owner session is discovered by the runtime, but configuration alone is
+	// not readiness: the process must be running and administratively available.
 	moonlightConfigured := moonlightSnapshot().Configured
-	hostReady := readiness.Broker || readiness.CurrentSession || moonlightConfigured
+	var moonlight map[string]any
+	if scoped && moonlightConfigured {
+		moonlight = moonlightBootstrap(ctx, device)
+		if moonlight != nil {
+			if admission, err := moonlightAdmission(device.ID); err == nil {
+				moonlight["admission"] = admission
+			} else {
+				moonlight["admission"] = "unavailable"
+			}
+		}
+	}
+	moonlightReady := moonlight != nil && moonlight["available"] == true
+	// An explicitly configured Sunshine host is not a usable desktop until its
+	// supervised process is running and has passed the availability check. This
+	// prevents a failed headless/KMS startup from falling through to the legacy
+	// broker, which can only produce a generic connection-ended error.
+	hostReady := readiness.Broker || readiness.CurrentSession || moonlightReady
 	reason := ""
 	recovery := ""
 	unattended := false
@@ -149,16 +165,9 @@ func (s *Server) desktopCapability(ctx context.Context, device *auth.TrustedDevi
 		payload["host"].(map[string]any)["authorization"] = authorizationCapabilityBlock(s.desktopAuthorization.Status())
 	}
 	moonlightBinding := ""
-	if scoped && hostReady {
-		if moonlight := moonlightBootstrap(ctx, device); moonlight != nil {
-			if admission, err := moonlightAdmission(device.ID); err == nil {
-				moonlight["admission"] = admission
-			} else {
-				moonlight["admission"] = "unavailable"
-			}
-			payload["moonlight"] = moonlight
-			moonlightBinding = moonlightBindingString(moonlight, trustedIngress)
-		}
+	if moonlight != nil {
+		payload["moonlight"] = moonlight
+		moonlightBinding = moonlightBindingString(moonlight, trustedIngress)
 	}
 	// v1 stays byte-identical for installed clients; the Moonlight bootstrap is
 	// covered by a separate v2 signature so old clients keep working.
