@@ -106,11 +106,12 @@ run. The stock Ubuntu 24.04 systemd policy ships
 `allow_inactive=yes`, `allow_active=yes`, so polkit allows it only for a
 subject it can resolve to a local session. A session without a seat (a bare
 SSH/`login` TTY session) and a process in the root slice resolve to
-`allow_any` and are rejected. A process with no session of its own is resolved
-by polkit to the owner's active graphical session when it runs in the owner's
-systemd user manager (`user-<uid>.slice`), because polkit falls back to
-`sd_pid_get_owner_uid()` and `sd_uid_get_display()`; that context is allowed
-without any root or PAM change.
+`allow_any` and are rejected. A process with no session of its own may be
+resolved by polkit to the owner's active graphical session when it runs in the owner's systemd user manager
+(`user-<uid>.slice`), because polkit can fall back to
+`sd_pid_get_owner_uid()` and `sd_uid_get_display()`. This is the supported
+manual hypothesis for the trial, not a guarantee: inspect `logind_sleep` in the
+read-only status output before treating unattended authorization as ready.
 
 Start the long-running daemon from the owner's user manager, not as a child of
 the SSH login session. The SSH login is still how the operator configures and
@@ -131,8 +132,9 @@ ssh owner@host 'systemctl --user status zen-desktop.service'
 ```
 
 `systemd-run --user` needs no root: it talks to the owner's own user manager
-over `$XDG_RUNTIME_DIR/systemd/private`. The only permission requirement is the
-stock polkit rule above; no root, sudo, PAM or logind policy edit is needed.
+over `$XDG_RUNTIME_DIR/systemd/private`. It does not change the stock polkit
+rule and does not guarantee that the sleep leg will be accepted; no root,
+sudo, PAM or logind policy edit is performed by this procedure.
 The idle and KDE screen-saver legs do not depend on this policy path.
 `zen desktop-host --status` reports each leg separately, and a rejected sleep
 leg is shown as `logind_sleep: unavailable` with the raw systemd/polkit reason,
