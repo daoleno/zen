@@ -50,6 +50,7 @@ type AuthorizationStatus struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 	PID               int             `json:"pid"`
 	Error             string          `json:"error,omitempty"`
+	Recovery          string          `json:"recovery,omitempty"`
 }
 
 // AuthorizationController owns one inhibitor leg set for one owner UID.
@@ -76,6 +77,13 @@ func newAuthorizationController(uid uint32, inhibit *AuthorizationInhibitors, di
 func DefaultAuthorizationStatusPath() string {
 	if override := os.Getenv("ZEN_DESKTOP_AUTHORIZATION_STATUS"); override != "" {
 		return override
+	}
+	// ZEN_STATE_DIR names the canonical auth/state root (for example ~/.zen),
+	// while the authorization controller owns its desktop subdirectory. Keep
+	// worker shells that export ZEN_STATE_DIR=~/.zen pointed at the same record
+	// the daemon writes; an explicit status override still wins above.
+	if stateRoot := os.Getenv("ZEN_STATE_DIR"); stateRoot != "" {
+		return filepath.Join(stateRoot, "desktop", "authorization-status.json")
 	}
 	return filepath.Join(ZenStateDir(), "authorization-status.json")
 }
@@ -106,6 +114,9 @@ func (c *AuthorizationController) Reconcile(ctx context.Context, input Authoriza
 			status.Inhibitors = c.inhibit.Release()
 			status.Reason = "session_unavailable"
 			status.Error = err.Error()
+			if err.Error() == "owner_session_locked" {
+				status.Recovery = "sudo loginctl unlock-session <active-session-id>; then verify with loginctl show-session <active-session-id> -p LockedHint -p State -p Active"
+			}
 			break
 		}
 		status.Session = &session

@@ -56,6 +56,7 @@ type AuthorizationStatus struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 	PID               int             `json:"pid"`
 	Error             string          `json:"error,omitempty"`
+	Recovery          string          `json:"recovery,omitempty"`
 }
 
 // AuthorizationController is a no-op outside Linux.

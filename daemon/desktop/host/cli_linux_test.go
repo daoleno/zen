@@ -306,3 +306,36 @@ func TestStatusCLIReadsAuthorizationReportWithoutSideEffects(t *testing.T) {
 		t.Fatal("--json without --status was accepted")
 	}
 }
+
+func TestStatusPathWithStateRootMatchesDesktopRecord(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "desktop"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	devices := `{"devices":[{"id":"dev-1","desktop_scope_version":1}]}`
+	if err := os.WriteFile(filepath.Join(root, "trusted-devices.json"), []byte(devices), 0600); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := filepath.Join(root, "desktop", "authorization-status.json")
+	status := AuthorizationStatus{Version: 1, Active: false, Reason: "session_unavailable", Error: "owner_session_locked", Recovery: "sudo loginctl unlock-session <active-session-id>", PID: os.Getpid(), UpdatedAt: time.Now().UTC()}
+	body, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statusPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZEN_STATE_DIR", root)
+	t.Setenv("ZEN_DESKTOP_AUTHORIZATION_STATUS", "")
+	var out bytes.Buffer
+	if err := RunLinuxCLI([]string{"--status", "--json", "--state-dir", root}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var report AuthorizationReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.StatusPath != statusPath || !report.StatusFresh || report.Status.Recovery == "" {
+		t.Fatalf("report=%+v", report)
+	}
+}

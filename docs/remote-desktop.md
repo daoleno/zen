@@ -157,13 +157,32 @@ ready instead of being promised an unattended session the machine cannot keep;
 suspend then remains possible, and the smallest supported setup step is to
 restart the daemon from the owner's user manager as shown above.
 
-The daemon writes the status record under its desktop state directory:
-`$ZEN_STATE_DIR/authorization-status.json` when `ZEN_STATE_DIR` is set,
-otherwise `$HOME/.zen/desktop/authorization-status.json`. The daemon's
-`--state-dir` selects the canonical identity/device state, not this desktop
-record. Run `zen-remote-desktop desktop-host --status` with the same `ZEN_STATE_DIR` and
-`HOME` as the daemon; pointing only the status command at another directory
-reports `no_status_record` instead of the live record.
+If the owner session was already locked when authorization was prepared, the
+inhibitors cannot unlock it retroactively. Recover the existing seat session
+over SSH with the normal logind request, then read back the result:
+
+```sh
+session="$(loginctl show-seat seat0 -p ActiveSession --value)"
+sudo loginctl unlock-session "$session"
+loginctl show-session "$session" -p LockedHint -p State -p Active
+zen-remote-desktop desktop-host --status --json
+```
+
+The installed policy requires administrator authentication (`auth_admin_keep`)
+for `org.freedesktop.login1.lock-sessions`; `sudo` may therefore prompt the
+operator, but Zen never asks for or handles an OS password. `unlock-session` is
+only a request. `LockedHint=no`, `State=active`, and `Active=yes` in the
+read-back, followed by a fresh status record with `active=true`, are the proof
+that the gate changed. After that first unlocked authorization, the existing
+idle, sleep, and KDE screen-saver legs protect ordinary reconnects; they do not
+override a manual lock or PAM policy.
+
+The daemon writes the status record under its desktop state directory. When
+`ZEN_STATE_DIR=$HOME/.zen`, Zen resolves it at
+`$HOME/.zen/desktop/authorization-status.json`, matching the daemon; the
+daemon's `--state-dir` still selects canonical identity/device state. An
+explicit `ZEN_DESKTOP_AUTHORIZATION_STATUS` remains available for isolated
+diagnostics.
 
 ### Status, Stop And Revoke
 

@@ -298,6 +298,9 @@ func printAuthorizationStatus(out io.Writer, asJSON bool, stateDir string) error
 	if report.StatusError != "" {
 		fmt.Fprintf(out, "  status record error: %s\n", report.StatusError)
 	}
+	if report.Status.Recovery != "" {
+		fmt.Fprintf(out, "  recovery (request only; verify after it returns): %s\n", report.Status.Recovery)
+	}
 	fmt.Fprintf(out, "  inhibitor: idle=%s sleep=%s lock=%s\n", status.Inhibitors.LogindIdle, status.Inhibitors.LogindSleep, status.Inhibitors.ScreenSaver)
 	if status.Session != nil {
 		fmt.Fprintf(out, "  session: %s %s uid=%d %s\n", status.Session.Backend, status.Session.Display, status.Session.UID, status.Session.Seat)

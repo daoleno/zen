@@ -77,6 +77,9 @@ func TestAuthorizationControllerReleasesWhenSessionUnavailable(t *testing.T) {
 	if !strings.Contains(status.Error, "owner_session_locked") {
 		t.Fatalf("error = %q", status.Error)
 	}
+	if !strings.Contains(status.Recovery, "loginctl unlock-session") {
+		t.Fatalf("recovery = %q", status.Recovery)
+	}
 	if status.Inhibitors.LogindIdle != legStateReleased {
 		t.Fatalf("inhibitors = %+v", status.Inhibitors)
 	}
