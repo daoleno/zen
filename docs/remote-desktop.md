@@ -127,21 +127,23 @@ manual hypothesis for the trial, not a guarantee: inspect `logind_sleep` in the
 read-only status output before treating unattended authorization as ready.
 
 Start the long-running daemon from the owner’s user manager, not as a child of
-the SSH login session. Install the user unit once (if it is not already
-installed), then daily remote desktop use is one command:
+the SSH login session. If a canonical Zen daemon is already running for
+`$HOME/.zen`, authorization reuses that daemon and does not start a competing
+`zen.service`. If no daemon is running, install the user unit once, then daily
+remote desktop use is one command:
 
 ```sh
 zen boot install --binary "$HOME/.local/bin/zen-release" --state-dir "$HOME/.zen"
 zen-remote-desktop desktop-host authorize
 ```
 
-`zen-remote-desktop desktop-host authorize` verifies the canonical `$HOME/.zen` identity,
-ensures the existing `zen.service` is active in the owner’s user manager, and
-finds the configured Sunshine runtime in the supported Zen candidate layout.
-It does not claim phone consent: finish the exact action printed by the
-command in the paired app (**Remote Desktop → Enable remote desktop →
-confirm**). Repeating the command is safe. Disable/revoke all desktop grants
-with `zen-remote-desktop desktop-host revoke`.
+`zen-remote-desktop desktop-host authorize` verifies the canonical `$HOME/.zen`
+identity, proves the live canonical control socket when Zen is already running,
+and validates the configured Sunshine launcher with its private state layout.
+It reports host preparation only; it does not claim phone consent. Finish the
+exact action printed by the command in the paired app (**Remote Desktop →
+Enable remote desktop → confirm**). Repeating the command is safe.
+Disable/revoke all desktop grants with `zen-remote-desktop desktop-host revoke`.
 
 The command does not change the stock polkit rule and does not guarantee that
 the sleep leg will be accepted; no root, sudo, PAM or logind policy edit is
