@@ -150,4 +150,113 @@ if (!process.env.ZEN_PREVIEW_HOOK_CHILD) {
     expect(binary).not.toContain("slow.png");
     await act(async () => renderer.unmount());
   });
+
+  test("slow failure stays open and retry remains available", async () => {
+    let rejectMetadata!: (error: Error) => void;
+    let metadataCalls = 0;
+    const loader = {
+      metadata: async () => {
+        metadataCalls += 1;
+        if (metadataCalls === 1) {
+          return new Promise<SessionFileMetadata>((_, reject) => {
+            rejectMetadata = reject;
+          });
+        }
+        return metadata("retry.png");
+      },
+      binary: async () => ({ uri: "fixture:retry.png", headers: {} }),
+      text: async () => {
+        throw Error("Not text");
+      },
+    };
+    const props = {
+      serverId: "fixture",
+      serverUrl: "http://fixture.invalid",
+      daemonId: "fixture",
+      workerId: "fixture",
+      processId: 1,
+      startedAt: 1,
+      chrome: {} as any,
+      theme: {} as any,
+      onClose() {},
+      loader,
+    };
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <SessionFilePreviewSheet {...props} reference="retry.png" />,
+      );
+    });
+    await act(async () =>
+      rejectMetadata(new Error("Timed out while inspecting the Session file.")),
+    );
+    expect(
+      renderer.root
+        .findAllByType("text")
+        .some((node) => String(node.props.children).includes("Timed out")),
+    ).toBe(true);
+    const retryButton = renderer.root.findAllByType("button").at(-1)!;
+    await act(async () => {
+      retryButton.props.onPress();
+    });
+    expect(metadataCalls).toBe(2);
+    expect(renderer.root.findByType("image").props.source.uri).toBe(
+      "fixture:retry.png",
+    );
+    await act(async () => renderer.unmount());
+  });
+
+  test("parent URL and CWD rerenders do not close or restart an open preview", async () => {
+    const metadataCalls: string[] = [];
+    const loader = {
+      metadata: async (_server: string, request: { path: string }) => {
+        metadataCalls.push(request.path);
+        return metadata(request.path);
+      },
+      binary: async (
+        _server: string,
+        _daemon: string,
+        request: { path: string },
+      ) => ({
+        uri: "fixture:" + request.path,
+        headers: {},
+      }),
+      text: async () => {
+        throw Error("Not text");
+      },
+    };
+    const props = {
+      serverId: "fixture",
+      serverUrl: "http://fixture.invalid",
+      daemonId: "fixture",
+      workerId: "fixture",
+      processId: 1,
+      startedAt: 1,
+      chrome: {} as any,
+      theme: {} as any,
+      onClose() {},
+      loader,
+    };
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <SessionFilePreviewSheet {...props} reference="stable.png" />,
+      );
+    });
+    await act(async () => {
+      renderer.update(
+        <SessionFilePreviewSheet
+          {...props}
+          serverUrl="http://reconnected.invalid"
+          cwd="/another/worktree"
+          reference="stable.png"
+        />,
+      );
+    });
+    expect(metadataCalls).toEqual(["stable.png"]);
+    expect(renderer.root.findByType("image").props.source.uri).toBe(
+      "fixture:stable.png",
+    );
+    await act(async () => renderer.unmount());
+  });
 }

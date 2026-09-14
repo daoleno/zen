@@ -107,12 +107,10 @@ interface SessionFilePreviewSheetProps {
 export function SessionFilePreviewSheet({
   reference,
   serverId,
-  serverUrl,
   daemonId,
   workerId,
   processId,
   startedAt,
-  cwd,
   chrome,
   theme,
   onClose,
@@ -124,12 +122,10 @@ export function SessionFilePreviewSheet({
   );
   const scopeKey = sessionFilePreviewScopeKey({
     serverId,
-    serverUrl,
     daemonId,
     workerId,
     processId,
     startedAt,
-    cwd,
   });
   const previousScopeRef = useRef(scopeKey);
 
@@ -217,7 +213,6 @@ export function SessionFilePreviewSheet({
     daemonId,
     processId,
     serverId,
-    serverUrl,
     startedAt,
     state.reference,
     state.requestEpoch,

@@ -205,19 +205,27 @@ describe("current-Session preview lifecycle", () => {
     expect(changed.text).toBeNull();
   });
 
-  test("server, Session, process, start, or live CWD changes close the sheet", () => {
+  test("server, daemon, Session, process, or start changes close the sheet", () => {
     const scope = sessionFilePreviewScopeKey({
       serverId: "server-a",
-      serverUrl: "wss://server-a.example/ws",
       daemonId: "daemon-a",
       workerId: "main:@7",
       processId: 412,
       startedAt: 1_784_518_400_123,
-      cwd: "/repo/zen",
     });
     expect(scope).toBe(
-      "server-a\u0000wss://server-a.example/ws\u0000daemon-a\u0000main:@7\u0000412\u00001784518400123\u0000/repo/zen",
+      "server-a\u0000daemon-a\u0000main:@7\u0000412\u00001784518400123",
     );
+
+    expect(
+      sessionFilePreviewScopeKey({
+        serverId: "server-a",
+        daemonId: "daemon-a",
+        workerId: "main:@7",
+        processId: 412,
+        startedAt: 1_784_518_400_123,
+      }),
+    ).toBe(scope);
 
     const opened = reduceSessionFilePreviewState(
       initialSessionFilePreviewState,

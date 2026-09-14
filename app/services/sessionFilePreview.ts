@@ -265,21 +265,17 @@ export function reduceSessionFilePreviewState(
 
 export function sessionFilePreviewScopeKey(input: {
   serverId: string;
-  serverUrl: string;
   daemonId: string;
   workerId: string;
   processId?: number;
   startedAt?: number;
-  cwd?: string;
 }): string {
   return [
     input.serverId,
-    input.serverUrl,
     input.daemonId,
     input.workerId,
     input.processId ?? "",
     input.startedAt ?? "",
-    input.cwd?.trim() || "",
   ].join("\u0000");
 }
 
