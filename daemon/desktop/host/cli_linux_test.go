@@ -105,8 +105,14 @@ func TestAuthorizeEnsuresUserUnitAndIsIdempotent(t *testing.T) {
 	}
 	oldConfig := os.Getenv("ZEN_SUNSHINE_CONFIG")
 	oldSystemctl := runDesktopUserSystemctl
+	oldProbe := probeCanonicalDaemon
 	os.Setenv("ZEN_SUNSHINE_CONFIG", config)
-	t.Cleanup(func() { os.Setenv("ZEN_SUNSHINE_CONFIG", oldConfig); runDesktopUserSystemctl = oldSystemctl })
+	probeCanonicalDaemon = func(string) bool { return false }
+	t.Cleanup(func() {
+		os.Setenv("ZEN_SUNSHINE_CONFIG", oldConfig)
+		runDesktopUserSystemctl = oldSystemctl
+		probeCanonicalDaemon = oldProbe
+	})
 	var calls [][]string
 	running := false
 	runDesktopUserSystemctl = func(args ...string) ([]byte, error) {
@@ -134,6 +140,40 @@ func TestAuthorizeEnsuresUserUnitAndIsIdempotent(t *testing.T) {
 	}
 	if len(calls) != 1 || calls[0][0] != "is-active" {
 		t.Fatalf("repeat calls=%v", calls)
+	}
+}
+
+func TestAuthorizeReusesRunningCanonicalDaemon(t *testing.T) {
+	state := t.TempDir()
+	if _, err := auth.NewManager(state); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(t.TempDir(), "sunshine-launcher")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "sunshine.json")
+	if err := os.WriteFile(config, []byte(`{"binary_path":"`+launcher+`","state_dir":"/tmp/sunshine-state","host_key":"test","http_port":47989}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldConfig, oldSystemctl, oldProbe := os.Getenv("ZEN_SUNSHINE_CONFIG"), runDesktopUserSystemctl, probeCanonicalDaemon
+	os.Setenv("ZEN_SUNSHINE_CONFIG", config)
+	probeCanonicalDaemon = func(got string) bool { return got == state }
+	var calls [][]string
+	runDesktopUserSystemctl = func(args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return nil, errors.New("unit missing")
+	}
+	t.Cleanup(func() {
+		os.Setenv("ZEN_SUNSHINE_CONFIG", oldConfig)
+		runDesktopUserSystemctl = oldSystemctl
+		probeCanonicalDaemon = oldProbe
+	})
+	if err := RunLinuxCLI([]string{"authorize", "--state-dir", state}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0][0] != "is-active" {
+		t.Fatalf("systemctl calls=%v; existing canonical daemon should not be started", calls)
 	}
 }
 

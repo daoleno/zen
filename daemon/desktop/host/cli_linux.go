@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -163,6 +164,20 @@ var runDesktopUserSystemctl = func(args ...string) ([]byte, error) {
 	return exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
 }
 
+// probeCanonicalDaemon detects the already-running daemon that owns this
+// canonical state directory. This lets authorize reuse an interactive `zen`
+// or `zen-dev` process instead of trying to start a second zen.service against
+// the same lock, identity and control socket.
+var probeCanonicalDaemon = func(stateDir string) bool {
+	socket := filepath.Join(stateDir, "run", "zen.sock")
+	conn, err := net.DialTimeout("unix", socket, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func runAuthorizeCommand(args []string, stderr io.Writer) error {
 	fs := flag.NewFlagSet("zen desktop-host authorize", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -187,14 +202,20 @@ func runAuthorizeCommand(args []string, stderr io.Writer) error {
 		return fmt.Errorf("read canonical Zen state: %w", err)
 	}
 	active := false
+	canonicalRunning := false
 	if _, probeErr := runDesktopUserSystemctl("is-active", "--quiet", *unit); probeErr == nil {
 		active = true
 	} else {
-		if output, startErr := runDesktopUserSystemctl("enable", "--now", *unit); startErr != nil {
+		canonicalRunning = probeCanonicalDaemon(resolvedState)
+		if canonicalRunning {
+			// The caller already owns this state directory. Do not install or
+			// launch another user unit; authorization will be observed by this
+			// daemon through its live control/desktop lifecycle.
+		} else if output, startErr := runDesktopUserSystemctl("enable", "--now", *unit); startErr != nil {
 			return fmt.Errorf("ensure %s in the user manager: %v: %s; run `zen boot install` once if the unit is not installed", *unit, startErr, strings.TrimSpace(string(output)))
 		}
 	}
-	if !active {
+	if !active && !canonicalRunning {
 		if _, probeErr := runDesktopUserSystemctl("is-active", "--quiet", *unit); probeErr != nil {
 			return fmt.Errorf("%s did not become active; inspect `systemctl --user status %s`", *unit, *unit)
 		}
@@ -204,11 +225,15 @@ func runAuthorizeCommand(args []string, stderr io.Writer) error {
 	}
 	if *jsonOut {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
-			"ok": true, "unit": *unit, "state_dir": manager.StorageDir(),
+			"ok": true, "unit": *unit, "daemon": map[string]any{"systemd_user_unit": active, "canonical_running": canonicalRunning}, "state_dir": manager.StorageDir(),
 			"sunshine_configured": true, "phone_action": "Open Zen on the paired phone, choose Remote Desktop, then Enable remote desktop and confirm.",
 		})
 	}
-	fmt.Fprintf(os.Stdout, "Remote desktop host enabled via user unit %s (canonical state %s).\n", *unit, manager.StorageDir())
+	if canonicalRunning {
+		fmt.Fprintf(os.Stdout, "Remote desktop host ready via the running canonical Zen daemon (state %s).\n", manager.StorageDir())
+	} else {
+		fmt.Fprintf(os.Stdout, "Remote desktop host ready via user unit %s (canonical state %s).\n", *unit, manager.StorageDir())
+	}
 	fmt.Fprintln(os.Stdout, "On the paired phone: open Remote Desktop, choose Enable remote desktop, and confirm the desktop scope.")
 	fmt.Fprintln(os.Stdout, "Repeat this command safely; use `zen desktop-host revoke` to clear every desktop scope.")
 	return nil
