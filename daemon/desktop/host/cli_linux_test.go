@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,6 +87,49 @@ func TestInitConfigCLIUsesCanonicalIdentity(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "--plan") || !strings.Contains(output.String(), "--binary-source") {
 		t.Fatalf("output missing next commands:\n%s", output.String())
+	}
+}
+
+func TestAuthorizeEnsuresUserUnitAndIsIdempotent(t *testing.T) {
+	state := t.TempDir()
+	if _, err := auth.NewManager(state); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "sunshine.json")
+	if err := os.WriteFile(config, []byte(`{"binary_path":"/tmp/sunshine","state_dir":"/tmp/sunshine-state","host_key":"test","http_port":47989}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldConfig := os.Getenv("ZEN_SUNSHINE_CONFIG")
+	oldSystemctl := runDesktopUserSystemctl
+	os.Setenv("ZEN_SUNSHINE_CONFIG", config)
+	t.Cleanup(func() { os.Setenv("ZEN_SUNSHINE_CONFIG", oldConfig); runDesktopUserSystemctl = oldSystemctl })
+	var calls [][]string
+	running := false
+	runDesktopUserSystemctl = func(args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(args) >= 2 && args[0] == "is-active" {
+			if running {
+				return nil, nil
+			}
+			return nil, errors.New("inactive")
+		}
+		if len(args) >= 2 && args[0] == "enable" {
+			running = true
+		}
+		return nil, nil
+	}
+	if err := RunLinuxCLI([]string{"authorize", "--state-dir", state}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 3 || calls[0][0] != "is-active" || calls[1][0] != "enable" || calls[2][0] != "is-active" {
+		t.Fatalf("systemctl calls=%v", calls)
+	}
+	calls = nil
+	if err := RunLinuxCLI([]string{"authorize", "--state-dir", state}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0][0] != "is-active" {
+		t.Fatalf("repeat calls=%v", calls)
 	}
 }
 

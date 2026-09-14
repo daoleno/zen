@@ -1932,7 +1932,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "  worker     List, spawn, inspect, message, progress, and close Zen Workers")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
 		fmt.Fprintln(stderr, "  devices    List or revoke paired mobile devices")
-		fmt.Fprintln(stderr, "  desktop-host  Linux unattended desktop broker (plan/install/register/serve)")
+		fmt.Fprintln(stderr, "  desktop-host  Linux remote desktop host (authorize/revoke/status and install)")
 		fmt.Fprintln(stderr, "  desktop-identity  Print this zen ELF hash and native role provenance")
 	}
 

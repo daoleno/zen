@@ -113,28 +113,26 @@ resolved by polkit to the owner's active graphical session when it runs in the o
 manual hypothesis for the trial, not a guarantee: inspect `logind_sleep` in the
 read-only status output before treating unattended authorization as ready.
 
-Start the long-running daemon from the owner's user manager, not as a child of
-the SSH login session. The SSH login is still how the operator configures and
-starts it. With the installed user unit:
+Start the long-running daemon from the owner’s user manager, not as a child of
+the SSH login session. Install the user unit once (if it is not already
+installed), then daily remote desktop use is one command:
 
 ```sh
 zen boot install --binary "$HOME/.local/bin/zen-release" --state-dir "$HOME/.zen"
-systemctl --user start zen.service
-systemctl --user status zen.service
+zen desktop-host authorize
 ```
 
-For a one-off supervised daemon without `zen boot install`:
+`zen desktop-host authorize` verifies the canonical `$HOME/.zen` identity,
+ensures the existing `zen.service` is active in the owner’s user manager, and
+finds the configured Sunshine runtime in the supported Zen candidate layout.
+It does not claim phone consent: finish the exact action printed by the
+command in the paired app (**Remote Desktop → Enable remote desktop →
+confirm**). Repeating the command is safe. Disable/revoke all desktop grants
+with `zen desktop-host revoke`.
 
-```sh
-ssh owner@host 'systemd-run --user --unit=zen-desktop --collect \
-  "$HOME/.local/bin/zen-release" serve --state-dir "$HOME/.zen" --addr 127.0.0.1:9876'
-ssh owner@host 'systemctl --user status zen-desktop.service'
-```
-
-`systemd-run --user` needs no root: it talks to the owner's own user manager
-over `$XDG_RUNTIME_DIR/systemd/private`. It does not change the stock polkit
-rule and does not guarantee that the sleep leg will be accepted; no root,
-sudo, PAM or logind policy edit is performed by this procedure.
+The command does not change the stock polkit rule and does not guarantee that
+the sleep leg will be accepted; no root, sudo, PAM or logind policy edit is
+performed by this procedure.
 The idle and KDE screen-saver legs do not depend on this policy path.
 `zen desktop-host --status` reports each leg separately, and a rejected sleep
 leg is shown as `logind_sleep: unavailable` with the raw systemd/polkit reason,
@@ -167,11 +165,44 @@ the live kernel-level logind inhibitor. `active` is true only when every leg is
 held; each leg is reported separately, and a missing KDE screen-saver interface
 or a logind rejection is reported truthfully instead of being hidden.
 
-Revoking the device in the app, or stopping the supervised host, releases every
-leg and restores the previous system policy; nothing else in the system was
-changed. If the session is locked, a greeter, or belongs to another account, the
-daemon releases every leg and re-acquires only when the owner desktop is active
-and unlocked again.
+Revoking the device in the app, running `zen desktop-host revoke`, or stopping
+the supervised host releases every leg and restores the previous system policy;
+the CLI revoke clears only desktop scope while preserving pairing. If the
+session is locked, a greeter, or belongs to another account, the daemon releases
+every leg and re-acquires only when the owner desktop is active and unlocked
+again.
+
+### Cloudflare HTTP/2 connector update
+
+The current root unit is `/etc/systemd/system/cloudflared.service`. When its
+`ExecStart` still has the expected `cloudflared --no-autoupdate tunnel run`
+shape, an administrator may apply this reversible update (Zen does not run it):
+
+```sh
+sudo cp -a /etc/systemd/system/cloudflared.service \
+  /etc/systemd/system/cloudflared.service.bak-20260914-zen-brain
+sudo sed -i \
+  's#cloudflared --no-autoupdate tunnel run#cloudflared --no-autoupdate --protocol http2 tunnel run#' \
+  /etc/systemd/system/cloudflared.service
+sudo systemctl daemon-reload
+sudo systemctl restart cloudflared.service
+```
+
+Before editing, inspect the unit and stop if the `ExecStart` shape differs;
+never copy `/etc/cloudflared/token` into reports. A redacted verification is:
+
+```sh
+unit=$(sudo systemctl cat cloudflared.service)
+if printf '%s\n' "$unit" | rg -q -- '--protocol[= ]http2'; then
+  echo 'cloudflared.service already uses HTTP/2' >&2
+  exit 0
+fi
+if ! printf '%s\n' "$unit" | rg -q '/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/token'; then
+  echo 'unexpected cloudflared ExecStart shape; refusing update' >&2
+  exit 1
+fi
+sudo journalctl -u cloudflared.service -n 80 --no-pager | rg 'protocol=http2'
+```
 
 ## What Is Distributed
 

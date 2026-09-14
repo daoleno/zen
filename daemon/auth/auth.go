@@ -383,6 +383,52 @@ func (m *Manager) GrantDesktopScope(deviceID, devicePublicKeyHex string, scopeVe
 	return &copyDevice, nil
 }
 
+// RevokeDesktopScopes clears only the desktop scope from every existing
+// trusted-device record. Pairing, terminal access and device identity remain
+// intact. Repeating the operation is safe and reports the number of records
+// whose scope changed.
+func (m *Manager) RevokeDesktopScopes() (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.loadDevicesLocked(); err != nil {
+		return 0, err
+	}
+	changed := 0
+	changedIDs := make([]string, 0)
+	nextDevices := make(map[string]*TrustedDevice, len(m.devices))
+	for id, device := range m.devices {
+		if device == nil {
+			continue
+		}
+		copyDevice := *device
+		if copyDevice.DesktopScopeVersion == DesktopScopeVersion {
+			copyDevice.DesktopScopeVersion = 0
+			changed++
+			changedIDs = append(changedIDs, id)
+		}
+		nextDevices[id] = &copyDevice
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	persistence, err := m.saveDevicesSnapshotLocked(nextDevices)
+	if err != nil {
+		return 0, err
+	}
+	if !persistence.Applied {
+		return 0, errors.New("trusted-device persistence did not apply")
+	}
+	m.devices = nextDevices
+	// Scope revocation must synchronously retire any active desktop leases,
+	// just like full device revocation. Publish after releasing the store lock.
+	m.mu.Unlock()
+	for _, id := range changedIDs {
+		m.publishRevocation(id)
+	}
+	m.mu.Lock()
+	return changed, nil
+}
+
 func (m *Manager) DesktopTrust(deviceID string, fingerprint [32]byte) (trusted, scoped bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

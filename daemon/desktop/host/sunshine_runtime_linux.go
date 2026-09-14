@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +61,18 @@ func ZenStateDir() string {
 
 func loadSunshineRuntimeConfig() (sunshineRuntimeConfig, error) {
 	var cfg sunshineRuntimeConfig
-	body, err := os.ReadFile(SunshineConfigPath())
+	path := SunshineConfigPath()
+	body, err := os.ReadFile(path)
+	if err != nil && os.Getenv("ZEN_SUNSHINE_CONFIG") == "" {
+		// The reviewed desktop candidate keeps its runtime versioned under
+		// ~/.local/lib/zen/remote-desktop-*/.  Discover that explicit layout
+		// automatically while retaining ~/.zen/desktop as the canonical path
+		// when it exists.  No arbitrary system Sunshine installation is used.
+		if discovered := discoverSunshineConfig(); discovered != "" {
+			path = discovered
+			body, err = os.ReadFile(path)
+		}
+	}
 	if err != nil {
 		return cfg, err
 	}
@@ -71,6 +83,25 @@ func loadSunshineRuntimeConfig() (sunshineRuntimeConfig, error) {
 		cfg.BinaryPath = binary
 	}
 	return cfg, nil
+}
+
+func discoverSunshineConfig() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	paths, err := filepath.Glob(filepath.Join(home, ".local", "lib", "zen", "remote-desktop-*", "sunshine.json"))
+	if err != nil || len(paths) == 0 {
+		return ""
+	}
+	sort.Strings(paths)
+	for i := len(paths) - 1; i >= 0; i-- {
+		info, statErr := os.Lstat(paths[i])
+		if statErr == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0o600 {
+			return paths[i]
+		}
+	}
+	return ""
 }
 
 // SunshineConfigured reports whether the operator explicitly configured the

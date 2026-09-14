@@ -216,6 +216,27 @@ func TestDesktopScopeGrantRefusesRevokedDevice(t *testing.T) {
 	}
 }
 
+func TestRevokeDesktopScopesPreservesPairingAndIsIdempotent(t *testing.T) {
+	m, key, pub := scopeFixture(t)
+	if _, err := scopePair(t, m, key, pub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GrantDesktopScope("phone", pub, DesktopScopeVersion); err != nil {
+		t.Fatal(err)
+	}
+	count, err := m.RevokeDesktopScopes()
+	if err != nil || count != 1 {
+		t.Fatalf("revoke count=%d err=%v", count, err)
+	}
+	if !m.IsDeviceTrusted("phone") || m.HasDesktopScope("phone", pub) {
+		t.Fatal("desktop revoke removed pairing or retained scope")
+	}
+	count, err = m.RevokeDesktopScopes()
+	if err != nil || count != 0 {
+		t.Fatalf("second revoke count=%d err=%v", count, err)
+	}
+}
+
 func TestDesktopScopeGrantPersistenceFailureDoesNotGrantMemoryPrivileges(t *testing.T) {
 	m, _, pub := scopeFixture(t)
 	enrollLegacyPhone(t, m, pub)

@@ -22,6 +22,14 @@ import (
 
 // RunLinuxCLI implements `zen desktop-host` and the historical zen-desktop-host entry.
 func RunLinuxCLI(args []string, stderr io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "authorize":
+			return runAuthorizeCommand(args[1:], stderr)
+		case "revoke":
+			return runRevokeCommand(args[1:], stderr)
+		}
+	}
 	fs := flag.NewFlagSet("zen desktop-host", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "/etc/zen/desktop-host.json", "Root-owned host configuration")
@@ -148,6 +156,95 @@ func RunLinuxCLI(args []string, stderr io.Writer) error {
 		}
 		return err
 	}
+	return nil
+}
+
+var runDesktopUserSystemctl = func(args ...string) ([]byte, error) {
+	return exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
+}
+
+func runAuthorizeCommand(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen desktop-host authorize", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	stateDir := fs.String("state-dir", "", "canonical Zen state directory (default: ~/.zen)")
+	unit := fs.String("unit", "zen.service", "existing Zen user unit to ensure")
+	jsonOut := fs.Bool("json", false, "print machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected desktop-host authorize arguments")
+	}
+	resolvedState, err := auth.ResolveStorageDir(*stateDir)
+	if err != nil {
+		return fmt.Errorf("locate canonical Zen state: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(resolvedState, "identity.json")); err != nil {
+		return errors.New("canonical Zen identity is unavailable; start Zen once before authorizing remote desktop")
+	}
+	manager, err := auth.NewManager(resolvedState)
+	if err != nil {
+		return fmt.Errorf("read canonical Zen state: %w", err)
+	}
+	active := false
+	if _, probeErr := runDesktopUserSystemctl("is-active", "--quiet", *unit); probeErr == nil {
+		active = true
+	} else {
+		if output, startErr := runDesktopUserSystemctl("enable", "--now", *unit); startErr != nil {
+			return fmt.Errorf("ensure %s in the user manager: %v: %s; run `zen boot install` once if the unit is not installed", *unit, startErr, strings.TrimSpace(string(output)))
+		}
+	}
+	if !active {
+		if _, probeErr := runDesktopUserSystemctl("is-active", "--quiet", *unit); probeErr != nil {
+			return fmt.Errorf("%s did not become active; inspect `systemctl --user status %s`", *unit, *unit)
+		}
+	}
+	if !SunshineConfigured() {
+		return errors.New("Sunshine runtime is not configured; run the one-time desktop package setup, then retry this command")
+	}
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"ok": true, "unit": *unit, "state_dir": manager.StorageDir(),
+			"sunshine_configured": true, "phone_action": "Open Zen on the paired phone, choose Remote Desktop, then Enable remote desktop and confirm.",
+		})
+	}
+	fmt.Fprintf(os.Stdout, "Remote desktop host enabled via user unit %s (canonical state %s).\n", *unit, manager.StorageDir())
+	fmt.Fprintln(os.Stdout, "On the paired phone: open Remote Desktop, choose Enable remote desktop, and confirm the desktop scope.")
+	fmt.Fprintln(os.Stdout, "Repeat this command safely; use `zen desktop-host revoke` to clear every desktop scope.")
+	return nil
+}
+
+func runRevokeCommand(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen desktop-host revoke", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	stateDir := fs.String("state-dir", "", "canonical Zen state directory (default: ~/.zen)")
+	jsonOut := fs.Bool("json", false, "print machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected desktop-host revoke arguments")
+	}
+	resolvedState, err := auth.ResolveStorageDir(*stateDir)
+	if err != nil {
+		return fmt.Errorf("locate canonical Zen state: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(resolvedState, "identity.json")); err != nil {
+		return errors.New("canonical Zen identity is unavailable; start Zen once before revoking remote desktop")
+	}
+	manager, err := auth.NewManager(resolvedState)
+	if err != nil {
+		return fmt.Errorf("read canonical Zen state: %w", err)
+	}
+	count, err := manager.RevokeDesktopScopes()
+	if err != nil {
+		return fmt.Errorf("revoke desktop scopes: %w", err)
+	}
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true, "revoked": count})
+	}
+	fmt.Fprintf(os.Stdout, "Remote desktop disabled; cleared desktop scope from %d paired device(s).\n", count)
+	fmt.Fprintln(os.Stdout, "The running daemon will release desktop inhibitors on its next authorization reconcile.")
 	return nil
 }
 
