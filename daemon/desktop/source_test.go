@@ -21,6 +21,7 @@ func TestConfiguredSourceAutoDetectsCurrentSession(t *testing.T) {
 	}
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/owned-fixture-never-opened")
+	t.Setenv("DISPLAY", ":1") // Xwayland must not steal the portal route.
 	id, name, args, err = configuredSource()
 	if err != nil || id != "wayland" || name != "Current Wayland session" || !reflect.DeepEqual(args, []string{"--display", "wayland-0", "--wayland", "--bus-address", "unix:path=/owned-fixture-never-opened"}) {
 		t.Fatal(id, name, args, err)

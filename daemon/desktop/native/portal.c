@@ -142,10 +142,11 @@ gboolean zen_portal_parse_grant(GVariant *results, gboolean control, guint32 *no
   int w = 0, h = 0;
   g_variant_get(stream, "(u@a{sv})", &selected, &properties);
   gboolean has_size = g_variant_lookup(properties, "size", "(ii)", &w, &h);
-  gboolean monitor = g_variant_lookup(properties, "source_type", "u", &source_type) && source_type == 1;
+  gboolean supported_source = g_variant_lookup(properties, "source_type", "u", &source_type) &&
+    (source_type == 1 || source_type == 4);
   g_variant_unref(properties); g_variant_unref(stream); g_variant_unref(streams);
-  if (!selected || !has_size || !monitor || w < 2 || h < 2 || w > 16384 || h > 16384)
-    return fail(error, G_IO_ERROR_INVALID_DATA, "Portal stream lacks valid monitor identity or logical dimensions.");
+  if (!selected || !has_size || !supported_source || w < 2 || h < 2 || w > 16384 || h > 16384)
+    return fail(error, G_IO_ERROR_INVALID_DATA, "Portal stream lacks a valid monitor or virtual source and logical dimensions.");
   *node = selected; *width = w; *height = h;
   return TRUE;
 }
@@ -195,6 +196,24 @@ static void add_persist_options(GVariantBuilder *builder, guint32 version, guint
     g_variant_builder_add(builder, "{sv}", "restore_token", g_variant_new_string(restore_token));
 }
 
+/* ScreenCast source bits are monitor=1, window=2, virtual=4. Prefer a real
+ * monitor; a headless portal may supply a virtual source through this same
+ * KDE/PipeWire route. */
+static guint32 portal_uint_property(ZenPortal *portal, const char *interface, const char *property) {
+  GError *error = NULL;
+  GVariant *reply = g_dbus_connection_call_sync(portal->bus, DEST, PATH,
+    "org.freedesktop.DBus.Properties", "Get", g_variant_new("(ss)", interface, property),
+    G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, 1000, portal->cancel, &error);
+  if (!reply) { g_clear_error(&error); return 0; }
+  guint32 value = 0;
+  GVariant *boxed = g_variant_get_child_value(reply, 0);
+  GVariant *inner = g_variant_get_variant(boxed);
+  if (inner && g_variant_is_of_type(inner, G_VARIANT_TYPE_UINT32)) value = g_variant_get_uint32(inner);
+  if (inner) g_variant_unref(inner);
+  g_variant_unref(boxed); g_variant_unref(reply);
+  return value;
+}
+
 const char *zen_portal_restore_token(const ZenPortal *portal) {
   return portal ? portal->restore_token : NULL;
 }
@@ -234,7 +253,14 @@ gboolean zen_portal_open(ZenPortal *portal, gboolean control, const char *parent
     g_variant_unref(result);
   }
   token = options(&builder);
-  g_variant_builder_add(&builder, "{sv}", "types", g_variant_new_uint32(1));
+  guint32 source_types = portal_uint_property(portal, SCREEN, "AvailableSourceTypes");
+  guint32 selected_source_type = (source_types & 1u) ? 1u : ((source_types & 4u) ? 4u : 0u);
+  if (!selected_source_type) {
+    g_free(token);
+    fail(error, G_IO_ERROR_NOT_SUPPORTED, "The KDE portal has no monitor or virtual ScreenCast source.");
+    goto failed;
+  }
+  g_variant_builder_add(&builder, "{sv}", "types", g_variant_new_uint32(selected_source_type));
   g_variant_builder_add(&builder, "{sv}", "multiple", g_variant_new_boolean(FALSE));
   g_variant_builder_add(&builder, "{sv}", "cursor_mode", g_variant_new_uint32(2));
   if (!control) add_persist_options(&builder, portal->screen_version, 4, restore_token);

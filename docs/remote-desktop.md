@@ -1,13 +1,18 @@
 # Remote Desktop
 
 Zen Remote Desktop connects the paired Android or iOS app to the desktop of
-the current Zen server. Supported Linux amd64 targets are an X11 desktop and
-an unlocked KDE Wayland owner desktop through the session's
-xdg-desktop-portal RemoteDesktop interface. Android and iOS use the same
+the current Zen server. The Linux product route is the logged-in KDE Wayland
+owner desktop through the session's xdg-desktop-portal ScreenCast/
+RemoteDesktop interfaces, PipeWire, and Zen's existing GStreamer H.264 path.
+Android and iOS use the same
 pairing, transport, and session contract. Web, audio, clipboard, file
 transfer, and multi-monitor composition are outside this feature. On Wayland
 the compositor keeps its own screen-sharing consent; Zen never injects input
 through a compositor test protocol.
+
+An Xvnc desktop may be used only as an owned, isolated test fixture for the
+native frame and input components. It is a separate virtual session and is not
+a product backend or a way to control the user's existing desktop.
 
 The KDE Wayland path requires the KDE xdg-desktop-portal backend to be selected
 in the logged-in user session. If the capability check reports an unavailable
@@ -601,3 +606,67 @@ was exercised on an owned AVD; physical Android, native iOS runtime, and
 personal-host boot installation remain separate qualification items. Full
 evidence, hashes, and resource-control notes belong in the Brain worklog, not
 in this operator document.
+
+## Lightweight Wayland backend decision (2026-09-14)
+
+The MVP backend is the existing Zen-owned path:
+
+```
+KDE ScreenCast/RemoteDesktop portal -> PipeWire -> GStreamer H.264
+  -> Zen desktop-helper length-prefixed packets -> authenticated Zen WebSocket
+  -> native Android/iOS decoder and view
+```
+
+The source already contains the important bounded pieces: typed portal session
+and consent handling, one selected monitor stream (or portal virtual source
+when no monitor is advertised), a portal-issued PipeWire file descriptor and
+node binding, software-first H.264 probing with optional VA
+hardware selection, bounded queueing, metadata plus binary frame packets, and
+portal RemoteDesktop pointer/keyboard events. The broker/client owns the local
+capability transfer and the authenticated Zen connection. This is enough for
+the one-screen, no-audio MVP when the portal grants either a monitor or its
+advertised virtual source. It is not
+a claim that the C path is a general streaming server: the remaining product
+work is real-session validation with a listener and decoder, lifecycle and
+reconnect observation, and platform UI evidence.
+
+| Choice | Result for the bounded MVP |
+| --- | --- |
+| Existing portal/PipeWire/GStreamer chain | Chosen. Reuses Zen auth, scope, revoke, WSS, framing, and native decoder boundaries; no game-streaming control plane. |
+| Sunshine/Moonlight host | Rejected for this MVP. It adds the admin/pairing/runtime and codec/network surface that Zen already owns, while the current host still fails before capture when KWin has zero outputs. Existing Sunshine artifacts remain untouched. |
+| Headless source | The KDE portal reports `AvailableSourceTypes=7`, including Virtual. Zen requests that source when no monitor is advertised and keeps creation/cleanup inside the portal session; no compositor restart or replacement is performed. |
+
+The current host is genuinely headless. Read-only evidence on 2026-09-14:
+
+* `kwin_wayland --version` → `kwin 6.6.4`; the running command has no `--virtual` and uses the DRM backend.
+* `loginctl show-session 30` reports an active, unlocked `Type=wayland` owner session, while `Display=` is empty.
+* `/sys/class/drm/card0-DP-1`, `DP-2`, `DP-3`, and `HDMI-A-1` all report `disconnected`; the only writeback connector is not a display output.
+* The user portal exposes ScreenCast v5 and RemoteDesktop v2. `AvailableSourceTypes` returns `7` (monitor, window, and virtual bits); Zen now prefers a monitor and requests the portal's virtual source when no monitor is advertised, keeping source creation and cleanup inside the same portal session.
+* The Wayland runtime has exactly one held compositor socket (`/run/user/1000/wayland-0`) and the live KWin object tree exposes EIS and screenshot interfaces, with no output-creation control.
+
+The portal's advertised virtual source is now the supported headless operation
+to validate in this same logged-in session. If the KDE portal declines that
+source or returns no stream, the capability reports the portal failure; Zen
+does not enable VKMS, grant broad `/dev/dri` access, add `CAP_SYS_ADMIN`,
+create a nested compositor, use X11/xrdp as a replacement, or report a
+black/fake frame as success.
+
+The daily UX remains **Zen start → one phone authorization → Connect**. Wayland
+portal consent and the physical/logical display output are the unavoidable host
+requirements; Sunshine's game streaming, UDP traversal, hardware codec
+negotiation, audio, gamepad, and separate admin plane are optional complexity
+outside this MVP.
+
+## Scope correction (2026-09-15)
+
+Remote Desktop has one product source on Linux: the current logged-in KDE
+Wayland session. Zen selects the portal/PipeWire source in that session,
+requests the OS consent dialog when needed, binds one stream, and forwards the
+existing length-prefixed metadata/H.264 and pointer/scroll/keyboard/text
+packets over the authenticated Zen WebSocket. Device scope, revoke, lifecycle,
+and the native Android/iOS decoder remain the control boundary.
+
+The `scripts/zen-virtual-x11.sh` launcher is an optional owned fixture for
+verifying native X11 capture and input without a physical monitor. It does not
+add a Zen backend, route, selector, or persistent desktop lifecycle, and its
+frames cannot prove that the logged-in KDE session is capturable.

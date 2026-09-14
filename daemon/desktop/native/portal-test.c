@@ -113,6 +113,10 @@ static void method_call(GDBusConnection *bus, const char *sender, const char *pa
   if (!strcmp(interface, "org.freedesktop.DBus.Properties") && !strcmp(method, "Get")) {
     const char *wanted, *property;
     g_variant_get(parameters, "(&s&s)", &wanted, &property);
+    if (!strcmp(property, "AvailableSourceTypes")) {
+      g_dbus_method_invocation_return_value(invocation, g_variant_new("(v)", g_variant_new_uint32(7)));
+      return;
+    }
     g_assert_cmpstr(property, ==, "version");
     guint32 version = (guint32)(!strcmp(wanted, SCREEN)
       ? g_atomic_int_get(&mock->screen_version) : g_atomic_int_get(&mock->remote_version));
