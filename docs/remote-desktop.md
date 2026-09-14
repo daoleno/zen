@@ -645,18 +645,51 @@ The current host is genuinely headless. Read-only evidence on 2026-09-14:
 * The user portal exposes ScreenCast v5 and RemoteDesktop v2. `AvailableSourceTypes` returns `7` (monitor, window, and virtual bits); Zen now prefers a monitor and requests the portal's virtual source when no monitor is advertised, keeping source creation and cleanup inside the same portal session.
 * The Wayland runtime has exactly one held compositor socket (`/run/user/1000/wayland-0`) and the live KWin object tree exposes EIS and screenshot interfaces, with no output-creation control.
 
-The portal's advertised virtual source is now the supported headless operation
-to validate in this same logged-in session. If the KDE portal declines that
-source or returns no stream, the capability reports the portal failure; Zen
-does not enable VKMS, grant broad `/dev/dri` access, add `CAP_SYS_ADMIN`,
-create a nested compositor, use X11/xrdp as a replacement, or report a
-black/fake frame as success.
+The portal advertises a virtual source, and Zen requests it in the same
+portal session when no monitor is advertised. That source is created by KWin
+only in the post-consent continuation. On the installed KDE 6.6.4 stack,
+`xdg-desktop-portal-kde`'s `RemoteDesktop.Start` first requires a Qt screen,
+then either restores a valid prior grant or creates a `RemoteDesktopDialog`;
+the virtual output is started only after that dialog is accepted. A session
+with no physical or logical output therefore cannot render the first consent
+dialog or create the virtual output that would make it renderable. The
+portal's advertised bit is capability metadata, not an unattended first-grant
+path.
 
-The daily UX remains **Zen start → one phone authorization → Connect**. Wayland
-portal consent and the physical/logical display output are the unavoidable host
-requirements; Sunshine's game streaming, UDP traversal, hardware codec
-negotiation, audio, gamepad, and separate admin plane are optional complexity
-outside this MVP.
+If the KDE portal declines the source or returns no stream, the capability
+reports the portal failure; Zen does not enable VKMS, grant broad `/dev/dri`
+access, add `CAP_SYS_ADMIN`, create a nested compositor, use X11/xrdp as a
+replacement, or report a black/fake frame as success. A saved restore token
+can bypass the chooser only after an operator has previously accepted a grant
+for this portal identity; Zen never fabricates or edits that token.
+
+#### Zero-output KDE session: operator prerequisite
+
+For KDE/Plasma 6.6.4 with KWin's DRM backend, the smallest first-grant
+prerequisite is one renderable Qt/KWin output in the existing owner session.
+The operator must complete the normal KDE Remote Desktop consent once while
+that output exists. Zen then stores the portal-issued single-use restore token
+at `$HOME/.zen/desktop-portal-restore-token`; later reconnects can use the
+supported restore path while the same KDE session remains valid. Removing the
+temporary output after the first grant is a valid rollback only if the saved
+grant still restores successfully; otherwise the consent prerequisite returns.
+
+On this host the current session reports `QGuiApplication::screens() = 1` but
+its only screen is `0x0`, `/sys/class/drm` reports every display connector
+disconnected, and there is no `kde-authorized/remote-desktop` permission or
+Zen restore-token file. KDE's only virtual-output call is the internal
+`zkde_screencast_unstable_v1` stream operation invoked after consent. There is
+no supported same-session command that can create an output before that
+dialog, so unattended first consent is not executable under the current
+zero-output constraint. This is a host prerequisite, not a phone action; the
+existing KDE session, daemon, APK, VNC service, and portal lifecycle remain
+unchanged.
+
+The daily UX after that first grant remains **Zen start → one phone
+authorization → Connect**. Wayland portal consent and a renderable output for
+the first grant are unavoidable host requirements; Sunshine's game streaming,
+UDP traversal, hardware codec negotiation, audio, gamepad, and separate admin
+plane are optional complexity outside this MVP.
 
 ## Scope correction (2026-09-15)
 
