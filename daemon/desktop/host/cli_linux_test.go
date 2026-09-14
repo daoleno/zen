@@ -95,8 +95,12 @@ func TestAuthorizeEnsuresUserUnitAndIsIdempotent(t *testing.T) {
 	if _, err := auth.NewManager(state); err != nil {
 		t.Fatal(err)
 	}
+	launcher := filepath.Join(t.TempDir(), "sunshine-launcher")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	config := filepath.Join(t.TempDir(), "sunshine.json")
-	if err := os.WriteFile(config, []byte(`{"binary_path":"/tmp/sunshine","state_dir":"/tmp/sunshine-state","host_key":"test","http_port":47989}`), 0600); err != nil {
+	if err := os.WriteFile(config, []byte(`{"binary_path":"`+launcher+`","state_dir":"/tmp/sunshine-state","host_key":"test","http_port":47989}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	oldConfig := os.Getenv("ZEN_SUNSHINE_CONFIG")

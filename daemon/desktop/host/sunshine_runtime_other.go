@@ -2,13 +2,18 @@
 
 package host
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // The supervised Sunshine/Moonlight host is not implemented outside Linux.
 // These adapters keep cross-platform builds honest: the capability endpoint
 // never advertises Moonlight on unsupported platforms.
 
 func SunshineConfigured() bool { return false }
+
+func ValidateSunshineRuntime() error { return errors.New("Sunshine unsupported on this platform") }
 
 func SunshineAvailable() bool { return false }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -109,6 +110,30 @@ func discoverSunshineConfig() string {
 func SunshineConfigured() bool {
 	_, err := loadSunshineRuntimeConfig()
 	return err == nil
+}
+
+// ValidateSunshineRuntime checks the configured executable before an operator
+// enables the host. Candidate launchers expose --check; ordinary Sunshine
+// binaries are still verified as executable without starting them.
+func ValidateSunshineRuntime() error {
+	cfg, err := loadSunshineRuntimeConfig()
+	if err != nil {
+		return fmt.Errorf("read Sunshine config: %w", err)
+	}
+	if cfg.BinaryPath == "" {
+		return errors.New("Sunshine config has no binary_path")
+	}
+	info, err := os.Stat(cfg.BinaryPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("configured Sunshine executable is unavailable: %s", cfg.BinaryPath)
+	}
+	if strings.HasSuffix(cfg.BinaryPath, "/sunshine-launcher") {
+		cmd := exec.Command(cfg.BinaryPath, "--check")
+		if output, checkErr := cmd.CombinedOutput(); checkErr != nil {
+			return fmt.Errorf("Sunshine launcher preflight failed: %v: %s", checkErr, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
 }
 
 // SunshineAdminFromRuntime builds the authenticated, certificate-pinned admin

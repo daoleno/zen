@@ -119,22 +119,22 @@ installed), then daily remote desktop use is one command:
 
 ```sh
 zen boot install --binary "$HOME/.local/bin/zen-release" --state-dir "$HOME/.zen"
-zen desktop-host authorize
+zen-remote-desktop desktop-host authorize
 ```
 
-`zen desktop-host authorize` verifies the canonical `$HOME/.zen` identity,
+`zen-remote-desktop desktop-host authorize` verifies the canonical `$HOME/.zen` identity,
 ensures the existing `zen.service` is active in the owner’s user manager, and
 finds the configured Sunshine runtime in the supported Zen candidate layout.
 It does not claim phone consent: finish the exact action printed by the
 command in the paired app (**Remote Desktop → Enable remote desktop →
 confirm**). Repeating the command is safe. Disable/revoke all desktop grants
-with `zen desktop-host revoke`.
+with `zen-remote-desktop desktop-host revoke`.
 
 The command does not change the stock polkit rule and does not guarantee that
 the sleep leg will be accepted; no root, sudo, PAM or logind policy edit is
 performed by this procedure.
 The idle and KDE screen-saver legs do not depend on this policy path.
-`zen desktop-host --status` reports each leg separately, and a rejected sleep
+`zen-remote-desktop desktop-host --status` reports each leg separately, and a rejected sleep
 leg is shown as `logind_sleep: unavailable` with the raw systemd/polkit reason,
 never as active. While the sleep leg is unavailable the authorization stays
 inactive (`active: false`), so a phone reconnect is told the desktop is not
@@ -146,7 +146,7 @@ The daemon writes the status record under its desktop state directory:
 `$ZEN_STATE_DIR/authorization-status.json` when `ZEN_STATE_DIR` is set,
 otherwise `$HOME/.zen/desktop/authorization-status.json`. The daemon's
 `--state-dir` selects the canonical identity/device state, not this desktop
-record. Run `zen desktop-host --status` with the same `ZEN_STATE_DIR` and
+record. Run `zen-remote-desktop desktop-host --status` with the same `ZEN_STATE_DIR` and
 `HOME` as the daemon; pointing only the status command at another directory
 reports `no_status_record` instead of the live record.
 
@@ -156,8 +156,8 @@ Check the exact authorization and inhibitor state over SSH at any time; the
 command is read-only and acquires nothing:
 
 ```sh
-zen desktop-host --status
-zen desktop-host --status --json
+zen-remote-desktop desktop-host --status
+zen-remote-desktop desktop-host --status --json
 ```
 
 The daemon publishes an owner-only status record and the command cross-checks
@@ -165,7 +165,7 @@ the live kernel-level logind inhibitor. `active` is true only when every leg is
 held; each leg is reported separately, and a missing KDE screen-saver interface
 or a logind rejection is reported truthfully instead of being hidden.
 
-Revoking the device in the app, running `zen desktop-host revoke`, or stopping
+Revoking the device in the app, running `zen-remote-desktop desktop-host revoke`, or stopping
 the supervised host releases every leg and restores the previous system policy;
 the CLI revoke clears only desktop scope while preserving pairing. If the
 session is locked, a greeter, or belongs to another account, the daemon releases

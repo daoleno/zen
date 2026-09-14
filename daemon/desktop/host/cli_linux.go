@@ -199,8 +199,8 @@ func runAuthorizeCommand(args []string, stderr io.Writer) error {
 			return fmt.Errorf("%s did not become active; inspect `systemctl --user status %s`", *unit, *unit)
 		}
 	}
-	if !SunshineConfigured() {
-		return errors.New("Sunshine runtime is not configured; run the one-time desktop package setup, then retry this command")
+	if err := ValidateSunshineRuntime(); err != nil {
+		return fmt.Errorf("Sunshine runtime is not ready; run the one-time desktop package setup, then retry this command: %w", err)
 	}
 	if *jsonOut {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
