@@ -72,6 +72,20 @@ Module wiring (source of truth for packaging):
 
 ## Day-to-day JS workflow
 
+Build the current arm64 Metro debug APK with one repeatable command from the
+repository root. It runs Expo prebuild first so the `Zen Debug` identity,
+`MetroConnectActivity`, and native modules stay synchronized, then assembles
+only the debug variant with `zenStandalone=false`:
+
+```bash
+bun run android:debug:apk
+```
+
+The command does not start Metro. It prints the deterministic artifact path
+`app/android/app/build/outputs/apk/debug/zen-debug-arm64.apk` and uses the
+existing debug keystore. Start or reuse Metro separately, then enter
+`192.168.110.223:8081` in **Zen Development** on the phone.
+
 Use a **Metro-connected debug APK** for development, not a standalone APK or
 Expo Go. Zen's custom terminal, pinned Link transport and remote desktop need
 their compiled native modules. The development APK uses the existing React

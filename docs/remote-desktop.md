@@ -9,6 +9,19 @@ transfer, and multi-monitor composition are outside this feature. On Wayland
 the compositor keeps its own screen-sharing consent; Zen never injects input
 through a compositor test protocol.
 
+The KDE Wayland path requires the KDE xdg-desktop-portal backend to be selected
+in the logged-in user session. If the capability check reports an unavailable
+current session, inspect the user bus before changing Zen state:
+
+```sh
+busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop | rg 'RemoteDesktop|ScreenCast'
+```
+
+Both interfaces must be present. A GTK-only portal selection leaves the host
+gate closed even when `loginctl` shows an active KDE Wayland seat; install the
+distribution's `xdg-desktop-portal-kde` package, select the KDE backend in the
+user portal configuration, and reconnect after the session portal is healthy.
+
 ## Quick Start
 
 For an already logged-in Linux X11 desktop, build a stable local ELF once
