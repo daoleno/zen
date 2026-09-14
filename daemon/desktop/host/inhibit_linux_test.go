@@ -73,7 +73,7 @@ func TestAuthorizationInhibitorsAcquiresAllLegsAndReleases(t *testing.T) {
 
 func TestAuthorizationInhibitorsReportsUnavailableLegTruthfully(t *testing.T) {
 	legs, idle, sleep, lock := fakeInhibitorSet()
-	sleep.acquireErr = errors.New("logind_inhibit_rejected")
+	sleep.acquireErr = errors.New("logind_inhibit_rejected: org.freedesktop.PolicyKit1.Error.NotAuthorized: Not authorized")
 	inhibitors := newAuthorizationInhibitors(1000, legs)
 	status := inhibitors.Reconcile(context.Background(), true)
 	if status.Active {
@@ -85,8 +85,10 @@ func TestAuthorizationInhibitorsReportsUnavailableLegTruthfully(t *testing.T) {
 	if status.LogindSleep != legStateUnavailable || status.Reason != legLogindSleep+"_unavailable" {
 		t.Fatalf("status = %+v", status)
 	}
-	if !strings.Contains(status.Error, "logind_inhibit_rejected") {
-		t.Fatalf("error = %q", status.Error)
+	for _, want := range []string{"logind_inhibit_rejected", "org.freedesktop.PolicyKit1.Error.NotAuthorized"} {
+		if !strings.Contains(status.Error, want) {
+			t.Fatalf("error %q does not preserve %q", status.Error, want)
+		}
 	}
 	if idle.aliveFlag == false || lock.aliveFlag == false {
 		t.Fatal("partial legs must still be held")

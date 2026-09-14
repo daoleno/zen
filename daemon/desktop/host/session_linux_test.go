@@ -43,6 +43,40 @@ func TestDiscoverOwnerSessionBindsToOwnerDesktop(t *testing.T) {
 	}
 }
 
+// TestDiscoverOwnerSessionIgnoresCallerEnvironment locks the SSH-started
+// contract: the operator's login environment (DISPLAY, WAYLAND_DISPLAY,
+// DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR, XDG_SESSION_ID) must never leak
+// into the owner session resolution or the supervised host environment. Only
+// the logind/runtime directory facts for the enrolled owner UID are used.
+func TestDiscoverOwnerSessionIgnoresCallerEnvironment(t *testing.T) {
+	for name, value := range map[string]string{
+		"DISPLAY":                  "attacker:9",
+		"WAYLAND_DISPLAY":          "attacker-wayland-9",
+		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/attacker-bus",
+		"XDG_RUNTIME_DIR":          "/tmp/attacker-runtime",
+		"XDG_SESSION_ID":           "999",
+	} {
+		t.Setenv(name, value)
+	}
+	stubOwnerSessionInspection(t, ownerWaylandObservation(1000), nil)
+	session, err := DiscoverOwnerSession(context.Background(), 1000)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if session.Display != "wayland-0" || session.BusAddress != "unix:path=/run/user/1000/bus" || session.RuntimeDir != "/run/user/1000" {
+		t.Fatalf("caller environment leaked into owner session: %+v", session)
+	}
+	env := strings.Join(session.Environment(), " ")
+	if strings.Contains(env, "attacker") {
+		t.Fatalf("caller environment leaked into session environment: %v", env)
+	}
+	for _, want := range []string{"XDG_RUNTIME_DIR=/run/user/1000", "WAYLAND_DISPLAY=wayland-0", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"} {
+		if !strings.Contains(env, want) {
+			t.Fatalf("environment missing %q: %v", want, env)
+		}
+	}
+}
+
 func TestDiscoverOwnerSessionFailsClosed(t *testing.T) {
 	cases := []struct {
 		name        string

@@ -3,6 +3,8 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -122,8 +124,17 @@ func (a *AuthorizationInhibitors) Reconcile(ctx context.Context, authorized bool
 			a.active[name] = false
 		}
 		if err := leg.acquire(ctx); err != nil {
-			a.lastErr[name] = err.Error()
+			message := err.Error()
+			// Surface the raw transport/polkit reason once per failure in the
+			// daemon log; the status record carries it for the read-only surface.
+			if a.lastErr[name] != message {
+				log.Printf("desktop authorization inhibitor %s unavailable: %s", name, message)
+			}
+			a.lastErr[name] = message
 			continue
+		}
+		if a.lastErr[name] != "" {
+			log.Printf("desktop authorization inhibitor %s recovered", name)
 		}
 		a.active[name] = true
 		delete(a.lastErr, name)
@@ -213,14 +224,14 @@ func (l *logindInhibitor) acquire(ctx context.Context) error {
 	// a request context that is cancelled when the caller returns.
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
-		return errors.New("system_bus_unavailable")
+		return fmt.Errorf("system_bus_unavailable: %w", err)
 	}
 	var fd dbus.UnixFD
 	if err := conn.Object("org.freedesktop.login1", "/org/freedesktop/login1").
 		CallWithContext(ctx, "org.freedesktop.login1.Manager.Inhibit", 0,
 			l.what, InhibitorWho, InhibitorReason, "block").Store(&fd); err != nil {
 		_ = conn.Close()
-		return errors.New("logind_inhibit_rejected")
+		return dbusRejectionError("logind_inhibit_rejected", err)
 	}
 	if fd < 0 {
 		_ = conn.Close()
@@ -276,14 +287,14 @@ func (s *screenSaverInhibitor) acquire(ctx context.Context) error {
 	}
 	conn, err := dbus.Connect(address)
 	if err != nil {
-		return errors.New("session_bus_unavailable")
+		return fmt.Errorf("session_bus_unavailable: %w", err)
 	}
 	var cookie uint32
 	if err := conn.Object("org.freedesktop.ScreenSaver", "/ScreenSaver").
 		CallWithContext(ctx, "org.freedesktop.ScreenSaver.Inhibit", 0,
 			InhibitorWho, InhibitorReason).Store(&cookie); err != nil {
 		_ = conn.Close()
-		return errors.New("screen_saver_inhibit_rejected")
+		return dbusRejectionError("screen_saver_inhibit_rejected", err)
 	}
 	done := make(chan struct{})
 	s.mu.Lock()
@@ -419,6 +430,20 @@ func LiveLogindInhibitor(ctx context.Context, ownerUID uint32) (idle bool, sleep
 		}
 	}
 	return idle, sleep, pid, nil
+}
+
+// dbusRejectionError keeps the stable leg code together with the raw D-Bus
+// error. godbus's Error.Error() returns only the body message, so the error
+// name (the systemd/polkit rejection class) is added explicitly.
+func dbusRejectionError(prefix string, err error) error {
+	var dbusErr dbus.Error
+	if errors.As(err, &dbusErr) && dbusErr.Name != "" {
+		if message := dbusErr.Error(); message != dbusErr.Name {
+			return fmt.Errorf("%s: %s: %s", prefix, dbusErr.Name, message)
+		}
+		return fmt.Errorf("%s: %s", prefix, dbusErr.Name)
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
 }
 
 func splitInhibitorWhat(value string) []string {

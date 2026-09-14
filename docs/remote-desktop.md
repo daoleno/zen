@@ -56,30 +56,25 @@ owner's protected runtime directory; it never guesses a DISPLAY, never reuses
 an unrelated login environment, and never creates a replacement X11 or xrdp
 session. Reboot, SDDM pre-login handoff and remote login-screen unlock are out
 of scope for this path; it covers the same logged-in session that is already
-running.
+running. Run the daemon itself from the owner's systemd user manager, not as a
+child of the SSH session; the sleep-inhibitor policy requirement is explained
+below.
 
 The supervised host engine is the explicitly configured, Zen-owned host
-binary. Zen never guesses a binary or touches a personal Sunshine install.
-Write the reviewed configuration once:
+binary. Zen never guesses a binary or touches a personal Sunshine install. The
+manual candidate package includes `setup-manual.sh`; it installs the reviewed
+Sunshine ELF, creates `$HOME/.zen/desktop/sunshine.json` with fresh local Web
+UI credentials and a stable per-install host key, and sets the required 0700 /
+0600 permissions. It never prints the generated password or overwrites an
+existing Zen Sunshine config. The generated config uses HTTP port 47989,
+application id 1, and a private state directory containing only Zen-owned
+certificates, keys, credentials, apps and pairing state.
 
-```json
-{
-  "binary_path": "/absolute/path/to/the/reviewed/host/binary",
-  "state_dir": "/home/<owner>/.zen/desktop/sunshine",
-  "host_key": "<the host identity the phone verifies>",
-  "http_port": 47989,
-  "app_id": 1,
-  "web_ui_username": "<Zen-owned Web UI account>",
-  "web_ui_password": "<Zen-owned Web UI secret>"
-}
-```
-
-at `$HOME/.zen/desktop/sunshine.json` with mode 0600 in a 0700 directory. The
-state directory holds only Zen-owned certificates, keys, credentials, apps and
-pairing state. The daemon starts the host on the first authenticated
-capability/connect request and passes the discovered owner session environment
-(`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`) to it, so the
-host attaches to that same KDE session.
+The daemon starts the host on the first authenticated capability/connect request
+and passes the discovered owner session environment (`XDG_RUNTIME_DIR`,
+`WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`) to it, so the host attaches to
+that same KDE session. The exact package and setup commands are recorded in the
+candidate README; no placeholder values are needed for the trial.
 
 ### The One Explicit Authorization
 
@@ -104,6 +99,56 @@ A manual lock (the lock key or `loginctl lock-session`) still works and still
 ends remote access, exactly as before. The inhibitor exists so an overnight idle
 or a temporary phone disconnect does not lock or suspend the desktop that the
 authorized phone will reconnect to.
+
+The sleep leg has a distro policy requirement that decides where the daemon may
+run. The stock Ubuntu 24.04 systemd policy ships
+`org.freedesktop.login1.inhibit-block-sleep` as `allow_any=no`,
+`allow_inactive=yes`, `allow_active=yes`, so polkit allows it only for a
+subject it can resolve to a local session. A session without a seat (a bare
+SSH/`login` TTY session) and a process in the root slice resolve to
+`allow_any` and are rejected. A process with no session of its own is resolved
+by polkit to the owner's active graphical session when it runs in the owner's
+systemd user manager (`user-<uid>.slice`), because polkit falls back to
+`sd_pid_get_owner_uid()` and `sd_uid_get_display()`; that context is allowed
+without any root or PAM change.
+
+Start the long-running daemon from the owner's user manager, not as a child of
+the SSH login session. The SSH login is still how the operator configures and
+starts it. With the installed user unit:
+
+```sh
+zen boot install --binary "$HOME/.local/bin/zen-release" --state-dir "$HOME/.zen"
+systemctl --user start zen.service
+systemctl --user status zen.service
+```
+
+For a one-off supervised daemon without `zen boot install`:
+
+```sh
+ssh owner@host 'systemd-run --user --unit=zen-desktop --collect \
+  "$HOME/.local/bin/zen-release" serve --state-dir "$HOME/.zen" --addr 127.0.0.1:9876'
+ssh owner@host 'systemctl --user status zen-desktop.service'
+```
+
+`systemd-run --user` needs no root: it talks to the owner's own user manager
+over `$XDG_RUNTIME_DIR/systemd/private`. The only permission requirement is the
+stock polkit rule above; no root, sudo, PAM or logind policy edit is needed.
+The idle and KDE screen-saver legs do not depend on this policy path.
+`zen desktop-host --status` reports each leg separately, and a rejected sleep
+leg is shown as `logind_sleep: unavailable` with the raw systemd/polkit reason,
+never as active. While the sleep leg is unavailable the authorization stays
+inactive (`active: false`), so a phone reconnect is told the desktop is not
+ready instead of being promised an unattended session the machine cannot keep;
+suspend then remains possible, and the smallest supported setup step is to
+restart the daemon from the owner's user manager as shown above.
+
+The daemon writes the status record under its desktop state directory:
+`$ZEN_STATE_DIR/authorization-status.json` when `ZEN_STATE_DIR` is set,
+otherwise `$HOME/.zen/desktop/authorization-status.json`. The daemon's
+`--state-dir` selects the canonical identity/device state, not this desktop
+record. Run `zen desktop-host --status` with the same `ZEN_STATE_DIR` and
+`HOME` as the daemon; pointing only the status command at another directory
+reports `no_status_record` instead of the live record.
 
 ### Status, Stop And Revoke
 
