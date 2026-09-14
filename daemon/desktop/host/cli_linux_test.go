@@ -95,18 +95,10 @@ func TestAuthorizeEnsuresUserUnitAndIsIdempotent(t *testing.T) {
 	if _, err := auth.NewManager(state); err != nil {
 		t.Fatal(err)
 	}
-	launcher := filepath.Join(t.TempDir(), "sunshine-launcher")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	config := filepath.Join(t.TempDir(), "sunshine.json")
-	if err := os.WriteFile(config, []byte(`{"binary_path":"`+launcher+`","state_dir":"/tmp/sunshine-state","host_key":"test","http_port":47989}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	oldConfig := os.Getenv("ZEN_SUNSHINE_CONFIG")
 	oldSystemctl := runDesktopUserSystemctl
 	oldProbe := probeCanonicalDaemon
-	os.Setenv("ZEN_SUNSHINE_CONFIG", config)
+	os.Setenv("ZEN_SUNSHINE_CONFIG", filepath.Join(t.TempDir(), "sunshine-not-configured.json"))
 	probeCanonicalDaemon = func(string) bool { return false }
 	t.Cleanup(func() {
 		os.Setenv("ZEN_SUNSHINE_CONFIG", oldConfig)
@@ -148,16 +140,8 @@ func TestAuthorizeReusesRunningCanonicalDaemon(t *testing.T) {
 	if _, err := auth.NewManager(state); err != nil {
 		t.Fatal(err)
 	}
-	launcher := filepath.Join(t.TempDir(), "sunshine-launcher")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	config := filepath.Join(t.TempDir(), "sunshine.json")
-	if err := os.WriteFile(config, []byte(`{"binary_path":"`+launcher+`","state_dir":"/tmp/sunshine-state","host_key":"test","http_port":47989}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	oldConfig, oldSystemctl, oldProbe := os.Getenv("ZEN_SUNSHINE_CONFIG"), runDesktopUserSystemctl, probeCanonicalDaemon
-	os.Setenv("ZEN_SUNSHINE_CONFIG", config)
+	os.Setenv("ZEN_SUNSHINE_CONFIG", filepath.Join(t.TempDir(), "sunshine-not-configured.json"))
 	probeCanonicalDaemon = func(got string) bool { return got == state }
 	var calls [][]string
 	runDesktopUserSystemctl = func(args ...string) ([]byte, error) {

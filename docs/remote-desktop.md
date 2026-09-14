@@ -143,9 +143,10 @@ zen-remote-desktop desktop-host authorize
 ```
 
 `zen-remote-desktop desktop-host authorize` verifies the canonical `$HOME/.zen`
-identity, proves the live canonical control socket when Zen is already running,
-and validates the configured Sunshine launcher with its private state layout.
-It reports host preparation only; it does not claim phone consent. Finish the
+identity and proves the live canonical control socket when Zen is already
+running. The host source is the current KDE Wayland portal session; Sunshine is
+not required for this route. The command reports host preparation only; it does
+not claim phone or compositor consent. Finish the
 exact action printed by the command in the paired app (**Remote Desktop →
 Enable remote desktop → confirm**). Repeating the command is safe.
 Disable/revoke all desktop grants with `zen-remote-desktop desktop-host revoke`.

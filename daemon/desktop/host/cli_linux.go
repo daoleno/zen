@@ -220,13 +220,10 @@ func runAuthorizeCommand(args []string, stderr io.Writer) error {
 			return fmt.Errorf("%s did not become active; inspect `systemctl --user status %s`", *unit, *unit)
 		}
 	}
-	if err := ValidateSunshineRuntime(); err != nil {
-		return fmt.Errorf("Sunshine runtime is not ready; run the one-time desktop package setup, then retry this command: %w", err)
-	}
 	if *jsonOut {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"ok": true, "unit": *unit, "daemon": map[string]any{"systemd_user_unit": active, "canonical_running": canonicalRunning}, "state_dir": manager.StorageDir(),
-			"sunshine_configured": true, "phone_action": "Open Zen on the paired phone, choose Remote Desktop, then Enable remote desktop and confirm.",
+			"source": "kde-wayland-portal", "phone_action": "Open Zen on the paired phone, choose Remote Desktop, then Enable remote desktop and confirm.",
 		})
 	}
 	if canonicalRunning {
