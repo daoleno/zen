@@ -89,6 +89,6 @@ test("closing a bottom sheet removes the modal backdrop and leaves no press targ
       </BottomSheetFrame>,
     );
   });
-  expect(renderer.root.findByType("modal" as any).props.visible).toBe(false);
+  expect(renderer.root.findAllByType("modal" as any)).toHaveLength(0);
   expect(renderer.root.findAllByType("pressable" as any)).toHaveLength(0);
 });

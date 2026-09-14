@@ -148,9 +148,11 @@ export function BottomSheetFrame({
     </>
   );
 
+  if (!visible) return null;
+
   return (
     <Modal
-      visible={visible}
+      visible
       transparent
       animationType="none"
       onRequestClose={onClose}

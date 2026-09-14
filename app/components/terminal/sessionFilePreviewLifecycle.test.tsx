@@ -206,6 +206,77 @@ if (!process.env.ZEN_PREVIEW_HOOK_CHILD) {
     await act(async () => renderer.unmount());
   });
 
+  test("worker generation hydration retries in place without closing the parent", async () => {
+    const metadataCalls: string[] = [];
+    let closeCalls = 0;
+    const loader = {
+      metadata: async (_server: string, request: { path: string }) => {
+        metadataCalls.push(request.path);
+        return metadata(request.path);
+      },
+      binary: async (
+        _server: string,
+        _daemon: string,
+        request: { path: string },
+      ) => ({ uri: "fixture:" + request.path, headers: {} }),
+      text: async () => {
+        throw Error("Not text");
+      },
+    };
+    const props = {
+      serverId: "fixture",
+      serverUrl: "http://fixture.invalid",
+      daemonId: "fixture",
+      workerId: "fixture",
+      processId: undefined,
+      startedAt: undefined,
+      chrome: {} as any,
+      theme: {} as any,
+      onClose() {
+        closeCalls += 1;
+      },
+      loader,
+    };
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <SessionFilePreviewSheet {...props} reference="hydrated.png" />,
+      );
+    });
+    expect(renderer.root.findAllByType("image")).toHaveLength(0);
+
+    await act(async () => {
+      renderer.update(
+        <SessionFilePreviewSheet
+          {...props}
+          processId={1}
+          reference="hydrated.png"
+        />,
+      );
+    });
+
+    expect(closeCalls).toBe(0);
+    expect(metadataCalls).toEqual([]);
+
+    await act(async () => {
+      renderer.update(
+        <SessionFilePreviewSheet
+          {...props}
+          processId={1}
+          startedAt={1}
+          reference="hydrated.png"
+        />,
+      );
+    });
+
+    expect(closeCalls).toBe(0);
+    expect(metadataCalls).toEqual(["hydrated.png"]);
+    expect(renderer.root.findByType("image").props.source.uri).toBe(
+      "fixture:hydrated.png",
+    );
+    await act(async () => renderer.unmount());
+  });
+
   test("parent URL and CWD rerenders do not close or restart an open preview", async () => {
     const metadataCalls: string[] = [];
     const loader = {
@@ -257,6 +328,50 @@ if (!process.env.ZEN_PREVIEW_HOOK_CHILD) {
     expect(renderer.root.findByType("image").props.source.uri).toBe(
       "fixture:stable.png",
     );
+    await act(async () => renderer.unmount());
+  });
+
+  test("a complete generation replacement closes the preview", async () => {
+    let closeCalls = 0;
+    const loader = {
+      metadata: async (_server: string, request: { path: string }) =>
+        metadata(request.path),
+      binary: async () => ({ uri: "fixture:image.png", headers: {} }),
+      text: async () => {
+        throw Error("Not text");
+      },
+    };
+    const props = {
+      serverId: "fixture",
+      serverUrl: "http://fixture.invalid",
+      daemonId: "fixture",
+      workerId: "fixture",
+      processId: 1,
+      startedAt: 1,
+      chrome: {} as any,
+      theme: {} as any,
+      onClose() {
+        closeCalls += 1;
+      },
+      loader,
+    };
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <SessionFilePreviewSheet {...props} reference="generation.png" />,
+      );
+    });
+    await act(async () => {
+      renderer.update(
+        <SessionFilePreviewSheet
+          {...props}
+          processId={2}
+          startedAt={2}
+          reference="generation.png"
+        />,
+      );
+    });
+    expect(closeCalls).toBe(1);
     await act(async () => renderer.unmount());
   });
 }

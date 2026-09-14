@@ -127,14 +127,45 @@ export function SessionFilePreviewSheet({
     processId,
     startedAt,
   });
-  const previousScopeRef = useRef(scopeKey);
+  const ownerKey = [serverId, daemonId, workerId].join("\u0000");
+  const previousContextRef = useRef({
+    scopeKey,
+    ownerKey,
+    processId,
+    startedAt,
+  });
 
   useEffect(() => {
-    if (previousScopeRef.current === scopeKey) return;
-    previousScopeRef.current = scopeKey;
-    dispatch({ type: "context_changed" });
-    if (reference) onClose();
-  }, [onClose, reference, scopeKey]);
+    const previousContext = previousContextRef.current;
+    const scopeChanged = previousContext.scopeKey !== scopeKey;
+    const previousIdentityComplete = Boolean(
+      previousContext.processId && previousContext.startedAt,
+    );
+    const identityComplete = Boolean(processId && startedAt);
+    const ownerChanged = previousContext.ownerKey !== ownerKey;
+    const generationChanged =
+      previousIdentityComplete &&
+      identityComplete &&
+      (previousContext.processId !== processId ||
+        previousContext.startedAt !== startedAt);
+    previousContextRef.current = { scopeKey, ownerKey, processId, startedAt };
+
+    if (!scopeChanged) {
+      return;
+    }
+
+    // Worker rows can hydrate their generation identity after the timeline has
+    // already opened a file link. Keep the sheet mounted while either half of
+    // that tuple is arriving, then restart with the complete authorization
+    // tuple. A temporarily missing identity also clears old preview data.
+    if (ownerChanged || generationChanged) {
+      dispatch({ type: "context_changed" });
+      if (reference) onClose();
+      return;
+    }
+
+    if (reference) dispatch({ type: "retry" });
+  }, [onClose, ownerKey, processId, reference, scopeKey, startedAt]);
 
   useEffect(() => {
     if (!reference) {
