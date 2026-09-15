@@ -126,6 +126,8 @@ Do not create a GitHub Release by hand. Recovery repeats every identity, SHA, ma
 
 ## Build-time baseline and optimization
 
+Android SDK setup explicitly requests `platform-tools` because the action's default also requests the removed SDK package `tools`. The following install step retains the pinned Android platform, build-tools, NDK, and CMake packages.
+
 Recent pre-change GitHub runs on July 14, 2026 put the combined release-assets job at about 20–27 minutes warm/cold. Android dominated: clean prebuild plus Gradle took roughly 14–22 minutes, native Ghostty took 2–3 minutes, and all three daemon binaries took about 40 seconds at the end. The old redundant tag-triggered `native-libs` workflow also consumed about 25–35 minutes, including duplicate iOS/Android native builds.
 
 The new graph moves the daemon work beside Android, so the expected assets critical path is Android plus roughly one minute for aggregation/publication: about 16–24 minutes cold and 14–20 minutes warm based on those observed Android ranges. `--build-cache` now explicitly enables Gradle task reuse across clean Expo prebuilds. The Gradle cache key still includes the generated release identity so a new version can save its own task outputs while setup-java restores compatible dependency state from its prefix; an exact-tag recovery can then hit that version's cache. Pinned native source/output caches remain content-addressed and verified after restore. CocoaPods downloads no longer miss only because the independent iOS build number changed. Xcode DerivedData remains uncached because signed, identity-sensitive intermediates are large and the observed evidence does not justify that risk and complexity.
