@@ -4,6 +4,7 @@
 # Prerequisites:
 #   - JDK 17, Android SDK (ANDROID_HOME), bun install
 #   - release_grade libghostty arm64 (./scripts/build-libghostty.sh --abis arm64-v8a)
+#   - pinned NDK 27.1.12297006; Moonlight/OpenSSL are prepared below
 #   - Expo prebuild so withZenAndroidRelease has wired assets + signing
 #
 # Signing (secret-safe):
@@ -52,6 +53,12 @@ if [[ -z "${ANDROID_HOME:-}${ANDROID_SDK_ROOT:-}" ]]; then
 fi
 
 "$ROOT/scripts/verify-libghostty.sh" --release
+
+# Both CI and local release/staging builds need the same hash-pinned sources
+# and arm64 OpenSSL prefix before Gradle configures the retained native module.
+"$ROOT/scripts/fetch-moonlight-common-c.sh"
+ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME:-${ANDROID_SDK_ROOT}}/ndk/27.1.12297006}" \
+  "$ROOT/scripts/build-openssl-android.sh" --abi arm64-v8a --api 24
 
 if [[ ! -f "$ROOT/app/assets/notices/GHOSTTY-MIT.txt" ]]; then
   echo "error: Ghostty MIT notice missing from app assets" >&2

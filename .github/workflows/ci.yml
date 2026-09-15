@@ -109,6 +109,17 @@ jobs:
           set -euo pipefail
           readelf -d bin/zen | grep -E 'NEEDED.*libgtk-3'
           test ! -e bin/libzen-desktop.so
+      - name: Build and verify production daemon targets
+        working-directory: .
+        env:
+          ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build
+        run: |
+          set -euo pipefail
+          pkg-config --exists gtk+-3.0 gstreamer-app-1.0 gstreamer-video-1.0 x11 xtst gio-unix-2.0
+          ./scripts/build-daemon-linux.sh --out-dir "$ZEN_BUILD_TMPDIR/release-bin"
+          file "$ZEN_BUILD_TMPDIR/release-bin/zen-linux-amd64" | grep -Eq 'ELF 64-bit.*(x86-64|x86_64)'
+          file "$ZEN_BUILD_TMPDIR/release-bin/zen-linux-arm64" | grep -Eq 'ELF 64-bit.*(ARM aarch64|ARM64)'
+          file "$ZEN_BUILD_TMPDIR/release-bin/zen-darwin-arm64" | grep -Eq 'Mach-O 64-bit.*arm64'
       - name: Desktop native tests
         env:
           CGO_ENABLED: "1"
@@ -231,6 +242,8 @@ jobs:
             app/modules/zen-terminal-vt/android/build.gradle
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android packages
         run: |
           set -euo pipefail
@@ -323,12 +336,23 @@ jobs:
       - name: Verify cached or built Android Ghostty output
         if: steps.ghostty-output-cache.outputs.cache-hit == 'true'
         run: ./scripts/verify-libghostty.sh --release
+      - name: Prepare pinned Android Moonlight sources and OpenSSL
+        env:
+          ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build
+        run: |
+          set -euo pipefail
+          ./scripts/fetch-moonlight-common-c.sh
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006" \
+            ./scripts/build-openssl-android.sh --abi arm64-v8a --api 24
       - name: Generate Android project
         run: |
           set -euo pipefail
           cd app
           bunx expo prebuild --platform android --clean --no-install
       - name: Compile Android native terminal module and app debug link
+        env:
+          NODE_ENV: production
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
         run: |
           set -euo pipefail
           ./scripts/verify-zen-terminal-abi-gradle.sh
@@ -336,13 +360,20 @@ jobs:
           ./gradlew \
             :zen-terminal-vt:assembleDebug \
             :app:assembleDebug \
+            :app:assembleRelease \
             -PreactNativeArchitectures=arm64-v8a \
+            -Pexpo.useLegacyPackaging=true \
             --console=plain
           NOTICE="app/src/main/assets/notices/GHOSTTY-MIT.txt"
           [[ -f "$NOTICE" ]] || {
             echo "error: prebuild did not package Ghostty MIT notice at $NOTICE" >&2
             exit 1
           }
+          cd ../..
+          APK="app/android/app/build/outputs/apk/release/app-release.apk"
+          ./scripts/verify-apk-notice.sh "$APK"
+          ./scripts/verify-android-native-symbols.py \
+            --lock app/modules/zen-terminal-vt/native.lock.json --apk "$APK"
 
   native-contract:
     name: Native terminal contract

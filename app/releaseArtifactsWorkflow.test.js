@@ -17,6 +17,29 @@ const nativeVerifier = fs.readFileSync(
 const appPackage = fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8');
 
 describe('release asset workflow contract', () => {
+  it('prepares native release inputs before compilation in release and ordinary CI', () => {
+    const ci = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+    const apk = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'android-release-apk.sh'), 'utf8');
+    const daemon = workflow.slice(workflow.indexOf('  daemon:'), workflow.indexOf('  android:'));
+    for (const pkg of ['libgtk-3-dev', 'libglib2.0-dev', 'libgstreamer1.0-dev', 'libgstreamer-plugins-base1.0-dev', 'libx11-dev', 'libxtst-dev']) {
+      expect(daemon).toContain(pkg);
+    }
+    expect(daemon.indexOf('pkg-config --exists')).toBeLessThan(daemon.indexOf('run: ./scripts/build-daemon-linux.sh'));
+    for (const [source, compile] of [[apk, 'if [[ $SKIP_PREBUILD -eq 0 ]]'], [ci, '- name: Generate Android project']]) {
+      const fetch = source.indexOf('/scripts/fetch-moonlight-common-c.sh');
+      const crypto = source.indexOf('/scripts/build-openssl-android.sh');
+      expect(fetch).toBeGreaterThan(0);
+      expect(crypto).toBeGreaterThan(fetch);
+      expect(crypto).toBeLessThan(source.indexOf(compile));
+      expect(source).toContain('--abi arm64-v8a --api 24');
+      expect(source).toContain('/ndk/27.1.12297006');
+    }
+    expect(ci).toContain(':app:assembleRelease');
+    expect(ci).toContain('./scripts/build-daemon-linux.sh --out-dir');
+    for (const source of [workflow, ci]) {
+      expect(source).toMatch(/uses: android-actions\/setup-android@v3\s+with:\s+packages: platform-tools/);
+    }
+  });
   it('rejects RN-normalized asset collisions before native and signed builds', () => {
     const gate = workflow.indexOf('run: bun test androidAssetNames.test.js');
     expect(gate).toBeGreaterThan(0);
