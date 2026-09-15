@@ -1,5 +1,9 @@
 # Remote Desktop
 
+The Remote Desktop drawer entry is temporarily hidden on Android and iOS.
+The route and implementation remain in the repository; the setup instructions
+below describe the retained feature, not a currently visible navigation entry.
+
 Zen Remote Desktop connects the paired Android or iOS app to the desktop of
 the current Zen server. The Linux product route is the logged-in KDE Wayland
 owner desktop through the session's xdg-desktop-portal ScreenCast/

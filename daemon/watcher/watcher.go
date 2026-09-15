@@ -61,6 +61,7 @@ var grokPromptReadyRe = regexp.MustCompile(`(?m)[│┃]\s*❯|^\s*❯`)
 var piVersionRe = regexp.MustCompile(`(?im)\bpi\s+v\d+\.\d+\.\d+\b`)
 var piEditorBorderRe = regexp.MustCompile(`(?m)^─{16,}$`)
 var piChromeRe = regexp.MustCompile(`(?im)(escape interrupt|/ commands|! bash)`)
+var piFooterRe = regexp.MustCompile(`(?im)^\s*\d+(?:\.\d+)?%/\S+\s+\([^\n)]*\)[^\n]*[·•]\s*\S+\s*$`)
 var piProjectTrustTitleRe = regexp.MustCompile(`(?im)^\s*Trust project folder\?\s*$`)
 var piBlockedOverlayRe = regexp.MustCompile(`(?im)(select a model|choose a model|model picker|sign[ -]?in|log[ -]?in|authentication required|api key|oauth|permission required|press enter to confirm|working\.\.\.|thinking\.\.\.)`)
 
@@ -3732,6 +3733,9 @@ func isPiInputReady(content string) bool {
 		return false
 	}
 	if !piVersionRe.MatchString(content) && !piChromeRe.MatchString(content) {
+		return false
+	}
+	if !piFooterRe.MatchString(content) {
 		return false
 	}
 	// Evaluate overlays only in the latest Pi UI epoch. Older transcript and

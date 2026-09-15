@@ -30,6 +30,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 ## Development and maintenance
 
 - [Contributing](../CONTRIBUTING.md)
+- [Design lint setup and commands](design-lint.md)
 - [Android native terminal and ABI contract](android.md#architecture--abi-contract)
 - [iOS source build and Ghostty XCFramework contract](ios.md#native-terminal--xcframework-contract)
 - [iOS CI, signing, and TestFlight automation](ios-ci-release.md)

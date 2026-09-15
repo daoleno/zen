@@ -8,6 +8,11 @@ Third-party components and bundled assets remain under their own licenses.
 See docs/third-party-assets.md and the notice files under app/assets/notices/
 and app/modules/zen-terminal-vt/ for attribution and redistribution details.
 
+Linux desktop-capable `zen` dynamically links the host's GTK 3, GStreamer,
+GLib/GIO, X11 and XTest libraries (`DT_NEEDED`). Those libraries and GStreamer
+plugins are OS dependencies, not bundled, and are not a promise of a static
+single-file binary. A sibling `libzen-desktop.so` is not part of the product.
+
 The Linux desktop broker uses github.com/godbus/dbus/v5 (BSD-2-Clause):
 
 Copyright (c) 2013, Georg Reinke (<guelfey at gmail dot com>), Google

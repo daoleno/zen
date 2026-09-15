@@ -30,7 +30,7 @@ interface PrimaryDrawerPanelProps {
   onNavigateAway(): void;
 }
 
-type DrawerRowIcon = "settings" | "skills" | "stats" | "desktop";
+type DrawerRowIcon = "settings" | "skills" | "stats";
 
 interface DrawerRowProps {
   drawerVisible: boolean;
@@ -46,9 +46,6 @@ function DrawerRowIconView({
   color: string;
   icon: DrawerRowIcon;
 }) {
-  if (icon === "desktop") {
-    return <Ionicons name="desktop-outline" color={color} size={19} />;
-  }
   if (icon === "stats") {
     return <NavStatsIcon color={color} size={19} />;
   }
@@ -223,12 +220,6 @@ export function PrimaryDrawerPanel({
           icon="stats"
           label="Stats"
           onPress={() => openRoute("/stats")}
-        />
-        <DrawerRow
-          drawerVisible={drawerVisible}
-          icon="desktop"
-          label="Remote Desktop"
-          onPress={() => openRoute("/remote-desktop")}
         />
       </ScrollView>
 

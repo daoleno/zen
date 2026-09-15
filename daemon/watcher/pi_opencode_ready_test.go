@@ -44,6 +44,12 @@ func TestPiAndOpenCodeInputReadyPredicates(t *testing.T) {
 	if !isPiInputReady(piReady) {
 		t.Fatal("expected pi ready pane")
 	}
+	separatorOnly := "pi v0.85.1\nescape interrupt · / commands · ! bash\n" +
+		"────────────────────────────────────────────────────────────────\n\n" +
+		"────────────────────────────────────────────────────────────────\n"
+	if isPiInputReady(separatorOnly) {
+		t.Fatal("Pi version/chrome and arbitrary separators without the footer must not be ready")
+	}
 	for _, overlay := range []string{
 		"Select a model",
 		"Sign in to continue",

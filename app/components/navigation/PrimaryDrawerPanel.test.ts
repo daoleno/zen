@@ -33,12 +33,12 @@ function label(node: ts.JsxSelfClosingElement) {
 }
 
 describe("primary drawer Settings footer", () => {
-  test("keeps feature order and places only Settings outside the scroll region", () => {
+  test("hides Remote Desktop while keeping Skills, Stats, and the Settings footer", () => {
     expect(scroll).toBeDefined();
     expect(footer).toBeDefined();
-    expect(rows(scroll).map(label)).toEqual(["Skills", "Stats", "Remote Desktop"]);
+    expect(rows(scroll).map(label)).toEqual(["Skills", "Stats"]);
     expect(rows(footer).map(label)).toEqual(["Settings"]);
-    expect(rows(file).map(label)).toEqual(["Skills", "Stats", "Remote Desktop", "Settings"]);
+    expect(rows(file).map(label)).toEqual(["Skills", "Stats", "Settings"]);
     expect(scroll.end).toBeLessThan(footer.pos);
     expect(footer.getText(file)).toContain("Zen v{appVersion}");
   });

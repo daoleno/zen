@@ -71,6 +71,54 @@ jobs:
       - name: Build
         run: go build -o bin/zen ./cmd/zen/
 
+  linux-desktop-native:
+    name: Linux desktop native
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - name: Install desktop native build and Xvfb packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libxtst-dev \
+            libx11-dev \
+            pkg-config \
+            xvfb \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-libav \
+            libopenh264-7 || sudo apt-get install -y libopenh264-6 || true
+          sudo apt-get install -y gstreamer1.0-plugins-ugly || true
+      - name: Build desktop-capable Linux ELF
+        working-directory: .
+        run: ./scripts/build-zen-local.sh bin/zen
+      - name: zen ELF must DT_NEED GTK and must not ship a sidecar
+        working-directory: .
+        run: |
+          set -euo pipefail
+          readelf -d bin/zen | grep -E 'NEEDED.*libgtk-3'
+          test ! -e bin/libzen-desktop.so
+      - name: Desktop native tests
+        env:
+          CGO_ENABLED: "1"
+          ZEN_DESKTOP_NATIVE_TEST: "1"
+          ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build
+        run: |
+          mkdir -p "$ZEN_BUILD_TMPDIR"
+          go test -count=1 -timeout 8m ./desktop ./desktop/nativebind ./desktop/host ./doctor ./cmd/zen-dev ./selfupdate
+          make -C desktop/native encoder-check portal-check
+
   app:
     name: App (Bun / Expo)
     runs-on: ubuntu-latest
