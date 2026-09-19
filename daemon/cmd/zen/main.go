@@ -229,6 +229,9 @@ func runDaemon(args []string, stderr io.Writer) error {
 	brainService := brain.NewService(brainStore, w, execs)
 	w.SetTurnLedger(brainService)
 	go brainService.RunLifecycleScheduler(ctx)
+	// Durable Brain transcript capture is daemon-owned: channel adapters and
+	// App subscriptions read the timeline and never gate its progression.
+	go brainService.RunHostTranscriptCapture(ctx)
 	calendarRoot, err := calendar.DefaultRoot()
 	if err != nil {
 		return fmt.Errorf("resolve calendar root: %w", err)

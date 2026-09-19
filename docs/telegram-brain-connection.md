@@ -38,6 +38,13 @@ Brain host and thread. Only explicit **New Chat** or `/new` calls Brain's
 `NewChat`. Binding, `/start`, native topic creation, reconnection and selection
 do not create canonical conversations.
 
+Canonical Brain replies are captured by the daemon itself: the bound Host
+executor transcript is materialized into the durable thread timeline as output
+is produced, with no App subscription required. Telegram, the App and every
+other reader project that durable timeline. Opening, closing or reconnecting a
+client never starts, stops or duplicates capture, and never gates whether the
+other readers progress.
+
 Telegram has two different private-topic flags:
 
 - `has_topics_enabled` permits private bot topics.

@@ -2377,6 +2377,16 @@ func (s *Service) hostTranscriptProvider(host HostSession, worker *classifier.Wo
 // HostBoundProviderConversation loads assistant/final transcript rows from the
 // stable Host Executor Session identity rather than cwd matching.
 func (s *Service) HostBoundProviderConversation() (work.CodexConversation, error) {
+	return s.hostBoundProviderConversation(work.NewProviderConversationReader())
+}
+
+// hostBoundProviderConversation is the reader-owning form used by the daemon
+// capture loop so unchanged polls reuse the parsed provider source instead of
+// re-parsing the whole transcript.
+func (s *Service) hostBoundProviderConversation(reader *work.ProviderConversationReader) (work.CodexConversation, error) {
+	if reader == nil {
+		reader = work.NewProviderConversationReader()
+	}
 	if s == nil || s.store == nil {
 		return work.CodexConversation{Available: false, Events: []work.CodexConversationEvent{}}, nil
 	}
@@ -2407,7 +2417,7 @@ func (s *Service) HostBoundProviderConversation() (work.CodexConversation, error
 			Events:    []work.CodexConversationEvent{},
 		}, nil
 	}
-	conversation, err := work.LoadHostConversationByIdentity(identity)
+	conversation, err := reader.LoadByIdentity(identity)
 	if err != nil {
 		return work.CodexConversation{}, err
 	}
