@@ -5,7 +5,6 @@ import {
 } from "react-native";
 import { AppText } from "../ui";
 import { NewTerminalAdvancedForm } from "./NewTerminalAdvancedForm";
-import { isAmpCommand } from "../../services/agentCommands";
 import {
   NewTerminalQuickLaunchSection,
   type NewTerminalLaunchPreset,
@@ -72,7 +71,7 @@ export function NewTerminalSheetContent({
           command={command}
           name={name}
           submitting={submitting}
-          canSubmit={canSubmit && !isAmpCommand(command)}
+          canSubmit={canSubmit}
           canPickDirectory={canPickDirectory}
           onCwdChange={onCwdChange}
           onCommandChange={onCommandChange}

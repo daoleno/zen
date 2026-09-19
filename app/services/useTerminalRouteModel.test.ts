@@ -21,12 +21,6 @@ describe("supportsChatInterface", () => {
     expect(supportsChatInterface("shell")).toBe(false);
   });
 
-  test("Amp keeps the terminal surface without a fabricated conversation capability", () => {
-    expect(supportsChatInterface("amp")).toBe(false);
-    expect(supportsChatInterface("amp", { structured_events: false })).toBe(false);
-    expect(defaultInterfaceRenderModeForKind("amp")).toBe("terminal");
-  });
-
   test("generic provider is eligible through structured-events capability", () => {
     expect(supportsChatInterface("terminal", { structured_events: true })).toBe(
       true,

@@ -8,7 +8,6 @@ export const GROK_COMMAND =
 export const PI_COMMAND = "pi";
 export const OPENCODE_COMMAND = "opencode";
 export const OPENCODE_AUTO_COMMAND = "opencode --auto";
-export const AMP_COMMAND = "amp --visibility private --no-ide --no-remote-control-terminal";
 
 export type SupportedAgentID = "claude" | "codex" | "cursor" | "grok" | "pi" | "opencode";
 
@@ -157,10 +156,6 @@ export function isOpenCodeCommand(command?: string) {
     normalized.startsWith("opencode ") ||
     commandBinary(normalized) === "opencode"
   );
-}
-
-export function isAmpCommand(command?: string) {
-  return commandBinary(command) === "amp";
 }
 
 export function findSupportedAgentByHandle(handle?: string) {

@@ -19,10 +19,8 @@ import { BrainExecutorIcon } from "./BrainExecutorIcon";
 import {
   brainAdapterLabel,
   brainProviderLabel,
-  brainExecutorOptions,
   type ExecutorTarget,
 } from "./brainPresentation";
-import { AMP_ACCOUNT_STATUS, AMP_CAPABILITY_SUMMARY } from "../../services/ampAgent";
 
 export type { ExecutorTarget };
 
@@ -106,8 +104,8 @@ export function BrainExecutorSheet({
       </View>
 
       <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
-        {brainExecutorOptions(executors).map((adapter) => {
-          const disabled = interactionLocked || Boolean(adapter.unavailableReason);
+        {executors.map((adapter) => {
+          const disabled = interactionLocked;
           const active = adapter.id === activeAdapterId;
           const rowShowsSpinner =
             interactionLocked &&
@@ -131,7 +129,7 @@ export function BrainExecutorSheet({
                 busy: rowShowsSpinner,
               }}
               accessibilityLabel={
-                adapter.unavailableReason ? `${label}. ${adapter.unavailableReason}` : target === "brain"
+                target === "brain"
                   ? `Set Brain host to ${label}`
                   : `Set Worker executor to ${label}`
               }
@@ -141,7 +139,6 @@ export function BrainExecutorSheet({
               style={[
                 styles.row,
                 {
-                  ...(adapter.unavailableReason ? { opacity: 1 } : {}),
                   borderColor: active ? colors.accent : themed.border,
                   backgroundColor: disabled
                     ? colors.disabledSurface
@@ -169,22 +166,13 @@ export function BrainExecutorSheet({
                 <Text
                   style={[styles.rowMeta, { color: metaColor }]}
                 >
-                  {adapter.unavailableReason ? "Custom executor / tmux" : provider}
-                  {!adapter.unavailableReason && adapter.runtime?.trim()
+                  {provider}
+                  {adapter.runtime?.trim()
                     ? ` · ${adapter.runtime.trim()}`
                     : ""}
                 </Text>
-                {adapter.unavailableReason ? (
-                  <>
-                    <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>{adapter.unavailableReason}</Text>
-                    <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>{AMP_CAPABILITY_SUMMARY}</Text>
-                    <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>{AMP_ACCOUNT_STATUS}</Text>
-                  </>
-                ) : null}
               </View>
-              {adapter.unavailableReason ? (
-                <Ionicons name="lock-closed-outline" size={18} color={colors.textSecondary} />
-              ) : rowShowsSpinner ? (
+              {rowShowsSpinner ? (
                 <ActivityIndicator size="small" color={colors.accent} />
               ) : active ? (
                 <Ionicons

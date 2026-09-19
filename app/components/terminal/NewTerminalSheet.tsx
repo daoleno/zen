@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Keyboard, StyleSheet } from "react-native";
 import { wsClient } from "../../services/websocket";
-import { isAmpCommand } from "../../services/agentCommands";
 import { useCurrentServer } from "../../store/currentServer";
 import { DirectoryPickerContent } from "./DirectoryPickerContent";
 import {
@@ -140,7 +139,7 @@ export function NewTerminalSheet({
   };
 
   const handlePresetTap = (preset: NewTerminalLaunchPreset) => {
-    if (!canSubmit || preset.unavailableReason) return;
+    if (!canSubmit) return;
     Keyboard.dismiss();
     setForm((current) => ({ ...current, command: preset.command }));
     if (form.advanced) {
@@ -154,7 +153,7 @@ export function NewTerminalSheet({
   };
 
   const handleAdvancedSubmit = () => {
-    if (!canSubmit || isAmpCommand(form.command)) return;
+    if (!canSubmit) return;
     Keyboard.dismiss();
     submitLaunch({
       cwd: form.cwd.trim(),

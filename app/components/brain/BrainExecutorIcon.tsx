@@ -6,7 +6,6 @@ import { Colors, useAppTheme } from "../../constants/tokens";
 import type { BrainExecutorRef } from "../../store/brain";
 import { brainAdapterProviderKey } from "./brainPresentation";
 import { CursorMark } from "../icons/CursorMark";
-import { AgentKindIcon } from "../terminal/AgentKindIcon";
 
 interface BrainExecutorIconProps {
   adapter: BrainExecutorRef;
@@ -18,10 +17,6 @@ export function BrainExecutorIcon({ adapter, size = 18 }: BrainExecutorIconProps
   const styles = useMemo(() => createStyles(colors), [colors]);
   const provider = brainAdapterProviderKey(adapter);
   const frameSize = size + 14;
-
-  if (provider === "amp") {
-    return <AgentKindIcon kind="amp" size={size} />;
-  }
 
   if (provider === "claude") {
     return <Claude.Color size={size} />;
