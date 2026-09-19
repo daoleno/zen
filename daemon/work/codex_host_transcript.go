@@ -148,6 +148,15 @@ func ResolveCodexTranscriptIdentityForWorker(
 // LoadCodexConversationByIdentity loads a Codex rollout by stable session/path
 // identity under the bound provider data root. It never selects "latest by cwd".
 func LoadCodexConversationByIdentity(identity CodexTranscriptIdentity) (CodexConversation, error) {
+	return NewProviderConversationReader().loadCodexConversationByIdentity(identity)
+}
+
+// loadCodexConversationByIdentity is the reader-owning form. An unchanged
+// rollout reuses this reader's parsed source instead of reparsing the tail, so
+// callers that poll an identity (Host transcript capture) only pay the source
+// stat check. Read errors still surface unchanged: a missing or unreadable
+// rollout is never masked by retained state.
+func (r *ProviderConversationReader) loadCodexConversationByIdentity(identity CodexTranscriptIdentity) (CodexConversation, error) {
 	identity.SessionID = strings.TrimSpace(identity.SessionID)
 	identity.Path = strings.TrimSpace(identity.Path)
 	identity.DataRoot = strings.TrimSpace(identity.DataRoot)
@@ -181,8 +190,7 @@ func LoadCodexConversationByIdentity(identity CodexTranscriptIdentity) (CodexCon
 			Events:    []CodexConversationEvent{},
 		}, nil
 	}
-	reader := &ProviderConversationReader{}
-	conversation, err := reader.loadCodexConversation(path)
+	conversation, err := r.loadCodexConversation(path)
 	if err != nil {
 		return CodexConversation{}, err
 	}

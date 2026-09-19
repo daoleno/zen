@@ -486,13 +486,19 @@ func sortTimelineItems(items []TimelineItem) {
 // events stay live-only until they finalize. Provider user echoes reconcile
 // one-to-one against Brain input admissions and never create rows.
 func (s *Store) MaterializeProviderConversation(threadID string, conversation work.CodexConversation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.materializeProviderConversationLocked(threadID, conversation)
+}
+
+// materializeProviderConversationLocked is the timeline-locked form. Callers
+// must hold s.mu.
+func (s *Store) materializeProviderConversationLocked(threadID string, conversation work.CodexConversation) error {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return nil
 	}
 	conversation.Events = work.SuppressPrivateHostTurns(conversation.Events)
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	allItems, err := s.readAllTimelineItemsLocked()
 	if err != nil {
 		return err
@@ -562,6 +568,38 @@ func (s *Store) MaterializeProviderConversation(threadID string, conversation wo
 		known[id] = true
 	}
 	return nil
+}
+
+// materializeProviderConversationBound appends provider events into the exact
+// thread only while the thread and Host transcript binding still match the
+// caller's read snapshot. false means NewChat or a Host replacement raced the
+// read: the caller must re-read, retry, and must not advance any checkpoint.
+// Provider inference is not store authority, so the provider name is not
+// compared here; the transcript identity fields are.
+func (s *Store) materializeProviderConversationBound(binding hostTranscriptBinding, conversation work.CodexConversation) (bool, error) {
+	threadID := strings.TrimSpace(binding.ThreadID)
+	if s == nil || threadID == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.readChatStateLocked("")
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(state.ThreadID) != threadID {
+		return false, nil
+	}
+	host, err := s.readHostSessionLocked()
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(host.ProviderSessionID) != strings.TrimSpace(binding.ProviderSessionID) ||
+		strings.TrimSpace(host.TranscriptPath) != strings.TrimSpace(binding.TranscriptPath) ||
+		strings.TrimSpace(host.ProviderDataRoot) != strings.TrimSpace(binding.ProviderDataRoot) {
+		return false, nil
+	}
+	return true, s.materializeProviderConversationLocked(threadID, conversation)
 }
 
 func providerEventMaterializable(event work.CodexConversationEvent) bool {

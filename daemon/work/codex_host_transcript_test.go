@@ -197,3 +197,40 @@ func writeCodexHostRollout(t *testing.T, path, sessionID, userBody, assistantBod
 		}
 	}
 }
+
+// TestLoadCodexConversationByIdentityReusesReaderSource pins the capture-loop
+// performance contract: polling one stable Codex Host identity must reuse the
+// reader's parsed source instead of reparsing the rollout tail, and must still
+// pick up appended rows.
+func TestLoadCodexConversationByIdentityReusesReaderSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout-cache.jsonl")
+	writeCodexHostRollout(t, path, "cache-session", "cache question", "first cached reply")
+	identity := HostTranscriptIdentity{
+		Provider: WorkerProviderCodex, SessionID: "cache-session", Path: path, DataRoot: dir,
+	}
+	reader := NewProviderConversationReader()
+	first, err := reader.LoadByIdentity(identity)
+	if err != nil || len(first.Events) == 0 {
+		t.Fatalf("first load: events=%d err=%v", len(first.Events), err)
+	}
+	unchanged, err := reader.LoadByIdentity(identity)
+	if err != nil || len(unchanged.Events) != len(first.Events) {
+		t.Fatalf("unchanged load: events=%d err=%v", len(unchanged.Events), err)
+	}
+	if &first.Events[0] != &unchanged.Events[0] {
+		t.Fatal("unchanged Codex identity was reparsed instead of reusing the reader source cache")
+	}
+	appendJSONL(t, path, map[string]any{
+		"timestamp": "2026-08-06T04:27:02Z",
+		"type":      "event_msg",
+		"payload":   map[string]any{"type": "agent_message", "message": "second cached reply"},
+	})
+	appended, err := reader.LoadByIdentity(identity)
+	if err != nil || len(appended.Events) != len(first.Events)+1 {
+		t.Fatalf("appended load: events=%d err=%v want %d", len(appended.Events), err, len(first.Events)+1)
+	}
+	if !conversationContainsBody(appended, "second cached reply") {
+		t.Fatalf("appended reply missing: %#v", appended.Events)
+	}
+}

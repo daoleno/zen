@@ -2390,25 +2390,9 @@ func (s *Service) hostBoundProviderConversation(reader *work.ProviderConversatio
 	if s == nil || s.store == nil {
 		return work.CodexConversation{Available: false, Events: []work.CodexConversationEvent{}}, nil
 	}
-	identity, err := s.BindHostProviderTranscript()
+	identity, err := s.hostBoundProviderTranscriptIdentity()
 	if err != nil {
 		return work.CodexConversation{}, err
-	}
-	if !identity.Bound() {
-		host, hostErr := s.store.HostSession()
-		if hostErr != nil {
-			return work.CodexConversation{}, hostErr
-		}
-		var worker *classifier.Worker
-		if strings.TrimSpace(host.ID) != "" && s.watcher != nil {
-			worker = s.watcher.GetWorker(host.ID)
-		}
-		identity = work.HostTranscriptIdentity{
-			Provider:  s.hostTranscriptProvider(host, worker),
-			SessionID: host.ProviderSessionID,
-			Path:      host.TranscriptPath,
-			DataRoot:  host.ProviderDataRoot,
-		}
 	}
 	if !identity.Bound() {
 		return work.CodexConversation{
@@ -2423,6 +2407,37 @@ func (s *Service) hostBoundProviderConversation(reader *work.ProviderConversatio
 	}
 	conversation.Events = work.SuppressPrivateHostTurns(conversation.Events)
 	return conversation, nil
+}
+
+// hostBoundProviderTranscriptIdentity resolves the stable Host Executor
+// transcript identity, persisting a newly resolved binding. It is the read
+// half shared by the App overlay and the daemon capture loop; the capture loop
+// pins the result as a binding and the store re-proves it under its lock.
+func (s *Service) hostBoundProviderTranscriptIdentity() (work.HostTranscriptIdentity, error) {
+	if s == nil || s.store == nil {
+		return work.HostTranscriptIdentity{}, nil
+	}
+	identity, err := s.BindHostProviderTranscript()
+	if err != nil {
+		return work.HostTranscriptIdentity{}, err
+	}
+	if identity.Bound() {
+		return identity, nil
+	}
+	host, hostErr := s.store.HostSession()
+	if hostErr != nil {
+		return work.HostTranscriptIdentity{}, hostErr
+	}
+	var worker *classifier.Worker
+	if strings.TrimSpace(host.ID) != "" && s.watcher != nil {
+		worker = s.watcher.GetWorker(host.ID)
+	}
+	return work.HostTranscriptIdentity{
+		Provider:  s.hostTranscriptProvider(host, worker),
+		SessionID: host.ProviderSessionID,
+		Path:      host.TranscriptPath,
+		DataRoot:  host.ProviderDataRoot,
+	}, nil
 }
 
 func (s *Service) ThreadTimeline(threadID string, limit int) ([]TimelineItem, error) {

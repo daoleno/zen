@@ -121,7 +121,7 @@ func (r *ProviderConversationReader) LoadByIdentity(identity HostTranscriptIdent
 
 	switch identity.Provider {
 	case WorkerProviderCodex, "":
-		return LoadCodexConversationByIdentity(identity.Codex())
+		return r.loadCodexConversationByIdentity(identity.Codex())
 	case WorkerProviderGrok:
 		return r.loadBoundGrokConversation(identity)
 	case WorkerProviderClaude:
