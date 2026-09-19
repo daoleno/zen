@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zen",
     "slug": "zen",
-    "version": "0.1.8",
+    "version": "0.1.9",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -38,7 +38,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.daoleno.zen",
-      "versionCode": 32,
+      "versionCode": 33,
       "blockedPermissions": ["android.permission.RECORD_AUDIO"],
       "permissions": ["android.permission.CAMERA"]
     },
