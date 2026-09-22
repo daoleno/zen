@@ -372,3 +372,10 @@ func (b TranscriptBinding) Empty() bool {
 	return strings.TrimSpace(b.Provider) == "" ||
 		(strings.TrimSpace(b.PiFlag) == "" && strings.TrimSpace(b.PiPath) == "")
 }
+
+// UnmarkedInputAdmissionLedger supports conservative pre-mutation crash repair.
+// The caller must serialize Session input and prove exact generation plus absent
+// transport marker; the implementation atomically requires Prepared, not Ambiguous.
+type UnmarkedInputAdmissionLedger interface {
+	AbortUnmarkedInputAdmission(candidate InputAdmission) error
+}

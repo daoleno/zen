@@ -423,6 +423,13 @@ func (s *Service) ResolveInputAdmission(resolution watcher.InputAdmissionResolut
 	return s.store.ResolveInputAdmission(resolution)
 }
 
+func (s *Service) AbortUnmarkedInputAdmission(candidate watcher.InputAdmission) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("brain store is not configured")
+	}
+	return s.store.AbortUnmarkedInputAdmission(candidate)
+}
+
 func (s *Service) MarkInputAdmissionAmbiguous(sessionID, proposedTurnID, reason string) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("brain service is not configured")

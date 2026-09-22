@@ -253,6 +253,28 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 		}
 	}
 
+	// Accepted recovery input can resolve an older loss review without going
+	// through ResolveWorkReview. Project the exact canonical resolution too;
+	// otherwise that old running Turn loses its relinquishment evidence when
+	// a later recovery closes and its typed wait is released.
+	for _, event := range s.fsm.ReviewResolutions(st.ID) {
+		resolution, ok := event.Payload.(lifecycle.ReviewResolvedPayload)
+		if !ok {
+			continue
+		}
+		resolvedIndex := workEventIndex(database.BrainWorkEvents, resolution.EventID)
+		if resolvedIndex < 0 {
+			continue
+		}
+		row := &database.BrainWorkEvents[resolvedIndex]
+		if row.WorkID != workID || row.HandledAt != nil {
+			continue
+		}
+		at := event.At
+		row.HandledAt = &at
+		row.Disposition = WorkDisposition(resolution.Disposition)
+		row.Actionable = false
+	}
 	database.BrainWork[index] = item
 	return nil
 }

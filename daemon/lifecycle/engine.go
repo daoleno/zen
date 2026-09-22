@@ -557,6 +557,17 @@ func (e *Engine) MarkAdmissionAmbiguous(id WorkID, token TurnToken, reason strin
 }
 
 func (e *Engine) AbortAdmission(id WorkID, token TurnToken, receipt, payloadSHA256, reason string) (*State, error) {
+	return e.abortAdmission(id, token, receipt, payloadSHA256, reason, false)
+}
+
+// AbortPreparedAdmission consumes proof that the exact same-generation
+// transport has no pre-mutation marker. Ambiguous/accepted state is never
+// downgraded by marker absence, including concurrent evidence arrival.
+func (e *Engine) AbortPreparedAdmission(id WorkID, token TurnToken, receipt, payloadSHA256 string) (*State, error) {
+	return e.abortAdmission(id, token, receipt, payloadSHA256, "same_generation_transport_unmarked", true)
+}
+
+func (e *Engine) abortAdmission(id WorkID, token TurnToken, receipt, payloadSHA256, reason string, preparedOnly bool) (*State, error) {
 	return e.dispatch(id, func(st *State, now time.Time) ([]Event, error) {
 		if st == nil {
 			return nil, ErrUnknownWork
@@ -570,6 +581,9 @@ func (e *Engine) AbortAdmission(id WorkID, token TurnToken, receipt, payloadSHA2
 		}
 		if a.Status == AdmissionAborted {
 			return nil, nil
+		}
+		if preparedOnly && a.Status != AdmissionPrepared {
+			return nil, fmt.Errorf("%w: unmarked recovery requires prepared admission", ErrInvalidCommand)
 		}
 		if a.Status == AdmissionAccepted {
 			return nil, fmt.Errorf("%w: accepted admission cannot be aborted", ErrInvalidCommand)
@@ -1317,4 +1331,19 @@ func ProjectCards(states []*State) []Card {
 // Cards returns the current projection.
 func (e *Engine) Cards() []Card {
 	return ProjectCards(e.ListViews())
+}
+
+// ReviewResolutions returns immutable resolution facts for one Work, including
+// resolutions committed by accepted follow-ups rather than an operator resolve.
+// Projection repair must not infer these decisions from current status alone.
+func (e *Engine) ReviewResolutions(id WorkID) []Event {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []Event
+	for _, event := range e.events {
+		if event.WorkID == id && event.Kind == KReviewResolved {
+			out = append(out, event)
+		}
+	}
+	return out
 }

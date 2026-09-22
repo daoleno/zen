@@ -294,3 +294,20 @@ The wait is cancelled during shutdown, and unavailable discovery leaves the
 listener and read controls usable without running a startup expiry sweep. Both
 lifecycle scheduling and transcript capture are joined runtime owners, started
 after shared initialization and cancelled on any runtime owner's failure.
+
+Accepted recovery input can itself resolve a prior review. Work projection repairs
+those exact canonical `review.resolved` facts (event identity, disposition and time)
+just as it repairs explicit operator resolutions. A superseded loss review therefore
+continues to prove relinquishment after the recovery Session closes and a later
+typed wait is released. Historical provider Turn rows remain unchanged; active
+Attempt validation still rejects unrelated Sessions and sibling Turn evidence.
+
+If canonical preparation succeeds but presentation persistence fails before
+transport begins, the exact new preparation is aborted durably. For older failed
+preparations, a subsequent explicit normal send can retire an unmarked preparation
+only under the Session input lock, with the same proven process/pane generation,
+matching Work/receipt/digest, and a non-full transport receipt history. The engine
+atomically requires Prepared state. A transport marker, ambiguous/accepted state,
+a changed generation, or possible receipt eviction cannot be treated as proof of
+non-submission. Recovery never replays the old payload; the new explicit input
+must acquire its own prompt-carried identity and canonical fence.

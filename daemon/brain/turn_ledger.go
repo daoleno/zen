@@ -266,6 +266,12 @@ func (s *Store) PrepareInputAdmission(candidate watcher.InputAdmission) (watcher
 		return watcher.InputAdmission{}, false, err
 	}
 	if err := s.SyncWorkProjection(string(st.ID)); err != nil {
+		// The caller has not crossed the transport marker/mutation boundary.
+		// Do not strand an active preparation when its read model failed.
+		if applied {
+			_, abortErr := s.fsm.AbortPreparedAdmission(st.ID, lifecycle.TurnToken(candidate.ProposedTurnID), candidate.Receipt, candidate.PayloadSHA256)
+			err = errors.Join(err, abortErr)
+		}
 		return watcher.InputAdmission{}, false, err
 	}
 	return admissionSnapshot(next, next.AdmissionByToken(lifecycle.TurnToken(candidate.ProposedTurnID))), applied, nil
@@ -425,6 +431,25 @@ func (s *Store) AbortInputAdmission(sessionID, proposedTurnID, receipt, payloadS
 		return admissionSnapshot(next, next.AdmissionByToken(lifecycle.TurnToken(proposedTurnID))), nil
 	}
 	return watcher.InputAdmission{}, fmt.Errorf("pending submission not found")
+}
+
+// AbortUnmarkedInputAdmission is called only by the serialized transport owner
+// after proving the same process/pane generation and absence of its pre-mutation
+// marker. It closes a prepared transaction left by failed projection persistence;
+// neither input nor prior accepted/ambiguous evidence can be replayed here.
+func (s *Store) AbortUnmarkedInputAdmission(candidate watcher.InputAdmission) error {
+	st, admission, err := s.fsmAdmission(candidate.SessionID, candidate.ProposedTurnID)
+	if err != nil {
+		return err
+	}
+	if string(st.ID) != candidate.WorkID || admission.ClaimToken != "" || admission.Purpose != "" || !admission.SignalProtocol ||
+		admission.ProcessIdentity != candidate.ProcessIdentity || admission.PaneGeneration != candidate.PaneGeneration {
+		return fmt.Errorf("unmarked admission identity mismatch")
+	}
+	if _, err := s.fsm.AbortPreparedAdmission(st.ID, admission.TurnToken, candidate.Receipt, candidate.PayloadSHA256); err != nil {
+		return err
+	}
+	return s.SyncWorkProjection(string(st.ID))
 }
 
 // MarkInputAdmissionAmbiguous records that the target-bound mutation queue
