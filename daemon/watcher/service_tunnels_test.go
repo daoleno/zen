@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -286,4 +290,65 @@ func TestQuickTunnelStoppingFinishedOperationRemainsStopped(t *testing.T) {
 	if err != nil || state.Status != "stopped" || state.URL != "" {
 		t.Fatalf("stop=%+v %v", state, err)
 	}
+}
+
+func TestQuickTunnelParentDeath(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux parent-death lifecycle")
+	}
+	if os.Getenv("ZEN_TUNNEL_PARENT_TEST") == "1" {
+		child := exec.Command("/bin/sleep", "60")
+		if err := bindTunnelToDaemon(child); err != nil {
+			t.Fatal(err)
+		}
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Println(child.Process.Pid)
+		select {}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := exec.Command(executable, "-test.run=^TestQuickTunnelParentDeath$", "-test.timeout=15s")
+	parent.Env = append(os.Environ(), "ZEN_TUNNEL_PARENT_TEST=1")
+	output, err := parent.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.Process.Kill(); _ = parent.Wait() }()
+	scanner := bufio.NewScanner(output)
+	if !scanner.Scan() {
+		t.Fatal("missing child identity")
+	}
+	pid, err := strconv.Atoi(scanner.Text())
+	if err != nil {
+		t.Fatal(err)
+	}
+	childProcess, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer childProcess.Kill()
+	if err := parent.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.Wait()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if os.IsNotExist(err) {
+			return
+		}
+		fields := strings.Fields(string(stat)[strings.LastIndex(string(stat), ")")+1:])
+		if len(fields) > 0 && fields[0] == "Z" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("owned tunnel child survived its parent")
 }
