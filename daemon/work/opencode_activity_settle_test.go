@@ -326,7 +326,10 @@ func TestOpenCodeConversationCacheInvalidatesOnWalWrites(t *testing.T) {
 		 INSERT INTO part(id, message_id, session_id, time_created, time_updated, data) VALUES ('p_new', 'msg_new', 'ses_wal', %d, %d, '{"type":"text","text":"second"}');`,
 		created, created, created, created,
 	)
-	if _, err := fmt.Fprintf(stdin, "%s\n", insert); err != nil {
+	committedMarker := filepath.Join(filepath.Dir(dbPath), "wal-committed.txt")
+	// WAL allocation can grow before the second INSERT commits. Wait for a
+	// SQLite-owned marker after the complete transaction, not merely growth.
+	if _, err := fmt.Fprintf(stdin, "BEGIN IMMEDIATE;\n%s\nCOMMIT;\n.once %q\nSELECT 'committed';\n", insert, committedMarker); err != nil {
 		t.Fatal(err)
 	}
 	// The write lands in the WAL: its size grows while the main db file stays
@@ -335,7 +338,8 @@ func TestOpenCodeConversationCacheInvalidatesOnWalWrites(t *testing.T) {
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		walAfter, err := os.Stat(walPath)
-		if err == nil && walAfter.Size() != walBefore.Size() {
+		committed, _ := os.ReadFile(committedMarker)
+		if err == nil && walAfter.Size() != walBefore.Size() && strings.TrimSpace(string(committed)) == "committed" {
 			walGrew = true
 			break
 		}
