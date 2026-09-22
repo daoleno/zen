@@ -303,3 +303,30 @@ Signed arm64 APK and daemon binaries are built in parallel when a reviewed annot
 - [Third-party assets (Ghostty MIT)](third-party-assets.md)
 - [Release blockers](release-blockers.md)
 - [Troubleshooting](troubleshooting.md)
+
+### Attachment document providers
+
+Android composer attachments use Zen's native `ACTION_OPEN_DOCUMENT` picker with
+`CATEGORY_OPENABLE`. It preserves the selected content URI and UTF-8 display name,
+then streams from that URI through the existing authenticated upload transport.
+Older installed binaries that lack the native `pickDocument` method continue to
+use Expo's picker, avoiding an undefined-method error after a JS update. Install
+the updated native APK to receive the provider metadata handling described here;
+the compatibility guard alone does not fix provider errors in older binaries.
+A provider may omit display name or size, return an empty metadata cursor, or
+return no cursor at all: Zen checks read access before accepting the selection,
+uses `upload` for an absent name, and keeps unknown size unknown. Directories,
+invalid URIs and inaccessible streams fail before an attachment/upload is created;
+canceling returns no attachment. No storage permission or guessed filesystem path
+is used. Settings import retains Expo's picker; iOS retains its existing picker
+and the shared upload/cancellation/current-server contract.
+
+The picker launches on the main queue and owns one selection through metadata
+validation. Module destruction cancels pending reads and discards late results.
+The activity's temporary read grant covers the immediate streamed upload; Zen
+does not persist grants or promise upload resumption after the activity/task ends.
+
+The native provider regression fixture lives in `zen-file-upload/android/src/androidTest`.
+Run `:zen-file-upload:connectedDebugAndroidTest` from `app/android` with an emulator.
+Its optional `PickerFixtureActivity` exercises the real system picker and test-only
+DocumentsProvider; fixture components are excluded from release APKs.

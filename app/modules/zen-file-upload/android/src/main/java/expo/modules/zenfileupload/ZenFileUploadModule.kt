@@ -3,8 +3,10 @@ package expo.modules.zenfileupload
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Coroutine
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.BufferedInputStream
@@ -13,6 +15,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val UPLOAD_BUFFER_BYTES = 1024 * 1024
@@ -39,12 +42,50 @@ class NativeUploadRequest : expo.modules.kotlin.records.Record {
 }
 
 class ZenFileUploadModule : Module() {
+    private val picker = PickerOwnership<Promise>()
+    private val pickerCancellation = android.os.CancellationSignal()
+    private val pickerReads = Executors.newSingleThreadExecutor()
     private val active = ConcurrentHashMap<String, ActiveUpload>()
     private val activeDownloads = ConcurrentHashMap<String, ActiveDownload>()
 
     override fun definition() = ModuleDefinition {
         Name("ZenFileUpload")
         Events("onUploadProgress")
+
+        AsyncFunction("pickDocument") { promise: Promise ->
+            picker.begin(promise)
+            try {
+                appContext.throwingActivity.startActivityForResult(
+                    UploadDocumentPicker.intent(), UploadDocumentPicker.REQUEST_CODE,
+                )
+            } catch (error: Exception) {
+                if (picker.finish(promise)) {
+                    promise.reject("ERR_DOCUMENT_PICK", "Could not open the file picker.", error)
+                }
+            }
+        }.runOnQueue(Queues.MAIN)
+
+        OnActivityResult { _, (requestCode, resultCode, intent) ->
+            if (requestCode == UploadDocumentPicker.REQUEST_CODE) {
+                val promise = picker.read()
+                if (promise != null) {
+                    val resolver = appContext.reactContext?.contentResolver
+                    try {
+                        pickerReads.execute {
+                            try {
+                                if (resolver == null) throw Exceptions.ReactContextLost()
+                                val asset = UploadDocumentPicker.readResult(resolver, resultCode, intent, pickerCancellation)
+                                if (picker.finish(promise)) promise.resolve(asset)
+                            } catch (error: Exception) {
+                                if (picker.finish(promise)) promise.reject("ERR_DOCUMENT_READ", error.message, error)
+                            }
+                        }
+                    } catch (error: java.util.concurrent.RejectedExecutionException) {
+                        if (picker.finish(promise)) promise.resolve(null)
+                    }
+                }
+            }
+        }
 
         AsyncFunction("upload") Coroutine { request: NativeUploadRequest ->
             upload(request)
@@ -63,6 +104,9 @@ class ZenFileUploadModule : Module() {
         }
 
         OnDestroy {
+            picker.destroy()?.resolve(null)
+            pickerCancellation.cancel()
+            pickerReads.shutdownNow()
             active.values.forEach { it.cancel() }
             active.clear()
             activeDownloads.values.forEach { it.cancel() }

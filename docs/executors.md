@@ -101,3 +101,22 @@ Zen does not synthesize timed typewriter output and does not derive structured C
 ## Diagnostics
 
 `zen doctor` reports which configured executors are on `PATH` and best-effort auth hints. Guided `zen setup` can write `~/.zen/executors.toml` for you (Safe vs Autonomous, Host/Delegated). It never runs sudo, never logs into providers, and requires explicit confirmation for Autonomous. Restart `zen` after setup (or after editing executor definitions/commands) so the daemon reloads the static catalog. Once zen is running, change only the Delegated Executor with `zen brain set-delegated <id>` — no restart.
+
+## Worker-only Codex reasoning default
+
+To give future delegated Workers a reasoning default without changing the Brain
+host or existing Sessions, define a separate executor in `~/.zen/executors.toml`:
+
+```toml
+[[executors]]
+name = "codex-medium"
+kind = "codex"
+command = "codex -c model_reasoning_effort=medium"
+```
+
+Keep the host's `codex` entry unchanged. Executor definitions load at daemon
+startup; adding this entry to disk does not activate it in a running catalog.
+After a reviewed daemon restart, verify it appears in `zen brain executors --json`,
+then run `zen brain set-delegated codex-medium`. That selection persists and affects
+future Workers. Zen still appends its normal delegated authorization flags.
+Do not change global Codex reasoning configuration to implement a Worker-only default.

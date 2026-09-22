@@ -93,6 +93,9 @@ export function useInterfaceComposerAttachments({
       );
       focusComposer();
     } catch (err: any) {
+      if (selectionGenerationRef.current !== selectionGeneration) {
+        return;
+      }
       if (handle && !uploadOwnerRef.current.finish(handle)) {
         return;
       }

@@ -29,6 +29,7 @@ let cancelCalls = 0;
 let nativeUploadError: Error | null = null;
 let nativeCancelError: Error | null = null;
 let nativeModule: {
+  pickDocument(): Promise<{ uri: string; name: string; mimeType: string; size: number | null } | null>;
   upload(request: Record<string, unknown>): Promise<typeof uploadResult>;
   cancel(uploadId: string): boolean;
   addListener(
@@ -197,6 +198,7 @@ describe("native attachment upload", () => {
       removed: boolean;
     }> = [];
     nativeModule = {
+      pickDocument: async () => selectedAsset,
       upload: async (request) => {
         nativeRequests.push(request);
         return uploadResult;
@@ -488,3 +490,44 @@ async function flushMicrotasks() {
     await Promise.resolve();
   }
 }
+
+
+describe("Android document selection boundary", () => {
+  function picker(pickDocument: NonNullable<typeof nativeModule>["pickDocument"]) {
+    nativeModule = {
+      pickDocument,
+      upload: async () => { throw new Error("unexpected upload"); },
+      cancel: () => false,
+      addListener: () => ({ remove() {} }),
+    };
+  }
+
+  test("preserves TXT UTF-8 name and original provider URI", async () => {
+    picker(async () => ({ uri: "content://fixture/document/opaque", name: "报告.txt", mimeType: "text/plain", size: 12 }));
+    const result = await uploadDocumentForServer("server-a");
+    expect(result?.localUri).toBe("content://fixture/document/opaque");
+    expect(uploadCalls[0].options.headers).toMatchObject({ "X-Zen-Upload-Name": encodeURIComponent("报告.txt"), "Content-Type": "text/plain" });
+    expect(pickerOptions).toBeUndefined();
+  });
+
+  test("readable document with unknown size stays unknown", async () => {
+    picker(async () => ({ uri: "content://fixture/document/opaque", name: "upload", mimeType: "text/plain", size: null }));
+    await uploadDocumentForServer("server-a");
+    expect(uploadCalls).toHaveLength(1);
+    expect(bytesCalls).toBe(0);
+  });
+
+  test("cancel returns no attachment and starts no upload", async () => {
+    picker(async () => null);
+    expect(await uploadDocumentForServer("server-a")).toBeNull();
+    expect(uploadCalls).toHaveLength(0);
+    expect(authorizationOptions).toBeUndefined();
+  });
+
+  test("unreadable provider fails before auth or upload", async () => {
+    picker(async () => { throw new Error("Cannot read this file."); });
+    await expect(uploadDocumentForServer("server-a")).rejects.toThrow("Cannot read this file.");
+    expect(uploadCalls).toHaveLength(0);
+    expect(authorizationOptions).toBeUndefined();
+  });
+});

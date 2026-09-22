@@ -345,6 +345,11 @@ function projectUploadTiming(
 }
 
 export async function pickUploadDocument(): Promise<UploadDocumentAsset | null> {
+  const native = getZenFileUploadModule();
+  if (native && typeof native.pickDocument === "function") {
+    const asset = await native.pickDocument();
+    return asset ? { ...asset, size: asset.size ?? undefined } : null;
+  }
   const result = await DocumentPicker.getDocumentAsync({
     type: ["*/*"],
     copyToCacheDirectory: false,
