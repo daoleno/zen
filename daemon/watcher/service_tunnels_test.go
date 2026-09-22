@@ -186,34 +186,43 @@ func TestQuickTunnelLiveHTTPAndWebSocket(t *testing.T) {
 	if os.Getenv("ZEN_TUNNEL_SMOKE_DOH") == "1" {
 		// Test-only DNS isolation: preserve the public hostname for TLS and HTTP.
 		publicHost, _ := url.Parse(state.URL)
-		request, _ := http.NewRequest(http.MethodGet, "https://1.1.1.1/dns-query?type=A&name="+url.QueryEscape(publicHost.Hostname()), nil)
-		request.Header.Set("Accept", "application/dns-json")
-		response, err := client.Do(request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var answer struct {
-			Status int
-			Answer []struct {
-				Type int
-				Data string
-			}
-		}
-		err = json.NewDecoder(response.Body).Decode(&answer)
-		response.Body.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
 		address := ""
-		for _, record := range answer.Answer {
-			if record.Type == 1 && net.ParseIP(record.Data) != nil {
-				address = record.Data
+		dnsStatus := -1
+		// Quick Tunnel DNS publication is asynchronous. Avoid treating the
+		// first negative DNS response as a permanent publication failure.
+		for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); {
+			request, _ := http.NewRequest(http.MethodGet, "https://1.1.1.1/dns-query?type=A&name="+url.QueryEscape(publicHost.Hostname()), nil)
+			request.Header.Set("Accept", "application/dns-json")
+			response, err := client.Do(request)
+			if err == nil {
+				var answer struct {
+					Status int
+					Answer []struct {
+						Type int
+						Data string
+					}
+				}
+				decodeErr := json.NewDecoder(response.Body).Decode(&answer)
+				response.Body.Close()
+				dnsStatus = answer.Status
+				if decodeErr == nil {
+					for _, record := range answer.Answer {
+						if record.Type == 1 && net.ParseIP(record.Data) != nil {
+							address = record.Data
+							break
+						}
+					}
+				}
+			}
+			if address != "" {
 				break
 			}
+			time.Sleep(2 * time.Second)
 		}
 		if address == "" {
-			t.Fatalf("Cloudflare DoH has no public A record: status=%d", answer.Status)
+			t.Fatalf("Cloudflare DoH has no public A record after bounded publication wait: status=%d", dnsStatus)
 		}
+
 		dialer = func(ctx context.Context, network, target string) (net.Conn, error) {
 			_, port, err := net.SplitHostPort(target)
 			if err != nil {
