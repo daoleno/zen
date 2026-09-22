@@ -72,7 +72,9 @@ configuration variables. It does not modify `~/.cloudflared/config.yaml`, named
 tunnel credentials, system units or unrelated cloudflared processes. Temporary
 URLs are kept in memory, not the repository or persistent service registry. The
 installed binary must support `--output json`; readiness requires its native
-connection confirmation as well as the generated URL.
+connection confirmation and DNS publication as well as the generated URL.
+While publication is pending, Open/Copy remain unavailable. A bounded publication
+timeout stops the tunnel and offers an actionable retry instead of a stale URL.
 
 Quick Tunnel URLs are random and temporary. Anyone with the URL can access the
 selected service. Cloudflare limits Quick Tunnels to 200 in-flight requests and

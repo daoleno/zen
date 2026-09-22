@@ -76,7 +76,7 @@ func startFixtureTunnel(t *testing.T, w *Watcher, service SessionService) (*quic
 }
 func waitTunnel(t *testing.T, tunnel *quickTunnel, owner *serviceTunnels) ServiceTunnel {
 	t.Helper()
-	deadline := time.Now().Add(35 * time.Second)
+	deadline := time.Now().Add(70 * time.Second)
 	for time.Now().Before(deadline) {
 		owner.mu.Lock()
 		state := tunnel.state
@@ -107,6 +107,9 @@ exec sleep 60
 	proxyFile := filepath.Join(directory, "proxy-url")
 	t.Setenv("ZEN_TUNNEL_TEST_PROXY", proxyFile)
 	w, service, origin, live := tunnelFixture(t)
+	w.tunnelResolveHost = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
 	tunnel, owner := startFixtureTunnel(t, w, service)
 	if state := waitTunnel(t, tunnel, owner); state.Status != "running" {
 		t.Fatalf("state=%+v", state)

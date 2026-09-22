@@ -231,11 +231,15 @@ func RunDSHSession(ctx context.Context, id, cwd string) error {
 	if !ready {
 		return fmt.Errorf("DSH startup timed out; inspect its private Session log")
 	}
+	interactions := newDSHInteractionOwner(id)
+	interactionContext, stopInteractions := context.WithCancel(ctx)
+	defer stopInteractions()
+	go interactions.run(interactionContext, address)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		method := strings.TrimPrefix(r.URL.Path, "/")
 		switch method {
-		case "session.prompt", "session.cancel", "session.history", "session.models", "session.selectModel", "session.attachment":
+		case "session.interactions", "session.respond", "session.prompt", "session.cancel", "session.history", "session.models", "session.selectModel", "session.attachment":
 		default:
 			http.Error(w, "unsupported DSH operation", 400)
 			return
@@ -250,6 +254,20 @@ func RunDSHSession(ctx context.Context, id, cwd string) error {
 			return
 		}
 		payload["sessionId"] = id
+		if method == "session.interactions" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(interactions.snapshot())
+			return
+		}
+		if method == "session.respond" {
+			if err := interactions.answer(r.Context(), address, payload); err != nil {
+				http.Error(w, err.Error(), 409)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]bool{"accepted": true})
+			return
+		}
+
 		var result json.RawMessage
 		if err := callDSHNative(r.Context(), address, method, payload, &result); err != nil {
 			http.Error(w, err.Error(), 502)

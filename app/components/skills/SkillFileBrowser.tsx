@@ -80,7 +80,7 @@ export function SkillFileBrowser({
       const path = skillImagePath(reference, preview?.path || "SKILL.md", files);
       if (path === preview?.path && preview.dataUrl) return { uri: preview.dataUrl, headers: {} };
       const next = await readFile(path);
-      signal.throwIfAborted();
+      if (signal.aborted) throw new Error("Image request cancelled.");
       if (next.copyId !== detail.copyId || next.preview?.path !== path || !next.preview.dataUrl) throw new Error(next.preview?.notice || "This Skill image is unavailable.");
       return { uri: next.preview.dataUrl, headers: {} };
     },

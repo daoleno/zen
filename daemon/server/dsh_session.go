@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
-	"github.com/daoleno/zen/daemon/work"
-	"github.com/gorilla/websocket"
+	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/daoleno/zen/daemon/work"
+	"github.com/gorilla/websocket"
 )
 
 type dshModels struct {
@@ -139,4 +141,34 @@ func (s *Server) handleDSHImage(conn *websocket.Conn, raw clientMessage) {
 		return
 	}
 	s.sendJSON(conn, map[string]any{"type": "session_image", "request_id": raw.RequestID, "data_url": "data:" + image.Attachment.MediaType + ";base64," + image.Data})
+}
+
+func (s *Server) handleDSHInteraction(conn *websocket.Conn, raw clientMessage) {
+	worker := s.currentSessionFileWorker(raw.WorkerID)
+	if err := validateSessionFileIdentity(worker, raw); err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "session_changed", err.Error())
+		return
+	}
+	id := work.DSHSessionID(worker.Command)
+	if id == "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "unsupported_session", "DSH Session required")
+		return
+	}
+	method := "session.interactions"
+	payload := map[string]any{}
+	if len(raw.DSHAnswer) > 0 {
+		method = "session.respond"
+		if json.Unmarshal(raw.DSHAnswer, &payload) != nil || payload == nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "invalid_answer", "Invalid answer")
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var result json.RawMessage
+	if err := work.CallDSH(ctx, id, method, payload, &result); err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "dsh_interaction_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{"type": "dsh_interaction", "request_id": raw.RequestID, "result": result})
 }

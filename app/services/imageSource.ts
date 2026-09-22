@@ -23,11 +23,11 @@ export function imageReference(path: string, name = "Image"): ZenImageSource {
 }
 
 export async function resolveImageSource(source: ZenImageSource, owner: ZenImageOwner | null, signal: AbortSignal): Promise<SessionFileBinarySource> {
-  signal.throwIfAborted();
+  if (signal.aborted) throw new Error("Image request cancelled.");
   if (source.kind === "owned") {
     if (!owner) throw new Error("Open this image from its Session or workspace.");
     const result = await owner.resolve(source.path, signal);
-    signal.throwIfAborted();
+    if (signal.aborted) throw new Error("Image request cancelled.");
     return result;
   }
   if (source.kind === "inline") {

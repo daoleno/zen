@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -242,6 +243,7 @@ func providerActivitySignalFor(observation ProviderActivityObservation) provider
 // Watcher monitors tmux windows and classifies agent states.
 type Watcher struct {
 	quickTunnels          *serviceTunnels
+	tunnelResolveHost     func(context.Context, string) ([]net.IPAddr, error)
 	pollInterval          time.Duration
 	workers               map[string]*classifier.Worker
 	workerOrder           []string

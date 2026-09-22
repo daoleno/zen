@@ -385,26 +385,57 @@ func (w *Watcher) runServiceTunnel(ctx context.Context, owner *serviceTunnels, t
 	}()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	startup := time.NewTimer(30 * time.Second)
+	startup := time.NewTimer(65 * time.Second)
 	defer startup.Stop()
 	publicURL := ""
 	connectionReady := false
+	publicationStarted := false
+	published := make(chan bool, 1)
+	checkPublication := func() {
+		if publicationStarted || !connectionReady || publicURL == "" {
+			return
+		}
+		publicationStarted = true
+		hostURL, _ := url.Parse(publicURL)
+		resolver := w.tunnelResolveHost
+		if resolver == nil {
+			resolver = net.DefaultResolver.LookupIPAddr
+		}
+		go func() {
+			publicationContext, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			for publicationContext.Err() == nil {
+				lookupContext, cancelLookup := context.WithTimeout(publicationContext, 3*time.Second)
+				addresses, err := resolver(lookupContext, hostURL.Hostname())
+				cancelLookup()
+				if err == nil && len(addresses) > 0 {
+					select {
+					case published <- true:
+					case <-ctx.Done():
+					}
+					return
+				}
+				select {
+				case <-publicationContext.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+			}
+		}()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case value := <-announced:
 			publicURL = value
-			if connectionReady {
-				set("running", publicURL, "")
-				startup.Stop()
-			}
+			checkPublication()
 		case <-connected:
 			connectionReady = true
-			if publicURL != "" {
-				set("running", publicURL, "")
-				startup.Stop()
-			}
+			checkPublication()
+		case <-published:
+			set("running", publicURL, "")
+			startup.Stop()
 		case err := <-exited:
 			exited <- err
 			if err != nil {
@@ -412,7 +443,7 @@ func (w *Watcher) runServiceTunnel(ctx context.Context, owner *serviceTunnels, t
 			}
 			return
 		case <-startup.C:
-			fail(fmt.Errorf("Cloudflare did not return a temporary URL. Check network access and retry."))
+			fail(fmt.Errorf("Cloudflare public URL is not available yet. DNS publication or connection failed; retry the tunnel."))
 			return
 		case <-ticker.C:
 			if !w.serviceOriginAlive(service) {

@@ -32,6 +32,7 @@ import {
   SessionFilePreviewSheet,
   type SessionFilePreviewLoader,
 } from "./SessionFilePreviewSheet";
+import { DSHInteractionPanel } from "./DSHInteractionPanel";
 import { ZenImageOwnerContext } from "./ZenImage";
 import { bindSessionFileRequestToGeneration, buildSessionFileBinarySource } from "../../services/sessionFilePreview";
 import type { ZenImageOwner } from "../../services/imageSource";
@@ -160,7 +161,7 @@ export function InterfaceChatTimelineSection({
       const request = { workerId, processId: workerProcessId, startedAt: workerStartedAt, path };
       if (path.startsWith("dsh-attachment:")) return { uri: await wsClient.getSessionImage(serverId, request), headers: {} };
       const metadata = await (filePreviewLoader?.metadata ?? wsClient.getSessionFileMetadata.bind(wsClient))(serverId, request);
-      signal.throwIfAborted();
+      if (signal.aborted) throw new Error("Image request cancelled.");
       if (metadata.kind !== "image" || metadata.tooLarge) throw new Error("This image exceeds the preview limit or is unsupported. Open the file to download it.");
       return (filePreviewLoader?.binary ?? buildSessionFileBinarySource)(serverId, daemonId, bindSessionFileRequestToGeneration(request, metadata));
     },
@@ -215,6 +216,7 @@ export function InterfaceChatTimelineSection({
   return (
     <ZenImageOwnerContext.Provider value={imageOwner}>
     <SessionFilePreviewContext.Provider value={filePreviewContext}>
+      {conversation?.source === "dsh_session_jsonl" && workerProcessId && workerStartedAt ? <DSHInteractionPanel key={imageOwner.key} serverId={serverId} request={{ workerId, processId: workerProcessId, startedAt: workerStartedAt, path: "" }} chrome={chrome} /> : null}
       <InterfaceTimelineView
         key={readingPosition?.scope}
         readingPosition={readingPosition}

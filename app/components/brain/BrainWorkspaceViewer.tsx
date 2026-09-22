@@ -81,7 +81,7 @@ export function BrainWorkspaceViewer({
       const parent = selectedPath?.split("/").slice(0, -1).join("/");
       const relative = parent && !path.startsWith("/") ? `${parent}/${path}` : path;
       const file = await wsClient.getBrainWorkspaceFile(serverId, relative);
-      signal.throwIfAborted();
+      if (signal.aborted) throw new Error("Image request cancelled.");
       if (!file.data_url) throw new Error("This workspace file is not a supported image.");
       return { uri: file.data_url, headers: {} };
     },

@@ -2746,6 +2746,24 @@ export class MultiServerWebSocketClient {
     });
   }
 
+  dshInteraction(serverId: string, request: SessionFileRequest, answer?: import("./dshInteractions").DSHAnswer): Promise<import("./dshInteractions").DSHInteractionSnapshot | { accepted: boolean }> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => { clearTimeout(timer); this.off("dsh_interaction", success); this.off("error", failure); };
+      const success = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        const result = payload.result;
+        if (answer ? result?.accepted === true : typeof result?.epoch === "string" && typeof result.connected === "boolean" && Array.isArray(result.items)) resolve(result);
+        else reject(new Error("Invalid DSH interaction response"));
+      };
+      const failure = (payload: any) => { if (payload.serverId === serverId && payload.request_id === requestId) { cleanup(); reject(new Error(payload.message || "DSH interaction unavailable")); } };
+      const timer = setTimeout(() => { cleanup(); reject(new Error("DSH interaction timed out")); }, 15000);
+      this.on("dsh_interaction", success); this.on("error", failure);
+      this.sendRequestNow(serverId, { type: "dsh_interaction", request_id: requestId, worker_id: request.workerId, process_id: request.processId, started_at: request.startedAt, dsh_answer: answer }, cleanup, reject);
+    });
+  }
+
   getSessionImage(serverId: string, request: SessionFileRequest): Promise<string> {
     const requestId = newProviderRequestId();
     return new Promise((resolve, reject) => {

@@ -15,6 +15,7 @@ import { InterfaceChatTimelineSection } from "./InterfaceChatTimelineSection";
 import { InterfaceChatKeyboardFrame } from "./InterfaceChatKeyboardFrame";
 import { usePinnedTimeline } from "./InterfaceChatSurfaceHooks";
 import type { SessionFilePreviewLoader } from "./SessionFilePreviewSheet";
+import { ImageReviewFixture } from "./ImageReviewFixture";
 import { readingFixtureMessage as message } from "./interfaceReadingFixtureData";
 
 const noop = () => {};
@@ -65,6 +66,7 @@ export function InterfaceReadingFixture() {
     () => buildChatChrome(appTheme),
     [appTheme],
   );
+  const [imageReview, setImageReview] = useState(false);
   const [events, setEvents] = useState(initial);
   const [streaming, setStreaming] = useState(false);
   const [away, setAway] = useState(false);
@@ -99,6 +101,7 @@ export function InterfaceReadingFixture() {
     >
       <View style={styles.tools}>
         {[
+          ["Images", () => setImageReview((value) => !value)],
           [
             "Append",
             () =>
@@ -134,7 +137,7 @@ export function InterfaceReadingFixture() {
           </Pressable>
         ))}
       </View>
-      {away ? (
+      {imageReview ? <ImageReviewFixture chrome={chrome} /> : away ? (
         <View style={styles.root} />
       ) : (
         <ReadingSurface

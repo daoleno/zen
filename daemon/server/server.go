@@ -315,6 +315,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 }
 
 type clientMessage struct {
+	DSHAnswer            json.RawMessage                        `json:"dsh_answer"`
 	ServiceID            string                                 `json:"service_id"`
 	ServiceGeneration    string                                 `json:"service_generation"`
 	TunnelAction         string                                 `json:"tunnel_action"`
@@ -1011,6 +1012,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"ranges":     map[string]any{},
 			})
 		}
+	case "dsh_interaction":
+		s.handleDSHInteraction(conn, raw)
 	case "session_image":
 		s.handleDSHImage(conn, raw)
 	case "get_session_resource_snapshot":

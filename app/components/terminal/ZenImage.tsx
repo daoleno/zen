@@ -62,19 +62,21 @@ function ImageGallery({ images, initial, chrome, onClose }: { images: ZenImageSo
   const owner = useContext(ZenImageOwnerContext);
   const [index, setIndex] = useState(initial);
   const [attempt, setAttempt] = useState(0);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const source = images[Math.min(index, images.length - 1)];
+  const identity = imageSourceKey(source, owner?.key || "phone");
   const resolved = useImage(source, owner, attempt);
-  const error = resolved.error || (failed ? "Could not load image" : null);
-  const move = (next: number) => { setFailed(false); setIndex(next); };
+  const failureKey = `${identity}:${attempt}`;
+  const error = resolved.error || (failed === failureKey ? "Could not load image" : null);
+  const move = (next: number) => { setFailed(null); setIndex(next); };
   return <Modal visible animationType="fade" onRequestClose={onClose} presentationStyle="fullScreen">
     <GestureHandlerRootView style={{ flex: 1 }}><SafeAreaProvider><SafeAreaView style={{ flex: 1, backgroundColor: chrome.surfaceMuted }}>
       <View style={styles.toolbar}>
         <Text numberOfLines={1} style={{ flex: 1, color: chrome.text }}>{source.name}</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Close image" onPress={onClose} style={styles.button}><Ionicons name="close-outline" size={26} color={chrome.text} /></Pressable>
       </View>
-      {error ? <Pressable accessibilityRole="button" accessibilityLabel="Retry image" onPress={() => { setFailed(false); setAttempt((value) => value + 1); }} style={styles.state}><Ionicons name="refresh-outline" size={28} color={chrome.text} /><Text style={{ color: chrome.text }}>{error}</Text></Pressable>
-        : resolved.source ? <SessionFileImagePreview key={`${resolved.key}:${attempt}`} source={resolved.source} chrome={chrome} onError={() => setFailed(true)} />
+      {error ? <Pressable accessibilityRole="button" accessibilityLabel="Retry image" onPress={() => { setFailed(null); setAttempt((value) => value + 1); }} style={styles.state}><Ionicons name="refresh-outline" size={28} color={chrome.text} /><Text style={{ color: chrome.text }}>{error}</Text></Pressable>
+        : resolved.source ? <SessionFileImagePreview key={failureKey} source={resolved.source} chrome={chrome} onError={() => setFailed(failureKey)} />
         : <View style={styles.state}><ActivityIndicator color={chrome.text} /></View>}
       {images.length > 1 ? <View style={styles.toolbar}>
         <Pressable accessibilityRole="button" accessibilityLabel="Previous image" disabled={index === 0} onPress={() => move(index - 1)} style={styles.button}><Ionicons name="chevron-back" size={24} color={index === 0 ? chrome.textSubtle : chrome.text} /></Pressable>

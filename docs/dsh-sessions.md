@@ -32,8 +32,12 @@ same owned session ID and native log rather than creating a second conversation.
 
 Native configuration must match the installed DSH version. Startup failures are
 reported in the bridge's private Session log; Zen never repairs credentials or
-chooses a different provider automatically. DSH's interactive approval/question
-widgets are not implemented in Zen; native permissions continue to fail closed.
+chooses a different provider automatically. DSH permission and question requests
+appear in Interface's review sheet. Native server-request RPC IDs, Session
+generation, and connection epochs fence every answer. Allow once, Reject,
+structured option/custom answers, and cancellation
+use native `/api/respond`; resolved, replaced, disconnected, or foreign-session
+requests cannot be answered from stale UI. Native permissions remain fail closed.
 Native terminal output is a minimal input bridge; the shared Interface provides
 message, reasoning, tool and image presentation. Windows daemon hosts do not expose
 the Unix Session bridge. Android and iOS use the same mobile implementation.

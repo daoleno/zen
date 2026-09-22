@@ -7,6 +7,7 @@ import type {
 import { parseMessageBlocks } from "./InterfaceMessageBodyModel";
 import { InterfaceMessageBlock } from "./InterfaceMessageBlock";
 import { prepareInterfaceMarkdown } from "./InterfaceNativeMarkdownBodyModel";
+import { MarkdownWithImages } from "../markdown/MarkdownWithImages";
 import { useStreamingMarkdownPresentation } from "./useStreamingMarkdownPresentation";
 
 interface MessageBodyProps {
@@ -33,9 +34,13 @@ export function MessageBody({
       streaming ? prepareInterfaceMarkdown(presentedValue, true) : presentedValue,
     [presentedValue, streaming],
   );
+  return <MarkdownWithImages markdown={displayValue} chrome={chrome} renderMarkdown={(text) => <MessageBlocks value={text} chrome={chrome} theme={theme} compact={compact} dense={dense} streaming={streaming} />} />;
+}
+
+function MessageBlocks({ value, chrome, theme, compact = false, dense = false, streaming = false }: MessageBodyProps) {
   const blocks = useMemo(
-    () => parseMessageBlocks(displayValue),
-    [displayValue],
+    () => parseMessageBlocks(value),
+    [value],
   );
   if (blocks.length === 0) {
     return null;
