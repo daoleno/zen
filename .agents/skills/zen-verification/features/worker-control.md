@@ -29,3 +29,19 @@ Preconditions:
 - A Worker status is not a completion decision. Brain Work and Event state remain authoritative.
 - Do not use `pkill`, `killall`, or process-name matching to clean up a verification run.
 - An empty list can be valid. The control path must pass even when no Worker is active.
+
+## DSH and service lifetime evidence
+
+The source map includes the additive DSH executor, exact native Session bridge,
+Zstandard event projection and Services tunnel process owner. `worker_list` proves
+only the canonical inventory read, not these mutations or provider output.
+
+Use `daemon/work/dsh_conversation_test.go` for source identity, packed streaming,
+tool correlation, attachment confinement and exclusive-owner regressions. A bounded
+native DSH smoke must use private state and record the exact Session identity;
+never infer success from a launch option alone or change saved model choices.
+
+`daemon/watcher/service_tunnels_test.go` checks HTTP/WebSocket proxy behavior,
+origin/listener replacement, stop isolation and Linux parent-death cleanup. Its
+public fixture test is explicit opt-in and always stops its own tunnel. A URL or
+native Cloudflare connection confirmation alone is not public reachability proof.

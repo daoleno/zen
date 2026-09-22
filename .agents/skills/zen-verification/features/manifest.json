@@ -5,22 +5,53 @@
       "id": "brain-work-routing",
       "runtime_kind": "runtime",
       "runtime_check": "brain_context",
-      "source_paths": ["daemon/brain/service.go", "daemon/brain/playbooks.go", "daemon/cmd/zen/main.go"],
-      "test_paths": ["daemon/brain/service_test.go", "daemon/brain/playbooks_test.go", "daemon/cmd/zen/control_app_test.go"]
+      "source_paths": [
+        "daemon/brain/service.go",
+        "daemon/brain/playbooks.go",
+        "daemon/cmd/zen/main.go"
+      ],
+      "test_paths": [
+        "daemon/brain/service_test.go",
+        "daemon/brain/playbooks_test.go",
+        "daemon/cmd/zen/control_app_test.go"
+      ]
     },
     {
       "id": "worker-control",
       "runtime_kind": "runtime",
       "runtime_check": "worker_list",
-      "source_paths": ["daemon/cmd/zen/main.go", "daemon/cmd/zen/control_app.go", "daemon/brain/session_projection.go"],
-      "test_paths": ["daemon/cmd/zen/control_app_test.go", "daemon/brain/session_projection_test.go", "daemon/brain/worker_authority_test.go"]
+      "source_paths": [
+        "daemon/cmd/zen/main.go",
+        "daemon/cmd/zen/control_app.go",
+        "daemon/brain/session_projection.go",
+        "daemon/work/worker_executors.go",
+        "daemon/work/dsh_runtime.go",
+        "daemon/work/dsh_conversation.go",
+        "daemon/watcher/service_tunnels.go"
+      ],
+      "test_paths": [
+        "daemon/cmd/zen/control_app_test.go",
+        "daemon/brain/session_projection_test.go",
+        "daemon/brain/worker_authority_test.go",
+        "daemon/work/dsh_conversation_test.go",
+        "daemon/watcher/service_tunnels_test.go"
+      ]
     },
     {
       "id": "project-skill-discovery",
       "runtime_kind": "source",
       "runtime_check": "skill_source",
-      "source_paths": ["daemon/skills/adapters.go", "daemon/skills/inventory.go", ".agents/skills/zen-verification/SKILL.md", ".agents/skills/zen-verification/features/README.md"],
-      "test_paths": ["daemon/skills/inventory_test.go", "daemon/skills/operations_test.go", "scripts/verify-zen-orchestration.sh"]
+      "source_paths": [
+        "daemon/skills/adapters.go",
+        "daemon/skills/inventory.go",
+        ".agents/skills/zen-verification/SKILL.md",
+        ".agents/skills/zen-verification/features/README.md"
+      ],
+      "test_paths": [
+        "daemon/skills/inventory_test.go",
+        "daemon/skills/operations_test.go",
+        "scripts/verify-zen-orchestration.sh"
+      ]
     }
   ]
 }
