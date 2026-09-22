@@ -750,6 +750,47 @@ func (owner *sessionInputOwner) submitWithTurn(
 			}
 		}
 
+		// A previous prepare can commit before projection validation fails, before
+		// the transport marker is written. Only a new explicit submission may
+		// retire that exact unmarked preparation, under this Session input lock.
+		if turn != nil && turn.SignalProtocol && turn.WorkID != "" && turn.ClaimToken == "" && turn.Purpose == "" {
+			if repair, ok := owner.ledger.(UnmarkedInputAdmissionLedger); ok {
+				admissions, err := owner.admissionLedger()
+				if err != nil {
+					return definitelyNotSubmitted(result.Receipt, err)
+				}
+				pending, err := admissions.PendingInputAdmissions(sessionID)
+				if err != nil {
+					return definitelyNotSubmitted(result.Receipt, err)
+				}
+				for _, prior := range pending {
+					if prior.WorkID != turn.WorkID || prior.ProposedTurnID == turn.ID || prior.ClaimToken != "" || prior.Purpose != "" || !prior.SignalProtocol {
+						continue
+					}
+					if _, marked := ledger.entry(prior.Receipt); marked {
+						continue
+					}
+					// A full receipt ring may have evicted an accepted transport
+					// whose provider signal has not arrived. Absence is not proof.
+					if len(ledger.Entries) >= sessionInputReceiptLedgerLimit {
+						return definitelyNotSubmitted(result.Receipt, fmt.Errorf("unmarked preparation cannot be resolved from a full receipt history"))
+					}
+					if prior.ProcessIdentity != delegatedTurnIdentity(expected) || prior.PaneGeneration != current.generation {
+						return definitelyNotSubmitted(result.Receipt, fmt.Errorf("unmarked preparation belongs to another process/pane generation"))
+					}
+					if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
+						return definitelyNotSubmitted(result.Receipt, err)
+					}
+					if err := validateSameSessionInputPane(current, owner.io.pane(socket, current.paneID)); err != nil {
+						return definitelyNotSubmitted(result.Receipt, err)
+					}
+					if err := repair.AbortUnmarkedInputAdmission(prior); err != nil {
+						return definitelyNotSubmitted(result.Receipt, fmt.Errorf("reconcile unmarked preparation: %w", err))
+					}
+				}
+			}
+		}
+
 		prepared := false
 		if turn != nil {
 			mode := InputAdmissionFresh

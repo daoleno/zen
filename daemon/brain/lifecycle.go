@@ -1425,7 +1425,7 @@ func (s *Store) applyWorkUpdateViaFSMLocked(database *presentationDatabase, inde
 		}
 	}
 	if update.AttemptSessionID != nil && strings.TrimSpace(*update.AttemptSessionID) != "" {
-		return Work{}, fmt.Errorf("%w: Attempt Sessions are admitted only through canonical turn admission", ErrWorkAttemptConflict)
+		return Work{}, fmt.Errorf("%w: Attempt Sessions cannot be assigned by Work update; use canonical turn admission", ErrWorkConflict)
 	}
 	if update.Status != nil && *update.Status != WorkDone && *update.Status != WorkCancelled && *update.Status != WorkWaiting {
 		return Work{}, fmt.Errorf("%w: status %q is derived", ErrWorkConflict, *update.Status)

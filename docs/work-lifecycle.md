@@ -258,3 +258,56 @@ and repeated timer sweeps create one stable actionable Event.
 - Completion policies do not perform orchestration or accept results.
 - Current rows are usable directly; no second event-log replay is required to
   repair a separate authority.
+
+### Startup projection recovery and observation gaps
+
+Startup recovers the canonical lifecycle image before serving control requests.
+It repairs Work rows, accepted admission rows in acceptance-sequence order, and
+then final Work presentation in one private image. The presentation is validated
+and committed once; lineage cards are repaired in one subsequent atomic timeline
+replacement. Unrelated conversation history remains intact. A failed presentation
+commit does not publish cards; a failed card replacement is retryable on restart.
+This work remains synchronous so clients never use partially repaired stores.
+
+A watcher inventory is authoritative only when every required tmux observation
+succeeds on the daemon's selected host socket. An unavailable server during the
+inventory or an ownership probe is Unknown: retain remembered Sessions and their
+resources, and do not publish removal or end-of-identity evidence. A later
+successful inventory can confirm actual absence. The providers' private tmux
+scratch server is not the host discovery authority.
+
+Native activity and canonical Attempt ownership can diverge after loss or release.
+Historical Turn rows remain evidence and are available by exact identity. They
+must not advertise a released Attempt as a currently steerable owner. For an
+explicit follow-up to a signal-protocol Session, the normal `worker send -id ...
+-work-id ... --stdin` path may prepare a fresh admission when the Work has no
+active Attempt. It still validates the exact owned process and provider generation,
+and only the new prompt-carried identity can admit the new Attempt. A conflicting
+current owner is rejected by the existing fence. Work updates cannot manually
+assign an Attempt Session; restarting a provider or editing durable state is not
+a recovery operation.
+
+The daemon starts lifecycle scheduling only after the watcher's first complete
+inventory and provider projection. Listener acquisition is not that barrier.
+Restored overdue leases therefore cannot be swept against an unstarted watcher.
+The wait is cancelled during shutdown, and unavailable discovery leaves the
+listener and read controls usable without running a startup expiry sweep. Both
+lifecycle scheduling and transcript capture are joined runtime owners, started
+after shared initialization and cancelled on any runtime owner's failure.
+
+Accepted recovery input can itself resolve a prior review. Work projection repairs
+those exact canonical `review.resolved` facts (event identity, disposition and time)
+just as it repairs explicit operator resolutions. A superseded loss review therefore
+continues to prove relinquishment after the recovery Session closes and a later
+typed wait is released. Historical provider Turn rows remain unchanged; active
+Attempt validation still rejects unrelated Sessions and sibling Turn evidence.
+
+If canonical preparation succeeds but presentation persistence fails before
+transport begins, the exact new preparation is aborted durably. For older failed
+preparations, a subsequent explicit normal send can retire an unmarked preparation
+only under the Session input lock, with the same proven process/pane generation,
+matching Work/receipt/digest, and a non-full transport receipt history. The engine
+atomically requires Prepared state. A transport marker, ambiguous/accepted state,
+a changed generation, or possible receipt eviction cannot be treated as proof of
+non-submission. Recovery never replays the old payload; the new explicit input
+must acquire its own prompt-carried identity and canonical fence.

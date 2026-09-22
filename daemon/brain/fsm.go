@@ -253,6 +253,28 @@ func (s *Store) fsmSyncWorkLocked(database *presentationDatabase, workID string,
 		}
 	}
 
+	// Accepted recovery input can resolve an older loss review without going
+	// through ResolveWorkReview. Project the exact canonical resolution too;
+	// otherwise that old running Turn loses its relinquishment evidence when
+	// a later recovery closes and its typed wait is released.
+	for _, event := range s.fsm.ReviewResolutions(st.ID) {
+		resolution, ok := event.Payload.(lifecycle.ReviewResolvedPayload)
+		if !ok {
+			continue
+		}
+		resolvedIndex := workEventIndex(database.BrainWorkEvents, resolution.EventID)
+		if resolvedIndex < 0 {
+			continue
+		}
+		row := &database.BrainWorkEvents[resolvedIndex]
+		if row.WorkID != workID || row.HandledAt != nil {
+			continue
+		}
+		at := event.At
+		row.HandledAt = &at
+		row.Disposition = WorkDisposition(resolution.Disposition)
+		row.Actionable = false
+	}
 	database.BrainWork[index] = item
 	return nil
 }
@@ -731,4 +753,59 @@ func (s *Store) SyncWorkCard(workID string, trigger *WorkEvent) (TimelineItem, b
 	item, created, err := s.syncWorkCardLocked(workID, trigger)
 	s.mu.Unlock()
 	return item, created, err
+}
+
+// rebuildWorkCardsLocked repairs startup cards from the committed presentation
+// in one timeline replacement. It preserves unrelated history, original card
+// positions/timestamps and unread state, and removes duplicate lineage slots.
+// Caller holds s.mu; a failed write remains repairable at the next startup.
+func (s *Store) rebuildWorkCardsLocked(database presentationDatabase, workIDs []string) error {
+	cards := make(map[string]TimelineItem)
+	for _, id := range workIDs {
+		index := workIndex(database.BrainWork, id)
+		if index < 0 || database.BrainWork[index].Review == nil {
+			continue
+		}
+		item := database.BrainWork[index]
+		eventIndex := workEventIndex(database.BrainWorkEvents, item.Review.EventID)
+		if eventIndex < 0 {
+			continue
+		}
+		event := cardEventForCanonicalReview(database, database.BrainWorkEvents[eventIndex])
+		if event.ID == "" || !isProjectedWorkResultEvent(event.Kind) {
+			continue
+		}
+		cards[id] = workCardTimelineItem(item, event, true)
+	}
+	if len(cards) == 0 {
+		return nil
+	}
+	items, err := s.readAllTimelineItemsLocked()
+	if err != nil {
+		return err
+	}
+	out := make([]TimelineItem, 0, len(items)+len(cards))
+	seen := make(map[string]bool, len(cards))
+	for _, current := range items {
+		projected, repair := cards[current.WorkID]
+		if current.Kind != timelineKindWorkCard || !repair {
+			out = append(out, current)
+			continue
+		}
+		if seen[current.WorkID] {
+			continue
+		}
+		seen[current.WorkID] = true
+		if !current.CreatedAt.IsZero() {
+			projected.CreatedAt = current.CreatedAt
+		}
+		projected.Unread = current.Unread || projected.Unread
+		out = append(out, projected)
+	}
+	for _, id := range workIDs {
+		if card, ok := cards[id]; ok && !seen[id] {
+			out = append(out, card)
+		}
+	}
+	return s.rewriteTimelineLocked(out)
 }
