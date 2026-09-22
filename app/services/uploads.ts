@@ -24,7 +24,7 @@ export type UploadedAttachment = {
 export type UploadDocumentAsset = Pick<
   DocumentPicker.DocumentPickerAsset,
   "uri" | "name" | "mimeType" | "size"
-> & { selectionError?: string };
+> & { selectionError?: string; selectionRetryable?: boolean };
 
 export type UploadProgressSnapshot = {
   transferredBytes: number | null;

@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Typography, useAppColors } from "../constants/tokens";
+import { ServiceTunnelControls } from "./ServiceTunnelControls";
 import { BottomSheetFrame } from "./ui/BottomSheetFrame";
 import {
   groupSessionServices,
@@ -284,6 +285,7 @@ function ServicePortRow({
           </Text>
         ) : null}
 
+        <ServiceTunnelControls service={service} onOpenURL={onOpenURL} />
         <View style={styles.linkRow}>
           {urls.length > 0 ? (
             urls.map((item) => (

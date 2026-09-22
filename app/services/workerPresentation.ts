@@ -1,3 +1,4 @@
+import { isDSHCommand } from "./agentCommands";
 import type { Worker } from '../store/workers';
 import { displayPathSubtitle } from './pathDisplay';
 import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
@@ -7,7 +8,7 @@ import {
   type TerminalFlavor,
 } from './terminalFlavor';
 
-export type AgentKind = 'terminal' | 'claude' | 'codex' | 'cursor' | 'grok' | 'pi' | 'opencode';
+export type AgentKind = 'terminal' | 'claude' | 'codex' | 'cursor' | 'grok' | 'pi' | 'opencode' | 'dsh';
 export type WorkerTitleSource = 'alias' | 'explicit_name' | 'default';
 export type { TerminalFlavor };
 
@@ -69,6 +70,7 @@ function detectAgentKind(agent: Pick<Worker, 'name' | 'project' | 'cwd' | 'comma
   if (isCursorAgentCommand(agent.command)) return 'cursor';
   if (isGrokCommand(agent.command)) return 'grok';
   if (isPiCommand(agent.command)) return 'pi';
+  if (isDSHCommand(agent.command)) return 'dsh';
   if (isOpenCodeCommand(agent.command)) return 'opencode';
   return 'terminal';
 }
@@ -137,6 +139,7 @@ function defaultTitle(kind: AgentKind): string {
       return 'Grok';
     case 'pi':
       return 'Pi';
+    case 'dsh': return 'DSH';
     case 'opencode':
       return 'OpenCode';
     default:
@@ -156,6 +159,7 @@ function shortDefaultTitle(kind: AgentKind): string {
       return 'Grok';
     case 'pi':
       return 'Pi';
+    case 'dsh': return 'DSH';
     case 'opencode':
       return 'OpenCode';
     default:
@@ -175,6 +179,7 @@ function typeLabel(kind: AgentKind, terminalFlavor: TerminalFlavor): string {
       return 'Grok';
     case 'pi':
       return 'Pi';
+    case 'dsh': return 'DSH';
     case 'opencode':
       return 'OpenCode';
     default:

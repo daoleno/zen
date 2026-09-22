@@ -43,7 +43,7 @@ internal object UploadDocumentPicker {
             try { read(resolver, uri, signal, debug, ::diagnostic) }
             catch (error: OperationCanceledException) { throw error }
             catch (error: Exception) {
-                mapOf("uri" to uri.toString(), "name" to "Unreadable file", "mimeType" to "application/octet-stream", "size" to null, "selectionError" to error.message)
+                mapOf("uri" to uri.toString(), "name" to "Unreadable file", "mimeType" to "application/octet-stream", "size" to null, "selectionError" to error.message, "selectionRetryable" to (uri.scheme == ContentResolver.SCHEME_CONTENT && !uri.authority.isNullOrBlank()))
             }
         }
     }

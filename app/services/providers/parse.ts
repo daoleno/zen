@@ -252,7 +252,7 @@ export function parseThreadRuntimeSelection(
   };
   if (
     !selection.session_id ||
-    !isSupportedProviderClient(selection.client) ||
+    (!isSupportedProviderClient(selection.client) && selection.client !== "dsh") ||
     !selection.connection_id ||
     !selection.connection_name ||
     !selection.model_id ||
@@ -261,6 +261,9 @@ export function parseThreadRuntimeSelection(
     (expectedWorkerId && selection.session_id !== expectedWorkerId.trim())
   ) {
     return null;
+  }
+  if (selection.client === "dsh" && Array.isArray(record.native_models)) {
+    selection.native_models = record.native_models.map(parseProviderModel).filter((model): model is ProviderModel => model !== null);
   }
   return selection;
 }

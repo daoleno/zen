@@ -315,6 +315,9 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 }
 
 type clientMessage struct {
+	ServiceID            string                                 `json:"service_id"`
+	ServiceGeneration    string                                 `json:"service_generation"`
+	TunnelAction         string                                 `json:"tunnel_action"`
 	Type                 string                                 `json:"type"`
 	RequestID            string                                 `json:"request_id"`
 	WorkerID             string                                 `json:"worker_id"`
@@ -894,6 +897,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.handleSessionInputMessage(conn, raw)
 	case "git_diff_status", "git_diff_patch", "git_diff_page", "git_diff_file_content", "git_repo_entries", "git_repo_file_content", "list_dir":
 		s.handleRepositoryMessage(conn, raw)
+	case "service_tunnel":
+		s.handleServiceTunnel(conn, raw)
 	case "list_session_services":
 		s.handleListSessionServices(conn, raw)
 	case "list_work_items":
@@ -1006,6 +1011,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"ranges":     map[string]any{},
 			})
 		}
+	case "session_image":
+		s.handleDSHImage(conn, raw)
 	case "get_session_resource_snapshot":
 		s.handleGetSessionResourceSnapshot(conn, raw)
 	default:
@@ -1026,6 +1033,14 @@ func (s *Server) handleSessionLifecycleMessage(conn *websocket.Conn, raw clientM
 		s.mu.Unlock()
 	case "create_session":
 		command := strings.TrimSpace(raw.Command)
+		if work.InferWorkerProvider(command) == work.WorkerProviderDSH {
+			ensured, err := work.EnsureDSHSessionLaunchCommand(command)
+			if err != nil {
+				s.sendErrorWithRequestID(conn, raw.RequestID, "create_session_failed", err.Error())
+				return
+			}
+			command = ensured
+		}
 		if work.InferWorkerProvider(command) == work.WorkerProviderPi {
 			ensured, err := work.EnsurePiSessionLaunchCommand(command)
 			if err != nil {

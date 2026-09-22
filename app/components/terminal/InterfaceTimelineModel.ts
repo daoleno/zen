@@ -977,6 +977,7 @@ function attachmentsFromTag(value: string): DisplayAttachment[] {
       .map((file: any) => ({
         name: typeof file?.name === "string" ? file.name.trim() : "",
         path: typeof file?.path === "string" ? file.path.trim() : "",
+        mimeType: typeof file?.content_type === "string" ? file.content_type : undefined,
       }))
       .filter((file: DisplayAttachment) => file.path);
   } catch {

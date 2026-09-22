@@ -370,6 +370,9 @@ func (s *Server) handleTestProviderConnection(conn *websocket.Conn, raw clientMe
 }
 
 func (s *Server) handleGetThreadRuntime(conn *websocket.Conn, raw clientMessage) {
+	if s.handleDSHThreadRuntime(conn, raw, false) {
+		return
+	}
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
@@ -398,6 +401,9 @@ func (s *Server) handleGetThreadRuntime(conn *websocket.Conn, raw clientMessage)
 }
 
 func (s *Server) handleSetThreadRuntime(conn *websocket.Conn, raw clientMessage) {
+	if s.handleDSHThreadRuntime(conn, raw, true) {
+		return
+	}
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")

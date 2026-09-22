@@ -148,6 +148,7 @@ func LoadExecutors(path string) (*ExecutorConfig, error) {
 			"grok":     {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
 			"opencode": {Name: "opencode", Command: "opencode", Kind: "opencode"},
 			"pi":       {Name: "pi", Command: "pi", Kind: "pi"},
+			"dsh":      {Name: "dsh", Command: "dsh", Kind: "dsh"},
 		},
 	}
 

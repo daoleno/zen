@@ -64,7 +64,7 @@ export function useInterfaceComposerAttachments({ serverId, ownerKey, attachment
       const placeholders: ComposerAttachment[] = entries.map(({ id, asset }) => ({
         id, name: asset.name || "upload", path: "", localUri: asset.uri, mimeType: asset.mimeType,
         uploadStatus: asset.selectionError ? "failed" : "queued", uploadError: asset.selectionError,
-        retryUpload: () => queueRef.current?.retry(id),
+        retryUpload: asset.selectionRetryable === false ? undefined : () => queueRef.current?.retry(id),
       }));
       setAttachments((current) => [...current, ...placeholders]);
       queueRef.current?.enqueue(entries);

@@ -116,6 +116,8 @@ func (r *ProviderConversationReader) Load(
 		return r.loadClaudeConversationForWorker(worker, now)
 	case WorkerProviderCodex:
 		return r.loadCodexConversationForWorker(worker, now)
+	case WorkerProviderDSH:
+		return r.loadDSHConversationForWorker(worker, now)
 	case WorkerProviderPi:
 		return r.loadPiConversationForWorker(worker, now)
 	case WorkerProviderOpenCode:

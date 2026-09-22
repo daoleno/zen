@@ -241,6 +241,7 @@ func providerActivitySignalFor(observation ProviderActivityObservation) provider
 
 // Watcher monitors tmux windows and classifies agent states.
 type Watcher struct {
+	quickTunnels          *serviceTunnels
 	pollInterval          time.Duration
 	workers               map[string]*classifier.Worker
 	workerOrder           []string
@@ -1252,6 +1253,7 @@ func (w *Watcher) ProbeProviderEvidence(sessionID string) (ProviderActivityObser
 
 // Run starts the polling loop. Blocks until context is cancelled.
 func (w *Watcher) Run(ctx context.Context) error {
+	defer w.StopServiceTunnels()
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
@@ -3567,6 +3569,9 @@ func codexWorkspaceTrustPathCandidates(content string) []string {
 }
 
 func isWorkerInputReady(command, content string) bool {
+	if workerCommandName(command) == "dsh" {
+		return strings.Contains(content, "DSH ready.")
+	}
 	if !needsInputReadinessWait(command, content) {
 		return true
 	}
@@ -3689,6 +3694,9 @@ func isCursorWorkspaceTrustPrompt(command, content string) bool {
 }
 
 func needsInputReadinessWait(command, content string) bool {
+	if workerCommandName(command) == "dsh" {
+		return true
+	}
 	lowerContent := strings.ToLower(content)
 	return isCodexCommand(command) ||
 		isCursorAgentCommand(command) ||
@@ -5160,6 +5168,9 @@ func foregroundTargetProcess(panePID int, processes map[int]processInfo) (string
 }
 
 func workerProviderFamily(command string) string {
+	if strings.Contains(command, "dsh-session") {
+		return "dsh"
+	}
 	switch workerCommandName(command) {
 	case "claude", "claude-code", "cc":
 		return "claude"
@@ -5169,6 +5180,8 @@ func workerProviderFamily(command string) string {
 		return "cursor-agent"
 	case "grok":
 		return "grok"
+	case "dsh":
+		return "dsh"
 	case "pi":
 		return "pi"
 	case "opencode":
@@ -5194,6 +5207,9 @@ func mergeWorkerCommandOwnership(previous, detected string) string {
 	detected = strings.TrimSpace(detected)
 	if detected == "" {
 		return detected
+	}
+	if strings.Contains(previous, "--dsh-session") && workerProviderFamily(detected) == "dsh" {
+		return previous
 	}
 	if commandExecutableBase(previous) != "pi" || commandExecutableBase(detected) != "pi" {
 		return detected
@@ -5486,6 +5502,12 @@ func workerCommandFromProcess(proc processInfo) string {
 	if lowerComm == "pi" || processArgsExecutableBase(lowerArgs) == "pi" {
 		return "pi"
 	}
+	if strings.Contains(lowerArgs, " dsh-session ") {
+		return proc.args
+	}
+	if lowerComm == "dsh" {
+		return "dsh"
+	}
 	if lowerComm == "opencode" || processArgsExecutableBase(lowerArgs) == "opencode" ||
 		strings.Contains(lowerArgs, "/bin/opencode") || strings.Contains(lowerArgs, " opencode ") ||
 		strings.HasPrefix(lowerArgs, "opencode ") {
@@ -5590,10 +5612,13 @@ func isGrokResumeCommandLine(command string) bool {
 
 func isWorkerCommand(command string) bool {
 	name := workerCommandName(command)
-	return name == "claude" || name == "claude-code" || name == "codex" || name == "cursor-agent" || name == "grok" || name == "cc" || name == "pi" || name == "opencode"
+	return name == "claude" || name == "claude-code" || name == "codex" || name == "cursor-agent" || name == "grok" || name == "cc" || name == "pi" || name == "opencode" || name == "dsh"
 }
 
 func workerCommandName(command string) string {
+	if strings.Contains(command, " dsh-session --dsh-session ") {
+		return "dsh"
+	}
 	fields := strings.Fields(strings.TrimSpace(command))
 	if len(fields) == 0 {
 		return normalizeCommand(command)

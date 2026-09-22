@@ -5,6 +5,7 @@ import { Typography } from "../../constants/tokens";
 import { InterfaceComposerAttachmentIcon } from "./InterfaceComposerAttachmentIcon";
 import { InterfaceComposerAttachmentRemoveButton } from "./InterfaceComposerAttachmentRemoveButton";
 
+import type { ZenImageSource } from "../../services/imageSource";
 import { ZenImage } from "./ZenImage";
 
 export type InterfaceComposerAttachment = import("./InterfaceChatSession").ComposerAttachment;
@@ -13,12 +14,14 @@ interface InterfaceComposerAttachmentChipProps {
   attachment: InterfaceComposerAttachment;
   chrome: TerminalThemeChrome;
   onRemove(id: string): void;
+  gallery?: ZenImageSource[];
 }
 
 export function InterfaceComposerAttachmentChip({
   attachment,
   chrome,
   onRemove,
+  gallery,
 }: InterfaceComposerAttachmentChipProps) {
   const thumbnailUri = attachmentThumbnailUri(attachment);
 
@@ -30,7 +33,7 @@ export function InterfaceComposerAttachmentChip({
           { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
         ]}
       >
-        <ZenImage source={{ kind: "phone", uri: thumbnailUri, name: attachment.name }} chrome={chrome} compact />
+        <ZenImage source={{ kind: "phone", uri: thumbnailUri, name: attachment.name }} chrome={chrome} gallery={gallery} compact />
         <InterfaceComposerAttachmentRemoveButton
           attachmentName={attachment.name}
           chrome={chrome}

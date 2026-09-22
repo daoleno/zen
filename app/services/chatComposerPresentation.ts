@@ -1,8 +1,9 @@
 import type { ConnectionState } from '../store/workers';
-import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
+import { isDSHCommand, isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
 import type { AgentKind } from './workerPresentation';
 
 export function agentKindFromCommand(command?: string): AgentKind {
+  if (isDSHCommand(command)) return 'dsh';
   if (isClaudeCommand(command)) return 'claude';
   if (isCodexCommand(command)) return 'codex';
   if (isCursorAgentCommand(command)) return 'cursor';

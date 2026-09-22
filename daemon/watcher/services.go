@@ -38,6 +38,8 @@ type SessionServiceURL struct {
 // (source "persistent"). Persistent rows never carry an invented live Worker
 // ID: WorkerID is empty once the creating Session is gone.
 type SessionService struct {
+	Generation   string              `json:"generation"`
+	Tunnel       *ServiceTunnel      `json:"tunnel,omitempty"`
 	ID           string              `json:"id"`
 	WorkerID     string              `json:"worker_id"`
 	WorkerName   string              `json:"worker_name"`
@@ -68,12 +70,14 @@ type servicePane struct {
 }
 
 type listeningSocket struct {
-	pid  int
-	port int
-	bind string
+	inode string
+	pid   int
+	port  int
+	bind  string
 }
 
 var ssPIDPattern = regexp.MustCompile(`pid=([0-9]+)`)
+var ssInodePattern = regexp.MustCompile(`\bino:([0-9]+)`)
 
 // DiscoverSessionServices scans tmux-owned process trees for listening TCP ports.
 func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
@@ -184,6 +188,7 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 	// never reported twice.
 	services = append(services, w.discoverPersistentServices(claimed, interfaces)...)
 
+	w.decorateServiceTunnels(services, sockets)
 	sort.Slice(services, func(i, j int) bool {
 		if services[i].Project != services[j].Project {
 			return services[i].Project < services[j].Project
@@ -335,7 +340,7 @@ func descendantPIDsIncludingRoot(rootPID int, processes map[int]processInfo) []i
 }
 
 func listListeningSockets() ([]listeningSocket, error) {
-	out, err := exec.Command("ss", "-H", "-ltnp").CombinedOutput()
+	out, err := exec.Command("ss", "-H", "-ltnpe").CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("ss listening sockets: %w", err)
 	}
@@ -364,7 +369,11 @@ func parseSSListeningSockets(output string) []listeningSocket {
 		if !ok || port <= 0 {
 			continue
 		}
-		sockets = append(sockets, listeningSocket{pid: pid, port: port, bind: bind})
+		inode := ""
+		if match := ssInodePattern.FindStringSubmatch(line); len(match) == 2 {
+			inode = match[1]
+		}
+		sockets = append(sockets, listeningSocket{pid: pid, port: port, bind: bind, inode: inode})
 	}
 	return sockets
 }

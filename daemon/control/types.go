@@ -66,6 +66,9 @@ type Request struct {
 	WorkID               string                                 `json:"work_id,omitempty"`
 	WorkFields           []string                               `json:"work_fields,omitempty"`
 	Service              *watcher.ManagedServiceDescriptor      `json:"service,omitempty"`
+	ServiceID            string                                 `json:"service_id,omitempty"`
+	ServiceGeneration    string                                 `json:"service_generation,omitempty"`
+	TunnelAction         string                                 `json:"tunnel_action,omitempty"`
 	ServiceUnit          string                                 `json:"service_unit,omitempty"`
 }
 
@@ -117,6 +120,7 @@ type Response struct {
 	Binding            *modelprofiles.WireBinding               `json:"binding,omitempty"`
 	TelegramStatus     *telegramchannel.Status                  `json:"telegram_status,omitempty"`
 	TelegramBinding    *telegramchannel.BindingChallenge        `json:"telegram_binding,omitempty"`
+	ServiceTunnel      *watcher.ServiceTunnel                   `json:"service_tunnel,omitempty"`
 	ServiceSnapshot    *watcher.SessionServiceSnapshot          `json:"service_snapshot,omitempty"`
 	Service            *watcher.ManagedServiceDescriptor        `json:"service,omitempty"`
 }

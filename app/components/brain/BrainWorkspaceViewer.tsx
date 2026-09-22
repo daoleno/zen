@@ -66,16 +66,6 @@ export function BrainWorkspaceViewer({
     () => (serverId ? `${serverId}:${workspace || ""}` : ""),
     [serverId, workspace],
   );
-  const imageOwner = useMemo<ZenImageOwner>(() => ({
-    key: workspaceCacheKey,
-    async resolve(path, signal) {
-      if (!serverId) throw new Error("Select the current server to open this image.");
-      const file = await wsClient.getBrainWorkspaceFile(serverId, path);
-      signal.throwIfAborted();
-      if (!file.data_url) throw new Error("This workspace file is not a supported image.");
-      return { uri: file.data_url, headers: {} };
-    },
-  }), [serverId, workspaceCacheKey]);
   const [tree, setTree] = useState<BrainWorkspaceTree | null>(null);
   const [treeCacheKey, setTreeCacheKey] = useState("");
   const [treeLoading, setTreeLoading] = useState(false);
@@ -84,6 +74,18 @@ export function BrainWorkspaceViewer({
     [],
   );
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const imageOwner = useMemo<ZenImageOwner>(() => ({
+    key: `${workspaceCacheKey}:${selectedPath || ""}`,
+    async resolve(path, signal) {
+      if (!serverId) throw new Error("Select the current server to open this image.");
+      const parent = selectedPath?.split("/").slice(0, -1).join("/");
+      const relative = parent && !path.startsWith("/") ? `${parent}/${path}` : path;
+      const file = await wsClient.getBrainWorkspaceFile(serverId, relative);
+      signal.throwIfAborted();
+      if (!file.data_url) throw new Error("This workspace file is not a supported image.");
+      return { uri: file.data_url, headers: {} };
+    },
+  }), [serverId, workspaceCacheKey, selectedPath]);
   const [selectedFile, setSelectedFile] = useState<BrainWorkspaceFile | null>(
     null,
   );
@@ -490,7 +492,7 @@ function BrainWorkspaceFilePreview({
   styles: ReturnType<typeof createStyles>;
 }) {
   if (file.kind === "image") {
-    return <View style={{ padding: 12 }}><ZenImage source={{ kind: "owned", path: file.path, name: file.name }} chrome={chrome} /></View>;
+    return <View style={{ padding: 12 }}><ZenImage source={file.data_url ? { kind: "inline", uri: file.data_url, name: file.name } : { kind: "owned", path: file.path, name: file.name }} chrome={chrome} /></View>;
   }
   const markdown =
     file.language === "markdown" || brainWorkspaceMarkdownPath(file.path);

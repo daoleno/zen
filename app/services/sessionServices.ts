@@ -11,7 +11,11 @@ export type SessionServiceInterface = {
   kind: "lan" | "tailscale" | string;
 };
 
+export type ServiceTunnel = { status: "starting" | "running" | "stopping" | "stopped" | "failed"; url?: string; error?: string; generation: string };
+
 export type SessionService = {
+  generation?: string;
+  tunnel?: ServiceTunnel;
   id: string;
   worker_id: string;
   worker_name: string;

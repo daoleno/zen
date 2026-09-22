@@ -4,7 +4,7 @@ import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import FontAwesome6 from '@expo/vector-icons/FontAwesome6';
 import type { ComponentProps } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Claude, Codex, Grok, OpenCode } from '@lobehub/icons-rn';
+import { Claude, Codex, Grok, OpenCode, DeepSeek } from '@lobehub/icons-rn';
 import { useAppTheme } from '../../constants/tokens';
 import type { ResolvedZenTheme } from '../../theme';
 import { surfacesFromTheme } from '../../constants/themedSurfaces';
@@ -115,7 +115,7 @@ export function AgentKindIcon({
     );
   }
 
-  if (kind === 'claude' || kind === 'codex' || kind === 'cursor' || kind === 'grok' || kind === 'pi' || kind === 'opencode') {
+  if (kind === 'claude' || kind === 'codex' || kind === 'cursor' || kind === 'grok' || kind === 'pi' || kind === 'opencode' || kind === 'dsh') {
     return content;
   }
 
@@ -167,6 +167,8 @@ function renderContent({
       </View>
     );
   }
+
+  if (kind === 'dsh') return <DeepSeek size={iconSize} color={theme.isLight ? '#000' : '#fff'} />;
 
   if (kind === 'pi') {
     return <PiMark size={iconSize} color={theme.isLight ? '#000' : '#fff'} />;

@@ -95,6 +95,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleWorkerProgress(req)
 	case "worker_close":
 		return a.handleWorkerClose(req)
+	case "service_tunnel":
+		return a.handleServiceTunnel(req)
 	case "service_list":
 		return a.handleServiceList()
 	case "service_register":
@@ -1516,6 +1518,8 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 				return "", hardenErr
 			}
 			command = hardened
+		} else if provider == work.WorkerProviderDSH {
+			return work.EnsureDSHSessionLaunchCommand(command)
 		} else if provider == work.WorkerProviderPi {
 			var ensureErr error
 			command, ensureErr = work.EnsurePiSessionLaunchCommand(command)
@@ -1532,6 +1536,8 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 		return work.HardenClaudeCommand(executorName), nil
 	} else if provider == work.WorkerProviderOpenCode {
 		return work.HardenOpenCodeDelegatedCommand(executorName)
+	} else if provider == work.WorkerProviderDSH {
+		return work.EnsureDSHSessionLaunchCommand(executorName)
 	} else if provider == work.WorkerProviderPi {
 		return work.EnsurePiSessionLaunchCommand(executorName)
 	}

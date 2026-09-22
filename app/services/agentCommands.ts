@@ -5,11 +5,12 @@ export const CODEX_COMMAND = "codex --dangerously-bypass-approvals-and-sandbox";
 export const CURSOR_AGENT_COMMAND = "cursor-agent --force --sandbox disabled";
 export const GROK_COMMAND =
   "grok --no-alt-screen --permission-mode bypassPermissions";
+export const DSH_COMMAND = "dsh";
 export const PI_COMMAND = "pi";
 export const OPENCODE_COMMAND = "opencode";
 export const OPENCODE_AUTO_COMMAND = "opencode --auto";
 
-export type SupportedAgentID = "claude" | "codex" | "cursor" | "grok" | "pi" | "opencode";
+export type SupportedAgentID = "claude" | "codex" | "cursor" | "grok" | "pi" | "opencode" | "dsh";
 
 export interface SupportedAgentTarget {
   id: SupportedAgentID;
@@ -20,6 +21,7 @@ export interface SupportedAgentTarget {
 }
 
 export const SUPPORTED_AGENT_TARGETS: SupportedAgentTarget[] = [
+ { id: "dsh", handle: "dsh", label: "DSH", command: DSH_COMMAND, description: "DeepSeek Harness with its native saved model and settings." },
   {
     id: "claude",
     handle: "claude",
@@ -194,4 +196,8 @@ export function stripSupportedAgentMentions(text?: string) {
     .replace(/\n[ \t]+/g, "\n")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
+}
+
+export function isDSHCommand(command?: string) {
+ return commandBinary(command) === "dsh" || /(?:^|\s)dsh-session(?:\s|$)/.test(command || "");
 }

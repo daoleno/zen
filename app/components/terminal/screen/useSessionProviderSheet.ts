@@ -120,7 +120,11 @@ export function useSessionProviderSheet({
           setVisible(false);
           return;
         }
-        const nextCatalog = await wsClient.listProviders(serverId);
+        const nextCatalog: ProvidersSnapshot = nextSelection.client === "dsh" ? {
+          revision: 0, presets: [], defaults: {},
+          connections: [{ id: nextSelection.connection_id, name: nextSelection.connection_name, preset_id: "dsh_native", clients: ["dsh"], credential_ready: nextSelection.credential_ready, advanced: false }],
+          models: { [nextSelection.connection_id]: nextSelection.native_models ?? [] },
+        } : await wsClient.listProviders(serverId);
         if (!ownerRef.current.isCurrent(token)) return;
         setCatalog(nextCatalog);
       } catch (loadError) {

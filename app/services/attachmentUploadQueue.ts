@@ -27,7 +27,7 @@ export class AttachmentUploadQueue {
   }
   retry(id: string) {
     const item = this.items.find((item) => item.id === id);
-    if (!item || item.status !== "failed" || this.disposed) return;
+    if (!item || item.status !== "failed" || item.asset.selectionRetryable === false || this.disposed) return;
     item.status = "queued";
     item.error = undefined;
     this.publish();

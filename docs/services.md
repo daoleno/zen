@@ -51,3 +51,44 @@ zen service unregister -unit dsh-web.service   # removes registration only
 
 On platforms without Linux user systemd, registration reports an honest
 unsupported error; tmux session discovery keeps working.
+
+## Temporary public Quick Tunnels
+
+A service row can start, inspect, open, copy or stop one temporary Cloudflare Quick
+Tunnel. Starting is explicit and exposes only that selected service. Zen confirms
+HTTP with a bounded local request; a TCP listener alone is not HTTP evidence.
+Authentication challenges and known control services are not publishable.
+
+Each tunnel binds to the current daemon, service ID, listener PID and process birth
+identity. Duplicate starts return the existing operation. A private loopback proxy
+rechecks the origin's process and listener before and after connecting, so a reused
+port cannot silently become the tunnel's new application. Origin loss stops the
+tunnel and clears its URL. Stopping a tunnel never stops the origin. Linux binds
+cloudflared to daemon death; restart begins with no tunnel and no stale URL. Other
+daemon operating systems report that this lifecycle mode is unsupported.
+
+Zen passes an isolated empty config and filters Cloudflare-specific inherited
+configuration variables. It does not modify `~/.cloudflared/config.yaml`, named
+tunnel credentials, system units or unrelated cloudflared processes. Temporary
+URLs are kept in memory, not the repository or persistent service registry. The
+installed binary must support `--output json`; readiness requires its native
+connection confirmation as well as the generated URL.
+
+Quick Tunnel URLs are random and temporary. Anyone with the URL can access the
+selected service. Cloudflare limits Quick Tunnels to 200 in-flight requests and
+does not support Server-Sent Events (SSE). HTTP and WebSocket behavior must be
+verified on the deployment's network; receiving a URL is not public reachability
+proof. Apps requiring SSE should use their private connection or an appropriate
+managed hosting/tunnel configuration.
+
+The existing CLI exposes the same owner:
+
+```sh
+zen service list --json
+zen service tunnel start -id SERVICE_ID -generation PROCESS_GENERATION
+zen service tunnel status -id SERVICE_ID -generation PROCESS_GENERATION
+zen service tunnel stop -id SERVICE_ID -generation PROCESS_GENERATION
+```
+
+Use the exact ID and generation from the current Services snapshot; stale rows
+cannot start a tunnel on a replacement process.

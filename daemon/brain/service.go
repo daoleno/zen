@@ -3401,6 +3401,11 @@ func (s *Service) hostLaunchCommand(executor work.WorkerExecutor, resumeSessionI
 			}
 		}
 		return withZenCLIOnPath(hardened), nil
+	case work.WorkerProviderDSH:
+		if resumeSessionID != "" {
+			return work.WithProviderResumeToken(provider, command, resumeSessionID)
+		}
+		return work.EnsureDSHSessionLaunchCommand(command)
 	case work.WorkerProviderPi:
 		if resumeSessionID != "" {
 			command, err := work.WithProviderResumeToken(provider, command, resumeSessionID)

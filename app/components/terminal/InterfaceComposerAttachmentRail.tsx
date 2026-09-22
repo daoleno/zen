@@ -6,6 +6,7 @@ import {
   InterfaceComposerAttachmentChip,
   type InterfaceComposerAttachment,
 } from "./InterfaceComposerAttachmentChip";
+import { imageReference, isImageAttachment, type ZenImageSource } from "../../services/imageSource";
 import { InterfaceComposerUploadingChip } from "./InterfaceComposerUploadingChip";
 
 export type { InterfaceComposerAttachment } from "./InterfaceComposerAttachmentChip";
@@ -25,6 +26,9 @@ export function InterfaceComposerAttachmentRail({
   onRemoveAttachment,
   onCancelUpload,
 }: InterfaceComposerAttachmentRailProps) {
+  const gallery: ZenImageSource[] = attachments.filter(isImageAttachment).map((attachment) => attachment.localUri
+    ? { kind: "phone", uri: attachment.localUri, name: attachment.name }
+    : imageReference(attachment.path, attachment.name));
   if (attachments.length === 0 && !activeUpload) {
     return null;
   }
@@ -41,15 +45,16 @@ export function InterfaceComposerAttachmentRail({
           <View key={attachment.id} style={{ gap: 4 }}>
           <InterfaceComposerAttachmentChip
             attachment={attachment}
+            gallery={gallery}
             chrome={chrome}
             onRemove={onRemoveAttachment}
           />
           {attachment.uploadStatus ? <Text numberOfLines={1} style={{ color: chrome.textMuted, maxWidth: 220 }}>
             {attachment.uploadStatus === "uploading" && attachment.uploadProgress?.fraction != null ? `${Math.round(attachment.uploadProgress.fraction * 100)}%` : attachment.uploadStatus}
           </Text> : null}
-          {attachment.uploadStatus === "failed" ? <Pressable accessibilityRole="button" accessibilityLabel={`Retry ${attachment.name}`} onPress={attachment.retryUpload}>
+          {attachment.uploadStatus === "failed" ? <Pressable accessibilityRole="button" accessibilityLabel={`Retry ${attachment.name}`} onPress={attachment.retryUpload} disabled={!attachment.retryUpload}>
             <Text numberOfLines={2} style={{ color: chrome.textMuted, maxWidth: 220 }}>{attachment.uploadError}</Text>
-            <Text style={{ color: chrome.accent }}>Retry</Text>
+            <Text style={{ color: chrome.accent }}>{attachment.retryUpload ? "Retry" : "Remove and select again"}</Text>
           </Pressable> : null}
           </View>
         ))}

@@ -13,6 +13,7 @@ import {
   GROK_COMMAND,
   OPENCODE_COMMAND,
   PI_COMMAND,
+ DSH_COMMAND,
 } from "../../services/agentCommands";
 import { AgentKindIcon } from "./AgentKindIcon";
 import { AppText } from "../ui";
@@ -25,6 +26,7 @@ export type NewTerminalLaunchPreset = {
 };
 
 const LAUNCH_PRESETS: readonly NewTerminalLaunchPreset[] = [
+ { key:"dsh",kind:"dsh",label:"DSH",command:DSH_COMMAND },
   { key: "shell", kind: "terminal", label: "Shell", command: "" },
   {
     key: "claude",

@@ -29,7 +29,7 @@ export type ProviderPickerModelRow = {
 };
 
 function modelEffectChoices(client: string, effects: string[]): string[] {
-  if (client !== "codex") return [];
+  if (client !== "codex" && client !== "dsh") return [];
   return ["", ...effects.filter((effect, index) =>
     effect.trim() !== "" && effects.indexOf(effect) === index
   )];

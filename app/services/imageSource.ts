@@ -4,6 +4,7 @@ import type { SessionFileBinarySource } from "./sessionFilePreview";
 export type ZenImageSource =
   | { kind: "phone"; uri: string; name: string }
   | { kind: "external"; uri: string; name: string }
+  | { kind: "inline"; uri: string; name: string }
   | { kind: "owned"; path: string; name: string };
 
 export interface ZenImageOwner {
@@ -16,6 +17,7 @@ export function isImageAttachment(value: { mimeType?: string; name?: string; pat
 }
 
 export function imageReference(path: string, name = "Image"): ZenImageSource {
+  if (path.startsWith("data:")) return { kind: "inline", uri: path, name };
   if (/^https?:\/\//i.test(path)) return { kind: "external", uri: path, name };
   return { kind: "owned", path, name };
 }
@@ -27,6 +29,10 @@ export async function resolveImageSource(source: ZenImageSource, owner: ZenImage
     const result = await owner.resolve(source.path, signal);
     signal.throwIfAborted();
     return result;
+  }
+  if (source.kind === "inline") {
+    if (source.uri.length > 8 * 1024 * 1024 || !/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=\r\n]+$/.test(source.uri)) throw new Error("Inline image is unsupported or exceeds the preview limit.");
+    return { uri: source.uri, headers: {} };
   }
   if (source.kind === "external") {
     const url = new URL(source.uri);

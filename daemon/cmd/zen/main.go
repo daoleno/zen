@@ -76,6 +76,8 @@ func main() {
 func run(args []string, stderr io.Writer) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
+		case "dsh-session":
+			return runDSHSessionCLI(args[1:])
 		case "serve":
 			return runDaemon(args[1:], stderr)
 		case "pair":

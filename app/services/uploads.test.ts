@@ -539,3 +539,11 @@ describe("Android document selection boundary", () => {
     expect(authorizationOptions).toBeUndefined();
   });
 });
+
+test("multi-select preserves all URIs in order and rejects excess before upload", async () => {
+  const assets = ["one", "two", "three"].map((name) => ({ uri: `content://fixture/${name}`, name, mimeType: "text/plain", size: 1 }));
+  nativeModule = { pickDocuments: async () => assets, upload: async () => uploadResult, cancel: () => false, addListener: () => ({ remove() {} }) };
+  expect((await pickUploadDocuments(3)).map((asset) => asset.uri)).toEqual(assets.map((asset) => asset.uri));
+  await expect(pickUploadDocuments(2)).rejects.toThrow("Choose up to 2 files");
+  expect(uploadCalls).toHaveLength(0);
+});

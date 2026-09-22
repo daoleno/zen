@@ -128,6 +128,8 @@ func (r *ProviderConversationReader) LoadByIdentity(identity HostTranscriptIdent
 		return r.loadBoundFileConversation(identity, claudeConversationSource, r.loadClaudeConversation)
 	case WorkerProviderCursor:
 		return r.loadBoundFileConversation(identity, cursorConversationSource, r.loadCursorConversation)
+	case WorkerProviderDSH:
+		return r.loadBoundFileConversation(identity, dshConversationSource, r.loadDSHConversation)
 	case WorkerProviderPi:
 		return r.loadBoundFileConversation(identity, piConversationSource, r.loadPiConversation)
 	case WorkerProviderOpenCode:

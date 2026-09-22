@@ -90,6 +90,7 @@ export type ProviderSwitchInput = {
 };
 
 export type ThreadRuntimeSelection = {
+  native_models?: ProviderModel[];
   session_id: string;
   client: string;
   connection_id: string;

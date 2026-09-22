@@ -15,6 +15,7 @@ const (
 	WorkerProviderGrok     = "grok"
 	WorkerProviderClaude   = "claude"
 	WorkerProviderPi       = "pi"
+	WorkerProviderDSH      = "dsh"
 	WorkerProviderOpenCode = "opencode"
 	WorkerProviderCustom   = "custom"
 
@@ -673,6 +674,8 @@ func inferWorkerProviderOne(value string) string {
 			// Exact basename only: avoid substring false positives
 			// (myopencode, opencodefake, …).
 			return WorkerProviderOpenCode
+		case base == WorkerProviderDSH || base == "dsh-session":
+			return WorkerProviderDSH
 		case base == WorkerProviderPi:
 			// Exact basename only: avoid substring false positives (pip, pixel, …).
 			return WorkerProviderPi
@@ -715,6 +718,9 @@ func workerCapabilities(provider, runtime string) WorkerCapabilities {
 		// Cursor Agent appends provider-structured message, tool, and turn rows
 		// under agent-transcripts. It does not expose Codex-style native APIs.
 		caps.StructuredEvents = true
+	case WorkerProviderDSH:
+		caps.StructuredEvents = true
+		caps.NativeResume = true
 	case WorkerProviderPi:
 		// Pi exposes structured chat via an owned JSONL session file. Resume is
 		// the same absolute --session path Zen injected at launch.

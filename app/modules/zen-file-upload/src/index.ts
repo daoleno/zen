@@ -36,6 +36,7 @@ export interface NativeDownloadRequest {
 
 export interface NativePickedDocument {
   selectionError?: string;
+  selectionRetryable?: boolean;
   uri: string;
   name: string;
   mimeType: string;

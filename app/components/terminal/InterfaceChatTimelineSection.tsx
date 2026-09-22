@@ -158,6 +158,7 @@ export function InterfaceChatTimelineSection({
     async resolve(path, signal) {
       if (!workerProcessId || !workerStartedAt) throw new Error("Refresh the Session to open this image.");
       const request = { workerId, processId: workerProcessId, startedAt: workerStartedAt, path };
+      if (path.startsWith("dsh-attachment:")) return { uri: await wsClient.getSessionImage(serverId, request), headers: {} };
       const metadata = await (filePreviewLoader?.metadata ?? wsClient.getSessionFileMetadata.bind(wsClient))(serverId, request);
       signal.throwIfAborted();
       if (metadata.kind !== "image" || metadata.tooLarge) throw new Error("This image exceeds the preview limit or is unsupported. Open the file to download it.");

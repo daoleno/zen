@@ -3,6 +3,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { MarkdownWithImages } from "../markdown/MarkdownWithImages";
 import { MessageBody } from "./InterfaceMessageBody";
 import { InterfaceTimelineActivityOutput } from "./InterfaceTimelineActivityOutput";
 import type { ZenActivityTimelineItem } from "./InterfaceTimelineActivityTypes";
@@ -44,13 +45,13 @@ export function InterfaceTimelineActivityBody({
   }
 
   return (
-    <InterfaceTimelineActivityOutput
-      body={displayBody}
+    <MarkdownWithImages markdown={body} chrome={chrome} renderMarkdown={(text) => <InterfaceTimelineActivityOutput
+      body={truncateBody(text, 1800)}
       bodyKind={bodyKind}
       chrome={chrome}
       theme={theme}
       emphasizeError={emphasizeError}
-    />
+    />} />
   );
 }
 

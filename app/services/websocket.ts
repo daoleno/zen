@@ -2746,6 +2746,23 @@ export class MultiServerWebSocketClient {
     });
   }
 
+  getSessionImage(serverId: string, request: SessionFileRequest): Promise<string> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => { clearTimeout(timer); this.off("session_image", success); this.off("error", failure); };
+      const success = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        if (typeof payload.data_url !== "string" || !payload.data_url.startsWith("data:image/")) reject(new Error("Invalid Session image"));
+        else resolve(payload.data_url);
+      };
+      const failure = (payload: any) => { if (payload.serverId === serverId && payload.request_id === requestId) { cleanup(); reject(new Error(payload.message || "Image unavailable")); } };
+      const timer = setTimeout(() => { cleanup(); reject(new Error("Image request timed out")); }, 15000);
+      this.on("session_image", success); this.on("error", failure);
+      this.sendRequestNow(serverId, { type: "session_image", request_id: requestId, worker_id: request.workerId, process_id: request.processId, started_at: request.startedAt, path: request.path }, cleanup, reject);
+    });
+  }
+
   getSessionFileMetadata(
     serverId: string,
     request: SessionFileRequest,
@@ -3687,6 +3704,23 @@ export class MultiServerWebSocketClient {
         cleanup,
         reject,
       );
+    });
+  }
+
+  serviceTunnel(serverId: string, serviceId: string, generation: string, action: "start" | "stop" | "status"): Promise<import("./sessionServices").ServiceTunnel> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => { clearTimeout(timer); this.off("service_tunnel", success); this.off("error", failure); };
+      const success = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId || payload.service_id !== serviceId) return;
+        cleanup();
+        if (!payload.tunnel || payload.tunnel.generation !== generation) reject(new Error("Service changed. Refresh Services."));
+        else resolve(payload.tunnel);
+      };
+      const failure = (payload: any) => { if (payload.serverId === serverId && payload.request_id === requestId) { cleanup(); reject(new Error(payload.message || "Tunnel request failed")); } };
+      const timer = setTimeout(() => { cleanup(); reject(new Error("Tunnel request timed out")); }, 10000);
+      this.on("service_tunnel", success); this.on("error", failure);
+      this.sendRequestNow(serverId, { type: "service_tunnel", request_id: requestId, service_id: serviceId, service_generation: generation, tunnel_action: action }, cleanup, reject);
     });
   }
 

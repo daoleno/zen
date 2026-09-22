@@ -90,3 +90,17 @@ func (a *controlApp) handleServiceUnregister(req control.Request) control.Respon
 	}
 	return control.Response{OK: true, Confirmation: "Unregistered persistent service " + unit + "."}
 }
+
+func (a *controlApp) handleServiceTunnel(req control.Request) control.Response {
+	owner, ok := a.watcher.(interface {
+		ServiceTunnelAction(string, string, string) (watcher.ServiceTunnel, error)
+	})
+	if !ok {
+		return control.ErrorResponse("services_unavailable", "Service tunnels are unavailable")
+	}
+	state, err := owner.ServiceTunnelAction(req.ServiceID, req.ServiceGeneration, req.TunnelAction)
+	if err != nil {
+		return control.ErrorResponse("service_tunnel_failed", err.Error())
+	}
+	return control.Response{OK: true, ServiceTunnel: &state}
+}

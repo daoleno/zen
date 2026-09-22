@@ -3,6 +3,7 @@ package work
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -36,6 +37,8 @@ func ProviderResumeToken(provider, command string) (token string, present bool, 
 		return exclusiveResumeFlagToken(options.argv, "--resume")
 	case WorkerProviderOpenCode:
 		return exclusiveOpenCodeSessionToken(options.argv)
+	case WorkerProviderDSH:
+		return exclusiveResumeFlagToken(options.argv, "--dsh-session")
 	case WorkerProviderPi:
 		return exclusivePiSessionToken(options.argv)
 	default:
@@ -84,6 +87,15 @@ func WithProviderResumeToken(provider, command, token string) (string, error) {
 			return "", fmt.Errorf("opencode resume requires ses_* session id")
 		}
 		return appendCommandOptions(command, "-s", quoted), nil
+	case WorkerProviderDSH:
+		if !dshSessionIDPattern.MatchString(token) {
+			return "", fmt.Errorf("invalid DSH session id")
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return "", err
+		}
+		return shellQuoteForLaunch(executable) + " dsh-session --dsh-session " + quoted, nil
 	case WorkerProviderPi:
 		if !filepath.IsAbs(token) {
 			return "", fmt.Errorf("pi resume requires an absolute --session path")

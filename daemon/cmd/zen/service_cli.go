@@ -17,6 +17,8 @@ func runServiceCommand(args []string, stderr io.Writer) error {
 		return flag.ErrHelp
 	}
 	switch args[0] {
+	case "tunnel":
+		return runServiceTunnel(args[1:], stderr)
 	case "list":
 		return runServiceList(args[1:], stderr)
 	case "register":
@@ -147,4 +149,32 @@ func serviceDisplayName(service watcher.SessionService) string {
 		return strings.TrimSpace(service.WorkerID)
 	}
 	return name
+}
+
+func runServiceTunnel(args []string, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: zen service tunnel <start|status|stop> -id ID -generation GENERATION")
+	}
+	action := args[0]
+	if action != "start" && action != "stop" && action != "status" {
+		return fmt.Errorf("unsupported tunnel action")
+	}
+	flags := flag.NewFlagSet("service tunnel", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	var id, generation string
+	flags.StringVar(&cfg.stateDir, "state-dir", "", "daemon state directory")
+	flags.StringVar(&id, "id", "", "exact discovered service id")
+	flags.StringVar(&generation, "generation", "", "exact discovered process generation")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if id == "" || generation == "" {
+		return fmt.Errorf("id and generation from zen service list are required")
+	}
+	response, err := callControl(cfg, control.Request{Type: "service_tunnel", ServiceID: id, ServiceGeneration: generation, TunnelAction: action})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, response, true)
 }

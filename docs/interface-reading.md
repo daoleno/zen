@@ -118,3 +118,8 @@ shows each file's status and permits removal or retry of failed files. Sending
 waits until attachments are ready or removed. Switching server or Session cancels
 pending work without deleting previously ready attachments. Android requires the
 updated Zen Debug native module; iOS uses Expo's multi-document picker.
+
+Attachment envelopes retain `content_type`, so a supported image without a file
+extension remains an image when history reloads. Raster data URLs are accepted
+only for PNG/JPEG/GIF/WebP and within an 8 MiB encoded preview bound. Composer image
+inspection navigates the selected batch without changing selection order.

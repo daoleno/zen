@@ -54,6 +54,7 @@ export function buildInterfaceComposerMessage(
     files: attachments.map((attachment) => ({
       name: attachment.name,
       path: attachment.path,
+      content_type: attachment.mimeType,
     })),
   })}</zen_attachments>`;
   return [body, attachmentBlock].filter(Boolean).join("\n\n");
