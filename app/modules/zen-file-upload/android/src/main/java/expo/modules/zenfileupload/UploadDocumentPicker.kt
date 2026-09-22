@@ -15,12 +15,14 @@ import java.io.IOException
 internal object UploadDocumentPicker {
     const val REQUEST_CODE = 58341
 
-    fun intent() = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+    // One-shot attachment import, including apps that don't expose DocumentsProvider.
+    // Keep one user-selected result; never retry with a different provider/URI.
+    fun intent() = Intent.createChooser(Intent(Intent.ACTION_GET_CONTENT).apply {
         addCategory(Intent.CATEGORY_OPENABLE)
         type = "*/*"
         putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
+    }, "Attach a file")
 
     fun readResult(resolver: ContentResolver, resultCode: Int, intent: Intent?, signal: CancellationSignal? = null, debug: Boolean = false): Map<String, Any?>? {
         fun diagnostic(message: String) {
@@ -42,10 +44,10 @@ internal object UploadDocumentPicker {
         }
         val uri = dataUri ?: clipUri ?: throw failure("RESULT", "No file was selected. Choose a file again.")
         diagnostic("uriContent=${uri.scheme == ContentResolver.SCHEME_CONTENT} authorityPresent=${!uri.authority.isNullOrBlank()}")
-        return read(resolver, uri, signal, ::diagnostic)
+        return read(resolver, uri, signal, debug, ::diagnostic)
     }
 
-    private fun read(resolver: ContentResolver, uri: Uri, signal: CancellationSignal?, diagnostic: (String) -> Unit): Map<String, Any?> {
+    private fun read(resolver: ContentResolver, uri: Uri, signal: CancellationSignal?, debug: Boolean, diagnostic: (String) -> Unit): Map<String, Any?> {
         if (uri.scheme != ContentResolver.SCHEME_CONTENT || uri.authority.isNullOrBlank()) {
             throw failure("URI", "Cannot read this file. The picker returned an invalid document URI.")
         }
@@ -95,16 +97,31 @@ internal object UploadDocumentPicker {
             resolver.openAssetFileDescriptor(uri, "r", signal)?.use { descriptor ->
                 stage = "READ"
                 descriptor.createInputStream().use { it.read() }
-            } ?: throw IOException("Document stream unavailable")
+            } ?: throw NoStreamException()
         } catch (error: Exception) {
-            diagnostic("stage=$stage exception=${error.javaClass.simpleName.take(80)} cause=${error.cause?.javaClass?.simpleName?.take(80)}")
+            // Expo JSI drops native causes. Include only bounded structural details
+            // in Debug alerts so a phone screenshot suffices without USB/logcat.
+            val detail = if (debug) {
+                val authority = uri.authority?.takeIf { it.matches(Regex("[A-Za-z0-9_.-]{1,120}")) } ?: "nonstandard"
+                val classes = generateSequence<Throwable>(error) { it.cause }.take(4).joinToString(" > ") {
+                    val name = it.javaClass.simpleName.takeIf { value -> value.matches(Regex("[A-Za-z0-9_$]{1,80}")) } ?: "Exception"
+                    if (it is android.system.ErrnoException) "$name(errno=${it.errno})" else name
+                }
+                "provider=$authority; exception=$classes"
+            } else null
+            if (detail != null) diagnostic("stage=$stage $detail")
             val reason = when (error) {
                 is SecurityException -> "Access was denied. Select the file again."
                 is OperationCanceledException -> "File selection was canceled."
+                is NoStreamException -> "The document provider returned no stream. Select the file again."
+                is java.io.FileNotFoundException -> "The document provider could not open the selected content."
+                is UnsupportedOperationException -> "The document provider does not support opening this content."
+                is android.os.DeadObjectException -> "The document provider stopped. Select the file again."
                 else -> "The document provider could not read it."
             }
             val code = if (error is SecurityException) "$stage-PERMISSION" else stage
-            throw failure(code, "Cannot read this file. $reason", error)
+            val failure = failure(code, "Cannot read this file. $reason", error)
+            throw if (detail == null) failure else IOException("${failure.message}\n$detail", error)
         }
         diagnostic("stage=READY namePresent=${!name.isNullOrBlank()} typePresent=${!mimeType.isNullOrBlank()} sizeKnown=${size != null}")
         return mapOf(
@@ -117,4 +134,6 @@ internal object UploadDocumentPicker {
 
     private fun failure(stage: String, message: String, cause: Exception? = null) =
         IOException("$message [PICK-$stage]", cause)
+
+    private class NoStreamException : IOException("Document provider returned no descriptor")
 }

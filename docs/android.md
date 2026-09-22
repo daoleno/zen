@@ -306,8 +306,9 @@ Signed arm64 APK and daemon binaries are built in parallel when a reviewed annot
 
 ### Attachment document providers
 
-Android composer attachments use Zen's native `ACTION_OPEN_DOCUMENT` picker with
-`CATEGORY_OPENABLE`. It preserves the selected content URI and UTF-8 display name,
+Android composer attachments use a native `ACTION_GET_CONTENT` chooser with
+`CATEGORY_OPENABLE` for one-shot import, including content supplied by apps that
+do not expose a DocumentsProvider. It preserves the selected content URI and UTF-8 display name,
 then streams from that URI through the existing authenticated upload transport.
 Older installed binaries that lack the native `pickDocument` method continue to
 use Expo's picker, avoiding an undefined-method error after a JS update. Install
@@ -325,7 +326,7 @@ The picker launches on the main queue and owns one selection through metadata
 validation. Module destruction cancels pending reads and discards late results.
 The activity's temporary read grant covers the immediate streamed upload; Zen
 does not persist grants or promise upload resumption after the activity/task ends.
-`ACTION_OPEN_DOCUMENT` remains the contract; Zen requests one openable document
+Zen requests one openable item through this single import flow
 and rejects ambiguous data/ClipData results instead of choosing a different file.
 Unknown size remains chunked even when the transport's advisory size query fails.
 
@@ -334,10 +335,25 @@ Picker errors include `PICK-RESULT` (missing/ambiguous selection), `PICK-URI`
 `PICK-READ` (stream creation/read). `-PERMISSION` identifies access denial.
 Debug builds log bounded structural result facts, read-grant presence, metadata
 stage/exception class and stream stage/exception class under `ZenDocumentPicker`
-in Android logcat. They never log URIs, names, provider identifiers, file bytes,
-or raw exception messages. Metadata failures alone do not imply access denial;
+in Android logcat. Debug stream failures also include the provider authority and
+up to four exception/cause class names (plus numeric errno when available) in the
+alert, since Expo does not pass native causes to JavaScript. A null descriptor is
+identified as `NoStreamException`. Release alerts omit these diagnostic details.
+Diagnostics never include full URIs, names, paths, file bytes, or raw provider
+exception messages. Metadata failures alone do not imply access denial;
 the original stream must still open and read. A stage code diagnoses a failure
 boundary, not a confirmed device-specific cause.
+
+The probe's `openAssetFileDescriptor(uri, "r", signal)` followed by
+`createInputStream()` uses the same content-provider opening semantics as the
+uploader's `openInputStream(uri)` (which delegates to those operations in AOSP).
+No alternate URI, provider fallback chain, persistent grant or cache copy is used.
+The temporary grant supports immediate upload while the activity/task lives;
+background resumption after task destruction is not supported. Copying into cache
+would still require opening the same source and would not repair an open failure.
+Android documents `GET_CONTENT` for attachment import and `OPEN_DOCUMENT` for
+document access: see the [Intent contract](https://developer.android.com/reference/android/content/Intent#ACTION_GET_CONTENT)
+and [AndroidX GetContent](https://developer.android.com/reference/androidx/activity/result/contract/ActivityResultContracts.GetContent).
 
 The native provider regression fixture lives in `zen-file-upload/android/src/androidTest`.
 Run `:zen-file-upload:connectedDebugAndroidTest` from `app/android` with an emulator.
