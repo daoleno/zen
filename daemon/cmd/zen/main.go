@@ -228,10 +228,6 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 	brainService := brain.NewService(brainStore, w, execs)
 	w.SetTurnLedger(brainService)
-	go brainService.RunLifecycleScheduler(ctx)
-	// Durable Brain transcript capture is daemon-owned: channel adapters and
-	// App subscriptions read the timeline and never gate its progression.
-	go brainService.RunHostTranscriptCapture(ctx)
 	calendarRoot, err := calendar.DefaultRoot()
 	if err != nil {
 		return fmt.Errorf("resolve calendar root: %w", err)
@@ -362,6 +358,25 @@ func runDaemon(args []string, stderr io.Writer) error {
 		Handler: controlHandler,
 	}
 	runtimeOwners := []runtimeOwner{
+		{
+			name: "Brain lifecycle scheduler",
+			run: func(ctx context.Context) error {
+				// Restored leases may already be overdue. Complete discovery and
+				// provider projection before evaluating their first expiry sweep.
+				if err := w.WaitForSnapshot(ctx); err != nil {
+					return err
+				}
+				brainService.RunLifecycleScheduler(ctx)
+				return nil
+			},
+		},
+		{
+			name: "Brain transcript capture",
+			run: func(ctx context.Context) error {
+				brainService.RunHostTranscriptCapture(ctx)
+				return nil
+			},
+		},
 		{
 			name: "Telegram connection",
 			run:  telegramManager.Run,

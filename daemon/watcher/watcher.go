@@ -251,6 +251,7 @@ type Watcher struct {
 	providerActivityProbe ProviderActivityProbe
 	nextEpoch             int64
 	snapshotReady         bool
+	snapshotReadyCh       chan struct{}
 	eventMu               sync.Mutex       // serialize projection publication without holding mu under backpressure
 	inventoryMu           sync.Mutex       // register resource ownership after in-flight inventory/reconciliation
 	workerEpoch           map[string]int64 // per-agent generation for lock-free probe apply
@@ -324,6 +325,7 @@ func New(pollInterval time.Duration) *Watcher {
 		probeLossSince:   make(map[string]probeLossState),
 		providerSignals:  make(map[string]providerActivitySignal),
 		events:           make(chan SessionEvent, 100),
+		snapshotReadyCh:  make(chan struct{}),
 		resources:        noopDelegatedResourceManager{},
 		submitSleep:      time.Sleep,
 	}
@@ -829,6 +831,24 @@ func (w *Watcher) Workers() []*classifier.Worker {
 	return result
 }
 
+// WaitForSnapshot waits for the first complete discovery/projection pass.
+// Startup lifecycle timers use this barrier; listener readiness is independent.
+// Cancellation also releases callers when discovery is unavailable.
+func (w *Watcher) WaitForSnapshot(ctx context.Context) error {
+	w.mu.RLock()
+	ready, done := w.snapshotReady, w.snapshotReadyCh
+	w.mu.RUnlock()
+	if ready {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
 // SnapshotReady reports whether Watcher has completed at least one full poll.
 // It gates the Brain startup reconciliation that needs a fresh inventory.
 func (w *Watcher) SnapshotReady() bool {
@@ -1273,9 +1293,8 @@ func (w *Watcher) poll() {
 	w.mu.RUnlock()
 	windows, err := listWindows()
 	if err != nil {
-		if isNoTmuxServerError(err) {
-			w.resourceManager().Reconcile(nil)
-		}
+		// An unavailable inventory proves neither Session loss nor released
+		// resources. Retain both until a successful authoritative observation.
 		w.inventoryMu.Unlock()
 		return
 	}
@@ -1294,7 +1313,12 @@ func (w *Watcher) poll() {
 	events := w.projectPollResultsLocked(results)
 	events = append(events, w.projectMissingWorkersLocked(missing)...)
 	w.compactWorkerOrderLocked()
-	w.snapshotReady = true
+	if !w.snapshotReady {
+		w.snapshotReady = true
+		if w.snapshotReadyCh != nil {
+			close(w.snapshotReadyCh)
+		}
+	}
 	w.mu.Unlock()
 	for _, event := range events {
 		w.events <- event
@@ -2370,8 +2394,8 @@ type tmuxWindow struct {
 // caller-visible server selected at startup. Ambient user windows are read only
 // as part of tmux's formatted listing and are discarded by the durable
 // @zen_worker_created marker before they can enter discovery or reconciliation.
-// A missing server is an empty inventory so removal reconciliation owns vanished
-// Zen sessions.
+// A missing/unreadable server is Unknown, never a successful empty inventory.
+// Only a successful observation may drive removal reconciliation.
 func (w *Watcher) listTmuxWindows() ([]tmuxWindow, error) {
 	if w == nil {
 		return nil, nil
@@ -2381,14 +2405,11 @@ func (w *Watcher) listTmuxWindows() ([]tmuxWindow, error) {
 	w.mu.RUnlock()
 	onSocket, err := listTmuxWindowsOn(socket)
 	if err != nil {
-		if isNoTmuxServerError(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	windows := make([]tmuxWindow, 0, len(onSocket))
 	for _, win := range onSocket {
-		present, owned, probeErr := probeTmuxTargetOwnership(socket, win.target)
+		present, owned, probeErr := probeTmuxTargetOwnershipOn(socket, win.target, true)
 		if probeErr != nil {
 			return nil, probeErr
 		}
@@ -2477,11 +2498,18 @@ func tmuxBoolOption(value string) bool {
 // inherit @zen_worker_created from a global tmux option. Missing targets and
 // missing servers are ordinary absence; any other failure is unknown.
 func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err error) {
+	return probeTmuxTargetOwnershipOn(socket, target, false)
+}
+
+// requireServer distinguishes inventory evidence from an exact cleanup probe:
+// cleanup may regard a missing server as absent, but discovery cannot publish
+// absence when any step of its multi-command inventory lost server access.
+func probeTmuxTargetOwnershipOn(socket, target string, requireServer bool) (present, owned bool, err error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return false, false, nil
 	}
-	present, err = tmuxTargetPresent(socket, target)
+	present, err = tmuxTargetPresentOn(socket, target, requireServer)
 	if err != nil || !present {
 		return false, false, err
 	}
@@ -2495,6 +2523,9 @@ func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err e
 		"@zen_worker_created",
 	).CombinedOutput()
 	outText := strings.TrimSpace(string(out))
+	if requireServer && (isNoTmuxServerError(commandErr) || isNoTmuxServerError(fmt.Errorf("%s", outText))) {
+		return false, false, fmt.Errorf("%w: selected tmux server became unavailable", ErrOwnershipProbeUnavailable)
+	}
 	if isTmuxTargetMissing(commandErr, outText) ||
 		isNoTmuxServerError(commandErr) ||
 		isNoTmuxServerError(fmt.Errorf("%s", outText)) {
@@ -2515,6 +2546,10 @@ func probeTmuxTargetOwnership(socket, target string) (present, owned bool, err e
 // window (or session) target. list-panes does not fall back to another window
 // when the requested window_id is gone.
 func tmuxTargetPresent(socket, target string) (bool, error) {
+	return tmuxTargetPresentOn(socket, target, false)
+}
+
+func tmuxTargetPresentOn(socket, target string, requireServer bool) (bool, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return false, nil
@@ -2528,6 +2563,9 @@ func tmuxTargetPresent(socket, target string) (bool, error) {
 		"#{session_name}:#{window_id}",
 	).CombinedOutput()
 	outText := strings.TrimSpace(string(out))
+	if requireServer && (isNoTmuxServerError(commandErr) || isNoTmuxServerError(fmt.Errorf("%s", outText))) {
+		return false, fmt.Errorf("%w: selected tmux server became unavailable", ErrOwnershipProbeUnavailable)
+	}
 	if isTmuxTargetMissing(commandErr, outText) ||
 		isNoTmuxServerError(commandErr) ||
 		isNoTmuxServerError(fmt.Errorf("%s", outText)) {

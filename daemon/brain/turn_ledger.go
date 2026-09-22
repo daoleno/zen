@@ -501,15 +501,22 @@ func (s *Store) rebuildFSMProjections() error {
 		return fmt.Errorf("brain store is not configured")
 	}
 	states := s.fsm.ListViews()
-	var firstErr error
-	note := func(err error) {
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+	if len(states) == 0 {
+		return nil
 	}
+	// Recovery owns one private presentation image until every Work and accepted
+	// admission has been projected. Persist it once before publishing cards;
+	// readers cannot observe a partially repaired image.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadPresentationLocked()
+	if err != nil {
+		return err
+	}
+	now := s.nowUTC()
 	for _, st := range states {
-		if err := s.SyncWorkProjection(string(st.ID)); err != nil {
-			note(fmt.Errorf("project Work %s: %w", st.ID, err))
+		if err := s.fsmSyncWorkLocked(&database, string(st.ID), now); err != nil {
+			return fmt.Errorf("project Work %s: %w", st.ID, err)
 		}
 	}
 	for _, st := range states {
@@ -534,8 +541,8 @@ func (s *Store) rebuildFSMProjections() error {
 					Admission: watcher.TurnAdmission{Stream: admission.AdmissionStream, ID: admission.AdmissionID,
 						Cursor: admission.AdmissionCursor, SHA256: admission.PayloadSHA256, At: admission.AdmissionAt},
 				}
-				if err := s.projectAcceptedAdmission(st, admission, resolution); err != nil {
-					note(fmt.Errorf("project admission %s: %w", admission.TurnToken, err))
+				if err := projectAcceptedAdmission(&database, st, admission, resolution, now); err != nil {
+					return fmt.Errorf("project admission %s: %w", admission.TurnToken, err)
 				}
 			}
 		}
@@ -543,11 +550,18 @@ func (s *Store) rebuildFSMProjections() error {
 	// Accepted admission rows are present now. Re-project Work once more so all
 	// presentation fields reflect the final canonical aggregate image.
 	for _, st := range states {
-		if err := s.SyncWorkProjection(string(st.ID)); err != nil {
-			note(fmt.Errorf("bind accepted Work projection %s: %w", st.ID, err))
+		if err := s.fsmSyncWorkLocked(&database, string(st.ID), now); err != nil {
+			return fmt.Errorf("bind accepted Work projection %s: %w", st.ID, err)
 		}
 	}
-	return firstErr
+	if err := s.persistPresentationLocked(database); err != nil {
+		return err
+	}
+	workIDs := make([]string, 0, len(states))
+	for _, st := range states {
+		workIDs = append(workIDs, string(st.ID))
+	}
+	return s.rebuildWorkCardsLocked(database, workIDs)
 }
 
 func (s *Store) fsmAdmission(sessionID, proposedTurnID string) (*lifecycle.State, *lifecycle.AdmissionState, error) {
@@ -564,15 +578,23 @@ func (s *Store) fsmAdmission(sessionID, proposedTurnID string) (*lifecycle.State
 // Failure cannot revoke the already-committed Lifecycle fact; restart repair
 // deterministically rebuilds this projection from the exact State admission.
 func (s *Store) projectAcceptedAdmission(st *lifecycle.State, admission *lifecycle.AdmissionState, resolution watcher.InputAdmissionResolution) error {
-	if st == nil || admission == nil {
-		return fmt.Errorf("accepted admission projection is missing canonical state")
-	}
-	now := s.nowUTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadPresentationLocked()
 	if err != nil {
 		return err
+	}
+	if err := projectAcceptedAdmission(&database, st, admission, resolution, s.nowUTC()); err != nil {
+		return err
+	}
+	return s.persistPresentationLocked(database)
+}
+
+// projectAcceptedAdmission mutates only the caller's private projection image.
+// Both single-admission commits and startup recovery use the same reducer.
+func projectAcceptedAdmission(database *presentationDatabase, st *lifecycle.State, admission *lifecycle.AdmissionState, resolution watcher.InputAdmissionResolution, now time.Time) error {
+	if st == nil || admission == nil {
+		return fmt.Errorf("accepted admission projection is missing canonical state")
 	}
 	resultTurnID := string(admission.ResultTurnToken)
 	if resultTurnID == "" {
@@ -605,7 +627,7 @@ func (s *Store) projectAcceptedAdmission(st *lifecycle.State, admission *lifecyc
 		if lease.After(turn.LeaseDeadline) {
 			turn.LeaseDeadline = lease
 		}
-		return s.persistPresentationLocked(database)
+		return nil
 	}
 	if admission.AttemptedAt.IsZero() {
 		return fmt.Errorf("accepted admission %s has no attempted_at", admission.TurnToken)
@@ -626,7 +648,7 @@ func (s *Store) projectAcceptedAdmission(st *lifecycle.State, admission *lifecyc
 		SignalProtocol:    admission.SignalProtocol, HostHandling: admission.ClaimToken != "",
 		LeaseDeadline: leaseFrom.Add(turnLeaseGrace).UTC(), UpdatedAt: now,
 	})
-	return s.persistPresentationLocked(database)
+	return nil
 }
 
 func databaseWorkIDForTurnAdmission(database presentationDatabase, sessionID string) string {
@@ -711,7 +733,22 @@ func (s *Store) Turn(sessionID string) (watcher.TurnSnapshot, bool, error) {
 	if !found {
 		return watcher.TurnSnapshot{}, false, nil
 	}
-	return turn.snapshot(), true, nil
+	snapshot := turn.snapshot()
+	if turn.WorkID != "" && !watcher.TurnTerminal(snapshot.Status) {
+		state, stateErr := s.fsmState(turn.WorkID)
+		if stateErr != nil {
+			return watcher.TurnSnapshot{}, false, stateErr
+		}
+		if state != nil && (state.Attempt == nil || state.Attempt.SessionID != sessionID ||
+			string(state.Attempt.TurnToken) != turn.TurnID) {
+			// Historical provider activity may outlive a lost/released Attempt.
+			// It remains audit evidence (TurnByID), never authority to steer a
+			// nonexistent owner. Signal-protocol reuse can prepare a fresh,
+			// explicitly requested admission under the engine's current fence.
+			snapshot.Status = watcher.TurnUnknown
+		}
+	}
+	return snapshot, true, nil
 }
 
 // TurnByID reads one exact canonical provider Turn. Host handling recovery
