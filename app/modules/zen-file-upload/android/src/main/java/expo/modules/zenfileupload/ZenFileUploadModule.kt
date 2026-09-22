@@ -74,7 +74,9 @@ class ZenFileUploadModule : Module() {
                         pickerReads.execute {
                             try {
                                 if (resolver == null) throw Exceptions.ReactContextLost()
-                                val asset = UploadDocumentPicker.readResult(resolver, resultCode, intent, pickerCancellation)
+                                val debug = (appContext.reactContext?.applicationInfo?.flags ?: 0) and
+                                    android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+                                val asset = UploadDocumentPicker.readResult(resolver, resultCode, intent, pickerCancellation, debug)
                                 if (picker.finish(promise)) promise.resolve(asset)
                             } catch (error: Exception) {
                                 if (picker.finish(promise)) promise.reject("ERR_DOCUMENT_READ", error.message, error)
@@ -348,13 +350,20 @@ private fun resolveContentLength(resolver: ContentResolver, uri: Uri, expectedSi
     if (uri.scheme == ContentResolver.SCHEME_FILE) {
         return File(requireNotNull(uri.path)).length()
     }
-    resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) {
-            val index = cursor.getColumnIndex(OpenableColumns.SIZE)
-            if (index >= 0 && !cursor.isNull(index)) {
-                return cursor.getLong(index)
+    // Advisory metadata must not veto a readable stream accepted by the picker.
+    try {
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (index >= 0 && !cursor.isNull(index)) {
+                    return cursor.getLong(index).takeIf { it >= 0 } ?: -1
+                }
             }
         }
+    } catch (error: android.os.OperationCanceledException) {
+        throw error
+    } catch (_: Exception) {
+        // Unknown size uses chunked transfer; opening still enforces permission.
     }
     return -1
 }

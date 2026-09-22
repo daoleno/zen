@@ -314,7 +314,7 @@ use Expo's picker, avoiding an undefined-method error after a JS update. Install
 the updated native APK to receive the provider metadata handling described here;
 the compatibility guard alone does not fix provider errors in older binaries.
 A provider may omit display name or size, return an empty metadata cursor, or
-return no cursor at all: Zen checks read access before accepting the selection,
+throw from optional MIME/metadata APIs: Zen checks stream read access before accepting the selection,
 uses `upload` for an absent name, and keeps unknown size unknown. Directories,
 invalid URIs and inaccessible streams fail before an attachment/upload is created;
 canceling returns no attachment. No storage permission or guessed filesystem path
@@ -325,6 +325,19 @@ The picker launches on the main queue and owns one selection through metadata
 validation. Module destruction cancels pending reads and discards late results.
 The activity's temporary read grant covers the immediate streamed upload; Zen
 does not persist grants or promise upload resumption after the activity/task ends.
+`ACTION_OPEN_DOCUMENT` remains the contract; Zen requests one openable document
+and rejects ambiguous data/ClipData results instead of choosing a different file.
+Unknown size remains chunked even when the transport's advisory size query fails.
+
+Picker errors include `PICK-RESULT` (missing/ambiguous selection), `PICK-URI`
+(invalid URI shape), `PICK-DIRECTORY`, `PICK-OPEN` (descriptor access), or
+`PICK-READ` (stream creation/read). `-PERMISSION` identifies access denial.
+Debug builds log bounded structural result facts, read-grant presence, metadata
+stage/exception class and stream stage/exception class under `ZenDocumentPicker`
+in Android logcat. They never log URIs, names, provider identifiers, file bytes,
+or raw exception messages. Metadata failures alone do not imply access denial;
+the original stream must still open and read. A stage code diagnoses a failure
+boundary, not a confirmed device-specific cause.
 
 The native provider regression fixture lives in `zen-file-upload/android/src/androidTest`.
 Run `:zen-file-upload:connectedDebugAndroidTest` from `app/android` with an emulator.
