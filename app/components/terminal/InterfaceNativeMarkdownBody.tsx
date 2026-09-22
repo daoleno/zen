@@ -15,7 +15,6 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
-import { MarkdownWithImages } from "../markdown/MarkdownWithImages";
 import { MarkdownWithMermaid } from "../markdown/MarkdownWithMermaid";
 import { InterfaceMarkdownErrorBoundary } from "./InterfaceMarkdownErrorBoundary";
 import {
@@ -117,9 +116,8 @@ export function InterfaceNativeMarkdownBody({
           compact={compact}
           streaming={streaming}
           renderMarkdown={(value) => (
-            <MarkdownWithImages markdown={value} chrome={chrome} renderMarkdown={(text) => (
             <EnrichedMarkdownText
-              markdown={text}
+              markdown={value}
               markdownStyle={markdownStyle}
               containerStyle={styles.messageBody}
               flavor="github"
@@ -132,7 +130,6 @@ export function InterfaceNativeMarkdownBody({
               streamingAnimation={streaming}
               spoilerOverlay="solid"
             />
-            )} />
           )}
         />
       </InterfaceMarkdownErrorBoundary>

@@ -925,6 +925,7 @@ function Inspector(
                 : undefined
             }
             onSelectFile={(path) => props.onInspectSkill(copy, path)}
+            readFile={(path) => props.onInspectSkillCopy(copy, path)}
           />
         </DetailSection>
         <DetailSection title="Available to">

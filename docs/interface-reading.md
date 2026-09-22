@@ -107,7 +107,7 @@ images; plain URLs, code and incomplete image syntax stay text.
 
 Brain workspace image reads use the existing workspace path authorization and
 reject unsupported images, files above 2 MiB and images above 40 megapixels.
-Workspace images currently support PNG, JPEG and GIF. Original bytes are retained;
+Workspace images support PNG, JPEG, GIF and WebP. Original bytes are retained;
 Session file downloads keep their existing scoped authorization and size policy.
 
 The attachment chooser supports selecting multiple files in one confirmation.
@@ -123,3 +123,10 @@ Attachment envelopes retain `content_type`, so a supported image without a file
 extension remains an image when history reloads. Raster data URLs are accepted
 only for PNG/JPEG/GIF/WebP and within an 8 MiB encoded preview bound. Composer image
 inspection navigates the selected batch without changing selection order.
+
+The Skills and Plugin file browser uses the same image viewer and exact-copy read
+owner. Markdown image paths resolve only within the selected package's advertised
+file list; traversal outside that copy is rejected. Selecting a raster file shows
+its original image bytes with the shared 2 MiB / 40 megapixel bound. Gallery
+navigation loads sibling images on demand. These small previews share their
+server-side raster validation with Brain workspace images.

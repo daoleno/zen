@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/daoleno/zen/daemon/attachment"
 	"io"
 	"mime"
 	"net/http"
@@ -24,6 +25,7 @@ type PackageFile struct {
 }
 
 type FilePreview struct {
+	DataURL       string `json:"data_url,omitempty"`
 	Path          string `json:"path"`
 	Kind          string `json:"kind"`
 	MediaType     string `json:"media_type"`
@@ -261,6 +263,30 @@ func previewOpenedPackageFile(file *os.File, relative string, info os.FileInfo) 
 	}
 	kind, mediaType, status := classifyPackageSample(relative, info.Size(), sample)
 	preview := &FilePreview{Path: relative, Kind: kind, MediaType: mediaType, Status: status, Size: info.Size()}
+	if strings.HasPrefix(mediaType, "image/") {
+		if info.Size() > attachment.ImagePreviewMaxBytes {
+			preview.Status = "binary"
+			preview.Notice = "Image exceeds the 2 MiB workspace preview limit."
+			return preview, nil
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		imageBytes, err := io.ReadAll(io.LimitReader(file, attachment.ImagePreviewMaxBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		imageURL, err := attachment.ImagePreviewDataURL(imageBytes)
+		if err != nil {
+			preview.Status = "binary"
+			preview.Notice = err.Error()
+			return preview, nil
+		}
+		preview.DataURL = imageURL
+		preview.BytesReturned = int64(len(imageBytes))
+		preview.Status = "ready"
+		return preview, nil
+	}
 	if status == "binary" {
 		preview.Notice = "Binary files are shown as metadata only."
 		return preview, nil

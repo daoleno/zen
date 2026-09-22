@@ -45,12 +45,16 @@
         "daemon/skills/adapters.go",
         "daemon/skills/inventory.go",
         ".agents/skills/zen-verification/SKILL.md",
-        ".agents/skills/zen-verification/features/README.md"
+        ".agents/skills/zen-verification/features/README.md",
+        "daemon/skills/inspect.go",
+        "daemon/attachment/image_preview.go"
       ],
       "test_paths": [
         "daemon/skills/inventory_test.go",
         "daemon/skills/operations_test.go",
-        "scripts/verify-zen-orchestration.sh"
+        "scripts/verify-zen-orchestration.sh",
+        "daemon/skills/risk_inspect_test.go",
+        "daemon/attachment/image_preview_test.go"
       ]
     }
   ]

@@ -15,12 +15,11 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/rivo/uniseg v0.4.7
 	github.com/yuin/goldmark v1.7.13
+	golang.org/x/image v0.31.0
 	golang.org/x/sys v0.29.0
 	golang.org/x/term v0.13.0
 	gopkg.in/ini.v1 v1.67.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require (
-	rsc.io/qr v0.2.0 // indirect
-)
+require rsc.io/qr v0.2.0 // indirect

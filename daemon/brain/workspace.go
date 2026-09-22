@@ -2,12 +2,8 @@ package brain
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
-	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
+	"github.com/daoleno/zen/daemon/attachment"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -95,13 +91,14 @@ func (s *Store) ReadWorkspaceFile(path string) (WorkspaceFile, error) {
 	}
 	contentType := http.DetectContentType(content)
 	if strings.HasPrefix(contentType, "image/") {
-		config, _, err := image.DecodeConfig(bytes.NewReader(content))
-		if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 40_000_000 {
-			return WorkspaceFile{}, fmt.Errorf("brain workspace image is unsupported or exceeds the 40 megapixel preview limit")
+		imageURL, err := attachment.ImagePreviewDataURL(content)
+		if err != nil {
+			return WorkspaceFile{}, err
 		}
+
 		return WorkspaceFile{
 			Name: filepath.Base(relativePath), Path: relativePath, Kind: "image", Language: "image",
-			DataURL: "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(content),
+			DataURL: imageURL,
 			Size:    info.Size(), ModifiedAt: info.ModTime().UTC(),
 		}, nil
 	}

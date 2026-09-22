@@ -4,6 +4,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { MarkdownWithImages } from "./MarkdownWithImages";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { splitMarkdownMermaidSegments } from "./mermaidFences";
 
@@ -26,14 +27,15 @@ export function MarkdownWithMermaid({
     () => splitMarkdownMermaidSegments(markdown),
     [markdown],
   );
+  const renderWithImages = (value: string) => <MarkdownWithImages markdown={value} chrome={chrome} renderMarkdown={renderMarkdown} />;
   if (!segments.some((segment) => segment.type === "mermaid")) {
-    return renderMarkdown(markdown);
+    return renderWithImages(markdown);
   }
   return (
     <View>
       {segments.map((segment, index) => {
         if (segment.type === "markdown") {
-          return <View key={`md:${index}`}>{renderMarkdown(segment.text)}</View>;
+          return <View key={`md:${index}`}>{renderWithImages(segment.text)}</View>;
         }
         const fence = segment.closed
           ? `\`\`\`mermaid\n${segment.source}\n\`\`\``

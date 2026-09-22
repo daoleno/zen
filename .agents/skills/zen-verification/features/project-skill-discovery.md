@@ -29,3 +29,8 @@ Preconditions:
 - A global copy of the skill does not satisfy the project-root source check.
 - A markdown-only feature list is not machine-verifiable. Keep `manifest.json` in sync.
 - Do not copy provider-specific pstack commands into this skill. Zen keeps executor choice provider-neutral.
+
+The exact-copy inspector also owns bounded raster previews used by Skills and
+Plugin file browsers. Its image read remains confined to the advertised package
+copy. Source/test anchors cover `inspect.go` and the shared raster preview helper;
+they are not a claim of mobile UI or provider execution proof.

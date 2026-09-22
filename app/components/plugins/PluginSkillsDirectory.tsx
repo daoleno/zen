@@ -144,6 +144,7 @@ export function PluginSkillsDirectory({
                     loading={state.status === "loading"}
                     error={state.status === "error" ? state.error : undefined}
                     onSelectFile={(path) => void load(entry, path)}
+                    readFile={(path) => { if (!entry.copy) return Promise.reject(new Error("Skill copy unavailable")); return onInspectCopy(entry.copy, path); }}
                   />
                 ) : state?.status === "error" ? (
                   <Text style={[styles.stateText, { color: colors.warning }]}>

@@ -14,6 +14,10 @@ import { TypeScale, Typography, useAppColors, useAppTheme } from "../../constant
 import { buildChatChrome } from "../../theme";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { MarkdownWithMermaid } from "../markdown/MarkdownWithMermaid";
+import { ZenImage, ZenImageOwnerContext } from "../terminal/ZenImage";
+import { useCurrentServer } from "../../store/currentServer";
+import { skillImagePath } from "../../services/skillImagePath";
+import type { ZenImageOwner, ZenImageSource } from "../../services/imageSource";
 import type { PackageDetail } from "../../services/skillsManagement";
 import {
   buildSkillFileTree,
@@ -33,13 +37,19 @@ export function SkillFileBrowser({
   loading,
   error,
   onSelectFile,
+  readFile,
 }: {
   detail: PackageDetail;
   loading?: boolean;
   error?: string;
   onSelectFile(path: string): void;
+  readFile(path: string): Promise<PackageDetail>;
 }) {
   const colors = useAppColors();
+  const { currentServerId } = useCurrentServer();
+  const { theme: appTheme } = useAppTheme();
+  const { chrome } = useMemo(() => buildChatChrome(appTheme), [appTheme]);
+
   const files = useMemo(() => detail.files ?? [], [detail]);
   const tree = useMemo(() => buildSkillFileTree(files), [files]);
   const [selectedPath, setSelectedPath] = useState<string>();
@@ -64,10 +74,23 @@ export function SkillFileBrowser({
     if (detail.preview?.path) setSelectedPath(detail.preview.path);
   }, [detail.preview?.path]);
   const preview = detail.preview;
-  const renderer = preview
+  const imageOwner = useMemo<ZenImageOwner>(() => ({
+    key: JSON.stringify([currentServerId, detail.copyId, detail.contentHash, preview?.path]),
+    async resolve(reference, signal) {
+      const path = skillImagePath(reference, preview?.path || "SKILL.md", files);
+      if (path === preview?.path && preview.dataUrl) return { uri: preview.dataUrl, headers: {} };
+      const next = await readFile(path);
+      signal.throwIfAborted();
+      if (next.copyId !== detail.copyId || next.preview?.path !== path || !next.preview.dataUrl) throw new Error(next.preview?.notice || "This Skill image is unavailable.");
+      return { uri: next.preview.dataUrl, headers: {} };
+    },
+  }), [currentServerId, detail.copyId, detail.contentHash, files, preview, readFile]);
+  const gallery: ZenImageSource[] = files.filter((file) => file.mediaType.startsWith("image/")).map((file) => ({ kind: "owned", path: `skill-file:${file.path}`, name: file.path }));
+  const renderer = preview && !preview.dataUrl
     ? skillRenderer(preview.kind, preview.content)
     : null;
   return (
+    <ZenImageOwnerContext.Provider value={imageOwner}>
     <View>
       {tree.length ? (
         tree.map((node) => (
@@ -117,6 +140,7 @@ export function SkillFileBrowser({
             {preview.notice}
           </Text>
         ) : null}
+        {preview?.dataUrl ? <ZenImage source={{ kind: "owned", path: `skill-file:${preview.path}`, name: preview.path }} gallery={gallery} chrome={chrome} /> : null}
         {preview?.status === "binary" ? (
           <BrowserState
             icon="document-attach-outline"
@@ -147,6 +171,7 @@ export function SkillFileBrowser({
         {renderer === "text" ? <Code content={preview?.content ?? ""} /> : null}
       </View>
     </View>
+    </ZenImageOwnerContext.Provider>
   );
 }
 

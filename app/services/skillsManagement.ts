@@ -106,6 +106,7 @@ export interface PackageFile {
 }
 
 export interface FilePreview {
+  dataUrl?: string;
   path: string;
   kind: PackageFile["kind"];
   mediaType: string;
@@ -474,6 +475,7 @@ function normalizeFilePreview(value: unknown): FilePreview | undefined {
     status,
     size: raw.size as number,
     bytesReturned: raw.bytes_returned as number,
+    dataUrl: typeof raw.data_url === "string" && raw.data_url.length <= 3_000_000 && /^data:image\/(png|jpeg|gif|webp);base64,/.test(raw.data_url) ? raw.data_url : undefined,
     content: boundedMultilineString(raw.content, 70_000) || undefined,
     notice: boundedString(raw.notice, 240) || undefined,
   };

@@ -137,3 +137,30 @@ func TestInspectRejectsStaleOrMismatchedCopy(t *testing.T) {
 		t.Fatalf("fixture cleanup failed: %v", err)
 	}
 }
+
+func TestInspectImageUsesExactPackageCopyBoundary(t *testing.T) {
+	f := newFixture(t)
+	root := f.writeSkill(f.agentGlobalDir(AgentCursor), "images", "body")
+	data, err := os.ReadFile("../../app/assets/reading-fixture/normal.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "photo.png"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := findCopy(t, inventory, "images", root)
+	detail, err := InspectPackageCopyFile(f.options(""), copy.Name, copy.ID, "photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Preview == nil || detail.Preview.Status != "ready" || !strings.HasPrefix(detail.Preview.DataURL, "data:image/png;base64,") {
+		t.Fatal("image preview missing")
+	}
+	if _, err := InspectPackageCopyFile(f.options(""), copy.Name, copy.ID, "../photo.png"); err == nil {
+		t.Fatal("image escaped package")
+	}
+}

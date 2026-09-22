@@ -11,7 +11,7 @@ import { SessionFileImagePreview } from "./SessionFileImagePreview";
 export const ZenImageOwnerContext = createContext<ZenImageOwner | null>(null);
 
 function useImage(source: ZenImageSource, owner: ZenImageOwner | null, attempt: number) {
-  const key = imageSourceKey(source, owner?.key || "phone");
+  const key = useMemo(() => imageSourceKey(source, owner?.key || "phone"), [source, owner?.key]);
   const [state, setState] = useState<{ key: string; source?: SessionFileBinarySource; error?: string }>({ key });
   useEffect(() => {
     const controller = new AbortController();
@@ -31,7 +31,7 @@ export function ZenImage({ source, chrome, gallery, compact = false }: {
   source: ZenImageSource; chrome: TerminalThemeChrome; gallery?: ZenImageSource[]; compact?: boolean;
 }) {
   const owner = useContext(ZenImageOwnerContext);
-  const identity = imageSourceKey(source, owner?.key || "phone");
+  const identity = useMemo(() => imageSourceKey(source, owner?.key || "phone"), [source, owner?.key]);
   const [opened, setOpened] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState<string | null>(null);
@@ -40,7 +40,7 @@ export function ZenImage({ source, chrome, gallery, compact = false }: {
   const resolved = useImage(source, owner, attempt);
   const error = resolved.error || (failed === identity ? "Could not load image" : null);
   const images = useMemo(() => gallery?.length ? gallery : [source], [gallery, source]);
-  const initial = Math.max(0, images.findIndex((image) => imageSourceKey(image, owner?.key || "phone") === identity));
+  const initial = useMemo(() => Math.max(0, images.findIndex((image) => imageSourceKey(image, owner?.key || "phone") === identity)), [images, owner?.key, identity]);
   const retry = () => { setFailed(null); setLoaded(null); setAttempt((value) => value + 1); };
   return (
     <View style={{ width: compact ? 96 : "100%", maxWidth: 400 }}>
