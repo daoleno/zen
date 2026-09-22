@@ -42,6 +42,7 @@ class NativeUploadRequest : expo.modules.kotlin.records.Record {
 }
 
 class ZenFileUploadModule : Module() {
+    private var pickerLimit = 8
     private val picker = PickerOwnership<Promise>()
     private val pickerCancellation = android.os.CancellationSignal()
     private val pickerReads = Executors.newSingleThreadExecutor()
@@ -52,8 +53,10 @@ class ZenFileUploadModule : Module() {
         Name("ZenFileUpload")
         Events("onUploadProgress")
 
-        AsyncFunction("pickDocument") { promise: Promise ->
+        AsyncFunction("pickDocuments") { maxCount: Int, promise: Promise ->
+            require(maxCount in 1..8) { "Choose between one and eight files." }
             picker.begin(promise)
+            pickerLimit = maxCount
             try {
                 appContext.throwingActivity.startActivityForResult(
                     UploadDocumentPicker.intent(), UploadDocumentPicker.REQUEST_CODE,
@@ -76,14 +79,14 @@ class ZenFileUploadModule : Module() {
                                 if (resolver == null) throw Exceptions.ReactContextLost()
                                 val debug = (appContext.reactContext?.applicationInfo?.flags ?: 0) and
                                     android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
-                                val asset = UploadDocumentPicker.readResult(resolver, resultCode, intent, pickerCancellation, debug)
+                                val asset = UploadDocumentPicker.readResult(resolver, resultCode, intent, pickerCancellation, debug, pickerLimit)
                                 if (picker.finish(promise)) promise.resolve(asset)
                             } catch (error: Exception) {
                                 if (picker.finish(promise)) promise.reject("ERR_DOCUMENT_READ", error.message, error)
                             }
                         }
                     } catch (error: java.util.concurrent.RejectedExecutionException) {
-                        if (picker.finish(promise)) promise.resolve(null)
+                        if (picker.finish(promise)) promise.resolve(emptyList<Any>())
                     }
                 }
             }
@@ -106,7 +109,7 @@ class ZenFileUploadModule : Module() {
         }
 
         OnDestroy {
-            picker.destroy()?.resolve(null)
+            picker.destroy()?.resolve(emptyList<Any>())
             pickerCancellation.cancel()
             pickerReads.shutdownNow()
             active.values.forEach { it.cancel() }

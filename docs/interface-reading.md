@@ -93,3 +93,28 @@ Run `bun test app`, `cd app && bunx tsc --noEmit`, and Android/iOS Expo exports.
 Native PID/log and before/after screen evidence remain necessary for crash,
 first-image, scrolling and keyboard claims. Export success is not a signed
 client release or iOS device proof.
+
+## Shared images and attachment selection
+
+Message attachments, tool images, Markdown images and composer previews use the
+same typed image sources and fullscreen viewer on Android and iOS. Phone upload
+URIs retain their original grants. Persisted provider paths resolve through the
+Session's generation-bound file capability. External HTTP images receive no Zen
+authorization. Images contain their full aspect ratio in bounded previews; tap
+opens inspection with pinch, pan, double-tap and gallery navigation. Text and code
+remain selectable. Markdown extraction uses structured tokens, including reference
+images; plain URLs, code and incomplete image syntax stay text.
+
+Brain workspace image reads use the existing workspace path authorization and
+reject unsupported images, files above 2 MiB and images above 40 megapixels.
+Workspace images currently support PNG, JPEG and GIF. Original bytes are retained;
+Session file downloads keep their existing scoped authorization and size policy.
+
+The attachment chooser supports selecting multiple files in one confirmation.
+The shared composer and Terminal accessory reserve the remaining slots within the
+eight-file limit before dispatch. Unsupported picker count limits are enforced on
+return with an actionable error. A sequential native upload queue preserves order,
+shows each file's status and permits removal or retry of failed files. Sending
+waits until attachments are ready or removed. Switching server or Session cancels
+pending work without deleting previously ready attachments. Android requires the
+updated Zen Debug native module; iOS uses Expo's multi-document picker.

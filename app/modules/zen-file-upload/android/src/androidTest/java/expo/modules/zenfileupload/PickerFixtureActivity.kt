@@ -16,11 +16,9 @@ class PickerFixtureActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != UploadDocumentPicker.REQUEST_CODE) return
         val outcome = try {
-            val asset = UploadDocumentPicker.readResult(contentResolver, resultCode, data)
-            if (asset == null) "CANCEL: no attachment" else {
-                val bytes = contentResolver.openInputStream(android.net.Uri.parse(asset["uri"] as String))!!.use { it.readBytes() }
-                "OK: $asset\n${String(bytes, Charsets.UTF_8)}"
-            }
+            val assets = UploadDocumentPicker.readResult(contentResolver, resultCode, data)
+            if (assets.isEmpty()) "CANCEL: no attachment" else "OK: ${assets.size} selected; ${assets.count { it["selectionError"] != null }} failed"
+
         } catch (error: Exception) { "ERROR: ${error.message}" }
         android.util.Log.i("ZenPickerFixture", outcome)
         setContentView(TextView(this).apply { text = outcome; textSize = 20f })

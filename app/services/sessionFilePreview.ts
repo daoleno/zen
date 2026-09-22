@@ -331,6 +331,7 @@ export async function buildSessionFileBinarySource(
   });
   const response = await fetch(capabilityURL, {
     method: "POST",
+    redirect: "error",
     headers: {
       Authorization: authorizationHeader,
       "Content-Type": "application/json",

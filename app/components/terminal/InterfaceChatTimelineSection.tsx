@@ -32,6 +32,9 @@ import {
   SessionFilePreviewSheet,
   type SessionFilePreviewLoader,
 } from "./SessionFilePreviewSheet";
+import { ZenImageOwnerContext } from "./ZenImage";
+import { bindSessionFileRequestToGeneration, buildSessionFileBinarySource } from "../../services/sessionFilePreview";
+import type { ZenImageOwner } from "../../services/imageSource";
 import type { TimelineReadingPosition } from "./timelineReadingPosition";
 
 interface InterfaceChatTimelineSectionProps {
@@ -150,6 +153,17 @@ export function InterfaceChatTimelineSection({
   onRetryPendingUserMessage,
   filePreviewLoader,
 }: InterfaceChatTimelineSectionProps) {
+  const imageOwner = useMemo<ZenImageOwner>(() => ({
+    key: JSON.stringify([serverId, daemonId, workerId, workerProcessId, workerStartedAt]),
+    async resolve(path, signal) {
+      if (!workerProcessId || !workerStartedAt) throw new Error("Refresh the Session to open this image.");
+      const request = { workerId, processId: workerProcessId, startedAt: workerStartedAt, path };
+      const metadata = await (filePreviewLoader?.metadata ?? wsClient.getSessionFileMetadata.bind(wsClient))(serverId, request);
+      signal.throwIfAborted();
+      if (metadata.kind !== "image" || metadata.tooLarge) throw new Error("This image exceeds the preview limit or is unsupported. Open the file to download it.");
+      return (filePreviewLoader?.binary ?? buildSessionFileBinarySource)(serverId, daemonId, bindSessionFileRequestToGeneration(request, metadata));
+    },
+  }), [serverId, daemonId, workerId, workerProcessId, workerStartedAt, filePreviewLoader]);
   const [filePreviewReference, setFilePreviewReference] = useState<
     string | null
   >(null);
@@ -198,6 +212,7 @@ export function InterfaceChatTimelineSection({
     syncingConversation && conversation?.reason === "transcript_not_found";
 
   return (
+    <ZenImageOwnerContext.Provider value={imageOwner}>
     <SessionFilePreviewContext.Provider value={filePreviewContext}>
       <InterfaceTimelineView
         key={readingPosition?.scope}
@@ -263,5 +278,6 @@ export function InterfaceChatTimelineSection({
         onClose={closeFilePreview}
       />
     </SessionFilePreviewContext.Provider>
+    </ZenImageOwnerContext.Provider>
   );
 }

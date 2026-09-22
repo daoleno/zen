@@ -72,7 +72,7 @@ describe("Interface native Markdown mobile contract", () => {
     expect(prepareInterfaceMarkdown("  hello  ", false)).toBe("hello");
     expect(
       prepareInterfaceMarkdown("![alt](https://example.com/x.png)", false),
-    ).toBe("[alt](https://example.com/x.png)");
+    ).toBe("![alt](https://example.com/x.png)");
   });
 
   test("keeps inline code without opaque fragment backgrounds in the style model", () => {

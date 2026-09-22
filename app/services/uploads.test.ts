@@ -29,7 +29,7 @@ let cancelCalls = 0;
 let nativeUploadError: Error | null = null;
 let nativeCancelError: Error | null = null;
 let nativeModule: {
-  pickDocument(): Promise<{ uri: string; name: string; mimeType: string; size: number | null } | null>;
+  pickDocuments(maxCount: number): Promise<Array<{ uri: string; name: string; mimeType: string; size: number | null }>>;
   upload(request: Record<string, unknown>): Promise<typeof uploadResult>;
   cancel(uploadId: string): boolean;
   addListener(
@@ -155,9 +155,16 @@ Object.assign(globalThis, {
 
 const {
   createAttachmentUploadOperation,
-  uploadDocumentForServer,
+  uploadDocumentsForServer,
+  pickUploadDocuments,
   V1_MAX_UPLOAD_FILE_BYTES,
 } = await import("./uploads");
+
+async function uploadDocumentForServer(serverId: string) {
+  const result = (await uploadDocumentsForServer(serverId))[0];
+  if (result?.error) throw new Error(result.error);
+  return result?.attachment ?? null;
+}
 
 afterAll(() => {
   Object.assign(globalThis, { fetch: originalFetch });
@@ -198,7 +205,7 @@ describe("native attachment upload", () => {
       removed: boolean;
     }> = [];
     nativeModule = {
-      pickDocument: async () => selectedAsset,
+      pickDocuments: async () => [selectedAsset],
       upload: async (request) => {
         nativeRequests.push(request);
         return uploadResult;
@@ -275,6 +282,7 @@ describe("native attachment upload", () => {
     expect(pickerOptions).toEqual({
       type: ["*/*"],
       copyToCacheDirectory: false,
+      multiple: true,
     });
     expect(uploadCalls).toHaveLength(1);
     expect(authorizationOptions).toEqual({
@@ -493,9 +501,9 @@ async function flushMicrotasks() {
 
 
 describe("Android document selection boundary", () => {
-  function picker(pickDocument: NonNullable<typeof nativeModule>["pickDocument"]) {
+  function picker(pickDocument: () => Promise<{ uri: string; name: string; mimeType: string; size: number | null } | null>) {
     nativeModule = {
-      pickDocument,
+      pickDocuments: async () => { const asset = await pickDocument(); return asset ? [asset] : []; },
       upload: async () => { throw new Error("unexpected upload"); },
       cancel: () => false,
       addListener: () => ({ remove() {} }),

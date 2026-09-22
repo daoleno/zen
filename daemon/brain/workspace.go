@@ -2,7 +2,13 @@ package brain
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -86,6 +92,18 @@ func (s *Store) ReadWorkspaceFile(path string) (WorkspaceFile, error) {
 	content, err := os.ReadFile(absolutePath)
 	if err != nil {
 		return WorkspaceFile{}, fmt.Errorf("read brain workspace file: %w", err)
+	}
+	contentType := http.DetectContentType(content)
+	if strings.HasPrefix(contentType, "image/") {
+		config, _, err := image.DecodeConfig(bytes.NewReader(content))
+		if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 40_000_000 {
+			return WorkspaceFile{}, fmt.Errorf("brain workspace image is unsupported or exceeds the 40 megapixel preview limit")
+		}
+		return WorkspaceFile{
+			Name: filepath.Base(relativePath), Path: relativePath, Kind: "image", Language: "image",
+			DataURL: "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(content),
+			Size:    info.Size(), ModifiedAt: info.ModTime().UTC(),
+		}, nil
 	}
 	if !isTextWorkspaceContent(content) {
 		return WorkspaceFile{}, fmt.Errorf("brain workspace file is not a text file")

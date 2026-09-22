@@ -755,3 +755,30 @@ func workspaceTreeHasDirectory(entries []WorkspaceEntry, path string) bool {
 	}
 	return false
 }
+
+func TestWorkspaceImageUsesExistingPathBoundary(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile("../../app/assets/reading-fixture/normal.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(store.WorkspacePath(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.WorkspacePath(), "preview.png"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.ReadWorkspaceFile("preview.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Kind != "image" || !strings.HasPrefix(file.DataURL, "data:image/png;base64,") || file.Content != "" {
+		t.Fatalf("unexpected image metadata: kind=%s", file.Kind)
+	}
+	if _, err := store.ReadWorkspaceFile("../preview.png"); err == nil {
+		t.Fatal("traversal accepted")
+	}
+}

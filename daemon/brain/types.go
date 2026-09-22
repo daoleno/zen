@@ -99,6 +99,7 @@ type WorkspaceEntry struct {
 }
 
 type WorkspaceFile struct {
+	DataURL    string    `json:"data_url,omitempty"`
 	Name       string    `json:"name"`
 	Path       string    `json:"path"`
 	Kind       string    `json:"kind"`

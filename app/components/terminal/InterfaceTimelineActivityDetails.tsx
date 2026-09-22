@@ -100,7 +100,7 @@ export function InterfaceTimelineActivityDetails({
 
       {showPreview ? (
         <ActivityPreview
-          uri={assetPreviewUri}
+          path={item.previewPath!}
           failed={assetPreviewFailed}
           chrome={chrome}
         />

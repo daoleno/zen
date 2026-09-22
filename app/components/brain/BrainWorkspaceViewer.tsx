@@ -27,6 +27,8 @@ import {
   type BrainWorkspaceTree,
 } from "../../services/websocket";
 import { AppText, BottomSheetFrame, IconButton } from "../ui";
+import { ZenImage, ZenImageOwnerContext } from "../terminal/ZenImage";
+import type { ZenImageOwner } from "../../services/imageSource";
 import { InterfaceNativeMarkdownBody } from "../terminal/InterfaceNativeMarkdownBody";
 import { MarkdownFallbackText } from "../markdown/MarkdownFallbackText";
 import {
@@ -64,6 +66,16 @@ export function BrainWorkspaceViewer({
     () => (serverId ? `${serverId}:${workspace || ""}` : ""),
     [serverId, workspace],
   );
+  const imageOwner = useMemo<ZenImageOwner>(() => ({
+    key: workspaceCacheKey,
+    async resolve(path, signal) {
+      if (!serverId) throw new Error("Select the current server to open this image.");
+      const file = await wsClient.getBrainWorkspaceFile(serverId, path);
+      signal.throwIfAborted();
+      if (!file.data_url) throw new Error("This workspace file is not a supported image.");
+      return { uri: file.data_url, headers: {} };
+    },
+  }), [serverId, workspaceCacheKey]);
   const [tree, setTree] = useState<BrainWorkspaceTree | null>(null);
   const [treeCacheKey, setTreeCacheKey] = useState("");
   const [treeLoading, setTreeLoading] = useState(false);
@@ -188,7 +200,7 @@ export function BrainWorkspaceViewer({
         const file = await wsClient.getBrainWorkspaceFile(serverId, entry.path);
         if (fileRequestRef.current === request) {
           if (cacheRef.current.cacheKey === workspaceCacheKey) {
-            cacheRef.current.files.set(entry.path, file);
+            if (!file.data_url) cacheRef.current.files.set(entry.path, file);
           }
           setSelectedFile(file);
           setSelectedFileCacheKey(workspaceCacheKey);
@@ -311,6 +323,7 @@ export function BrainWorkspaceViewer({
     workspace;
 
   return (
+    <ZenImageOwnerContext.Provider value={imageOwner}>
     <BottomSheetFrame
       visible={visible}
       onClose={onClose}
@@ -461,6 +474,7 @@ export function BrainWorkspaceViewer({
         )}
       </View>
     </BottomSheetFrame>
+    </ZenImageOwnerContext.Provider>
   );
 }
 
@@ -475,6 +489,9 @@ function BrainWorkspaceFilePreview({
   theme: TerminalThemePalette;
   styles: ReturnType<typeof createStyles>;
 }) {
+  if (file.kind === "image") {
+    return <View style={{ padding: 12 }}><ZenImage source={{ kind: "owned", path: file.path, name: file.name }} chrome={chrome} /></View>;
+  }
   const markdown =
     file.language === "markdown" || brainWorkspaceMarkdownPath(file.path);
   const content = file.content;

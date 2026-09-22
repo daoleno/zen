@@ -35,6 +35,7 @@ export interface NativeDownloadRequest {
 }
 
 export interface NativePickedDocument {
+  selectionError?: string;
   uri: string;
   name: string;
   mimeType: string;
@@ -42,7 +43,7 @@ export interface NativePickedDocument {
 }
 
 interface ZenFileUploadNativeModule {
-  pickDocument?(): Promise<NativePickedDocument | null>;
+  pickDocuments?(maxCount: number): Promise<NativePickedDocument[]>;
   upload(request: NativeUploadRequest): Promise<NativeUploadResult>;
   cancel(uploadId: string): boolean;
   download?(request: NativeDownloadRequest): Promise<NativeDownloadResult>;

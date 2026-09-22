@@ -45,6 +45,7 @@ export function buildInterfaceComposerMessage(
   draft: string,
   attachments: ComposerAttachment[],
 ) {
+  if (attachments.some((item) => item.uploadStatus && item.uploadStatus !== "ready")) return "";
   const body = draft.trim();
   if (attachments.length === 0) {
     return body;

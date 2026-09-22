@@ -5,14 +5,10 @@ import {
   buildTerminalChrome,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { CurrentAttachmentUpload } from "../../services/currentAttachmentUpload";
-import {
-  buildUploadUrl,
-  createAttachmentUploadOperation,
-  pickUploadDocument,
-  resolveServerUploadTarget,
-  type ActiveAttachmentUpload,
-} from "../../services/uploads";
+import { buildUploadUrl } from "../../services/uploads";
+import { useInterfaceComposerAttachments } from "./useInterfaceComposerAttachments";
+import { InterfaceComposerAttachmentRail } from "./InterfaceComposerAttachmentRail";
+import type { ComposerAttachment } from "./InterfaceChatSession";
 import { TerminalAccessoryControls } from "./TerminalAccessoryControls";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
@@ -49,21 +45,21 @@ export function TerminalAccessoryBar({
 
   const repeatDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const repeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const uploadOwnerRef = useRef(new CurrentAttachmentUpload());
-  const selectionGenerationRef = useRef(0);
-  const [selecting, setSelecting] = React.useState(false);
-  const [activeUpload, setActiveUpload] =
-    React.useState<ActiveAttachmentUpload | null>(null);
-  const uploadEnabled = uploadConfigured && !selecting && !activeUpload;
-
+  const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([]);
+  const insertedRef = useRef(new Set<string>());
+  const focusComposer = React.useCallback(() => terminalRef.current?.resumeInput(), [terminalRef]);
+  const { activeUpload, canAttach: uploadEnabled, handleUploadAttachment: handleFilePick, cancelUpload: handleCancelUpload, removeAttachment } = useInterfaceComposerAttachments({
+    serverId, ownerKey: uploadOwnerKey || "", attachments,
+    connectionState: uploadConfigured ? "connected" : "offline", setAttachments, focusComposer,
+  });
+  React.useEffect(() => { setAttachments([]); insertedRef.current.clear(); }, [serverId, uploadOwnerKey]);
   React.useEffect(() => {
-    setSelecting(false);
-    setActiveUpload(null);
-    return () => {
-      selectionGenerationRef.current += 1;
-      uploadOwnerRef.current.cancel();
-    };
-  }, [daemonId, serverUrl, uploadOwnerKey]);
+    for (const attachment of attachments) {
+      if (attachment.uploadStatus !== "ready" || insertedRef.current.has(attachment.id)) continue;
+      insertedRef.current.add(attachment.id);
+      terminalRef.current?.sendInput(appendShellPath("", attachment.path));
+    }
+  }, [attachments, terminalRef]);
 
   const sendInput = (data: string) => {
     terminalRef.current?.sendInput(data);
@@ -112,72 +108,6 @@ export function TerminalAccessoryBar({
     sendInput(sequence);
   };
 
-  const handleFilePick = async () => {
-    if (!uploadEnabled) {
-      return;
-    }
-    const selectionGeneration = selectionGenerationRef.current + 1;
-    selectionGenerationRef.current = selectionGeneration;
-    setSelecting(true);
-    let handle: ReturnType<CurrentAttachmentUpload["start"]> | null = null;
-    try {
-      const asset = await pickUploadDocument();
-      if (selectionGenerationRef.current !== selectionGeneration || !asset) {
-        return;
-      }
-
-      const server = await resolveServerUploadTarget(serverId);
-      if (selectionGenerationRef.current !== selectionGeneration) {
-        return;
-      }
-      setSelecting(false);
-      setActiveUpload({ name: asset.name || "upload", progress: null });
-      handle = uploadOwnerRef.current.start(
-        (onProgress) =>
-          createAttachmentUploadOperation(asset, server, {
-            onProgress,
-          }),
-        (progress) => {
-          setActiveUpload((current) =>
-            current ? { ...current, progress } : current,
-          );
-        },
-      );
-      const attachment = await handle.result;
-      if (!uploadOwnerRef.current.finish(handle)) {
-        return;
-      }
-      setActiveUpload(null);
-
-      onCtrlArmedChange(false);
-      terminalRef.current?.resumeInput();
-      sendInput(appendShellPath("", attachment.path));
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (err: any) {
-      if (handle && !uploadOwnerRef.current.finish(handle)) {
-        return;
-      }
-      setActiveUpload(null);
-      Alert.alert("Error", err?.message || "Failed to upload file");
-    } finally {
-      if (selectionGenerationRef.current === selectionGeneration) {
-        setSelecting(false);
-      }
-    }
-  };
-
-  const handleCancelUpload = () => {
-    selectionGenerationRef.current += 1;
-    const cancellationError = uploadOwnerRef.current.cancel();
-    setSelecting(false);
-    setActiveUpload(null);
-    if (cancellationError) {
-      Alert.alert(
-        "Cancel failed",
-        cancellationError.message || "Could not cancel this upload",
-      );
-    }
-  };
 
   return (
     <View
@@ -189,6 +119,7 @@ export function TerminalAccessoryBar({
         },
       ]}
     >
+      <InterfaceComposerAttachmentRail attachments={attachments} activeUpload={null} chrome={chrome} onRemoveAttachment={removeAttachment} onCancelUpload={handleCancelUpload} />
       <TerminalAccessoryControls
         uploadEnabled={uploadEnabled}
         activeUpload={activeUpload}

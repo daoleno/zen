@@ -45,6 +45,10 @@ type KeyedState<T> = {
 
 export type ComposerAttachment = UploadedAttachment & {
   id: string;
+  uploadStatus?: "queued" | "uploading" | "ready" | "failed";
+  uploadError?: string;
+  uploadProgress?: import("../../services/uploads").UploadProgressSnapshot | null;
+  retryUpload?(): void;
 };
 
 export type { PendingUserMessageLifecycle };

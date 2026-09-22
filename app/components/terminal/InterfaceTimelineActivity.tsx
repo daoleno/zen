@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { StyleSheet, View } from "react-native";
 import type {
   TerminalThemeChrome,
@@ -38,38 +38,12 @@ export function ZenActivityEvent({
     item.id,
     defaultExpanded,
   );
-  const [assetPreviewUri, setAssetPreviewUri] = useState<string | null>(null);
-  const [assetPreviewFailed, setAssetPreviewFailed] = useState(false);
   const activityPresentation = buildInterfaceTimelineActivityPresentation(
     item,
     chrome,
     theme,
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    setAssetPreviewUri(null);
-    setAssetPreviewFailed(false);
-    if (!item.previewPath || !detailsExpanded) {
-      return () => {
-        cancelled = true;
-      };
-    }
-    void loadAssetPreview(item.previewPath)
-      .then((uri) => {
-        if (!cancelled && uri) {
-          setAssetPreviewUri(uri);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAssetPreviewFailed(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [detailsExpanded, item.previewPath, loadAssetPreview]);
 
   return (
     <View style={styles.wrap}>
@@ -96,8 +70,8 @@ export function ZenActivityEvent({
           item={item}
           chrome={chrome}
           theme={theme}
-          assetPreviewUri={assetPreviewUri}
-          assetPreviewFailed={assetPreviewFailed}
+          assetPreviewUri={null}
+          assetPreviewFailed={false}
           formatPatchPath={formatPatchPath}
           truncateBody={truncateBody}
         />

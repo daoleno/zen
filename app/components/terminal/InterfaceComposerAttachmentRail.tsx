@@ -1,5 +1,5 @@
 import React from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { ActiveAttachmentUpload } from "../../services/uploads";
 import {
@@ -38,12 +38,20 @@ export function InterfaceComposerAttachmentRail({
         contentContainerStyle={styles.list}
       >
         {attachments.map((attachment) => (
+          <View key={attachment.id} style={{ gap: 4 }}>
           <InterfaceComposerAttachmentChip
-            key={attachment.id}
             attachment={attachment}
             chrome={chrome}
             onRemove={onRemoveAttachment}
           />
+          {attachment.uploadStatus ? <Text numberOfLines={1} style={{ color: chrome.textMuted, maxWidth: 220 }}>
+            {attachment.uploadStatus === "uploading" && attachment.uploadProgress?.fraction != null ? `${Math.round(attachment.uploadProgress.fraction * 100)}%` : attachment.uploadStatus}
+          </Text> : null}
+          {attachment.uploadStatus === "failed" ? <Pressable accessibilityRole="button" accessibilityLabel={`Retry ${attachment.name}`} onPress={attachment.retryUpload}>
+            <Text numberOfLines={2} style={{ color: chrome.textMuted, maxWidth: 220 }}>{attachment.uploadError}</Text>
+            <Text style={{ color: chrome.accent }}>Retry</Text>
+          </Pressable> : null}
+          </View>
         ))}
         {activeUpload ? (
           <InterfaceComposerUploadingChip

@@ -24,7 +24,7 @@ export type UploadedAttachment = {
 export type UploadDocumentAsset = Pick<
   DocumentPicker.DocumentPickerAsset,
   "uri" | "name" | "mimeType" | "size"
->;
+> & { selectionError?: string };
 
 export type UploadProgressSnapshot = {
   transferredBytes: number | null;
@@ -344,20 +344,21 @@ function projectUploadTiming(
   };
 }
 
-export async function pickUploadDocument(): Promise<UploadDocumentAsset | null> {
+export const MAX_COMPOSER_ATTACHMENTS = 8;
+
+export async function pickUploadDocuments(maxCount = MAX_COMPOSER_ATTACHMENTS): Promise<UploadDocumentAsset[]> {
+  if (maxCount < 1 || maxCount > MAX_COMPOSER_ATTACHMENTS) throw new Error("Remove an attachment before selecting more files.");
   const native = getZenFileUploadModule();
-  if (native && typeof native.pickDocument === "function") {
-    const asset = await native.pickDocument();
-    return asset ? { ...asset, size: asset.size ?? undefined } : null;
+  let assets: UploadDocumentAsset[];
+  if (native && typeof native.pickDocuments === "function") {
+    assets = (await native.pickDocuments(maxCount)).map((asset) => ({ ...asset, size: asset.size ?? undefined }));
+  } else {
+    const result = await DocumentPicker.getDocumentAsync({ type: ["*/*"], multiple: true, copyToCacheDirectory: false });
+    assets = result.canceled ? [] : result.assets ?? [];
   }
-  const result = await DocumentPicker.getDocumentAsync({
-    type: ["*/*"],
-    copyToCacheDirectory: false,
-  });
-  if (result.canceled || !result.assets?.length) {
-    return null;
-  }
-  return result.assets[0];
+  // Document pickers do not expose a cross-platform count limit. Reject before dispatch.
+  if (assets.length > maxCount) throw new Error(`Choose up to ${maxCount} files. Remove an attachment to make room.`);
+  return assets;
 }
 
 export async function resolveServerUploadTarget(
@@ -398,15 +399,20 @@ function encodedByteLength(encoded: string): number {
   return length;
 }
 
-export async function uploadDocumentForServer(
-  serverId: string,
-): Promise<UploadedAttachment | null> {
-  const asset = await pickUploadDocument();
-  if (!asset) {
-    return null;
-  }
+export async function uploadDocumentsForServer(serverId: string): Promise<Array<{ asset: UploadDocumentAsset; attachment?: UploadedAttachment; error?: string }>> {
+  const assets = await pickUploadDocuments();
+  if (!assets.length) return [];
   const target = await resolveServerUploadTarget(serverId);
-  return uploadDocumentAsset(asset, target);
+  const results: Array<{ asset: UploadDocumentAsset; attachment?: UploadedAttachment; error?: string }> = [];
+  for (const asset of assets) {
+    try {
+      if (asset.selectionError) throw new Error(asset.selectionError);
+      results.push({ asset, attachment: await uploadDocumentAsset(asset, target) });
+    } catch (error) {
+      results.push({ asset, error: error instanceof Error ? error.message : "Upload failed" });
+    }
+  }
+  return results;
 }
 
 function normalizeByteCount(value: number): number | null {

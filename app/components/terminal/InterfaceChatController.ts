@@ -99,6 +99,8 @@ export function useInterfaceChatController({
     uploading,
   } = useInterfaceComposerAttachments({
     serverId,
+    ownerKey: JSON.stringify([serverId, workerId, conversationScopeKey]),
+    attachments,
     connectionState,
     setAttachments,
     focusComposer,

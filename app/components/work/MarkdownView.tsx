@@ -5,6 +5,7 @@ import { buildChatChrome } from "../../theme";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { MermaidDiagram } from "../markdown/MermaidDiagram";
 import { isMermaidFenceLanguage } from "../markdown/mermaidFences";
+import { MarkdownWithImages } from "../markdown/MarkdownWithImages";
 import { tokenizeMarkdownInline } from "./MarkdownViewModel";
 
 type Block =
@@ -16,6 +17,12 @@ type Block =
   | { type: "rule" };
 
 export function MarkdownView({ value }: { value: string }) {
+  const { theme: appTheme } = useAppTheme();
+  const { chrome } = useMemo(() => buildChatChrome(appTheme), [appTheme]);
+  return <MarkdownWithImages markdown={value} chrome={chrome} renderMarkdown={(text) => <MarkdownTextView value={text} />} />;
+}
+
+function MarkdownTextView({ value }: { value: string }) {
   const colors = useAppColors();
   const { theme: appTheme } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);

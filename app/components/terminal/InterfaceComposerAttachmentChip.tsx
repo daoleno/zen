@@ -1,17 +1,13 @@
 import React from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import { InterfaceComposerAttachmentIcon } from "./InterfaceComposerAttachmentIcon";
 import { InterfaceComposerAttachmentRemoveButton } from "./InterfaceComposerAttachmentRemoveButton";
 
-export interface InterfaceComposerAttachment {
-  id: string;
-  name: string;
-  path: string;
-  localUri?: string;
-  mimeType?: string;
-}
+import { ZenImage } from "./ZenImage";
+
+export type InterfaceComposerAttachment = import("./InterfaceChatSession").ComposerAttachment;
 
 interface InterfaceComposerAttachmentChipProps {
   attachment: InterfaceComposerAttachment;
@@ -34,12 +30,7 @@ export function InterfaceComposerAttachmentChip({
           { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
         ]}
       >
-        <Image
-          source={{ uri: thumbnailUri }}
-          style={styles.thumb}
-          resizeMode="cover"
-          accessibilityLabel={attachment.name}
-        />
+        <ZenImage source={{ kind: "phone", uri: thumbnailUri, name: attachment.name }} chrome={chrome} compact />
         <InterfaceComposerAttachmentRemoveButton
           attachmentName={attachment.name}
           chrome={chrome}
@@ -119,8 +110,8 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   thumbChip: {
-    width: 56,
-    height: 56,
+    width: 96,
+    height: 80,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",

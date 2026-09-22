@@ -1,9 +1,16 @@
 import React from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import type { DisplayAttachment } from "./InterfaceTimelineMessage";
+
+import { ZenImage } from "./ZenImage";
+import { imageReference, isImageAttachment, type ZenImageSource } from "../../services/imageSource";
+
+function attachmentSource(attachment: DisplayAttachment): ZenImageSource {
+  return attachment.localUri ? { kind: "phone", uri: attachment.localUri, name: attachment.name } : imageReference(attachment.path, attachment.name);
+}
 
 interface InterfaceTimelineAttachmentPreviewListProps {
   attachments: DisplayAttachment[];
@@ -16,6 +23,7 @@ export function InterfaceTimelineAttachmentPreviewList({
   chrome,
   compact,
 }: InterfaceTimelineAttachmentPreviewListProps) {
+  const gallery = attachments.filter(isImageAttachment).map(attachmentSource);
   return (
     <View
       style={[styles.attachments, compact ? styles.attachmentsCompact : null]}
@@ -25,6 +33,7 @@ export function InterfaceTimelineAttachmentPreviewList({
           key={`${attachment.name}:${attachment.path}:${attachment.localUri ?? ""}`}
           attachment={attachment}
           chrome={chrome}
+          gallery={gallery}
         />
       ))}
     </View>
@@ -34,28 +43,14 @@ export function InterfaceTimelineAttachmentPreviewList({
 function InterfaceTimelineAttachmentPreviewPill({
   attachment,
   chrome,
+  gallery,
 }: {
   attachment: DisplayAttachment;
+  gallery: ZenImageSource[];
   chrome: TerminalThemeChrome;
 }) {
-  const thumbnailUri = attachmentThumbnailUri(attachment);
-
-  if (thumbnailUri) {
-    return (
-      <View
-        style={[
-          styles.thumbPill,
-          { borderColor: chrome.border, backgroundColor: chrome.surfaceMuted },
-        ]}
-      >
-        <Image
-          source={{ uri: thumbnailUri }}
-          style={styles.thumb}
-          resizeMode="cover"
-          accessibilityLabel={attachment.name || basename(attachment.path)}
-        />
-      </View>
-    );
+  if (isImageAttachment(attachment)) {
+    return <ZenImage source={attachmentSource(attachment)} gallery={gallery} chrome={chrome} />;
   }
 
   return (
@@ -85,23 +80,6 @@ function InterfaceTimelineAttachmentPreviewPill({
       </Text>
     </View>
   );
-}
-
-function attachmentThumbnailUri(attachment: DisplayAttachment) {
-  if (!attachment.localUri) {
-    return null;
-  }
-  if (attachment.mimeType?.startsWith("image/")) {
-    return attachment.localUri;
-  }
-  if (
-    looksLikeImagePath(attachment.name) ||
-    looksLikeImagePath(attachment.path) ||
-    looksLikeImagePath(attachment.localUri)
-  ) {
-    return attachment.localUri;
-  }
-  return null;
 }
 
 function looksLikeImagePath(value: string) {

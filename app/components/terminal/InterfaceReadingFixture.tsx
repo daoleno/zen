@@ -52,7 +52,7 @@ const initial = Array.from({ length: 81 }, (_, index) =>
   message(
     index,
     index % 10 === 9
-      ? `## Images ${index}\n\n[JPEG image](large.jpg)\n\n[Normal image](normal.png)\n\n[Large image](large.png)\n\n[Tall image](tall.png)`
+      ? `## Images ${index}\n\n[JPEG image](large.jpg)\n\n![Normal image](normal.png)\n\n[Large image](large.png)\n\n![Tall image](tall.png)`
       : undefined,
   ),
 );

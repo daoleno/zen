@@ -210,6 +210,7 @@ export interface BrainWorkspaceTree {
 }
 
 export interface BrainWorkspaceFile {
+  data_url?: string;
   name: string;
   path: string;
   kind: "file" | string;
@@ -4047,6 +4048,7 @@ function normalizeBrainWorkspaceEntry(raw: any): BrainWorkspaceEntry {
 function normalizeBrainWorkspaceFile(raw: any): BrainWorkspaceFile {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
+    data_url: typeof source.data_url === "string" ? source.data_url : undefined,
     name: typeof source.name === "string" ? source.name : "",
     path: typeof source.path === "string" ? source.path : "",
     kind: typeof source.kind === "string" ? source.kind : "file",

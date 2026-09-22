@@ -8,7 +8,7 @@ import {
 export const INTERFACE_MARKDOWN_MOBILE_RENDERER = "enriched" as const;
 
 const STREAMING_REMEND_OPTIONS: RemendOptions = {
-  images: true,
+  images: false,
   inlineKatex: false,
   linkMode: "text-only",
 };
@@ -34,7 +34,7 @@ export function prepareInterfaceMarkdown(value: string, streaming: boolean) {
   if (streaming) {
     markdown = remend(markdown, STREAMING_REMEND_OPTIONS);
   }
-  const prepared = stripMarkdownImages(markdown);
+  const prepared = markdown;
   if (measure) {
     recordMarkdownPrepareSample({
       durationMs: nowMs() - started,
@@ -51,18 +51,4 @@ function nowMs() {
     globalThis as { performance?: { now(): number } }
   ).performance;
   return perf?.now?.() ?? Date.now();
-}
-
-function stripMarkdownImages(value: string) {
-  return value.replace(
-    /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
-    (_match, alt, url) => {
-      const label = String(alt || "").trim();
-      const href = String(url || "").trim();
-      if (!href) {
-        return label;
-      }
-      return label ? `[${label}](${href})` : href;
-    },
-  );
 }

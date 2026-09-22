@@ -12,7 +12,7 @@ class UploadDocumentPickerTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private fun select(id: String): Map<String, Any?>? {
         val uri = DocumentsContract.buildDocumentUri("expo.modules.zenfileupload.fixture", id)
-        return UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_OK, Intent().setData(uri))
+        return UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_OK, Intent().setData(uri)).single()
     }
 
     @Test fun testNormalUtf8TXT() {
@@ -32,12 +32,28 @@ class UploadDocumentPickerTest {
         }
     }
 
-    @Test fun testUnreadableDirectoryAndOpaqueInvalidURIReject() {
-        for (id in listOf("unreadable", "directory", ":", "query-error")) {
-            try { select(id); fail("must reject $id") } catch (expected: java.io.IOException) {
-                assertTrue(expected.message!!.startsWith("Cannot read this file."))
-            }
+    @Test fun testUnreadableDirectoryAndOpaqueInvalidURIReturnPerFileErrors() {
+        for (id in listOf("unreadable", "directory", ":")) {
+            assertTrue((select(id)!!["selectionError"] as String).startsWith("Cannot read this file."))
         }
+        assertNull(select("query-error")!!["selectionError"])
+    }
+
+    @Test fun testMultipleClipDataPreservesOrderAndPartialFailure() {
+        val resolver = instrumentation.context.contentResolver
+        val uris = listOf("normal", "unreadable", "unknown").map { DocumentsContract.buildDocumentUri("expo.modules.zenfileupload.fixture", it) }
+        val clip = android.content.ClipData.newRawUri("files", uris[0])
+        uris.drop(1).forEach { clip.addItem(android.content.ClipData.Item(it)) }
+        val intent = Intent().apply { clipData = clip; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        val assets = UploadDocumentPicker.readResult(resolver, Activity.RESULT_OK, intent)
+        assertEquals(uris.map { it.toString() }, assets.map { it["uri"] })
+        assertNull(assets[0]["selectionError"])
+        assertNotNull(assets[1]["selectionError"])
+        assertNull(assets[2]["selectionError"])
+        try { UploadDocumentPicker.readResult(resolver, Activity.RESULT_OK, intent, maxCount = 2); fail("excess accepted") } catch (_: java.io.IOException) {}
+        val chooser = UploadDocumentPicker.intent()
+        val inner = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
+        assertTrue(inner.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false))
     }
 
     @Test fun testUnknownAndEmptyFileSizes() {
@@ -47,21 +63,19 @@ class UploadDocumentPickerTest {
     }
 
     @Test fun testInvalidSchemeAndCancelledRead() {
-        try {
-            UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_OK,
-                Intent().setData(Uri.parse("file:///not-a-provider")))
-            fail("file URI accepted")
-        } catch (_: java.io.IOException) {}
+        val invalid = UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_OK,
+            Intent().setData(Uri.parse("file:///not-a-provider")))
+        assertNotNull(invalid.single()["selectionError"])
         val signal = android.os.CancellationSignal().apply { cancel() }
         try {
             UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_OK,
                 Intent().setData(DocumentsContract.buildDocumentUri("expo.modules.zenfileupload.fixture", "normal")), signal)
             fail("cancelled metadata read accepted")
-        } catch (_: java.io.IOException) {}
+        } catch (_: android.os.OperationCanceledException) {}
     }
 
     @Test fun testCancelAndMissingResult() {
-        assertNull(UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_CANCELED, null))
+        assertTrue(UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_CANCELED, null).isEmpty())
         try {
             UploadDocumentPicker.readResult(instrumentation.context.contentResolver, Activity.RESULT_OK, null)
             fail("missing URI must fail")

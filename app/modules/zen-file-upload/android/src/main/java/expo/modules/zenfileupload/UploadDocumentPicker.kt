@@ -16,35 +16,36 @@ internal object UploadDocumentPicker {
     const val REQUEST_CODE = 58341
 
     // One-shot attachment import, including apps that don't expose DocumentsProvider.
-    // Keep one user-selected result; never retry with a different provider/URI.
+    // Keep every user-selected URI and its original activity read grant.
     fun intent() = Intent.createChooser(Intent(Intent.ACTION_GET_CONTENT).apply {
         addCategory(Intent.CATEGORY_OPENABLE)
         type = "*/*"
-        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }, "Attach a file")
+    }, "Attach files")
 
-    fun readResult(resolver: ContentResolver, resultCode: Int, intent: Intent?, signal: CancellationSignal? = null, debug: Boolean = false): Map<String, Any?>? {
+    fun readResult(resolver: ContentResolver, resultCode: Int, intent: Intent?, signal: CancellationSignal? = null, debug: Boolean = false, maxCount: Int = 8): List<Map<String, Any?>> {
         fun diagnostic(message: String) {
             // Structural facts only; never URI, metadata values or exception messages.
             if (debug) Log.d("ZenDocumentPicker", message)
         }
         val clip = intent?.clipData
         diagnostic("result=$resultCode data=${intent?.data != null} clipCount=${clip?.itemCount ?: 0} flags=${intent?.flags ?: 0} readGrant=${(intent?.flags ?: 0) and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0} mainThread=${android.os.Looper.myLooper() == android.os.Looper.getMainLooper()}")
-        if (resultCode == Activity.RESULT_CANCELED) return null
+        if (resultCode == Activity.RESULT_CANCELED) return emptyList()
         if (resultCode != Activity.RESULT_OK) throw failure("RESULT", "Could not select this file. Try again.")
-        if (clip != null && (clip.itemCount != 1 || clip.getItemAt(0).uri == null)) {
-            throw failure("RESULT", "Choose one file.")
+        val uris = if (clip != null && clip.itemCount > 0) {
+            (0 until clip.itemCount).map { clip.getItemAt(it).uri ?: throw failure("RESULT", "The picker returned an invalid file.") }
+        } else listOf(intent?.data ?: throw failure("RESULT", "No file was selected. Choose files again."))
+        if (uris.size > maxCount) throw failure("LIMIT", "Choose up to $maxCount files. Remove an attachment to make room.")
+        return uris.map { uri ->
+            signal?.throwIfCanceled()
+            diagnostic("uriContent=${uri.scheme == ContentResolver.SCHEME_CONTENT} authorityPresent=${!uri.authority.isNullOrBlank()}")
+            try { read(resolver, uri, signal, debug, ::diagnostic) }
+            catch (error: OperationCanceledException) { throw error }
+            catch (error: Exception) {
+                mapOf("uri" to uri.toString(), "name" to "Unreadable file", "mimeType" to "application/octet-stream", "size" to null, "selectionError" to error.message)
+            }
         }
-        val dataUri = intent?.data
-        val clipUri = clip?.getItemAt(0)?.uri
-        // Never silently substitute a different ClipData item.
-        if (dataUri != null && clipUri != null && dataUri != clipUri) {
-            throw failure("RESULT", "The picker returned conflicting files. Choose one file again.")
-        }
-        val uri = dataUri ?: clipUri ?: throw failure("RESULT", "No file was selected. Choose a file again.")
-        diagnostic("uriContent=${uri.scheme == ContentResolver.SCHEME_CONTENT} authorityPresent=${!uri.authority.isNullOrBlank()}")
-        return read(resolver, uri, signal, debug, ::diagnostic)
     }
 
     private fun read(resolver: ContentResolver, uri: Uri, signal: CancellationSignal?, debug: Boolean, diagnostic: (String) -> Unit): Map<String, Any?> {

@@ -1,143 +1,88 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type SetStateAction,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { Alert } from "react-native";
 import type { ConnectionState } from "../../store/workers";
-import { CurrentAttachmentUpload } from "../../services/currentAttachmentUpload";
-import {
-  createAttachmentUploadOperation,
-  pickUploadDocument,
-  resolveServerUploadTarget,
-  type ActiveAttachmentUpload,
-} from "../../services/uploads";
+import { AttachmentUploadQueue } from "../../services/attachmentUploadQueue";
+import { createAttachmentUploadOperation, pickUploadDocuments, resolveServerUploadTarget, MAX_COMPOSER_ATTACHMENTS, type ActiveAttachmentUpload } from "../../services/uploads";
 import type { ComposerAttachment } from "./InterfaceChatSession";
-
-const MAX_COMPOSER_ATTACHMENTS = 8;
 
 interface UseInterfaceComposerAttachmentsInput {
   serverId: string;
+  ownerKey: string;
+  attachments: ComposerAttachment[];
   connectionState: ConnectionState;
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   focusComposer(): void;
 }
 
-export function useInterfaceComposerAttachments({
-  serverId,
-  connectionState,
-  setAttachments,
-  focusComposer,
-}: UseInterfaceComposerAttachmentsInput) {
-  const uploadOwnerRef = useRef(new CurrentAttachmentUpload());
+export function useInterfaceComposerAttachments({ serverId, ownerKey, attachments, connectionState, setAttachments, focusComposer }: UseInterfaceComposerAttachmentsInput) {
+  const queueRef = useRef<AttachmentUploadQueue | null>(null);
   const selectionGenerationRef = useRef(0);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const [selecting, setSelecting] = useState(false);
-  const [activeUpload, setActiveUpload] =
-    useState<ActiveAttachmentUpload | null>(null);
-  const uploading = selecting || activeUpload !== null;
-  const canAttach = connectionState === "connected" && !uploading;
+  const selectingRef = useRef(false);
+  const uploading = selecting || attachments.some((item) => item.uploadStatus && item.uploadStatus !== "ready");
+  const canAttach = connectionState === "connected" && !selecting && attachments.length < MAX_COMPOSER_ATTACHMENTS;
 
   useEffect(() => {
+    const generation = ++selectionGenerationRef.current;
     setSelecting(false);
-    setActiveUpload(null);
+    selectingRef.current = false;
+    const queue = new AttachmentUploadQueue(async (asset, onProgress) => {
+      const target = await resolveServerUploadTarget(serverId);
+      if (selectionGenerationRef.current !== generation) throw new Error("The upload owner changed.");
+      return createAttachmentUploadOperation(asset, target, { onProgress });
+    }, (items) => {
+      const byId = new Map(items.map((item) => [item.id, item]));
+      setAttachments((current) => current.map((attachment) => {
+        const item = byId.get(attachment.id);
+        return item ? { ...attachment, ...item.result, uploadStatus: item.status, uploadProgress: item.progress, uploadError: item.error } : attachment;
+      }));
+    });
+    queueRef.current = queue;
     return () => {
-      selectionGenerationRef.current += 1;
-      uploadOwnerRef.current.cancel();
+      selectionGenerationRef.current++;
+      queueRef.current = null;
+      queue.dispose();
+      setAttachments((current) => current.filter((item) => !item.uploadStatus || item.uploadStatus === "ready"));
     };
-  }, [serverId]);
+  }, [serverId, ownerKey, setAttachments]);
+
+  useEffect(() => { queueRef.current?.forgetCompleted(new Set(attachments.map((item) => item.id))); }, [attachments]);
 
   const handleUploadAttachment = useCallback(async () => {
-    if (!canAttach) {
-      return;
-    }
-    const selectionGeneration = selectionGenerationRef.current + 1;
-    selectionGenerationRef.current = selectionGeneration;
+    if (!canAttach || selectingRef.current) return;
+    const remaining = MAX_COMPOSER_ATTACHMENTS - attachmentsRef.current.length;
+    const generation = selectionGenerationRef.current;
+    selectingRef.current = true;
     setSelecting(true);
-    let handle: ReturnType<CurrentAttachmentUpload["start"]> | null = null;
     try {
-      const asset = await pickUploadDocument();
-      if (selectionGenerationRef.current !== selectionGeneration || !asset) {
-        return;
-      }
-      const target = await resolveServerUploadTarget(serverId);
-      if (selectionGenerationRef.current !== selectionGeneration) {
-        return;
-      }
-
-      setSelecting(false);
-      setActiveUpload({ name: asset.name || "upload", progress: null });
-      handle = uploadOwnerRef.current.start(
-        (onProgress) =>
-          createAttachmentUploadOperation(asset, target, { onProgress }),
-        (progress) => {
-          setActiveUpload((current) =>
-            current ? { ...current, progress } : current,
-          );
-        },
-      );
-      const attachment = await handle.result;
-      if (!uploadOwnerRef.current.finish(handle)) {
-        return;
-      }
-      setActiveUpload(null);
-      setAttachments((current) =>
-        [
-          ...current,
-          {
-            ...attachment,
-            id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-          },
-        ].slice(-MAX_COMPOSER_ATTACHMENTS),
-      );
+      const assets = await pickUploadDocuments(remaining);
+      if (selectionGenerationRef.current !== generation || !assets.length) return;
+      if (assets.length + attachmentsRef.current.length > MAX_COMPOSER_ATTACHMENTS) throw new Error("Remove an attachment before selecting more files.");
+      const entries = assets.map((asset) => ({ id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`, asset }));
+      const placeholders: ComposerAttachment[] = entries.map(({ id, asset }) => ({
+        id, name: asset.name || "upload", path: "", localUri: asset.uri, mimeType: asset.mimeType,
+        uploadStatus: asset.selectionError ? "failed" : "queued", uploadError: asset.selectionError,
+        retryUpload: () => queueRef.current?.retry(id),
+      }));
+      setAttachments((current) => [...current, ...placeholders]);
+      queueRef.current?.enqueue(entries);
       focusComposer();
-    } catch (err: any) {
-      if (selectionGenerationRef.current !== selectionGeneration) {
-        return;
-      }
-      if (handle && !uploadOwnerRef.current.finish(handle)) {
-        return;
-      }
-      setActiveUpload(null);
-      Alert.alert("Upload failed", uploadErrorMessage(err));
+    } catch (error) {
+      if (selectionGenerationRef.current === generation) Alert.alert("Could not attach files", error instanceof Error ? error.message : "Try selecting the files again.");
     } finally {
-      if (selectionGenerationRef.current === selectionGeneration) {
-        setSelecting(false);
-      }
+      if (selectionGenerationRef.current === generation) { selectingRef.current = false; setSelecting(false); }
     }
-  }, [canAttach, focusComposer, serverId, setAttachments]);
+  }, [canAttach, focusComposer, setAttachments]);
 
+  const removeAttachment = useCallback((id: string) => {
+    queueRef.current?.remove(id);
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  }, [setAttachments]);
   const cancelUpload = useCallback(() => {
-    selectionGenerationRef.current += 1;
-    const cancellationError = uploadOwnerRef.current.cancel();
-    setSelecting(false);
-    setActiveUpload(null);
-    if (cancellationError) {
-      Alert.alert("Cancel failed", uploadErrorMessage(cancellationError));
-    }
-  }, []);
+    for (const item of attachmentsRef.current) if (item.uploadStatus && item.uploadStatus !== "ready") removeAttachment(item.id);
+  }, [removeAttachment]);
 
-  const removeAttachment = useCallback(
-    (id: string) => {
-      setAttachments((current) =>
-        current.filter((attachment) => attachment.id !== id),
-      );
-    },
-    [setAttachments],
-  );
-
-  return {
-    activeUpload,
-    canAttach,
-    cancelUpload,
-    handleUploadAttachment,
-    removeAttachment,
-    uploading,
-  };
-}
-
-function uploadErrorMessage(err: any) {
-  const message = typeof err?.message === "string" ? err.message.trim() : "";
-  return message || "Could not upload this file.";
+  return { activeUpload: null as ActiveAttachmentUpload | null, canAttach, cancelUpload, handleUploadAttachment, removeAttachment, uploading };
 }
