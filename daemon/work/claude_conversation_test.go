@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -514,6 +515,9 @@ func TestProviderConversationReaderClaudeExplicitResumeOldOrMissing(t *testing.T
 }
 
 func TestProviderConversationReaderClaudeUsesProcessConfigDir(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires procfs process environment evidence")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cwd := "/repo/configured-claude"
