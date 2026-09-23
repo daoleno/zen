@@ -39,6 +39,7 @@ import {
   providerEditorAfterSave,
   providerEditorCanSave,
   providerEditorInitialBaseUrl,
+  providerEditorInitialModelId,
   providerEditorInitialName,
   providerEditorRequiresBaseUrl,
   providerEditorSessionKey,
@@ -103,6 +104,7 @@ export interface ProvidersPresentationProps {
     name: string;
     baseUrl: string;
     apiKey: string;
+    modelId: string;
   }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
   apiKeyAutoFocus?: boolean;
 }
@@ -598,6 +600,7 @@ interface ProviderEditorSheetProps {
     name: string;
     baseUrl: string;
     apiKey: string;
+    modelId: string;
   }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
 }
 
@@ -624,6 +627,7 @@ function ProviderEditorSheet({
   const insets = useSafeAreaInsets();
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [modelId, setModelId] = useState("");
   const [name, setName] = useState("");
   const [testState, setTestState] = useState<TestState>({ kind: "idle" });
   const sessionKey = providerEditorSessionKey(editor);
@@ -635,6 +639,7 @@ function ProviderEditorSheet({
     if (providerEditorShouldResetFields(previous, sessionKey)) {
       setApiKey("");
       setBaseUrl(providerEditorInitialBaseUrl(editor));
+      setModelId(providerEditorInitialModelId(editor));
       setName(providerEditorInitialName(editor));
       setTestState({ kind: "idle" });
     }
@@ -643,6 +648,7 @@ function ProviderEditorSheet({
   const resetFields = () => {
     setApiKey("");
     setBaseUrl("");
+    setModelId("");
     setName("");
     setTestState({ kind: "idle" });
   };
@@ -733,6 +739,7 @@ function ProviderEditorSheet({
       name: name.trim(),
       baseUrl: baseUrl.trim(),
       apiKey,
+      modelId: modelId.trim(),
     });
     if (outcome.status === "saved") resetFields();
   };
@@ -808,6 +815,18 @@ function ProviderEditorSheet({
               autoComplete="off"
               textContentType="URL"
               keyboardType="url"
+              containerStyle={styles.field}
+            />
+            <Text style={styles.fieldLabel}>Model ID</Text>
+            <MobileSingleLineInput
+              value={modelId}
+              onChangeText={setModelId}
+              editable={!mutating && !testing}
+              placeholder="Optional if models can be synced"
+              placeholderTextColor={colors.textSecondary}
+              accessibilityLabel="Model ID"
+              autoCapitalize="none"
+              autoCorrect={false}
               containerStyle={styles.field}
             />
           </>

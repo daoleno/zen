@@ -382,6 +382,38 @@ func TestProviderConnectionProbeIsTransientAndUsesClientAuth(t *testing.T) {
 	}
 }
 
+func TestClaudeDiscoveryKeepsVersionedProxyPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		base, first, fallback string
+	}{
+		{"https://gateway.example/proxy", "https://gateway.example/proxy/v1/models", "https://gateway.example/proxy/models"},
+		{"https://gateway.example/proxy/v1/", "https://gateway.example/proxy/v1/models", "https://gateway.example/proxy/models"},
+	} {
+		urls := modelDiscoveryURLs(tc.base, ProtocolAnthropicMessages)
+		if len(urls) != 2 || urls[0] != tc.first || urls[1] != tc.fallback {
+			t.Fatalf("base=%s discovery URLs=%v", tc.base, urls)
+		}
+	}
+}
+
+func TestClaudeConnectionProbeDoesNotHideAuthorizationFailureBehindFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/proxy/v1/models" {
+			http.Error(w, "denied", http.StatusUnauthorized)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	owner := startTestOwner(t, readyLookup("x"))
+	_, err := owner.TestProviderConnection(ProviderConnectionTestInput{
+		Client: ClientClaude, BaseURL: server.URL + "/proxy/v1", Credential: "fixture-not-real",
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") || strings.Contains(err.Error(), "manual model ID") {
+		t.Fatalf("expected authorization failure rather than missing models: %v", err)
+	}
+}
+
 // Regression: custom/advanced account connections intentionally omit model_id.
 // Discover and compile probes must use the ClientModel contract placeholder
 // instead of failing with "model_id is required".

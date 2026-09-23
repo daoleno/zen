@@ -159,6 +159,12 @@ export function providerEditorInitialBaseUrl(
   return editor?.kind === "edit" ? (editor.connection.base_url ?? "") : "";
 }
 
+export function providerEditorInitialModelId(
+  editor: ProvidersEditorState,
+): string {
+  return editor?.kind === "edit" ? (editor.connection.manual_model_id ?? "") : "";
+}
+
 /**
  * Whether the unified form shows an editable Base URL field for this target:
  * new custom endpoints and advanced connections only. Curated connections own

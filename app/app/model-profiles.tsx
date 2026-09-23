@@ -235,6 +235,7 @@ export default function ProvidersScreen() {
     name: string;
     baseUrl: string;
     apiKey: string;
+    modelId: string;
   }): Promise<ProviderSaveOutcome> => {
     const previous = catalogRef.current;
     if (!currentServerId || !currentConnected || !previous) {
@@ -268,6 +269,7 @@ export default function ProvidersScreen() {
             name: input.name,
             client: input.client,
             baseUrl: input.baseUrl,
+            modelId: input.modelId,
             presetId: input.connection?.preset_id,
             // Curated connections keep the official endpoint; only
             // custom/advanced connections carry an editable Base URL.
@@ -677,13 +679,14 @@ export default function ProvidersScreen() {
           connection.clients[0] ?? "codex",
         );
       }}
-      onSaveProvider={async ({ client, connection, name, baseUrl, apiKey }) => {
+      onSaveProvider={async ({ client, connection, name, baseUrl, apiKey, modelId }) => {
         const outcome = await saveProvider({
           client,
           connection,
           name,
           baseUrl,
           apiKey,
+          modelId,
         });
         applySaveOutcome(outcome);
         return outcome;

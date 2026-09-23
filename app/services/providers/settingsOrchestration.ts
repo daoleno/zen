@@ -43,7 +43,11 @@ export function defaultRuntimeSeedAction(input: {
   const available = (input.snapshot.models[input.connectionId] ?? []).filter(
     (model) => model.available && model.known !== false,
   );
-  if (current?.connection_id && current.model_id) {
+  if (
+    current?.connection_id &&
+    current.model_id &&
+    (input.client !== "claude" || current.connection_id === input.connectionId)
+  ) {
     return { kind: "preserve", modelId: current.model_id };
   }
   if (available.length === 0) return { kind: "unavailable" };

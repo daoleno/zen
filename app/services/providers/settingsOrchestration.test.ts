@@ -44,6 +44,19 @@ describe("future-thread default runtime policy", () => {
     });
   });
 
+  test("does not reuse another connection's model when changing Claude default", () => {
+    const action = defaultRuntimeSeedAction({
+      snapshot: {
+        ...snapshot,
+        defaults: { claude: { connection_id: "a", model_id: "old-model" } },
+        models: { ...snapshot.models, b: [{ id: "new-model", available: true, source: "manual" }] },
+      },
+      client: "claude",
+      connectionId: "b",
+    });
+    expect(action).toEqual({ kind: "choose", models: [{ id: "new-model", available: true, source: "manual" }] });
+  });
+
   test("asks for discovery when the target has no available models", () => {
     expect(defaultRuntimeSeedAction({
       snapshot: { ...snapshot, defaults: {}, models: {} },

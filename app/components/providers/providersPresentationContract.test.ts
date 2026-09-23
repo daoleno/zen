@@ -5,6 +5,7 @@ import {
   providerEditorAfterSave,
   providerEditorCanSave,
   providerEditorInitialBaseUrl,
+  providerEditorInitialModelId,
   providerEditorInitialName,
   providerEditorRequiresBaseUrl,
   providerEditorSessionKey,
@@ -31,6 +32,7 @@ type ConnectionFixture = {
   credential_ready: boolean;
   advanced: boolean;
   base_url?: string;
+  manual_model_id?: string;
 };
 
 function connection(
@@ -135,6 +137,11 @@ describe("unified Add/Edit Provider editor", () => {
     expect(providerEditorInitialBaseUrl(edit)).toBe(
       "https://api.example.com/v1",
     );
+    expect(providerEditorInitialModelId(edit)).toBe("");
+    expect(providerEditorInitialModelId({
+      kind: "edit",
+      connection: connection("conn-model", { manual_model_id: "vendor/claude" }),
+    })).toBe("vendor/claude");
     expect(providerEditorRequiresBaseUrl(edit)).toBe(true);
     expect(providerEditorRequiresBaseUrl({ kind: "create", client: "codex" })).toBe(
       true,

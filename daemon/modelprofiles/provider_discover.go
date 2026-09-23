@@ -3,6 +3,7 @@ package modelprofiles
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+var errModelDiscoveryDenied = errors.New("model discovery denied")
 
 // modelDiscoveryCache stores last-known-good /v1/models id lists per connection.
 type modelDiscoveryCache struct {
@@ -308,6 +311,9 @@ type DiscoverProviderModelsResult struct {
 // be returned with a persistence warning; durable LKG is never claimed on write failure.
 func (o *Owner) DiscoverProviderModels(connectionID string, force bool) ([]ProviderModelEntry, error) {
 	res, err := o.DiscoverProviderModelsDetailed(connectionID, force)
+	if err != nil && len(res.Entries) > 0 {
+		return res.Entries, nil
+	}
 	return res.Entries, err
 }
 
@@ -388,7 +394,7 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 			}
 		}
 	}
-	if discoverErr != nil && len(out.Entries) == 0 {
+	if discoverErr != nil {
 		return out, discoverErr
 	}
 	return out, nil
@@ -494,13 +500,19 @@ func fetchUpstreamModels(ctx context.Context, client *http.Client, profile Profi
 		return nil, nil, err
 	}
 	candidates := modelDiscoveryURLs(base, profile.Protocol)
-	var lastErr error
+	var lastErr, deniedErr error
 	for _, endpoint := range candidates {
 		ids, metadata, err := getModelsOnce(ctx, client, endpoint, profile, store, lookup)
 		if err == nil {
 			return ids, metadata, nil
 		}
+		if errors.Is(err, errModelDiscoveryDenied) {
+			deniedErr = err
+		}
 		lastErr = err
+	}
+	if deniedErr != nil {
+		return nil, nil, deniedErr
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("%w: discovery failed", ErrUpstreamInvalid)
@@ -512,6 +524,9 @@ func modelDiscoveryURLs(base, protocol string) []string {
 	base = strings.TrimRight(base, "/")
 	switch normalizeID(protocol) {
 	case ProtocolAnthropicMessages:
+		if strings.HasSuffix(base, "/v1") {
+			return []string{base + "/models", strings.TrimSuffix(base, "/v1") + "/models"}
+		}
 		return []string{base + "/v1/models", base + "/models"}
 	default:
 		if strings.HasSuffix(base, "/v1") {
@@ -543,6 +558,12 @@ func getModelsOnce(ctx context.Context, client *http.Client, endpoint string, pr
 		return nil, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, nil, fmt.Errorf("%w: %w (HTTP %d); check API key and model-list access", ErrUpstreamInvalid, errModelDiscoveryDenied, resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+			return nil, nil, fmt.Errorf("%w: model listing unavailable (HTTP %d); API key not verified, enter a manual model ID to continue", ErrUpstreamInvalid, resp.StatusCode)
+		}
 		return nil, nil, fmt.Errorf("%w: discovery status %d", ErrUpstreamInvalid, resp.StatusCode)
 	}
 	return parseModelsCatalogResponse(body)

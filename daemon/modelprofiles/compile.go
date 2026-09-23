@@ -1,6 +1,7 @@
 package modelprofiles
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -70,14 +71,14 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 			CodexControlSocket: normalizeSpace(opts.CodexControlSocket),
 		}, nil
 	case ExecutorClaude:
+		if strings.Contains(baseCommand, LoopbackAuthPlaceholder) {
+			return ResolvedLaunch{}, fmt.Errorf("%w: loopback placeholder must not appear in base command", ErrInvalid)
+		}
 		command, env, err := compileClaude(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL)
 		if err != nil {
 			return ResolvedLaunch{}, err
 		}
 		if err := assertNoUpstreamLeak(command, env, profile); err != nil {
-			return ResolvedLaunch{}, err
-		}
-		if err := assertNoPlaceholderLeak(command, profile); err != nil {
 			return ResolvedLaunch{}, err
 		}
 		return ResolvedLaunch{
@@ -182,6 +183,17 @@ func compileClaude(baseCommand, clientModel string, profile Profile, loopbackRou
 	env = map[string]string{EnvAnthropicBaseURL: loopbackRouteURL}
 	if normalizeID(profile.AuthMode) != AuthModeNativePassthrough {
 		env[EnvAnthropicAuthToken] = LoopbackAuthPlaceholder
+		env[EnvAnthropicAPIKey] = LoopbackClaudeAPIKeyPlaceholder
+		// Claude user settings may supply their own env and override the process
+		// environment. CLI --settings wins for this Session without changing the
+		// user's config. All values here are loopback-only and non-secret.
+		settings, err := json.Marshal(struct {
+			Env map[string]string `json:"env"`
+		}{Env: env})
+		if err != nil {
+			return "", nil, fmt.Errorf("%w: encode Claude route settings: %v", ErrInvalid, err)
+		}
+		command = appendArgv(command, "--settings", string(settings))
 	}
 	return command, env, nil
 }

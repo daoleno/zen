@@ -63,6 +63,14 @@ Models and accounts** stores the supplied API key on the current daemon through
 Zen's credential store. The mobile form does not display stored secrets; leaving
 an existing key empty preserves it. Switching the current server rebinds the
 configuration. Selecting a model connection does not change the Brain executor.
+For a custom Claude gateway, enter its endpoint root (including any proxy path,
+optionally ending in `/v1`) and the exact model ID. Model ID can be entered
+manually when the gateway has no `/models` endpoint; failed model discovery does
+not verify or invalidate the key. Zen routes managed Claude requests through its
+session-bound loopback and injects the saved upstream key there. The launch uses
+session-specific Claude settings to keep a pre-existing native settings file's
+endpoint or authentication environment from redirecting that managed session;
+native-login sessions retain their own authentication behavior.
 
 ## Custom executors
 
