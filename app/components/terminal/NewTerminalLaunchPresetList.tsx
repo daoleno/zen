@@ -13,7 +13,7 @@ import {
   GROK_COMMAND,
   OPENCODE_COMMAND,
   PI_COMMAND,
- DSH_COMMAND,
+  DSH_COMMAND,
 } from "../../services/agentCommands";
 import { AgentKindIcon } from "./AgentKindIcon";
 import { AppText } from "../ui";
@@ -26,7 +26,6 @@ export type NewTerminalLaunchPreset = {
 };
 
 const LAUNCH_PRESETS: readonly NewTerminalLaunchPreset[] = [
- { key:"dsh",kind:"dsh",label:"DSH",command:DSH_COMMAND },
   { key: "shell", kind: "terminal", label: "Shell", command: "" },
   {
     key: "claude",
@@ -39,6 +38,7 @@ const LAUNCH_PRESETS: readonly NewTerminalLaunchPreset[] = [
   { key: "grok", kind: "grok", label: "Grok", command: GROK_COMMAND },
   { key: "pi", kind: "pi", label: "Pi", command: PI_COMMAND },
   { key: "opencode", kind: "opencode", label: "OpenCode", command: OPENCODE_COMMAND },
+  { key: "dsh", kind: "dsh", label: "DSH", command: DSH_COMMAND },
 ];
 
 interface NewTerminalLaunchPresetListProps {
@@ -64,40 +64,39 @@ export function NewTerminalLaunchPresetList({
   return (
     <View>
       <View style={styles.presetGrid}>
-      {LAUNCH_PRESETS.map((preset) => {
-        const active = activePreset === preset.key;
-        const disabled = !canSubmit;
-        return (
-          <TouchableOpacity
-            key={preset.key}
-            accessibilityRole="button"
-            accessibilityLabel={preset.label}
-            accessibilityState={{ disabled, selected: active }}
-            style={[
-              styles.presetCard,
-              preset.key === "shell" && styles.presetCardWide,
-              active && styles.presetCardActive,
-              (submitting || disabled) && styles.presetCardDisabled,
-            ]}
-            onPress={() => {
-              if (!disabled) onPresetPress(preset);
-            }}
-            disabled={disabled}
-            activeOpacity={0.82}
-          >
-            <View style={styles.presetIcon}>
-              <AgentKindIcon kind={preset.kind} size={20} />
-            </View>
-            <AppText
-              variant="label"
-              tone={active ? "primary" : "secondary"}
-              style={styles.presetLabel}
+        {LAUNCH_PRESETS.map((preset) => {
+          const active = activePreset === preset.key;
+          const disabled = !canSubmit;
+          return (
+            <TouchableOpacity
+              key={preset.key}
+              accessibilityRole="button"
+              accessibilityLabel={preset.label}
+              accessibilityState={{ disabled, selected: active }}
+              style={[
+                styles.presetCard,
+                active && styles.presetCardActive,
+                (submitting || disabled) && styles.presetCardDisabled,
+              ]}
+              onPress={() => {
+                if (!disabled) onPresetPress(preset);
+              }}
+              disabled={disabled}
+              activeOpacity={0.82}
             >
-              {preset.label}
-            </AppText>
-          </TouchableOpacity>
-        );
-      })}
+              <View style={styles.presetIcon}>
+                <AgentKindIcon kind={preset.kind} size={20} />
+              </View>
+              <AppText
+                variant="label"
+                tone={active ? "primary" : "secondary"}
+                style={styles.presetLabel}
+              >
+                {preset.label}
+              </AppText>
+            </TouchableOpacity>
+          );
+        })}
       </View>
     </View>
   );
@@ -127,9 +126,6 @@ function createStyles(colors: typeof Colors) {
     presetCardActive: {
       backgroundColor: colors.surfaceActive,
       borderColor: colors.accent,
-    },
-    presetCardWide: {
-      width: "100%",
     },
     presetCardDisabled: {
       opacity: 0.5,
