@@ -95,10 +95,25 @@ func findClaudeTranscript(worker classifier.Worker, now time.Time) (claudeTransc
 	if err != nil {
 		return claudeTranscriptCandidate{}, false, err
 	}
+	resumeID := claudeResumeSessionID(worker.Command)
+	configDir := firstProcessTreeEnvironValue(worker.ProcessID, "CLAUDE_CONFIG_DIR")
+	if configDir == "" && worker.ProcessID > 0 {
+		if processHome := firstProcessTreeEnvironValue(worker.ProcessID, "HOME"); processHome != "" {
+			home = processHome
+		}
+	}
+	if configDir == "" {
+		configDir = filepath.Join(home, ".claude")
+	}
+	if !filepath.IsAbs(configDir) {
+		// A process-local relative config directory cannot be resolved safely
+		// from the daemon's cwd. Never bind another account's HOME transcript.
+		return claudeTranscriptCandidate{}, false, nil
+	}
 
 	var candidates []claudeTranscriptCandidate
 	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
-		projectDir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(candidateCWD))
+		projectDir := filepath.Join(configDir, "projects", encodeClaudeProjectDir(candidateCWD))
 		entries, err := os.ReadDir(projectDir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -116,7 +131,7 @@ func findClaudeTranscript(worker classifier.Worker, now time.Time) (claudeTransc
 				continue
 			}
 			updated := info.ModTime()
-			if !isClaudeTranscriptFresh(updated, now) {
+			if resumeID == "" && !isClaudeTranscriptFresh(updated, now) {
 				continue
 			}
 			meta, err := readClaudeMeta(path)
@@ -142,10 +157,9 @@ func findClaudeTranscript(worker classifier.Worker, now time.Time) (claudeTransc
 		return claudeTranscriptCandidate{}, false, nil
 	}
 
-	if sessionID := claudeResumeSessionID(worker.Command); sessionID != "" {
-		if matched, ok := matchClaudeTranscriptID(candidates, sessionID); ok {
-			return matched, true, nil
-		}
+	if resumeID != "" {
+		matched, ok := matchClaudeTranscriptID(candidates, resumeID)
+		return matched, ok, nil
 	}
 
 	freshCandidates := freshClaudeTranscriptCandidates(candidates, now)

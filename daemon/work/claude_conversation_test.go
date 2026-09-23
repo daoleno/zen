@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -476,6 +477,78 @@ func TestProviderConversationReaderClaudeFindsResumeSession(t *testing.T) {
 	}
 	if got.Activity == nil || got.Activity.Status != ProviderActivityRunning {
 		t.Fatalf("Activity = %#v, want running", got.Activity)
+	}
+}
+
+func TestProviderConversationReaderClaudeExplicitResumeOldOrMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/repo/claude-resume"
+	now := time.Now().UTC()
+	oldPath := claudeReaderTranscriptPath(home, cwd, "resume-old")
+	otherPath := claudeReaderTranscriptPath(home, cwd, "other-session")
+	writeClaudeReaderTranscript(t, oldPath, cwd, "resume-old", "owned old transcript")
+	writeClaudeReaderTranscript(t, otherPath, cwd, "other-session", "unrelated fresh transcript")
+	forceReaderFixtureModTime(t, oldPath, now.Add(-96*time.Hour))
+	forceReaderFixtureModTime(t, otherPath, now)
+	worker := classifier.Worker{
+		Name: "claude", Command: "claude --resume resume-old", Cwd: cwd,
+		StartedAt: now.Add(-time.Minute),
+	}
+	got, err := NewProviderConversationReader().Load(worker, WorkerProviderClaude, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Available || got.SessionID != "resume-old" || got.Path != oldPath ||
+		!conversationContainsBody(got, "owned old transcript") {
+		t.Fatalf("old explicit resume crossed ownership: %#v", got)
+	}
+	worker.Command = "claude --resume missing-session"
+	got, err = NewProviderConversationReader().Load(worker, WorkerProviderClaude, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Available || got.Reason != "transcript_not_found" || len(got.Events) != 0 {
+		t.Fatalf("missing explicit resume bound another session: %#v", got)
+	}
+}
+
+func TestProviderConversationReaderClaudeUsesProcessConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/repo/configured-claude"
+	now := time.Now().UTC()
+	configDir := filepath.Join(t.TempDir(), "isolated-claude")
+	ownedPath := filepath.Join(configDir, "projects", encodeClaudeProjectDir(cwd), "owned.jsonl")
+	wrongPath := claudeReaderTranscriptPath(home, cwd, "owned")
+	writeClaudeReaderTranscript(t, ownedPath, cwd, "owned", "process-owned config")
+	writeClaudeReaderTranscript(t, wrongPath, cwd, "owned", "daemon-home config")
+	forceReaderFixtureModTime(t, ownedPath, now)
+	forceReaderFixtureModTime(t, wrongPath, now)
+	cmd := exec.Command("sleep", "30")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+configDir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	deadline := time.Now().Add(2 * time.Second)
+	for firstProcessTreeEnvironValue(cmd.Process.Pid, "CLAUDE_CONFIG_DIR") != configDir {
+		if time.Now().After(deadline) {
+			t.Fatal("fixture process did not expose its config directory")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	worker := classifier.Worker{
+		Name: "claude", Command: "claude --resume owned", Cwd: cwd,
+		ProcessID: cmd.Process.Pid,
+	}
+	got, err := NewProviderConversationReader().Load(worker, WorkerProviderClaude, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Available || got.Path != ownedPath || !conversationContainsBody(got, "process-owned config") ||
+		conversationContainsBody(got, "daemon-home config") {
+		t.Fatalf("did not honor process config owner: %#v", got)
 	}
 }
 
