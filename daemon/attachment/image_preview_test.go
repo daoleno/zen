@@ -35,3 +35,20 @@ func TestImagePreviewPreservesBytesAndBoundsDimensions(t *testing.T) {
 		t.Fatalf("dimension bound=%v", err)
 	}
 }
+
+func TestImagePreviewSVGPreservesBytesAndRejectsFakeRoots(t *testing.T) {
+	svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><path d="M0 0"/></svg>`)
+	uri, err := ImagePreviewDataURL(svg)
+	if err != nil || uri != "data:image/svg+xml;base64,"+base64.StdEncoding.EncodeToString(svg) {
+		t.Fatalf("SVG changed or rejected: %v", err)
+	}
+	long := append([]byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><path d="`), make([]byte, 500)...)
+	if !HasSVGPreviewRoot(long[:512]) {
+		t.Fatal("valid SVG sniff root rejected")
+	}
+	for _, invalid := range [][]byte{[]byte("not an image <svg>"), []byte("<?xml broken"), []byte{0xff, '<', 's', 'v', 'g', '>'}} {
+		if IsSVGPreview(invalid) {
+			t.Fatalf("invalid SVG accepted: %q", invalid)
+		}
+	}
+}

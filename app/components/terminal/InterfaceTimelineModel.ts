@@ -2073,7 +2073,7 @@ function previewableImageUri(value?: string) {
 }
 
 function looksLikeImagePath(value: string) {
-  return /\.(png|jpe?g|gif|webp|bmp)$/i.test(value.trim());
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(value.trim());
 }
 
 function basename(value: string) {

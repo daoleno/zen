@@ -60,6 +60,7 @@ export interface SessionFileTextPreview {
 export interface SessionFileBinarySource {
   uri: string;
   headers: Record<string, string>;
+  mimeType?: string;
 }
 
 interface SessionFileCapabilityResponse {
@@ -113,7 +114,7 @@ const KNOWN_FILE_BASENAMES = new Set([
 ]);
 
 const FILE_EXTENSION_RE =
-  /\.(?:c|cc|conf|cpp|css|csv|env|gif|go|graphql|h|hpp|html?|ini|java|jpe?g|js|json|jsx|kt|kts|log|lua|m|markdown|md|mdx|mm|pdf|php|plist|png|properties|py|rb|rs|sh|sql|swift|toml|ts|tsx|txt|webp|xml|ya?ml|zsh)$/i;
+  /\.(?:c|cc|conf|cpp|css|csv|env|gif|go|graphql|h|hpp|html?|ini|java|jpe?g|js|json|jsx|kt|kts|log|lua|m|markdown|md|mdx|mm|pdf|php|plist|png|properties|py|rb|rs|sh|sql|svg|swift|toml|ts|tsx|txt|webp|xml|ya?ml|zsh)$/i;
 
 export const initialSessionFilePreviewState: SessionFilePreviewState = {
   reference: null,

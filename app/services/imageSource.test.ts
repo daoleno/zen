@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { imageReference, imageSourceKey, resolveImageSource } from "./imageSource";
+import { imageReference, imageSourceKey, isImageAttachment, isSvgImage, resolveImageSource } from "./imageSource";
 
 test("phone grants remain intact and provider file URIs require their owner", async () => {
   const signal = new AbortController().signal;
@@ -15,8 +15,16 @@ test("external URLs carry no credentials and stale resolution is discarded", asy
   expect(imageSourceKey(imageReference("a.png"), "server-a")).not.toBe(imageSourceKey(imageReference("a.png"), "server-b"));
 });
 
-test("bounded raster data is inspectable without external authorization", async () => {
+test("bounded image data and SVG metadata retain their owner", async () => {
   const controller = new AbortController();
   expect((await resolveImageSource(imageReference("data:image/png;base64,YQ=="), null, controller.signal)).headers).toEqual({});
-  await expect(resolveImageSource(imageReference("data:image/svg+xml;base64,YQ=="), null, controller.signal)).rejects.toThrow("unsupported");
+  const inline = imageReference("data:image/svg+xml;base64,YQ==");
+  expect(isSvgImage(inline)).toBe(true);
+  expect((await resolveImageSource(inline, null, controller.signal)).headers).toEqual({});
+  expect(isImageAttachment({ name: "logo.svg" })).toBe(true);
+  expect(isSvgImage({ kind: "phone", uri: "content://picker/grant", name: "logo", mimeType: "image/svg+xml" })).toBe(true);
+  expect(isSvgImage(imageReference("/workspace/logo.svg"))).toBe(true);
+  expect(isSvgImage(imageReference("opaque-reference", "Logo"), { uri: "https://owned.example.test/stream", headers: {}, mimeType: "image/svg+xml" })).toBe(true);
+  await expect(resolveImageSource(imageReference("/workspace/logo.svg"), null, controller.signal)).rejects.toThrow("Session");
+  await expect(resolveImageSource(imageReference("data:image/svg+xml;base64,%00"), null, controller.signal)).rejects.toThrow("unsupported");
 });

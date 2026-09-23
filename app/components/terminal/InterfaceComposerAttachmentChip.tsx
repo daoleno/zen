@@ -5,7 +5,7 @@ import { Typography } from "../../constants/tokens";
 import { InterfaceComposerAttachmentIcon } from "./InterfaceComposerAttachmentIcon";
 import { InterfaceComposerAttachmentRemoveButton } from "./InterfaceComposerAttachmentRemoveButton";
 
-import type { ZenImageSource } from "../../services/imageSource";
+import { isImageAttachment, type ZenImageSource } from "../../services/imageSource";
 import { ZenImage } from "./ZenImage";
 
 export type InterfaceComposerAttachment = import("./InterfaceChatSession").ComposerAttachment;
@@ -23,7 +23,7 @@ export function InterfaceComposerAttachmentChip({
   onRemove,
   gallery,
 }: InterfaceComposerAttachmentChipProps) {
-  const thumbnailUri = attachmentThumbnailUri(attachment);
+  const thumbnailUri = attachment.uploadStatus === "failed" ? null : attachmentThumbnailUri(attachment);
 
   if (thumbnailUri) {
     return (
@@ -33,7 +33,7 @@ export function InterfaceComposerAttachmentChip({
           { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
         ]}
       >
-        <ZenImage source={{ kind: "phone", uri: thumbnailUri, name: attachment.name }} chrome={chrome} gallery={gallery} compact />
+        <ZenImage source={{ kind: "phone", uri: thumbnailUri, name: attachment.name, mimeType: attachment.mimeType }} chrome={chrome} gallery={gallery} compact />
         <InterfaceComposerAttachmentRemoveButton
           attachmentName={attachment.name}
           chrome={chrome}
@@ -59,12 +59,8 @@ export function InterfaceComposerAttachmentChip({
         <Text style={[styles.name, { color: chrome.text }]} numberOfLines={1}>
           {attachment.name}
         </Text>
-        <Text
-          style={[styles.path, { color: chrome.textSubtle }]}
-          numberOfLines={1}
-        >
-          {basename(attachment.path)}
-        </Text>
+        {attachment.uploadStatus === "failed" ? <Text style={[styles.path, { color: chrome.danger }]} numberOfLines={1}>Upload failed</Text>
+          : attachment.path ? <Text style={[styles.path, { color: chrome.textSubtle }]} numberOfLines={1}>{basename(attachment.path)}</Text> : null}
       </View>
       <InterfaceComposerAttachmentRemoveButton
         attachmentName={attachment.name}
@@ -80,19 +76,6 @@ function attachmentThumbnailUri(attachment: InterfaceComposerAttachment) {
     return attachment.localUri;
   }
   return null;
-}
-
-function isImageAttachment(attachment: InterfaceComposerAttachment) {
-  if (attachment.mimeType?.startsWith("image/")) {
-    return true;
-  }
-  return (
-    looksLikeImagePath(attachment.name) || looksLikeImagePath(attachment.path)
-  );
-}
-
-function looksLikeImagePath(value: string) {
-  return /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(value.trim());
 }
 
 function basename(value: string) {
@@ -118,10 +101,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
-  },
-  thumb: {
-    width: "100%",
-    height: "100%",
   },
   thumbRemove: {
     position: "absolute",

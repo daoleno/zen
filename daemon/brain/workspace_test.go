@@ -782,3 +782,21 @@ func TestWorkspaceImageUsesExistingPathBoundary(t *testing.T) {
 		t.Fatal("traversal accepted")
 	}
 }
+
+func TestWorkspaceSVGUsesExistingPathBoundary(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"/>`)
+	if err := os.WriteFile(filepath.Join(store.WorkspacePath(), "preview.svg"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.ReadWorkspaceFile("preview.svg")
+	if err != nil || file.Kind != "image" || !strings.HasPrefix(file.DataURL, "data:image/svg+xml;base64,") {
+		t.Fatalf("workspace SVG = %+v, %v", file, err)
+	}
+	if _, err := store.ReadWorkspaceFile("../preview.svg"); err == nil {
+		t.Fatal("SVG escaped workspace")
+	}
+}

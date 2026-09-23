@@ -145,6 +145,7 @@ func TestSessionFilePreviewClassifiesSupportedAndUnsupportedRenderers(t *testing
 		"config.yaml": "text",
 		"server.log":  "text",
 		"photo.png":   "image",
+		"vector.svg":  "image",
 		"manual.pdf":  "pdf",
 		"archive.zip": "unsupported",
 	} {
@@ -152,6 +153,8 @@ func TestSessionFilePreviewClassifiesSupportedAndUnsupportedRenderers(t *testing
 		switch filepath.Ext(name) {
 		case ".png":
 			data = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+		case ".svg":
+			data = []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"/>`)
 		case ".pdf":
 			data = []byte("%PDF-1.7\n")
 		case ".zip":

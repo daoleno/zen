@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/daoleno/zen/daemon/attachment"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/gorilla/websocket"
 )
@@ -299,6 +300,9 @@ func classifySessionFile(path string, sniff []byte, sampleTruncated bool) (kind,
 	}
 	if containsBinaryMarker(sniff) || !sessionFileSniffUTF8OK(sniff, sampleTruncated) {
 		return "unsupported", detected
+	}
+	if extension == ".svg" && attachment.HasSVGPreviewRoot(sniff) {
+		return "image", "image/svg+xml"
 	}
 	if extension == ".md" || extension == ".markdown" || extension == ".mdx" {
 		return "markdown", "text/markdown; charset=utf-8"

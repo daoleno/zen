@@ -2,10 +2,10 @@ import type { SessionFileBinarySource } from "./sessionFilePreview";
 
 /** A phone grant is only accepted from the upload owner, never provider text. */
 export type ZenImageSource =
-  | { kind: "phone"; uri: string; name: string }
-  | { kind: "external"; uri: string; name: string }
-  | { kind: "inline"; uri: string; name: string }
-  | { kind: "owned"; path: string; name: string };
+  | { kind: "phone"; uri: string; name: string; mimeType?: string }
+  | { kind: "external"; uri: string; name: string; mimeType?: string }
+  | { kind: "inline"; uri: string; name: string; mimeType?: string }
+  | { kind: "owned"; path: string; name: string; mimeType?: string };
 
 export interface ZenImageOwner {
   key: string;
@@ -13,13 +13,20 @@ export interface ZenImageOwner {
 }
 
 export function isImageAttachment(value: { mimeType?: string; name?: string; path?: string }) {
-  return Boolean(value.mimeType?.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif)(?:[?#].*)?$/i.test(value.name || value.path || ""));
+  return Boolean(value.mimeType?.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif|svg)(?:[?#].*)?$/i.test(value.name || value.path || ""));
 }
 
-export function imageReference(path: string, name = "Image"): ZenImageSource {
-  if (path.startsWith("data:")) return { kind: "inline", uri: path, name };
-  if (/^https?:\/\//i.test(path)) return { kind: "external", uri: path, name };
-  return { kind: "owned", path, name };
+export function isSvgImage(source: ZenImageSource, resolved?: SessionFileBinarySource) {
+  if ([source.mimeType, resolved?.mimeType].some((type) => type?.toLowerCase().split(";", 1)[0] === "image/svg+xml")) return true;
+  if (/\.svg(?:[?#].*)?$/i.test(source.name) || (source.kind === "owned" && /\.svg(?:[?#].*)?$/i.test(source.path))) return true;
+  const uri = resolved?.uri || (source.kind === "owned" ? "" : source.uri);
+  return /^data:image\/svg\+xml(?:;|,)/i.test(uri) || /\.svg(?:[?#].*)?$/i.test(uri);
+}
+
+export function imageReference(path: string, name = "Image", mimeType?: string): ZenImageSource {
+  if (path.startsWith("data:")) return { kind: "inline", uri: path, name, mimeType };
+  if (/^https?:\/\//i.test(path)) return { kind: "external", uri: path, name, mimeType };
+  return { kind: "owned", path, name, mimeType };
 }
 
 export async function resolveImageSource(source: ZenImageSource, owner: ZenImageOwner | null, signal: AbortSignal): Promise<SessionFileBinarySource> {
@@ -31,7 +38,7 @@ export async function resolveImageSource(source: ZenImageSource, owner: ZenImage
     return result;
   }
   if (source.kind === "inline") {
-    if (source.uri.length > 8 * 1024 * 1024 || !/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=\r\n]+$/.test(source.uri)) throw new Error("Inline image is unsupported or exceeds the preview limit.");
+    if (source.uri.length > 8 * 1024 * 1024 || !/^data:image\/(?:png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/=\r\n]+$/i.test(source.uri)) throw new Error("Inline image is unsupported or exceeds the preview limit.");
     return { uri: source.uri, headers: {} };
   }
   if (source.kind === "external") {

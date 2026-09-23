@@ -17,6 +17,7 @@ import {
   View,
 } from "react-native";
 import { SessionFileImagePreview } from "./SessionFileImagePreview";
+import { isSvgImage } from "../../services/imageSource";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -628,6 +629,7 @@ function SessionFilePreviewBody({
       return state.binarySource ? (
         <SessionFileImagePreview
           source={state.binarySource}
+          svg={isSvgImage({ kind: "owned", path: state.metadata.path, name: state.metadata.name, mimeType: state.metadata.contentType }, state.binarySource)}
           chrome={chrome}
           onError={onBinaryError}
         />

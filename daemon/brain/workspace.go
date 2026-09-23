@@ -90,7 +90,7 @@ func (s *Store) ReadWorkspaceFile(path string) (WorkspaceFile, error) {
 		return WorkspaceFile{}, fmt.Errorf("read brain workspace file: %w", err)
 	}
 	contentType := http.DetectContentType(content)
-	if strings.HasPrefix(contentType, "image/") {
+	if strings.HasPrefix(contentType, "image/") || (strings.EqualFold(filepath.Ext(relativePath), ".svg") && attachment.IsSVGPreview(content)) {
 		imageURL, err := attachment.ImagePreviewDataURL(content)
 		if err != nil {
 			return WorkspaceFile{}, err

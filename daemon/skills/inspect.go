@@ -314,6 +314,9 @@ func classifyOpenedPackageFile(file *os.File, relative string, size int64) (stri
 func classifyPackageSample(relative string, size int64, sample []byte) (string, string, string) {
 	ext := strings.ToLower(filepath.Ext(relative))
 	mediaType := mime.TypeByExtension(ext)
+	if ext == ".svg" {
+		mediaType = "image/svg+xml"
+	}
 	if mediaType == "" {
 		mediaType = http.DetectContentType(sample)
 	}

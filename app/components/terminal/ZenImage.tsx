@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { imageSourceKey, resolveImageSource, type ZenImageOwner, type ZenImageSource } from "../../services/imageSource";
+import { imageSourceKey, isSvgImage, resolveImageSource, type ZenImageOwner, type ZenImageSource } from "../../services/imageSource";
 import type { SessionFileBinarySource } from "../../services/sessionFilePreview";
 import { SessionFileImagePreview } from "./SessionFileImagePreview";
+import { ZenImageContent } from "./ZenImageContent";
 
 export const ZenImageOwnerContext = createContext<ZenImageOwner | null>(null);
 
@@ -39,19 +40,20 @@ export function ZenImage({ source, chrome, gallery, compact = false }: {
   const [ratio, setRatio] = useState(1.5);
   const resolved = useImage(source, owner, attempt);
   const error = resolved.error || (failed === identity ? "Could not load image" : null);
+  const isLoaded = loaded === identity && Boolean(resolved.source);
+  const svg = isSvgImage(source, resolved.source);
   const images = useMemo(() => gallery?.length ? gallery : [source], [gallery, source]);
   const initial = useMemo(() => Math.max(0, images.findIndex((image) => imageSourceKey(image, owner?.key || "phone") === identity)), [images, owner?.key, identity]);
   const retry = () => { setFailed(null); setLoaded(null); setAttempt((value) => value + 1); };
   return (
     <View style={{ width: compact ? 96 : "100%", maxWidth: 400 }}>
-      <Pressable accessibilityRole="button" accessibilityLabel={error ? `Retry ${source.name}` : `Open ${source.name}`} onPress={error ? retry : () => setOpened(identity)}
+      <Pressable accessibilityRole="button" accessibilityLabel={error ? `Retry ${source.name}` : `Open ${source.name}`} disabled={!error && !isLoaded}
+        onPress={error ? retry : () => setOpened(identity)}
         style={[styles.preview, { borderColor: chrome.border, backgroundColor: chrome.surfaceMuted, height: compact ? 80 : Math.max(100, Math.min(280, 320 / ratio)) }]}>
-        {resolved.source && !error ? <Image key={`${identity}:${attempt}`} source={resolved.source} resizeMode="contain" resizeMethod="resize"
-          style={StyleSheet.absoluteFill} accessibilityLabel={source.name}
-          onLoad={(event) => { setLoaded(identity); const { width, height } = event.nativeEvent.source; if (width > 0 && height > 0) setRatio(width / height); }}
-          onError={() => setFailed(identity)} /> : null}
-        {error ? <><Ionicons name="refresh-outline" size={22} color={chrome.textMuted} /><Text numberOfLines={2} style={{ color: chrome.textMuted }}>{error}</Text></> : loaded !== identity ? <ActivityIndicator color={chrome.textMuted} /> : null}
-        <View style={styles.expand}><Ionicons name="expand-outline" size={17} color={chrome.text} /></View>
+        {resolved.source && !error ? <ZenImageContent key={`${identity}:${attempt}`} source={resolved.source} svg={svg}
+          onLoad={(nextRatio) => { setLoaded(identity); setRatio(nextRatio); }} onError={() => setFailed(identity)} /> : null}
+        {error ? <Ionicons name="refresh-outline" size={22} color={chrome.textMuted} /> : !isLoaded ? <ActivityIndicator color={chrome.textMuted} /> : null}
+        {!error && isLoaded && !compact ? <View style={styles.expand}><Ionicons name="expand-outline" size={17} color={chrome.text} /></View> : null}
       </Pressable>
       {opened === identity ? <ImageGallery key={identity} images={images} initial={initial} chrome={chrome} onClose={() => setOpened(null)} /> : null}
     </View>
@@ -76,7 +78,7 @@ function ImageGallery({ images, initial, chrome, onClose }: { images: ZenImageSo
         <Pressable accessibilityRole="button" accessibilityLabel="Close image" onPress={onClose} style={styles.button}><Ionicons name="close-outline" size={26} color={chrome.text} /></Pressable>
       </View>
       {error ? <Pressable accessibilityRole="button" accessibilityLabel="Retry image" onPress={() => { setFailed(null); setAttempt((value) => value + 1); }} style={styles.state}><Ionicons name="refresh-outline" size={28} color={chrome.text} /><Text style={{ color: chrome.text }}>{error}</Text></Pressable>
-        : resolved.source ? <SessionFileImagePreview key={failureKey} source={resolved.source} chrome={chrome} onError={() => setFailed(failureKey)} />
+        : resolved.source ? <SessionFileImagePreview key={failureKey} source={resolved.source} svg={isSvgImage(source, resolved.source)} chrome={chrome} onError={() => setFailed(failureKey)} />
         : <View style={styles.state}><ActivityIndicator color={chrome.text} /></View>}
       {images.length > 1 ? <View style={styles.toolbar}>
         <Pressable accessibilityRole="button" accessibilityLabel="Previous image" disabled={index === 0} onPress={() => move(index - 1)} style={styles.button}><Ionicons name="chevron-back" size={24} color={index === 0 ? chrome.textSubtle : chrome.text} /></Pressable>

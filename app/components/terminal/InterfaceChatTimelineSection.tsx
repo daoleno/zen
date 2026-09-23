@@ -163,7 +163,9 @@ export function InterfaceChatTimelineSection({
       const metadata = await (filePreviewLoader?.metadata ?? wsClient.getSessionFileMetadata.bind(wsClient))(serverId, request);
       if (signal.aborted) throw new Error("Image request cancelled.");
       if (metadata.kind !== "image" || metadata.tooLarge) throw new Error("This image exceeds the preview limit or is unsupported. Open the file to download it.");
-      return (filePreviewLoader?.binary ?? buildSessionFileBinarySource)(serverId, daemonId, bindSessionFileRequestToGeneration(request, metadata));
+      const source = await (filePreviewLoader?.binary ?? buildSessionFileBinarySource)(serverId, daemonId, bindSessionFileRequestToGeneration(request, metadata));
+      if (signal.aborted) throw new Error("Image request cancelled.");
+      return { ...source, mimeType: metadata.contentType };
     },
   }), [serverId, daemonId, workerId, workerProcessId, workerStartedAt, filePreviewLoader]);
   const [filePreviewReference, setFilePreviewReference] = useState<

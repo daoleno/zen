@@ -107,26 +107,31 @@ images; plain URLs, code and incomplete image syntax stay text.
 
 Brain workspace image reads use the existing workspace path authorization and
 reject unsupported images, files above 2 MiB and images above 40 megapixels.
-Workspace images support PNG, JPEG, GIF and WebP. Original bytes are retained;
+Workspace images support PNG, JPEG, GIF, WebP and bounded SVG. SVG uses the
+native vector renderer after strict XML, drawing-tag and local-reference checks;
+white transparent vectors use a neutral gray inspection backing. Original bytes are retained;
 Session file downloads keep their existing scoped authorization and size policy.
 
 The attachment chooser supports selecting multiple files in one confirmation.
 The shared composer and Terminal accessory reserve the remaining slots within the
 eight-file limit before dispatch. Unsupported picker count limits are enforced on
 return with an actionable error. A sequential native upload queue preserves order,
-shows each file's status and permits removal or retry of failed files. Sending
+shows subtle progress while pending and compact retry/remove on failure. Ready
+attachments show only their thumbnail or file chip, with no success label. Sending
 waits until attachments are ready or removed. Switching server or Session cancels
 pending work without deleting previously ready attachments. Android requires the
 updated Zen Debug native module; iOS uses Expo's multi-document picker.
 
 Attachment envelopes retain `content_type`, so a supported image without a file
-extension remains an image when history reloads. Raster data URLs are accepted
-only for PNG/JPEG/GIF/WebP and within an 8 MiB encoded preview bound. Composer image
+extension remains an image when history reloads. Data URLs are accepted for
+PNG/JPEG/GIF/WebP and SVG within an 8 MiB encoded source bound; SVG decoding is
+additionally capped at 2 MiB and never fetches embedded external resources. Composer image
 inspection navigates the selected batch without changing selection order.
 
 The Skills and Plugin file browser uses the same image viewer and exact-copy read
 owner. Markdown image paths resolve only within the selected package's advertised
-file list; traversal outside that copy is rejected. Selecting a raster file shows
-its original image bytes with the shared 2 MiB / 40 megapixel bound. Gallery
+file list; traversal outside that copy is rejected. Selecting an image shows
+its original bytes with the shared 2 MiB / 40 megapixel bound. Gallery
 navigation loads sibling images on demand. These small previews share their
-server-side raster validation with Brain workspace images.
+server-side image bound with Brain workspace images; raster dimensions are
+validated server-side, while SVG structure and dimensions are checked on-device.

@@ -164,3 +164,24 @@ func TestInspectImageUsesExactPackageCopyBoundary(t *testing.T) {
 		t.Fatal("image escaped package")
 	}
 }
+
+func TestInspectSVGUsesExactPackageCopyBoundary(t *testing.T) {
+	f := newFixture(t)
+	root := f.writeSkill(f.agentGlobalDir(AgentCursor), "vector", "body")
+	data := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"/>`)
+	if err := os.WriteFile(filepath.Join(root, "logo.svg"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := DiscoverInventory(f.options(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := findCopy(t, inventory, "vector", root)
+	detail, err := InspectPackageCopyFile(f.options(""), copy.Name, copy.ID, "logo.svg")
+	if err != nil || detail.Preview == nil || !strings.HasPrefix(detail.Preview.DataURL, "data:image/svg+xml;base64,") {
+		t.Fatalf("Skill SVG = %+v, %v", detail, err)
+	}
+	if _, err := InspectPackageCopyFile(f.options(""), copy.Name, copy.ID, "../logo.svg"); err == nil {
+		t.Fatal("SVG escaped Skill copy")
+	}
+}

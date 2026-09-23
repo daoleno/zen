@@ -9,7 +9,7 @@ import { ZenImage } from "./ZenImage";
 import { imageReference, isImageAttachment, type ZenImageSource } from "../../services/imageSource";
 
 function attachmentSource(attachment: DisplayAttachment): ZenImageSource {
-  return attachment.localUri ? { kind: "phone", uri: attachment.localUri, name: attachment.name } : imageReference(attachment.path, attachment.name);
+  return attachment.localUri ? { kind: "phone", uri: attachment.localUri, name: attachment.name, mimeType: attachment.mimeType } : imageReference(attachment.path, attachment.name, attachment.mimeType);
 }
 
 interface InterfaceTimelineAttachmentPreviewListProps {
