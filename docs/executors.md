@@ -96,6 +96,8 @@ Update granularity is intentionally limited to what each current Zen adapter rec
 
 The CLIs themselves have richer direct protocols that the current tmux/transcript integration does not own: Codex app-server emits item-keyed assistant/reasoning/output deltas, Claude supports `stream-json` with partial message events, and Cursor supports `stream-json --stream-partial-output`. Genuine delta support for those providers requires a daemon-owned structured executor runtime that owns process or app-server I/O, translates native lifecycle notifications into this reducer, persists reconnectable snapshots, and coordinates send/interrupt/terminal attachment. Adding flags to the existing interactive tmux command is not sufficient, and parsing raw NDJSON from terminal chrome would violate the protocol boundary.
 
+Managed Claude sessions read project JSONL from the owning process's `CLAUDE_CONFIG_DIR` (or its `HOME/.claude`). An explicit `--resume <id>` binds only that ID, even when its transcript is older than the ordinary discovery window; if the file is missing, Zen does not select a different same-directory chat. Settings can change Claude's Provider/model default for future launches, but Zen does not claim that changing the gateway route updates an already-running interactive Claude process. Its active Provider/model picker is unavailable until a native process-control owner can acknowledge such changes; the existing session and transcript remain intact.
+
 Zen does not synthesize timed typewriter output and does not derive structured Chat from terminal screenshots, prompt echoes, or pane chrome. The live Terminal path remains independent and unchanged.
 
 ## Diagnostics

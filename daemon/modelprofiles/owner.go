@@ -1223,6 +1223,9 @@ func (o *Owner) ActivateSession(sessionID, profileID string, expectedGeneration 
 	if !ok {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
 	}
+	if !bindingHotSwitchable(current.Binding) && normalizeID(current.Binding.ExecutorID) == ExecutorClaude {
+		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, fmt.Errorf("%w: Claude session %s has no native live control", ErrBindingNotRouted, sessionID)
+	}
 	profile, err := o.store.ResolveProfile(current.Binding.ExecutorID, profileID)
 	if err != nil {
 		return SessionRouteState{}, WireSessionSnapshot{}, PersistResult{}, err

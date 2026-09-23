@@ -213,8 +213,8 @@ func TestWorkerSessionWireModelProfileCapabilitiesFromRouteTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	anthropic := srv.workerSessionWire(&classifier.Worker{ID: "tmux:@anthropic", Name: "notes", Command: "zsh"})
-	if !anthropic.Capabilities.ModelProfileManaged || !anthropic.Capabilities.ModelProfileActiveSwitch {
-		t.Fatalf("anthropic managed=true switch=true: %#v", anthropic.Capabilities)
+	if !anthropic.Capabilities.ModelProfileManaged || anthropic.Capabilities.ModelProfileActiveSwitch {
+		t.Fatalf("anthropic managed=true switch=false: %#v", anthropic.Capabilities)
 	}
 
 	// List projection matches per-session wire.
@@ -233,7 +233,7 @@ func TestWorkerSessionWireModelProfileCapabilitiesFromRouteTable(t *testing.T) {
 	if !list[1].Capabilities.ModelProfileManaged || list[1].Capabilities.ModelProfileActiveSwitch {
 		t.Fatalf("list native %#v", list[1].Capabilities)
 	}
-	if !list[2].Capabilities.ModelProfileManaged || !list[2].Capabilities.ModelProfileActiveSwitch {
+	if !list[2].Capabilities.ModelProfileManaged || list[2].Capabilities.ModelProfileActiveSwitch {
 		t.Fatalf("list anthropic %#v", list[2].Capabilities)
 	}
 	if list[3].Capabilities.ModelProfileManaged || list[3].Capabilities.ModelProfileActiveSwitch {
@@ -269,7 +269,7 @@ func TestWorkerSessionWireModelProfileCapabilitiesFromRouteTable(t *testing.T) {
 		t.Fatalf("restart native %#v", restartNative.Capabilities)
 	}
 	restartAnthropic := srv2.workerSessionWire(&classifier.Worker{ID: "tmux:@anthropic", Command: "zsh"})
-	if !restartAnthropic.Capabilities.ModelProfileManaged || !restartAnthropic.Capabilities.ModelProfileActiveSwitch {
+	if !restartAnthropic.Capabilities.ModelProfileManaged || restartAnthropic.Capabilities.ModelProfileActiveSwitch {
 		t.Fatalf("restart anthropic %#v", restartAnthropic.Capabilities)
 	}
 }

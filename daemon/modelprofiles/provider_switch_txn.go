@@ -248,6 +248,9 @@ func (o *Owner) switchProviderLocked(clientOrExecutor, connectionID string, revi
 	if client == "" || connectionID == "" {
 		return PersistResult{}, fmt.Errorf("%w: client and connection are required", ErrInvalid)
 	}
+	if client == ClientClaude {
+		return PersistResult{}, fmt.Errorf("%w: Claude provider switch has no native live control; change the future-launch default instead", ErrBindingNotRouted)
+	}
 
 	raw, err := o.GetProfile(connectionID)
 	if err != nil {

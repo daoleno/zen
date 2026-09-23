@@ -573,7 +573,7 @@ func TestReasoningEffortClaudeRejected(t *testing.T) {
 	if sel.ReasoningEfforts != nil || sel.ReasoningEffortDefault != "" || sel.ReasoningEffort != "" {
 		t.Fatalf("Claude selection must project no effort surface: %#v", sel)
 	}
-	if _, _, _, err := owner.SetThreadRuntime("s-claude", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "claude-sonnet-4-6", Effect: ReasoningEffortHigh}); !errors.Is(err, ErrReasoningEffortUnsupported) {
+	if _, _, _, err := owner.SetThreadRuntime("s-claude", ThreadRuntimeChoice{ConnectionID: conn.ID, ModelID: "claude-sonnet-4-6", Effect: ReasoningEffortHigh}); !errors.Is(err, ErrBindingNotRouted) {
 		t.Fatalf("Claude effort activation err=%v", err)
 	}
 	if state, _ := owner.Table().Get("s-claude"); state.Binding.ReasoningEffort != "" {

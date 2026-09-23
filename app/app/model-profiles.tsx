@@ -517,14 +517,21 @@ export default function ProvidersScreen() {
         if (catalog.defaults[client]?.connection_id === connection.id) {
           return;
         }
-        // The existing complete seed can be switched atomically, including
-        // currently routed Sessions and their acknowledged model/effect.
+        // Claude has no owned native active-switch control; its default only
+        // applies to future sessions. Codex retains its routed switch behavior.
         void runMutation(() =>
-          wsClient.switchProvider(currentServerId!, {
-            client,
-            connectionId: connection.id,
-            revision,
-          }),
+          client === "claude"
+            ? wsClient.setProviderDefault(currentServerId!, {
+                client,
+                connectionId: connection.id,
+                modelId: catalog.defaults[client]?.model_id,
+                revision,
+              })
+            : wsClient.switchProvider(currentServerId!, {
+                client,
+                connectionId: connection.id,
+                revision,
+              }),
         );
         return;
       }

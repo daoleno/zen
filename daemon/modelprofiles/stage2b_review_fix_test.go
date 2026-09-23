@@ -1446,8 +1446,8 @@ func TestSessionRouteCapabilitiesManagedAndActiveSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	acaps := owner.SessionRouteCapabilities("s-anthropic")
-	if !acaps.Managed || !acaps.ActiveSwitch {
-		t.Fatalf("anthropic managed=true switch=true: %#v", acaps)
+	if !acaps.Managed || acaps.ActiveSwitch {
+		t.Fatalf("anthropic managed=true switch=false without native control: %#v", acaps)
 	}
 
 	native := Profile{

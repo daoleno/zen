@@ -740,12 +740,15 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 	return projection, applyErr
 }
 
-// SwitchProvider atomically updates the future-launch default Provider and
-// retargets every currently running routed Session for the same client without
-// changing each Session's selected model or effect.
+// SwitchProvider atomically updates the future-launch default and retargets
+// routed Codex sessions. Claude uses SetProviderDefault: its interactive CLI
+// cannot acknowledge a route-only active-session switch.
 func (o *Owner) SwitchProvider(clientOrExecutor, connectionID string, revision int64) (ProviderCatalogProjection, error) {
 	if o == nil || !o.started || o.store == nil || o.table == nil || o.routes == nil {
 		return ProviderCatalogProjection{}, fmt.Errorf("%w: owner not started", ErrInvalid)
+	}
+	if clientFromExecutor(clientOrExecutor) == ClientClaude {
+		return ProviderCatalogProjection{}, fmt.Errorf("%w: Claude provider switch has no native live control; change the future-launch default instead", ErrBindingNotRouted)
 	}
 	o.mu.Lock()
 	persist, err := o.switchProviderLocked(clientOrExecutor, connectionID, revision)
@@ -1014,6 +1017,9 @@ func (o *Owner) prepareThreadRuntimeLocked(sessionID string, choice ThreadRuntim
 	state, ok := o.table.Get(sessionID)
 	if !ok {
 		return preparedThreadRuntime{}, fmt.Errorf("%w: %s", ErrBindingNotFound, sessionID)
+	}
+	if normalizeID(state.Binding.ExecutorID) == ExecutorClaude {
+		return preparedThreadRuntime{}, fmt.Errorf("%w: Claude session %s has no native live control", ErrBindingNotRouted, sessionID)
 	}
 	raw, err := o.GetProfile(connectionID)
 	if err != nil {

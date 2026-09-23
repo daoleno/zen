@@ -440,15 +440,11 @@ func ProfileHotSwitchable(profileProtocol string) bool {
 	return ok
 }
 
-// bindingHotSwitchable reports whether a Session's runtime can be switched
-// without a process restart. Managed Codex requires the live-control app-server
-// socket: a pre-feature embedded Codex session cannot adopt native
-// synchronization without restarting the Codex process, so it must never be
-// advertised as hot-switchable. Non-Codex executors keep the route-only
-// contract.
+// bindingHotSwitchable requires an owned native control path, not just a
+// mutable gateway route. Claude's interactive process has no such owner.
 func bindingHotSwitchable(b RouteBinding) bool {
 	if normalizeID(b.ExecutorID) != ExecutorCodex {
-		return true
+		return false
 	}
 	return normalizeSpace(b.CodexControlSocket) != ""
 }
@@ -469,7 +465,9 @@ func CapabilitiesFor(executorID string) ExecutorCapabilities {
 		if routeProtocol, ok := RouteProtocolFor(protocol); ok {
 			cap.Routed = true
 			cap.RouteProtocol = routeProtocol
-			cap.ActiveSwitch = ActiveSwitchRouteBinding
+			if executorID == ExecutorCodex {
+				cap.ActiveSwitch = ActiveSwitchRouteBinding
+			}
 			out.RouteProtocols = appendUnique(out.RouteProtocols, routeProtocol)
 		}
 		out.Protocols = append(out.Protocols, cap)
