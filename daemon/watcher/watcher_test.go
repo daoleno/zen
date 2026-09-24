@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -1381,6 +1382,27 @@ func TestMissingOwnedWorkerIsRetainedAcrossTransientInventoryGap(t *testing.T) {
 	}
 	if w.workers[worker.ID] != worker {
 		t.Fatal("transient inventory gap should retain the in-memory owner")
+	}
+}
+
+func TestMissingWorkerIsRetainedWhenOwnershipProbeIsTemporarilyUnavailable(t *testing.T) {
+	w := New(time.Hour)
+	w.targetOwnershipResolver = func(string) (bool, error) {
+		return false, fmt.Errorf("reload control socket: %w", ErrOwnershipProbeUnavailable)
+	}
+	worker := &classifier.Worker{ID: "zen-worker-claude:@reload", Command: "claude", PaneAlive: true}
+	w.workers[worker.ID] = worker
+	w.workerEpoch[worker.ID] = 1
+
+	missing := []missingPollWorker{{
+		id: worker.ID, epoch: 1, owner: worker, workerSnap: *worker,
+	}}
+	resolved := w.collectMissingPollEvidence(missing, nil)
+	if len(resolved) != 0 {
+		t.Fatalf("transient ownership probe failure was treated as removal: %#v", resolved)
+	}
+	if w.workers[worker.ID] != worker {
+		t.Fatal("transient ownership probe failure should retain the canonical worker")
 	}
 }
 
