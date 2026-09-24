@@ -1,5 +1,7 @@
 import { requireNativeModule, requireNativeViewManager } from "expo-modules-core";
+import React, { forwardRef, useEffect, useImperativeHandle } from "react";
 import type { ComponentType, Ref } from "react";
+import { Platform, View } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 import type { DesktopCommandTarget } from "../../../services/remoteDesktopCommands";
 
@@ -24,8 +26,28 @@ export interface DesktopViewProps {
   onState: (event: { nativeEvent: DesktopState }) => void;
 }
 
+const WebDesktopView = forwardRef(function WebDesktopView(
+  { style, onState }: DesktopViewProps,
+  ref: Ref<DesktopCommandTarget>,
+) {
+  useImperativeHandle(ref, () => ({
+    sendCommand: async () => false,
+    disconnect: async () => undefined,
+    showSensitiveInput: async () => false,
+  }), []);
+  useEffect(() => {
+    onState({
+      nativeEvent: {
+        state: "unsupported",
+        reason: "Remote desktop is unavailable on Web.",
+      },
+    });
+  }, [onState]);
+  return React.createElement(View, { style });
+});
+
 export const NativeDesktopView: ComponentType<DesktopViewProps> =
-  requireNativeViewManager("ZenRemoteDesktop");
+  Platform.OS === "web" ? WebDesktopView : requireNativeViewManager("ZenRemoteDesktop");
 
 export interface DesktopKeyboardApi {
   focus(): Promise<void>;
