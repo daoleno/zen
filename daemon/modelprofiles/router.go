@@ -25,7 +25,8 @@ type Router struct {
 	maxBody int64
 	// models resolves a route's connection to its synced model catalog for the
 	// local GET /v1/models surface. Nil means the surface is unavailable.
-	models func(profileID string) ([]ProviderModelEntry, error)
+	models       func(profileID string) ([]ProviderModelEntry, error)
+	modelCatalog func(profileID string) (RouteModelCatalog, error)
 	// modelSwitch applies a model/effect identity carried with Codex's reserved
 	// explicit model-switch contextual signal, or with an authoritative native
 	// settings snapshot for fragment-less changes.
@@ -37,6 +38,14 @@ type Router struct {
 	// ws tracks hijacked Responses WebSocket connections so shutdown tears
 	// them down deterministically.
 	ws *wsConnRegistry
+}
+
+// RouteModelCatalog describes the catalog available for request preflight.
+// Entries from bundled/local fallbacks are useful for presentation but are not
+// authoritative enough to reject an Agent's custom model.
+type RouteModelCatalog struct {
+	Entries  []ProviderModelEntry
+	Reliable bool
 }
 
 // RouterOption configures Router construction.
@@ -83,6 +92,13 @@ func WithRouterModelCatalog(models func(profileID string) ([]ProviderModelEntry,
 	return func(r *Router) {
 		r.models = models
 	}
+}
+
+// WithRouterReliableModelCatalog installs the request-preflight catalog
+// resolver. Reliable catalogs come from live/LKG discovery or explicit
+// exposed policy; unreliable fallback rows remain display-only.
+func WithRouterReliableModelCatalog(models func(profileID string) (RouteModelCatalog, error)) RouterOption {
+	return func(r *Router) { r.modelCatalog = models }
 }
 
 // WithRouterModelSwitch installs the explicit Terminal /model mutation path.
@@ -223,15 +239,22 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeRouteError(w, http.StatusBadRequest, ErrModelUnsupported)
 			return
 		}
-		if binding.RouteProtocol == RouteProtocolAnthropicMessages && r.models != nil {
-			entries, catalogErr := r.models(binding.ProfileID)
+		if r.modelCatalog != nil || r.models != nil {
+			catalog := RouteModelCatalog{}
+			var catalogErr error
+			if r.modelCatalog != nil {
+				catalog, catalogErr = r.modelCatalog(binding.ProfileID)
+			} else {
+				catalog.Entries, catalogErr = r.models(binding.ProfileID)
+				catalog.Reliable = true
+			}
 			if catalogErr != nil && !errors.Is(catalogErr, ErrNotFound) {
 				writeRouteError(w, http.StatusServiceUnavailable, catalogErr)
 				return
 			}
-			if len(entries) > 0 {
+			if catalog.Reliable && len(catalog.Entries) > 0 {
 				served := false
-				for _, entry := range entries {
+				for _, entry := range catalog.Entries {
 					if entry.Available && normalizeSpace(entry.ID) == requestModel {
 						served = true
 						break
@@ -314,23 +337,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		// The route binding is the acknowledged Session runtime. A request body
-		// is a transport payload from a potentially stale CLI process, not an
-		// intent signal. Normalize it to the immutable flight snapshot instead of
-		// guessing whether a mismatch came from a stale request or /model.
-		bindingModel := normalizeSpace(binding.UpstreamModel)
+		// Model selection is request-level for both managed Agents. Preserve the
+		// client's exact model and let the exposed catalog (when reliable) or the
+		// upstream decide whether it is served; never rewrite to a Provider
+		// preset/placeholder identity.
 		bindingEffort := normalizeID(binding.ReasoningEffort)
-		// Claude Code's request model is the local /model selection. Preserve
-		// it for request-level Provider routing; a fixed launch binding must
-		// not silently replace that choice. Codex keeps its acknowledged
-		// binding rewrite because its native thread model is daemon-controlled.
-		if binding.RouteProtocol != RouteProtocolAnthropicMessages && requestModel != bindingModel {
-			rewritten, err = rewriteRequestModel(body, bindingModel)
-			if err != nil {
-				writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
-				return
-			}
-		}
 		if parsed.Endpoint == EndpointResponses {
 			requestEffort, requestEffortPresent = requestEffortFromBody(rewritten)
 			if bindingEffort != "" {
@@ -519,11 +530,18 @@ func (r *Router) serveRouteWebSocket(w http.ResponseWriter, req *http.Request, p
 // never projected; the Codex picker therefore only ever offers identities the
 // daemon can launch and route truthfully.
 func (r *Router) serveLocalModels(w http.ResponseWriter, binding RouteBinding) {
-	if r.models == nil {
+	if r.models == nil && r.modelCatalog == nil {
 		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: model catalog not configured", ErrInvalid))
 		return
 	}
-	entries, err := r.models(binding.ProfileID)
+	var entries []ProviderModelEntry
+	var err error
+	if r.modelCatalog != nil {
+		catalog, catalogErr := r.modelCatalog(binding.ProfileID)
+		entries, err = catalog.Entries, catalogErr
+	} else if r.models != nil {
+		entries, err = r.models(binding.ProfileID)
+	}
 	if err != nil {
 		// The route's connection is gone: the catalog cannot resolve.
 		if errors.Is(err, ErrRouteNotFound) || errors.Is(err, ErrNotFound) {

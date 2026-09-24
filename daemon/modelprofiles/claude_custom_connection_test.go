@@ -74,7 +74,7 @@ func TestSavedCustomClaudeLaunchRoutesSelectedModelAndKey(t *testing.T) {
 	if discoveryErr == nil || !manualFound || !bundledFound {
 		t.Fatalf("missing /models must keep manual model, add local candidates, and return an honest warning: entries=%#v warning=%t", discovery.Entries, discoveryErr != nil)
 	}
-	created, err = owner.SetProviderDefault(ClientClaude, conn.ID, "", created.Revision)
+	created, err = owner.SetProviderConnection(ClientClaude, conn.ID, created.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestSavedCustomClaudeLaunchRoutesSelectedModelAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.Defaults[ClientClaude] != (ProviderDefault{ConnectionID: conn.ID, ModelID: ""}) {
+	if reopened.Defaults[ClientClaude] != (ProviderConnectionSelection{ConnectionID: conn.ID}) {
 		t.Fatalf("default/manual model not restored: %#v", reopened.Defaults)
 	}
 	reopenedManual := false

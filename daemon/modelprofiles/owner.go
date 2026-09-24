@@ -33,7 +33,6 @@ const (
 	CodeBindingIncompatible        = "route_binding_incompatible"
 	CodeBindingNotRouted           = "route_binding_not_routed"
 	CodeContractUnverified         = "model_profile_contract_unverified"
-	CodeUpstreamModelRequired      = "upstream_model_required"
 	CodeModelUnsupported           = "model_unsupported"
 	CodeReasoningEffortUnsupported = "reasoning_effort_unsupported"
 	CodeDiscoveryCacheInvalid      = "provider_discovery_cache_invalid"
@@ -306,7 +305,7 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		_ = o.Close()
 		return nil, err
 	}
-	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch), WithRouterNativeSettings(o.nativeSettingsForRoute))
+	o.router = NewRouter(o.table, WithRouterLookup(lookup), WithRouterCredentials(cfg.Credentials), WithRouterReliableModelCatalog(o.routeModelCatalog), WithRouterModelSwitch(o.ApplyTerminalModelSwitch), WithRouterNativeSettings(o.nativeSettingsForRoute))
 	if err := o.startGateway(cfg); err != nil {
 		_ = o.Close()
 		return nil, err
@@ -481,7 +480,7 @@ func (o *Owner) ensureListenerLocked(sticky bool) (PersistResult, error) {
 	}
 
 	if o.router == nil {
-		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterCredentials(o.creds), WithRouterModelCatalog(o.modelsForRoute), WithRouterModelSwitch(o.ApplyTerminalModelSwitch), WithRouterNativeSettings(o.nativeSettingsForRoute))
+		o.router = NewRouter(o.table, WithRouterLookup(o.lookup), WithRouterCredentials(o.creds), WithRouterReliableModelCatalog(o.routeModelCatalog), WithRouterModelSwitch(o.ApplyTerminalModelSwitch), WithRouterNativeSettings(o.nativeSettingsForRoute))
 	}
 	srv := &http.Server{
 		Handler:           o.router.Handler(),
@@ -734,6 +733,28 @@ func (o *Owner) modelsForRoute(profileID string) ([]ProviderModelEntry, error) {
 	return o.modelsForConnection(profile, false)
 }
 
+func (o *Owner) routeModelCatalog(profileID string) (RouteModelCatalog, error) {
+	profile, err := o.GetProfile(profileID)
+	if err != nil {
+		return RouteModelCatalog{}, err
+	}
+	entries, err := o.modelsForConnection(profile, false)
+	if err != nil {
+		return RouteModelCatalog{}, err
+	}
+	// Only discovery-backed entries are authoritative for preflight. Fallback
+	// rows keep the Models page useful while allowing local Agent model ids.
+	reliable := false
+	o.mu.Lock()
+	if o.discovery != nil {
+		if discovered, ok := o.discovery.get(profile.ID); ok {
+			reliable = discovered.ExposurePolicySet || len(discovered.IDs) > 0 || len(discovered.LastGood) > 0
+		}
+	}
+	o.mu.Unlock()
+	return RouteModelCatalog{Entries: entries, Reliable: reliable}, nil
+}
+
 // UpsertProfile creates or updates a profile under CAS revision after full
 // AuthorizeProfileContract admission. Serialized under Owner.mu against
 // PrepareLaunch/ActivateSession profile resolution. Returns an atomic
@@ -924,10 +945,9 @@ func (o *Owner) PrepareLaunch(executorID, profileID, baseCommand string) (Sessio
 	return o.PrepareLaunchModel(executorID, profileID, "", baseCommand)
 }
 
-// PrepareLaunchModel is PrepareLaunch with an explicit client model override
-// (create_session's connection_id + model_id). The gateway never owns a model:
-// the launch model is the explicit override or the exact client-selected
-// default. Discovery and local catalogs never replace or reject that identity.
+// PrepareLaunchModel is PrepareLaunch with an explicit Agent/Session model
+// override (create_session's connection_id + model_id). An empty override
+// inherits the Agent's local model configuration.
 func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCommand string) (SessionLaunchPlan, error) {
 	if o == nil || !o.started {
 		return SessionLaunchPlan{}, fmt.Errorf("%w: owner not started", ErrInvalid)
@@ -1653,8 +1673,6 @@ func ControlErrorCode(err error) string {
 		return CodeBindingIncompatible
 	case errors.Is(err, ErrContractUnverified):
 		return CodeContractUnverified
-	case errors.Is(err, ErrUpstreamModelRequired):
-		return CodeUpstreamModelRequired
 	case errors.Is(err, ErrModelUnsupported):
 		return CodeModelUnsupported
 	case errors.Is(err, ErrReasoningEffortUnsupported):
@@ -1749,10 +1767,16 @@ func inferExecutorFromCommand(command string) string {
 }
 
 func contractFromBinding(b RouteBinding) VerifiedProfileContract {
+	upstreamModel := b.UpstreamModel
+	if b.RequestModelRouting {
+		// The route has no fixed upstream identity; re-verification uses the
+		// admitted client contract as the placeholder identity only.
+		upstreamModel = b.ClientModel
+	}
 	return VerifiedProfileContract{
 		Provenance:       b.ClientModelProvenance,
 		ClientModelID:    b.ClientModel,
-		UpstreamModelID:  b.UpstreamModel,
+		UpstreamModelID:  upstreamModel,
 		ExecutorID:       b.ExecutorID,
 		Protocol:         b.Protocol,
 		RouteProtocol:    b.RouteProtocol,

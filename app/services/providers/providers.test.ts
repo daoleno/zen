@@ -9,7 +9,6 @@ import {
   parseThreadRuntimeSelection,
   connectionsForSession,
   modelChoicesForSession,
-  defaultClientsForConnection,
   curatedConnectionInput,
   advancedConnectionInput,
   createdConnectionFromMutation,
@@ -17,9 +16,7 @@ import {
   blockCreateAfterAmbiguity,
   isCreateBlockedByAmbiguity,
   shouldUnlockCreateAfterAmbiguity,
-  boundModelForConnection,
   clientForConnection,
-  connectionRequiresModelSelection,
   enabledModelIds,
   launchSelectionFromSnapshot,
   modelSupportChoices,
@@ -53,7 +50,7 @@ function providerSnapshot(
       },
     ],
     defaults: {
-      codex: { connection_id: "c1", model_id: "deepseek-chat" },
+      codex: { connection_id: "c1" },
     },
     presets: [
       {
@@ -134,7 +131,7 @@ describe("Provider DTO parse", () => {
         },
       ],
       defaults: {
-        codex: { connection_id: "c1", model_id: "deepseek-chat" },
+        codex: { connection_id: "c1" },
       },
       presets: [
         { id: "deepseek", label: "DeepSeek", clients: ["codex", "claude"] },
@@ -163,10 +160,9 @@ describe("Provider DTO parse", () => {
         hot_switchable: true,
       }),
     ).toHaveLength(1);
-    expect(defaultClientsForConnection(catalog!, "c1")).toEqual(["codex"]);
   });
 
-  test("preserves an explicit direct-login empty default", () => {
+  test("preserves an explicit direct-login connection-only default", () => {
     const catalog = parseProvidersSnapshot({
       revision: 4,
       connections: [
@@ -177,13 +173,12 @@ describe("Provider DTO parse", () => {
           credential_ready: true,
         },
       ],
-      defaults: { codex: { connection_id: "", model_id: "" } },
+      defaults: { codex: { connection_id: "" } },
       presets: [],
       models: { c1: [] },
     });
     expect(catalog?.defaults.codex).toEqual({
       connection_id: "",
-      model_id: "",
     });
     expect(
       parseProvidersSnapshot({
@@ -578,21 +573,6 @@ describe("Model sync and default binding policy", () => {
     ).toBeNull();
   });
 
-  test("bound model is the client default model for that connection only", () => {
-    const snapshot = providerSnapshot({
-      defaults: {
-        codex: { connection_id: "c1", model_id: "deepseek-chat" },
-      },
-    });
-    expect(boundModelForConnection(snapshot, "codex", "c1")).toBe(
-      "deepseek-chat",
-    );
-    // A non-default connection has no bound model to show.
-    expect(boundModelForConnection(snapshot, "codex", "c2")).toBeNull();
-    expect(boundModelForConnection(snapshot, "claude", "c1")).toBeNull();
-    expect(boundModelForConnection(null, "codex", "c1")).toBeNull();
-  });
-
   test("support chips mark the gateway's exposed models", () => {
     const snapshot = providerSnapshot();
     const connection = snapshot.connections[0]!;
@@ -644,9 +624,9 @@ describe("Model sync and default binding policy", () => {
     expect(reenabled).toEqual(["gpt-5.6-sol"]);
   });
 
-  test("launch selection carries the client's connection and model", () => {
+  test("launch selection carries the client's connection without a model seed", () => {
     const snapshot = providerSnapshot({
-      defaults: { codex: { connection_id: "c1", model_id: "gpt-5.6-sol" } },
+      defaults: { codex: { connection_id: "c1" } },
     });
     expect(providerClientForCommand("codex")).toBe("codex");
     expect(providerClientForCommand("cd /x && codex exec")).toBe("codex");
@@ -654,14 +634,14 @@ describe("Model sync and default binding policy", () => {
     expect(providerClientForCommand("sh")).toBeNull();
     expect(launchSelectionFromSnapshot(snapshot, "codex")).toEqual({
       connectionId: "c1",
-      modelId: "gpt-5.6-sol",
+      modelId: "",
     });
     expect(launchSelectionFromSnapshot(snapshot, "claude")).toBeNull();
     expect(
       launchSelectionFromSnapshot(
         {
           ...snapshot,
-          defaults: { claude: { connection_id: "c1", model_id: "legacy" } },
+          defaults: { claude: { connection_id: "c1" } },
         },
         "claude",
       ),
@@ -689,7 +669,7 @@ describe("Provider transport source contract", () => {
       "list_providers",
       "upsert_provider_connection",
       "delete_provider_connection",
-      "set_provider_default",
+      "set_provider_connection",
       "discover_provider_models",
       "set_provider_models",
       "get_thread_runtime",

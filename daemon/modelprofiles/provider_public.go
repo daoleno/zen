@@ -58,12 +58,10 @@ type ProviderConnection struct {
 	Advanced              bool   `json:"advanced,omitempty"`
 }
 
-// ProviderDefault is the future-launch connection selection for one product
-// client. ModelID is retained only for the existing Codex seed path; Claude
-// leaves it empty because its model belongs to local Claude Code settings.
-type ProviderDefault struct {
+// ProviderConnectionSelection is the future-launch connection selection for one product
+// client. Agent and Session own model selection.
+type ProviderConnectionSelection struct {
 	ConnectionID string `json:"connection_id"`
-	ModelID      string `json:"model_id,omitempty"`
 }
 
 // ProviderModelEntry is a catalog/discovery model id with availability only.
@@ -89,12 +87,12 @@ type ProviderModelEntry struct {
 
 // ProviderCatalogProjection is the Settings list payload.
 type ProviderCatalogProjection struct {
-	Revision    int64                           `json:"revision"`
-	Connections []ProviderConnection            `json:"connections"`
-	Defaults    map[string]ProviderDefault      `json:"defaults"`
-	Presets     []ProviderPreset                `json:"presets"`
-	Models      map[string][]ProviderModelEntry `json:"models"`
-	Gateway     GatewayStatus                   `json:"gateway"`
+	Revision    int64                                  `json:"revision"`
+	Connections []ProviderConnection                   `json:"connections"`
+	Defaults    map[string]ProviderConnectionSelection `json:"defaults"`
+	Presets     []ProviderPreset                       `json:"presets"`
+	Models      map[string][]ProviderModelEntry        `json:"models"`
+	Gateway     GatewayStatus                          `json:"gateway"`
 }
 
 type GatewayStatus struct {

@@ -14,13 +14,12 @@ import (
 
 // Store is the process-local owner of ~/.zen/model-profiles.toml.
 type Store struct {
-	mu            sync.RWMutex
-	path          string
-	revision      int64
-	profiles      map[string]Profile
-	defaults      map[string]string
-	defaultModels map[string]string // client -> model_id (Settings default; not connection row)
-	lookup        func(string) (string, bool)
+	mu       sync.RWMutex
+	path     string
+	revision int64
+	profiles map[string]Profile
+	defaults map[string]string
+	lookup   func(string) (string, bool)
 	// dirSync is an optional fault seam invoked after a successful rename.
 	// nil uses the real parent-directory Sync. After rename, the write is
 	// committed; a dirSync error returns ErrPersistDirSync with memory aligned.
@@ -30,10 +29,9 @@ type Store struct {
 }
 
 type fileDocument struct {
-	Revision      int64             `toml:"revision"`
-	Profiles      []Profile         `toml:"profiles"`
-	Defaults      map[string]string `toml:"defaults"`
-	DefaultModels map[string]string `toml:"default_models,omitempty"`
+	Revision int64             `toml:"revision"`
+	Profiles []Profile         `toml:"profiles"`
+	Defaults map[string]string `toml:"defaults"`
 }
 
 // NewStore loads path or returns an empty revision-0 catalog when missing.
@@ -44,11 +42,10 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("%w: model profiles path is required", ErrInvalid)
 	}
 	s := &Store{
-		path:          path,
-		profiles:      map[string]Profile{},
-		defaults:      map[string]string{},
-		defaultModels: map[string]string{},
-		lookup:        lookupEnv,
+		path:     path,
+		profiles: map[string]Profile{},
+		defaults: map[string]string{},
+		lookup:   lookupEnv,
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -149,7 +146,7 @@ func (s *Store) MigrateProviderSlugs() error {
 	if !changed {
 		return nil
 	}
-	if err := s.persistLocked(s.revision, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels)); err != nil {
+	if err := s.persistLocked(s.revision, next, cloneDefaults(s.defaults)); err != nil {
 		return err
 	}
 	s.profiles = next
@@ -199,11 +196,9 @@ func (s *Store) ResolveProfile(executorID, profileID string) (Profile, error) {
 	return s.ResolveProfileWithModel(executorID, profileID, "")
 }
 
-// ResolveProfileWithModel is ResolveProfile with an explicit client model
-// override for the launch: a non-empty modelOverride wins over the recorded
-// client-selected model, which wins over the connection's durable model. The
-// gateway itself never owns a model — an empty result means no client
-// selection exists yet.
+// ResolveProfileWithModel is ResolveProfile with an explicit Agent/Session
+// model override for the launch. The Provider connection never supplies a
+// model; an empty result leaves selection to the local Agent and request.
 func (s *Store) ResolveProfileWithModel(executorID, profileID, modelOverride string) (Profile, error) {
 	if s == nil {
 		return Profile{}, ErrNotFound
@@ -229,9 +224,8 @@ func (s *Store) ResolveProfileWithModel(executorID, profileID, modelOverride str
 			return Profile{}, fmt.Errorf("%w: model override: %v", ErrInvalid, err)
 		}
 	}
-	if modelOverride == "" && executorID != ExecutorClaude {
-		modelOverride = strings.TrimSpace(s.defaultModels[clientFromExecutor(executorID)])
-	}
+	// Provider selection never supplies a model. An empty override means the
+	// Agent's local configuration (or the first request model) owns selection.
 	s.mu.RUnlock()
 	if !ok {
 		return Profile{}, fmt.Errorf("%w: %s", ErrNotFound, profileID)
@@ -248,70 +242,30 @@ func (s *Store) ResolveProfileWithModel(executorID, profileID, modelOverride str
 	return profile, nil
 }
 
-// DefaultModelID returns the Settings default model override for a client.
-func (s *Store) DefaultModelID(client string) string {
+// ClientDefault returns the recorded connection selection for one client.
+func (s *Store) ClientDefault(client string) string {
 	if s == nil {
 		return ""
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return strings.TrimSpace(s.defaultModels[clientFromExecutor(client)])
-}
-
-// ClientDefault returns the recorded default connection and client-selected
-// model for one client (empty when none). The model is explicit client choice
-// only — the store never fabricates one.
-func (s *Store) ClientDefault(client string) (connectionID, modelID string) {
-	if s == nil {
-		return "", ""
-	}
 	client = clientFromExecutor(client)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	connectionID = strings.TrimSpace(s.defaults[client])
+	connectionID := strings.TrimSpace(s.defaults[client])
 	if connectionID == "" {
 		connectionID = strings.TrimSpace(s.defaults[executorFromClient(client)])
 	}
-	return connectionID, strings.TrimSpace(s.defaultModels[client])
+	return connectionID
 }
 
-// SetDefaultModel sets or clears the Settings default model for a client without
-// mutating the connection row. Prefer SetClientDefault for Provider+model pairs.
-func (s *Store) SetDefaultModel(client, modelID string, expectedRevision int64) (Catalog, error) {
-	if s == nil {
-		return Catalog{}, fmt.Errorf("model profile store is not configured")
-	}
-	client = clientFromExecutor(client)
-	modelID = normalizeSpace(modelID)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if expectedRevision != s.revision {
-		return Catalog{}, fmt.Errorf("%w: expected revision %d, have %d", ErrConflict, expectedRevision, s.revision)
-	}
-	nextDefaults := cloneDefaults(s.defaults)
-	nextModels := cloneDefaults(s.defaultModels)
-	if modelID == "" {
-		delete(nextModels, client)
-	} else {
-		nextModels[client] = modelID
-	}
-	nextRev := s.revision + 1
-	err := s.persistLocked(nextRev, cloneProfiles(s.profiles), nextDefaults, nextModels)
-	return s.applyPersist(err, nextRev, cloneProfiles(s.profiles), nextDefaults, nextModels)
-}
-
-// SetClientDefault atomically sets or clears the future-launch default
-// connection and model for one client in a single revisioned durable write.
-// Empty connectionID clears both fields. Persistence failure leaves memory and
-// revision unchanged.
-func (s *Store) SetClientDefault(client, connectionID, modelID string, expectedRevision int64) (Catalog, error) {
+// SetClientDefault atomically sets or clears the future-launch connection
+// selection for one client in a single revisioned durable write.
+func (s *Store) SetClientDefault(client, connectionID string, expectedRevision int64) (Catalog, error) {
 	if s == nil {
 		return Catalog{}, fmt.Errorf("model profile store is not configured")
 	}
 	client = clientFromExecutor(client)
 	executorID := executorFromClient(client)
 	connectionID = normalizeID(connectionID)
-	modelID = normalizeSpace(modelID)
 	if client == "" || executorID == "" {
 		return Catalog{}, fmt.Errorf("%w: client is required", ErrInvalid)
 	}
@@ -325,11 +279,9 @@ func (s *Store) SetClientDefault(client, connectionID, modelID string, expectedR
 		return Catalog{}, fmt.Errorf("%w: expected revision %d, have %d", ErrConflict, expectedRevision, s.revision)
 	}
 	nextDefaults := cloneDefaults(s.defaults)
-	nextModels := cloneDefaults(s.defaultModels)
 	if connectionID == "" {
 		delete(nextDefaults, executorID)
 		delete(nextDefaults, client)
-		delete(nextModels, client)
 	} else {
 		profile, ok := s.profiles[connectionID]
 		if !ok {
@@ -343,23 +295,13 @@ func (s *Store) SetClientDefault(client, connectionID, modelID string, expectedR
 		} else if profile.ExecutorID != executorID {
 			return Catalog{}, fmt.Errorf("%w: profile %s belongs to executor %s, not %s", ErrInvalid, connectionID, profile.ExecutorID, executorID)
 		}
-		if modelID != "" {
-			if err := ValidateModelID(modelID); err != nil {
-				return Catalog{}, fmt.Errorf("%w: model: %v", ErrInvalid, err)
-			}
-		}
 		nextDefaults[client] = connectionID
 		nextDefaults[executorID] = connectionID
-		if modelID == "" {
-			delete(nextModels, client)
-		} else {
-			nextModels[client] = modelID
-		}
 	}
 	nextRev := s.revision + 1
 	nextProfiles := cloneProfiles(s.profiles)
-	err := s.persistLocked(nextRev, nextProfiles, nextDefaults, nextModels)
-	return s.applyPersist(err, nextRev, nextProfiles, nextDefaults, nextModels)
+	err := s.persistLocked(nextRev, nextProfiles, nextDefaults)
+	return s.applyPersist(err, nextRev, nextProfiles, nextDefaults)
 }
 
 // profileNameInUse checks the same case-insensitive identity on load and edits.
@@ -405,8 +347,8 @@ func (s *Store) Create(profile Profile, expectedRevision int64) (Catalog, error)
 	next := cloneProfiles(s.profiles)
 	next[profile.ID] = profile
 	nextRev := s.revision + 1
-	err := s.persistLocked(nextRev, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels))
-	return s.applyPersist(err, nextRev, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels))
+	err := s.persistLocked(nextRev, next, cloneDefaults(s.defaults))
+	return s.applyPersist(err, nextRev, next, cloneDefaults(s.defaults))
 }
 
 // Update replaces an existing profile. expectedRevision must match.
@@ -448,8 +390,8 @@ func (s *Store) Update(profile Profile, expectedRevision int64) (Catalog, error)
 	next := cloneProfiles(s.profiles)
 	next[profile.ID] = profile
 	nextRev := s.revision + 1
-	err := s.persistLocked(nextRev, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels))
-	return s.applyPersist(err, nextRev, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels))
+	err := s.persistLocked(nextRev, next, cloneDefaults(s.defaults))
+	return s.applyPersist(err, nextRev, next, cloneDefaults(s.defaults))
 }
 
 // Delete removes a profile. Fails if the profile is currently a default.
@@ -470,8 +412,8 @@ func (s *Store) Delete(id string, expectedRevision int64) (Catalog, error) {
 	next := cloneProfiles(s.profiles)
 	delete(next, id)
 	nextRev := s.revision + 1
-	err := s.persistLocked(nextRev, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels))
-	return s.applyPersist(err, nextRev, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels))
+	err := s.persistLocked(nextRev, next, cloneDefaults(s.defaults))
+	return s.applyPersist(err, nextRev, next, cloneDefaults(s.defaults))
 }
 
 // preflightDeleteLocked checks revision/existence/defaults without mutation.
@@ -529,11 +471,9 @@ func (s *Store) SetDefault(executorID, profileID string, expectedRevision int64)
 		return Catalog{}, fmt.Errorf("%w: expected revision %d, have %d", ErrConflict, expectedRevision, s.revision)
 	}
 	nextDefaults := cloneDefaults(s.defaults)
-	nextModels := cloneDefaults(s.defaultModels)
 	if profileID == "" {
 		delete(nextDefaults, executorID)
 		delete(nextDefaults, client)
-		delete(nextModels, client)
 	} else {
 		profile, ok := s.profiles[profileID]
 		if !ok {
@@ -552,8 +492,8 @@ func (s *Store) SetDefault(executorID, profileID string, expectedRevision int64)
 	}
 	nextRev := s.revision + 1
 	nextProfiles := cloneProfiles(s.profiles)
-	err := s.persistLocked(nextRev, nextProfiles, nextDefaults, nextModels)
-	return s.applyPersist(err, nextRev, nextProfiles, nextDefaults, nextModels)
+	err := s.persistLocked(nextRev, nextProfiles, nextDefaults)
+	return s.applyPersist(err, nextRev, nextProfiles, nextDefaults)
 }
 
 func (s *Store) load() error {
@@ -582,7 +522,7 @@ func (s *Store) load() error {
 		}
 		profiles[profile.ID] = profile
 	}
-	defaults, defaultModels, err := s.parseCatalogExtras(doc, profiles)
+	defaults, err := s.parseCatalogExtras(doc, profiles)
 	if err != nil {
 		return err
 	}
@@ -598,12 +538,11 @@ func (s *Store) load() error {
 	s.revision = doc.Revision
 	s.profiles = profiles
 	s.defaults = defaults
-	s.defaultModels = defaultModels
 	return nil
 }
 
-// parseCatalogExtras validates and returns the durable defaults maps.
-func (s *Store) parseCatalogExtras(doc fileDocument, profiles map[string]Profile) (defaults, defaultModels map[string]string, err error) {
+// parseCatalogExtras validates and returns the durable connection selections.
+func (s *Store) parseCatalogExtras(doc fileDocument, profiles map[string]Profile) (defaults map[string]string, err error) {
 	defaults = map[string]string{}
 	for executorID, profileID := range doc.Defaults {
 		executorID = normalizeID(executorID)
@@ -614,55 +553,37 @@ func (s *Store) parseCatalogExtras(doc fileDocument, profiles map[string]Profile
 		client := clientFromExecutor(executorID)
 		ex := executorFromClient(client)
 		if !SupportsExecutor(ex) {
-			return nil, nil, fmt.Errorf("%w: default executor %s", ErrUnsupportedExecutor, executorID)
+			return nil, fmt.Errorf("%w: default executor %s", ErrUnsupportedExecutor, executorID)
 		}
 		profile, ok := profiles[profileID]
 		if !ok {
-			return nil, nil, fmt.Errorf("%w: default profile %s for %s", ErrNotFound, profileID, executorID)
+			return nil, fmt.Errorf("%w: default profile %s for %s", ErrNotFound, profileID, executorID)
 		}
 		if isAccountConnection(profile) {
 			spec, ok := lookupPreset(inferPresetID(profile))
 			if !ok || !presetSupportsClient(spec, ex) {
-				return nil, nil, fmt.Errorf("%w: default connection %s does not support client %s", ErrInvalid, profileID, client)
+				return nil, fmt.Errorf("%w: default connection %s does not support client %s", ErrInvalid, profileID, client)
 			}
 		} else if profile.ExecutorID != ex {
-			return nil, nil, fmt.Errorf("%w: default profile %s belongs to %s, not %s", ErrInvalid, profileID, profile.ExecutorID, ex)
+			return nil, fmt.Errorf("%w: default profile %s belongs to %s, not %s", ErrInvalid, profileID, profile.ExecutorID, ex)
 		}
 		defaults[client] = profileID
 		defaults[ex] = profileID
 	}
-	defaultModels = map[string]string{}
-	for client, modelID := range doc.DefaultModels {
-		client = clientFromExecutor(client)
-		// Claude's model selection belongs to the local Claude Code settings.
-		// Ignore legacy Provider-level records on load.
-		if client == ClientClaude {
-			continue
-		}
-		modelID = normalizeSpace(modelID)
-		if client == "" || modelID == "" {
-			continue
-		}
-		defaultModels[client] = modelID
-	}
-	return defaults, defaultModels, nil
+	return defaults, nil
 }
 
-func (s *Store) persistLocked(revision int64, profiles map[string]Profile, defaults, defaultModels map[string]string) error {
+func (s *Store) persistLocked(revision int64, profiles map[string]Profile, defaults map[string]string) error {
 	doc := fileDocument{
-		Revision:      revision,
-		Profiles:      make([]Profile, 0, len(profiles)),
-		Defaults:      map[string]string{},
-		DefaultModels: map[string]string{},
+		Revision: revision,
+		Profiles: make([]Profile, 0, len(profiles)),
+		Defaults: map[string]string{},
 	}
 	for _, id := range sortedProfileIDs(profiles) {
 		doc.Profiles = append(doc.Profiles, profiles[id])
 	}
 	for _, executorID := range sortedDefaultKeys(defaults) {
 		doc.Defaults[executorID] = defaults[executorID]
-	}
-	for _, client := range sortedDefaultKeys(defaultModels) {
-		doc.DefaultModels[client] = defaultModels[client]
 	}
 	var encoded strings.Builder
 	if err := toml.NewEncoder(&encoded).Encode(doc); err != nil {
@@ -674,13 +595,12 @@ func (s *Store) persistLocked(revision int64, profiles map[string]Profile, defau
 // applyPersist aligns memory with a committed rename. Pre-rename failures leave
 // memory unchanged. ErrPersistDirSync means rename committed: memory is updated
 // to match disk and the uncertain-durability error is returned for the caller.
-func (s *Store) applyPersist(err error, revision int64, profiles map[string]Profile, defaults, defaultModels map[string]string) (Catalog, error) {
+func (s *Store) applyPersist(err error, revision int64, profiles map[string]Profile, defaults map[string]string) (Catalog, error) {
 	if err != nil && !errors.Is(err, ErrPersistDirSync) {
 		return Catalog{}, err
 	}
 	s.profiles = profiles
 	s.defaults = defaults
-	s.defaultModels = defaultModels
 	s.revision = revision
 	return s.catalogLocked(), err
 }

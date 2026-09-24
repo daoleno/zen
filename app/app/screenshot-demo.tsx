@@ -724,7 +724,7 @@ function ComposerStatesDemo() {
       },
     ],
     defaults: {
-      codex: { connection_id: "c1", model_id: demoModelId },
+      codex: { connection_id: "c1" },
     },
     presets: [],
     models: {
@@ -1223,7 +1223,7 @@ function ProvidersDemo() {
         onCloseEditor={NOOP}
         onDelete={NOOP}
         onUseDirect={NOOP}
-        onSetDefault={NOOP}
+        onSelectConnection={NOOP}
         onDiscover={NOOP}
         modelPicker={modelPicker}
         onCloseModelPicker={NOOP}

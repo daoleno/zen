@@ -15,7 +15,7 @@ import (
 func TestProvidersCatalogPayloadIncludesGatewayStatus(t *testing.T) {
 	proj := modelprofiles.ProviderCatalogProjection{
 		Revision: 9,
-		Defaults: map[string]modelprofiles.ProviderDefault{},
+		Defaults: map[string]modelprofiles.ProviderConnectionSelection{},
 		Presets:  []modelprofiles.ProviderPreset{},
 		Models:   map[string][]modelprofiles.ProviderModelEntry{},
 		Gateway: modelprofiles.GatewayStatus{

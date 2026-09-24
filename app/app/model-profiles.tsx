@@ -16,8 +16,6 @@ import {
   classifyMutationPersistence,
   clientForConnection,
   durabilityWarningMessage,
-  defaultRuntimeSeedAction,
-  modelSupportChangeKeepsDefaultValid,
   offlineProviderError,
   presentProviderError,
   providerMutationRequiresRefresh,
@@ -237,7 +235,6 @@ export default function ProvidersScreen() {
     name: string;
     baseUrl: string;
     apiKey: string;
-    modelId: string;
   }): Promise<ProviderSaveOutcome> => {
     const previous = catalogRef.current;
     if (!currentServerId || !currentConnected || !previous) {
@@ -267,7 +264,6 @@ export default function ProvidersScreen() {
           name: input.name,
           client: input.client,
           baseUrl: input.baseUrl,
-          modelId: input.modelId,
           presetId: input.connection?.preset_id,
           // Curated connections keep the official endpoint; only
           // custom/advanced connections carry an editable Base URL.
@@ -504,69 +500,36 @@ export default function ProvidersScreen() {
   const offline = !currentConnected;
   const unavailable = error?.kind === "unavailable";
 
-  /** Settings persists only a complete runtime seed for future Sessions. */
+  /** Settings persists only the future Agent connection selection. */
   const switchPreferredProvider = useCallback(
     async (client: ProviderClient, connection: ProviderConnection) => {
       if (!catalog) return;
-      const action = defaultRuntimeSeedAction({
-        snapshot: catalog,
-        client,
-        connectionId: connection.id,
-      });
-      if (action.kind === "apply") {
-        if (
-          catalog.defaults[client]?.connection_id === connection.id &&
-          catalog.defaults[client]?.model_id === action.modelId
-        ) {
-          return;
-        }
-        setSwitchStates((previous) => ({
-          ...previous,
-          [connection.id]: { kind: "pending" },
-        }));
-        const current = catalog.defaults[client];
-        const result = await runMutation(() =>
-          client === "codex" && current?.model_id === action.modelId
-            ? wsClient.switchProvider(currentServerId!, {
-                client,
-                connectionId: connection.id,
-                revision,
-              })
-            : wsClient.setProviderDefault(currentServerId!, {
-                client,
-                connectionId: connection.id,
-                modelId: action.modelId,
-                revision,
-              }),
-        );
-        if (!result) {
-          setSwitchStates((previous) => ({
-            ...previous,
-            [connection.id]: {
-              kind: "error",
-              message:
-                "Could not set this Provider as default. Check the Model ID and retry.",
-            },
-          }));
-        } else {
-          setSwitchStates((previous) => {
-            const next = { ...previous };
-            delete next[connection.id];
-            return next;
-          });
-        }
-        return;
-      }
-      if (action.kind === "unavailable") {
+      if (catalog.defaults[client]?.connection_id === connection.id) return;
+      setSwitchStates((previous) => ({
+        ...previous,
+        [connection.id]: { kind: "pending" },
+      }));
+      const result = await runMutation(() =>
+        wsClient.setProviderConnection(currentServerId!, {
+          client,
+          connectionId: connection.id,
+          revision,
+        }),
+      );
+      if (!result) {
         setSwitchStates((previous) => ({
           ...previous,
           [connection.id]: {
             kind: "error",
-            message:
-              "No local model catalog is available. Edit this Provider to enter a Model ID.",
+            message: "Could not select this Provider connection. Retry.",
           },
         }));
-        return;
+      } else {
+        setSwitchStates((previous) => {
+          const next = { ...previous };
+          delete next[connection.id];
+          return next;
+        });
       }
     },
     [catalog, currentServerId, revision, runMutation],
@@ -633,14 +596,14 @@ export default function ProvidersScreen() {
 
       onUseDirect={(client: ProviderClient) => {
         void runMutation(() =>
-          wsClient.setProviderDefault(currentServerId!, {
+          wsClient.setProviderConnection(currentServerId!, {
             client,
             connectionId: "",
             revision,
           }),
         );
       }}
-      onSetDefault={(client, connection) => {
+      onSelectConnection={(client, connection) => {
         void switchPreferredProvider(client, connection);
       }}
       switchStates={switchStates}
@@ -651,17 +614,6 @@ export default function ProvidersScreen() {
       onCloseModelPicker={() => setModelPicker(null)}
       onSelectModel={(client, connection, modelId) => {
         const enabledIds = toggleModelSupport(catalog, connection.id, modelId);
-        if (
-          !modelSupportChangeKeepsDefaultValid({
-            snapshot: catalog!,
-            client,
-            connectionId: connection.id,
-            enabledModelIds: enabledIds,
-          })
-        ) {
-          Alert.alert("Model is in use", "The selected runtime model cannot be disabled.");
-          return;
-        }
         void runSetModels(connection, enabledIds);
       }}
       onTestConnection={async ({ client, baseUrl, apiKey }) => {
@@ -690,7 +642,6 @@ export default function ProvidersScreen() {
         name,
         baseUrl,
         apiKey,
-        modelId,
       }) => {
         const outcome = await saveProvider({
           client,
@@ -698,7 +649,6 @@ export default function ProvidersScreen() {
           name,
           baseUrl,
           apiKey,
-          modelId,
         });
         applySaveOutcome(outcome);
         return outcome;

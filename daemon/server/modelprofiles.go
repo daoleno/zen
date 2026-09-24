@@ -45,8 +45,8 @@ func (s *Server) handleModelProfileMessage(conn *websocket.Conn, raw clientMessa
 	case "delete_provider_connection":
 		s.handleDeleteProviderConnection(conn, raw)
 		return true
-	case "set_provider_default":
-		s.handleSetProviderDefault(conn, raw)
+	case "set_provider_connection":
+		s.handleSetProviderConnection(conn, raw)
 		return true
 	case "switch_provider":
 		s.handleSwitchProvider(conn, raw)
@@ -169,7 +169,7 @@ func (s *Server) handleDeleteProviderConnection(conn *websocket.Conn, raw client
 	s.sendProvidersMutation(conn, raw.RequestID, proj, err)
 }
 
-func (s *Server) handleSetProviderDefault(conn *websocket.Conn, raw clientMessage) {
+func (s *Server) handleSetProviderConnection(conn *websocket.Conn, raw clientMessage) {
 	owner := s.modelProfiles()
 	if owner == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
@@ -186,7 +186,11 @@ func (s *Server) handleSetProviderDefault(conn *websocket.Conn, raw clientMessag
 	if connectionID == "" {
 		connectionID = strings.TrimSpace(raw.ProfileID)
 	}
-	proj, err := owner.SetProviderDefault(executorID, connectionID, raw.ModelID, raw.Revision)
+	if strings.TrimSpace(raw.ModelID) != "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfileInvalid, "connection selection payload must not include a model")
+		return
+	}
+	proj, err := owner.SetProviderConnection(executorID, connectionID, raw.Revision)
 	s.sendProvidersMutation(conn, raw.RequestID, proj, err)
 }
 

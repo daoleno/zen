@@ -84,10 +84,8 @@ export function providerClientForCommand(command: string): ProviderClient | null
 }
 
 /**
- * The authoritative connection selection for a new Session. Claude's model
- * remains empty here so Claude Code can inherit its local /model setting;
- * Codex may still carry its legacy explicit seed until its local config path
- * is migrated.
+ * The authoritative connection selection for a new Session. Both Agents
+ * inherit their local model configuration unless the Session requests one.
  */
 export function launchSelectionFromSnapshot(
   snapshot: ProvidersSnapshot | null | undefined,
@@ -102,64 +100,16 @@ export function launchSelectionFromSnapshot(
   if (!connection) return null;
   return {
     connectionId: connection.id,
-    modelId: client === "claude" ? "" : entry.model_id?.trim() || "",
+    modelId: "",
   };
-}
-
-/**
- * The client-selected model bound to a connection via the client default, or
- * null when the connection is not the client default or no model is selected.
- * Claude deliberately has no Provider-bound model.
- */
-export function boundModelForConnection(
-  snapshot: ProvidersSnapshot | null | undefined,
-  client: string,
-  connectionId: string,
-): string | null {
-  const normalizedClient = normalizeProviderClient(client);
-  if (normalizedClient === "claude") return null;
-  const defaultEntry = snapshot?.defaults[normalizedClient];
-  if (!defaultEntry) return null;
-  if (
-    normalizeProviderId(defaultEntry.connection_id) !==
-    normalizeProviderId(connectionId)
-  ) {
-    return null;
-  }
-  const modelId = normalizeProviderId(defaultEntry.model_id ?? "");
-  return modelId || null;
-}
-
-/**
- * True when a connection is the client default but has no upstream model
- * bound yet — the exact state that makes `codex new` fail closed. The row
- * renders a "sync models" hint instead of a model name in this state.
- */
-export function connectionRequiresModelSelection(
-  snapshot: ProvidersSnapshot | null | undefined,
-  client: string,
-  connectionId: string,
-): boolean {
-  const normalizedClient = normalizeProviderClient(client);
-  const defaultEntry = snapshot?.defaults[normalizedClient];
-  if (!defaultEntry) return false;
-  if (
-    normalizeProviderId(defaultEntry.connection_id) !==
-    normalizeProviderId(connectionId)
-  ) {
-    return false;
-  }
-  return (
-    normalizedClient !== "claude" &&
-    !normalizeProviderId(defaultEntry.model_id ?? "")
-  );
 }
 
 /**
  * Picker inventory for one connection after discovery: every discovered model
  * as a compact support chip. "Selected" means the gateway exposes the model
  * (the client enable allowlist); tapping toggles support. There is no
- * default-model concept: the gateway never owns a default model.
+ * connection selection is independent from model exposure: the gateway never
+ * owns an Agent model.
  */
 export function modelSupportChoices(
   snapshot: ProvidersSnapshot | null | undefined,
@@ -210,15 +160,6 @@ export function toggleModelSupport(
     .filter((id) => current.has(id));
 }
 
-export function connectionIsFutureDefault(
-  snapshot: ProvidersSnapshot,
-  connectionId: string,
-): string[] {
-  return Object.entries(snapshot.defaults)
-    .filter(([, value]) => value.connection_id === connectionId)
-    .map(([client]) => client);
-}
-
 export function modelChoicesForSession(
   snapshot: ProvidersSnapshot | null | undefined,
   selection: ThreadRuntimeSelection | null | undefined,
@@ -238,30 +179,21 @@ export function modelChoicesForSession(
   );
 }
 
-export function defaultClientsForConnection(
-  snapshot: ProvidersSnapshot,
-  connectionId: string,
-): string[] {
-  return Object.entries(snapshot.defaults)
-    .filter(([, value]) => value.connection_id === connectionId)
-    .map(([client]) => client);
-}
-
-export type FutureDefaultOption = {
+export type ConnectionSelectionOption = {
   connectionId: string;
   connectionName: string;
   selected: boolean;
 };
 
-export type FutureDefaultClientRow = {
+export type ConnectionSelectionClientRow = {
   client: string;
   label: string;
   currentConnectionId: string | null;
   currentConnectionName: string | null;
-  options: FutureDefaultOption[];
+  options: ConnectionSelectionOption[];
 };
 
-function futureDefaultClientLabel(client: string): string {
+function connectionSelectionClientLabel(client: string): string {
   const normalized = normalizeProviderClient(client);
   if (normalized === "codex") return "Codex";
   if (normalized === "claude") return "Claude";
@@ -269,13 +201,13 @@ function futureDefaultClientLabel(client: string): string {
 }
 
 /**
- * One compact Defaults surface: Codex and Claude each select among ready,
- * client-compatible Provider connections. Cards stay glance-only.
+ * One compact connection selection surface: Codex and Claude each select
+ * among ready, client-compatible Provider connections. Cards stay glance-only.
  */
-export function futureDefaultRows(
+export function connectionSelectionRows(
   snapshot: ProvidersSnapshot | null | undefined,
   clients: readonly string[] = ["codex", "claude"],
-): FutureDefaultClientRow[] {
+): ConnectionSelectionClientRow[] {
   if (!snapshot) return [];
   return clients.map((client) => {
     const normalized = normalizeProviderClient(client) || client.trim().toLowerCase();
@@ -292,7 +224,7 @@ export function futureDefaultRows(
       }));
     return {
       client: normalized,
-      label: futureDefaultClientLabel(normalized),
+      label: connectionSelectionClientLabel(normalized),
       currentConnectionId: currentId,
       currentConnectionName: currentConnection?.name ?? null,
       options,

@@ -5,7 +5,6 @@ import {
   providerEditorAfterSave,
   providerEditorCanSave,
   providerEditorInitialBaseUrl,
-  providerEditorInitialModelId,
   providerEditorInitialName,
   providerEditorRequiresBaseUrl,
   providerEditorSessionKey,
@@ -145,15 +144,6 @@ describe("unified Add/Edit Provider editor", () => {
     expect(providerEditorInitialBaseUrl(edit)).toBe(
       "https://api.example.com/v1",
     );
-    expect(providerEditorInitialModelId(edit)).toBe("");
-    expect(
-      providerEditorInitialModelId({
-        kind: "edit",
-        connection: connection("conn-model", {
-          manual_model_id: "vendor/claude",
-        }),
-      }),
-    ).toBe("vendor/claude");
     expect(providerEditorRequiresBaseUrl(edit)).toBe(true);
     expect(
       providerEditorRequiresBaseUrl({ kind: "create", client: "codex" }),
@@ -351,11 +341,11 @@ describe("Agent-first Providers surface contract", () => {
     expect(screenSource).toContain("clientForConnection(");
   });
 
-  test("settings applies a deterministic model without opening the picker", () => {
-    expect(screenSource).toContain("wsClient.setProviderDefault");
-    expect(screenSource).toContain("action.modelId");
+  test("settings selects only a connection without a model seed", () => {
+    expect(screenSource).toContain("wsClient.setProviderConnection");
+    expect(screenSource).not.toContain("action.modelId");
     expect(screenSource).not.toContain('purpose: "default"');
-    expect(screenSource).toContain("defaultRuntimeSeedAction");
+    expect(screenSource).not.toContain("defaultRuntimeSeedAction");
   });
 
   test("model rows control the exposed model scope for the current Provider", () => {
@@ -369,15 +359,12 @@ describe("Agent-first Providers surface contract", () => {
     expect(presentationSource).toContain("modelChipSelected");
     expect(presentationSource).toContain("FlatList");
     expect(presentationSource).toContain("pickerListContent");
-    expect(presentationSource).not.toContain(
-      "Choose the model for new ${providerClientLabel(picker.client)} sessions.",
-    );
     expect(presentationSource).not.toContain("selectingDefault");
     expect(presentationSource).toContain('accessibilityRole="checkbox"');
     expect(screenSource).toContain("runSetModels");
     expect(screenSource).toContain("wsClient.setProviderModels");
-    expect(screenSource).toContain("wsClient.setProviderDefault");
-    expect(screenSource).toContain("wsClient.setProviderDefault");
+    expect(screenSource).toContain("wsClient.setProviderConnection");
+    expect(screenSource).toContain("wsClient.setProviderConnection");
     expect(screenSource).toContain("toggleModelSupport(");
     expect(screenSource).not.toContain("firstSupportedModel(");
   });
@@ -394,9 +381,9 @@ describe("Agent-first Providers surface contract", () => {
   });
 
   test("every saved Provider overflow menu tests the exact stored connection", () => {
-    expect(presentationSource).toContain('"Test Connection"');
+    expect(presentationSource).toContain('label="Test connection"');
     expect(presentationSource).toContain("onTestConnectionById(");
-    expect(presentationSource).toContain("handleTestConnection");
+    expect(presentationSource).toContain("onTestConnectionById");
     // The daemon resolves the persisted Base URL, protocol and active stored
     // credential ref by stable Provider ID; the App never sends a key back.
     expect(screenSource).toContain("wsClient.testSavedProviderConnection");

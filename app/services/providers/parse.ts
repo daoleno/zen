@@ -6,7 +6,7 @@ import {
   type ProviderConnection,
   type ProviderConnectionTestResult,
   type ProviderCredentialResult,
-  type ProviderDefault,
+  type ProviderConnectionSelection,
   type ProviderModel,
   type ProviderModelsResult,
   type ProviderPreset,
@@ -206,29 +206,28 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
 
   const defaultsRecord = asRecord(record.defaults);
   if (!defaultsRecord) return null;
-  const defaults: Record<string, ProviderDefault> = {};
+  const defaults: Record<string, ProviderConnectionSelection> = {};
   for (const [rawClient, rawDefault] of Object.entries(defaultsRecord)) {
     const client = normalizeProviderClient(rawClient);
     const entry = asRecord(rawDefault);
     const connectionId = asString(entry?.connection_id);
-    const modelId = asString(entry?.model_id);
     if (!isSupportedProviderClient(client)) {
       return null;
     }
+    // Provider defaults are connection-only. Reject the retired model field so
+    // stale/default-model payloads cannot re-enter the App state model.
+    if (entry && Object.prototype.hasOwnProperty.call(entry, "model_id")) return null;
     // Direct/native login is represented by the supported client's explicit
     // empty default. Claude connection defaults intentionally omit model_id;
     // its model belongs to local Claude Code configuration or the Session.
     if (!connectionId) {
-      if (modelId) return null;
-      defaults[client] = { connection_id: "", model_id: "" };
+      defaults[client] = { connection_id: "" };
       continue;
     }
     if (!connectionIds.has(connectionId)) return null;
     const connection = connections.find((item) => item.id === connectionId);
     if (!connection?.clients.includes(client)) return null;
-    defaults[client] = modelId
-      ? { connection_id: connectionId, model_id: modelId }
-      : { connection_id: connectionId };
+    defaults[client] = { connection_id: connectionId };
   }
 
   const modelsRecord = asRecord(record.models);

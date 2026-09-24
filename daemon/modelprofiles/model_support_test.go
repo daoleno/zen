@@ -25,12 +25,12 @@ func TestLaunchCarriesSelectedModelGpt56SolEndToEnd(t *testing.T) {
 	owner.mu.Unlock()
 
 	// The client selects gpt-5.6-sol from the support allowlist.
-	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "gpt-5.6-sol", proj.Revision)
+	proj, err = owner.SetProviderConnection(ClientCodex, "cf-api-fan", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := proj.Defaults[ClientCodex].ModelID; got != "gpt-5.6-sol" {
-		t.Fatalf("client-selected model=%q", got)
+	if got := proj.Defaults[ClientCodex].ConnectionID; got != "cf-api-fan" {
+		t.Fatalf("connection selection=%q", got)
 	}
 
 	// New Session launch (create_session carries the selection): the upstream
@@ -161,24 +161,24 @@ func TestModelSupportCannotDisableSelectedDefault(t *testing.T) {
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("gw", []string{"gpt-5.6-sol"}, nil)
 	owner.mu.Unlock()
-	proj, err = owner.SetProviderDefault(ClientCodex, "gw", "gpt-5.6-sol", proj.Revision)
+	proj, err = owner.SetProviderConnection(ClientCodex, "gw", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := proj.Models["gw"]
 	_, persist, err := owner.SetProviderModelSupport("gw", nil)
-	if err == nil || persist.Applied {
-		t.Fatalf("disabling selected default must be refused: persist=%#v err=%v", persist, err)
+	if err != nil || !persist.Applied {
+		t.Fatalf("model exposure is independent of connection selection: persist=%#v err=%v", persist, err)
 	}
 	after, projectErr := owner.ProjectProviders()
 	if projectErr != nil {
 		t.Fatal(projectErr)
 	}
-	if got := after.Defaults[ClientCodex]; got.ConnectionID != "gw" || got.ModelID != "gpt-5.6-sol" {
+	if got := after.Defaults[ClientCodex]; got.ConnectionID != "gw" {
 		t.Fatalf("default runtime changed after refused support update: %#v", got)
 	}
-	if len(before) != len(after.Models["gw"]) || !after.Models["gw"][0].Available {
-		t.Fatalf("support mutation applied despite refusal: before=%#v after=%#v", before, after.Models["gw"])
+	if len(before) != len(after.Models["gw"]) || after.Models["gw"][0].Available {
+		t.Fatalf("support mutation did not apply: before=%#v after=%#v", before, after.Models["gw"])
 	}
 }
 
@@ -205,7 +205,7 @@ func TestCodexRoutedDefaultAuthoritativeForStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault(ClientCodex, "gw", "gpt-5.6-sol", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, "gw", proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 	if !owner.CodexRoutedDefault() {
@@ -216,7 +216,7 @@ func TestCodexRoutedDefaultAuthoritativeForStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault(ClientCodex, "", "", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, "", proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 	if owner.CodexRoutedDefault() {
@@ -224,9 +224,9 @@ func TestCodexRoutedDefaultAuthoritativeForStats(t *testing.T) {
 	}
 }
 
-// SetProviderDefault preserves the client-selected model when the same
+// SetProviderConnection preserves the client-selected model when the same
 // connection remains the default, and never fabricates a preset default.
-func TestSetProviderDefaultPreservesSelectedModel(t *testing.T) {
+func TestSetProviderConnectionPreservesSelectedModel(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
 		ID: "gw", Name: "gateway.example", Client: ClientCodex,
@@ -240,17 +240,17 @@ func TestSetProviderDefaultPreservesSelectedModel(t *testing.T) {
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("gw", []string{"gpt-5.6-sol"}, nil)
 	owner.mu.Unlock()
-	proj, err = owner.SetProviderDefault(ClientCodex, "gw", "gpt-5.6-sol", proj.Revision)
+	proj, err = owner.SetProviderConnection(ClientCodex, "gw", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Re-selecting the same connection with an empty model must not reset the
 	// client's selection to a fabricated preset default.
-	proj, err = owner.SetProviderDefault(ClientCodex, "gw", "", proj.Revision)
+	proj, err = owner.SetProviderConnection(ClientCodex, "gw", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := proj.Defaults[ClientCodex].ModelID; got != "gpt-5.6-sol" {
-		t.Fatalf("selected model lost after re-selecting connection: %q", got)
+	if got := proj.Defaults[ClientCodex].ConnectionID; got != "gw" {
+		t.Fatalf("connection selection lost after re-selecting: %q", got)
 	}
 }

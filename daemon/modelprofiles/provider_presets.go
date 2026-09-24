@@ -20,7 +20,7 @@ type presetSpec struct {
 	AuthMode       string
 	CredentialEnv  string
 	ClientModel    map[string]string // executor -> default client contract id
-	DefaultModel   map[string]string // executor -> default upstream model id
+	BuiltinModels  map[string]string // executor -> bundled catalog model id
 }
 
 var curatedPresets = []presetSpec{
@@ -35,7 +35,7 @@ var curatedPresets = []presetSpec{
 		AuthMode:       AuthModeBearerEnv,
 		CredentialEnv:  "OPENAI_API_KEY",
 		ClientModel:    map[string]string{ExecutorCodex: "gpt-5"},
-		DefaultModel:   map[string]string{ExecutorCodex: "gpt-5"},
+		BuiltinModels:  map[string]string{ExecutorCodex: "gpt-5"},
 	},
 	{
 		Public: ProviderPreset{
@@ -48,7 +48,7 @@ var curatedPresets = []presetSpec{
 		AuthMode:       AuthModeBearerEnv,
 		CredentialEnv:  "OPENROUTER_API_KEY",
 		ClientModel:    map[string]string{ExecutorCodex: "gpt-5"},
-		DefaultModel:   map[string]string{ExecutorCodex: "openai/gpt-5"},
+		BuiltinModels:  map[string]string{ExecutorCodex: "openai/gpt-5"},
 	},
 	{
 		Public: ProviderPreset{
@@ -61,7 +61,7 @@ var curatedPresets = []presetSpec{
 		AuthMode:       AuthModeXAPIKeyEnv,
 		CredentialEnv:  "ANTHROPIC_API_KEY",
 		ClientModel:    map[string]string{ExecutorClaude: "claude-sonnet-4-6"},
-		DefaultModel:   map[string]string{ExecutorClaude: "claude-sonnet-4-6"},
+		BuiltinModels:  map[string]string{ExecutorClaude: "claude-sonnet-4-6"},
 	},
 	{
 		Public: ProviderPreset{
@@ -77,7 +77,7 @@ var curatedPresets = []presetSpec{
 			ExecutorCodex:  "gpt-5",
 			ExecutorClaude: "claude-sonnet-4-6",
 		},
-		DefaultModel: map[string]string{
+		BuiltinModels: map[string]string{
 			ExecutorCodex:  "deepseek-v4-flash",
 			ExecutorClaude: "deepseek-v4-flash",
 		},
@@ -97,7 +97,7 @@ var curatedPresets = []presetSpec{
 			ExecutorCodex:  "gpt-5",
 			ExecutorClaude: "claude-sonnet-4-6",
 		},
-		DefaultModel: map[string]string{},
+		BuiltinModels: map[string]string{},
 	},
 }
 
@@ -183,7 +183,7 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 	}
 
 	// Curated account identity never owns a model. Advanced/Custom may store a
-	// manual model id for discovery/default hints only.
+	// manual model id for catalog identity hints only.
 	modelID := ""
 	if advanced {
 		modelID = in.ModelID
@@ -193,7 +193,7 @@ func CompileProviderConnection(in ProviderConnectionInput) (Profile, error) {
 			}
 		}
 	} else if in.ModelID != "" {
-		return Profile{}, fmt.Errorf("%w: curated connections do not own model_id; select models via defaults or Session activation", ErrInvalid)
+		return Profile{}, fmt.Errorf("%w: curated connections do not own model_id; select a model in the Agent Session", ErrInvalid)
 	}
 
 	id := in.ID
@@ -302,10 +302,8 @@ func compileProviderConnectionForClient(in ProviderConnectionInput, executor str
 	// Unified identity for managed Codex: the selected model slug IS the Codex
 	// session model (client_model) and the routed upstream model — no hidden
 	// compatibility model. The daemon-owned model catalog supplies suggestions
-	// and metadata but never admits or rejects the exact slug. For curated
-	// presets the preset's default model is the identity; an omitted model
-	// stays a compile-only probe placeholder (never the route's UpstreamModel)
-	// until the client selects one explicitly.
+	// and metadata but never fabricates a route target. An omitted model stays a
+	// compile-only placeholder until the Agent selects one explicitly.
 	modelID := in.ModelID
 	modelPlaceholder := false
 	if executor == ExecutorCodex {

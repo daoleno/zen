@@ -91,7 +91,7 @@ import {
   type ProviderConnectionInput,
   type ProviderConnectionTestResult,
   type ProviderCredentialResult,
-  type ProviderDefaultInput,
+  type ProviderConnectionSelectionInput,
   type ProviderModelsResult,
   type ProviderSwitchInput,
   type ThreadRuntimeSelection,
@@ -849,21 +849,20 @@ export class MultiServerWebSocketClient {
     );
   }
 
-  setProviderDefault(
+  setProviderConnection(
     serverId: string,
-    input: ProviderDefaultInput,
+    input: ProviderConnectionSelectionInput,
   ): Promise<ProvidersMutationResult> {
     return this.requestProvidersCatalog(
       serverId,
       {
-        type: "set_provider_default",
+        type: "set_provider_connection",
         client: input.client,
         executor_id: input.client,
         connection_id: input.connectionId,
-        ...(input.modelId?.trim() ? { model_id: input.modelId.trim() } : {}),
         revision: input.revision,
       },
-      "Timed out while updating Provider default.",
+      "Timed out while updating Provider connection.",
       false,
     );
   }
@@ -889,7 +888,7 @@ export class MultiServerWebSocketClient {
   /**
    * Persist the client-side model support allowlist of one connection: the
    * full set of discovered models the client wants exposed. The gateway never
-   * owns a default model; this write only toggles which models are supported.
+   * owns a model; this write only selects the Provider connection.
    */
   setProviderModels(
     serverId: string,

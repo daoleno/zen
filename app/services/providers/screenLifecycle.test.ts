@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ProviderRequestOwner } from "./reconcile";
-import { futureDefaultRows } from "./presentation";
+import { connectionSelectionRows } from "./presentation";
 import {
   idleProvidersInFlightFlags,
   providersScreenAfterBlur,
@@ -33,7 +33,7 @@ function snapshot(revision = 3): ProvidersSnapshot {
         advanced: false,
       },
     ],
-    defaults: { codex: { connection_id: "c1", model_id: "model-a" } },
+    defaults: { codex: { connection_id: "c1" } },
     presets: [],
     models: {},
   };
@@ -101,9 +101,9 @@ describe("Providers screen blur lifecycle", () => {
   });
 });
 
-describe("Future default rows", () => {
+describe("Connection selection rows", () => {
   test("one Codex/Claude surface lists ready options and marks the current choice", () => {
-    const rows = futureDefaultRows(snapshot());
+    const rows = connectionSelectionRows(snapshot());
     expect(rows.map((row) => row.client)).toEqual(["codex", "claude"]);
     const codex = rows[0];
     expect(codex.currentConnectionId).toBe("c1");

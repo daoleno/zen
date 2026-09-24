@@ -154,7 +154,6 @@ function providerCatalogPayload(requestId: string, revision = 1) {
     defaults: {
       codex: {
         connection_id: "deepseek-main",
-        model_id: "deepseek-chat",
       },
     },
     presets: [
@@ -753,19 +752,17 @@ describe("Provider public WebSocket boundary", () => {
       warning: "directory sync pending",
     });
 
-    const defaultPending = client.setProviderDefault(server.id, {
+    const defaultPending = client.setProviderConnection(server.id, {
       client: "codex",
       connectionId: "deepseek-main",
-      modelId: "deepseek-chat",
       revision: 4,
     });
     const setDefault = JSON.parse(socket.sent.at(-1)!);
     expect(setDefault).toMatchObject({
-      type: "set_provider_default",
+      type: "set_provider_connection",
       client: "codex",
       executor_id: "codex",
       connection_id: "deepseek-main",
-      model_id: "deepseek-chat",
       revision: 4,
     });
     expect(setDefault.profile_id).toBeUndefined();

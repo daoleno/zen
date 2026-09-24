@@ -169,7 +169,7 @@ func buildProviderSwitchSnapshots(t *testing.T, root string) (*Owner, providerSw
 		connectionA.ID: {"gpt-5.4", "gpt-5.5"},
 		connectionB.ID: {"gpt-5.4", "gpt-5.5"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connectionA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connectionA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	for _, sessionID := range []string{"journal-thread-1", "journal-thread-2"} {
@@ -211,7 +211,6 @@ func captureProviderSwitchSnapshot(owner *Owner) providerSwitchSnapshot {
 	snapshot := providerSwitchSnapshotFromState(
 		owner.store.revision,
 		owner.store.defaults,
-		owner.store.defaultModels,
 		routes,
 	)
 	owner.store.mu.RUnlock()
@@ -223,7 +222,7 @@ func persistProviderCatalogSnapshot(t *testing.T, owner *Owner, snapshot provide
 	owner.store.mu.RLock()
 	profiles := cloneProfiles(owner.store.profiles)
 	owner.store.mu.RUnlock()
-	if err := owner.store.persistLocked(snapshot.Revision, profiles, snapshot.Defaults, snapshot.DefaultModels); err != nil {
+	if err := owner.store.persistLocked(snapshot.Revision, profiles, snapshot.Defaults); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -233,8 +232,8 @@ func assertProviderSwitchSnapshot(t *testing.T, got, want providerSwitchSnapshot
 	if got.Revision != want.Revision {
 		t.Fatalf("revision=%d want=%d", got.Revision, want.Revision)
 	}
-	if !equalStringMap(got.Defaults, want.Defaults) || !equalStringMap(got.DefaultModels, want.DefaultModels) {
-		t.Fatalf("defaults mismatch: got=%#v/%#v want=%#v/%#v", got.Defaults, got.DefaultModels, want.Defaults, want.DefaultModels)
+	if !equalStringMap(got.Defaults, want.Defaults) {
+		t.Fatalf("defaults mismatch: got=%#v want=%#v", got.Defaults, want.Defaults)
 	}
 	sort.Slice(got.Routes, func(i, j int) bool {
 		return got.Routes[i].Binding.SessionID < got.Routes[j].Binding.SessionID

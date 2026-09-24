@@ -36,6 +36,30 @@ import {
   providerClientLabel,
   providerNameIssue,
 } from "../../services/providers";
+
+function connectionSubtitle(
+  connection: ProviderConnection,
+  catalog: ProvidersSnapshot | null,
+): string {
+  if (connection.base_url) return providerBaseUrlHostname(connection.base_url);
+  const preset = catalog?.presets.find(
+    (item) => item.id === connection.preset_id,
+  );
+  return preset?.label ?? "Official endpoint";
+}
+
+function catalogAgeLabel(connection: ProviderConnection): string {
+  if (!connection.models_fetched_at) return "Models not synced";
+  const timestamp = Date.parse(connection.models_fetched_at);
+  if (!Number.isFinite(timestamp)) return "Models synced";
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+  if (connection.models_stale || connection.models_warning) return "Models stale";
+  if (minutes < 1) return "Models just now";
+  if (minutes < 60) return `Models ${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `Models ${hours}h ago`;
+  return `Models ${Math.round(hours / 24)}d ago`;
+}
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 import { RisingSheet } from "../ui/RisingSheet";
@@ -43,7 +67,6 @@ import {
   providerEditorAfterSave,
   providerEditorCanSave,
   providerEditorInitialBaseUrl,
-  providerEditorInitialModelId,
   providerEditorInitialName,
   providerEditorRequiresBaseUrl,
   providerEditorSessionKey,
@@ -79,7 +102,7 @@ export interface ProvidersPresentationProps {
   onCloseEditor(): void;
   onDelete(connection: ProviderConnection): void;
   onUseDirect(client: ProviderClient): void;
-  onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
+  onSelectConnection(client: ProviderClient, connection: ProviderConnection): void;
   switchStates?: Record<
     string,
     { kind: "pending" | "error"; message?: string }
@@ -112,7 +135,6 @@ export interface ProvidersPresentationProps {
     name: string;
     baseUrl: string;
     apiKey: string;
-    modelId: string;
   }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
   apiKeyAutoFocus?: boolean;
 }
@@ -135,7 +157,7 @@ export function ProvidersPresentation({
   onCloseEditor,
   onDelete,
   onUseDirect,
-  onSetDefault,
+  onSelectConnection,
   switchStates = {},
   onDiscover,
   modelPicker,
@@ -234,7 +256,7 @@ export function ProvidersPresentation({
               disabled={!canMutate || writeLocked}
               switchStates={switchStates}
               onUseDirect={onUseDirect}
-              onSetDefault={onSetDefault}
+              onSelectConnection={onSelectConnection}
               onOpenEditor={onOpenEditor}
               onDelete={onDelete}
               onDiscover={onDiscover}
@@ -326,7 +348,7 @@ function ProviderConnectionList({
   disabled,
   switchStates,
   onUseDirect,
-  onSetDefault,
+  onSelectConnection,
   onOpenEditor,
   onDelete,
   onDiscover,
@@ -338,7 +360,7 @@ function ProviderConnectionList({
   disabled: boolean;
   switchStates: Record<string, { kind: "pending" | "error"; message?: string }>;
   onUseDirect(client: ProviderClient): void;
-  onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
+  onSelectConnection(client: ProviderClient, connection: ProviderConnection): void;
   onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
   onDelete(connection: ProviderConnection): void;
   onDiscover(connection: ProviderConnection): void;
@@ -357,10 +379,10 @@ function ProviderConnectionList({
       .toLowerCase()
       .includes(normalizedQuery);
   });
-  const selectedDefault = catalog.defaults[selectedClient];
-  const selectedConnection = selectedDefault?.connection_id
+  const selectedConnectionSelection = catalog.defaults[selectedClient];
+  const selectedConnection = selectedConnectionSelection?.connection_id
     ? catalog.connections.find(
-        (connection) => connection.id === selectedDefault.connection_id,
+        (connection) => connection.id === selectedConnectionSelection.connection_id,
       )
     : undefined;
   return (
@@ -440,21 +462,21 @@ function ProviderConnectionList({
           accessibilityRole="radio"
           accessibilityLabel={`${providerClientLabel(selectedClient)} official login`}
           accessibilityState={{
-            checked: selectedDefault?.connection_id === "",
+            checked: selectedConnectionSelection?.connection_id === "",
             disabled,
           }}
-          disabled={disabled || selectedDefault?.connection_id === ""}
+          disabled={disabled || selectedConnectionSelection?.connection_id === ""}
           onPress={() => onUseDirect(selectedClient)}
         >
           <Ionicons
             name={
-              selectedDefault?.connection_id === ""
+              selectedConnectionSelection?.connection_id === ""
                 ? "checkmark-circle"
                 : "ellipse-outline"
             }
             size={22}
             color={
-              selectedDefault?.connection_id === ""
+              selectedConnectionSelection?.connection_id === ""
                 ? colors.accentStrong
                 : colors.textTertiary
             }
@@ -469,7 +491,7 @@ function ProviderConnectionList({
           client={selectedClient}
           disabled={disabled}
           switchState={switchStates[connection.id]}
-          onSetDefault={onSetDefault}
+          onSelectConnection={onSelectConnection}
           onOpenEditor={() => onOpenEditor({ kind: "edit", connection })}
           onDelete={() => onDelete(connection)}
           onDiscover={() => onDiscover(connection)}
@@ -493,7 +515,7 @@ function ProviderConnectionRow({
   client,
   disabled,
   switchState,
-  onSetDefault,
+  onSelectConnection,
   onOpenEditor,
   onDelete,
   onDiscover,
@@ -504,7 +526,7 @@ function ProviderConnectionRow({
   client: ProviderClient;
   disabled: boolean;
   switchState?: { kind: "pending" | "error"; message?: string };
-  onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
+  onSelectConnection(client: ProviderClient, connection: ProviderConnection): void;
   onOpenEditor(): void;
   onDelete(): void;
   onDiscover(): void;
@@ -523,7 +545,7 @@ function ProviderConnectionRow({
   const selected = catalog.defaults[client]?.connection_id === connection.id;
   const ready = connection.credential_ready;
   const testing = testState.kind === "testing";
-  const onSetDefaultForClient = () => onSetDefault(client, connection);
+  const onSelectConnectionForClient = () => onSelectConnection(client, connection);
   const handleTest = async () => {
     if (testing) return;
     setTestState({ kind: "testing" });
@@ -551,7 +573,7 @@ function ProviderConnectionRow({
         accessibilityRole="radio"
         accessibilityState={{ checked: selected, disabled: disabled || !ready }}
         accessibilityLabel={`${connection.name}, ${connectionSubtitle(connection, catalog)}${ready ? "" : ", API key required"}`}
-        onPress={ready ? onSetDefaultForClient : onOpenEditor}
+        onPress={ready ? onSelectConnectionForClient : onOpenEditor}
       >
         <View
           style={[styles.radioOuter, selected && styles.radioOuterSelected]}
@@ -707,425 +729,6 @@ function IconAction({
   );
 }
 
-/* Secondary identity: Base-URL hostname for custom gateways, preset label
- * for curated connections (daemon-provided, never hardcoded). */
-/* Obsolete client-first components retained only as inert source during the
- * scoped migration; the ProviderConnectionList above is the rendered path.
-      </View>
-      {testState.kind === "success" ? (
-        <Text style={[styles.testResultText, { color: colors.success }]}>
-          Connected · {testState.latencyMs} ms
-          {testState.modelCount > 0
-            ? ` · ${testState.modelCount} models found`
-            : ""}
-        </Text>
-      ) : null}
-      {testState.kind === "error" ? (
-        <Text style={[styles.testResultText, { color: colors.dangerText }]}>
-          {testState.message}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-function IconAction({
-  label,
-  icon,
-  onPress,
-  disabled,
-  danger,
-}: {
-  label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  onPress(): void;
-  disabled: boolean;
-  danger?: boolean;
-}) {
-  const colors = useAppColors();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      hitSlop={5}
-    >
-      <Ionicons
-        name={icon}
-        size={19}
-        color={danger ? colors.dangerText : colors.textSecondary}
-      />
-    </Pressable>
-  );
-}
-
-function ClientConnectionCard({
-  client,
-  catalog,
-  disabled,
-  onUseDirect,
-  onSetDefault,
-  onOpenEditor,
-  onDelete,
-  onDiscover,
-  onTestConnection,
-}: {
-  client: ProviderClient;
-  catalog: ProvidersSnapshot;
-  disabled: boolean;
-  onUseDirect(): void;
-  onSetDefault(connection: ProviderConnection): void;
-  onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
-  onDelete(connection: ProviderConnection): void;
-  onDiscover(connection: ProviderConnection): void;
-  onTestConnection(
-    connection: ProviderConnection,
-  ): Promise<ProviderConnectionTestResult>;
-}) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  const connections = connectionsForClient(catalog, client);
-  const selectedId = catalog.defaults[client]?.connection_id ?? "";
-  const direct = selectedId === "";
-  const label = providerClientLabel(client);
-
-  return (
-    <View style={styles.clientSection}>
-      <View style={styles.clientHeader}>
-        <View style={styles.clientIcon}>
-          {client === "codex" ? (
-            <Codex.Color size={22} />
-          ) : (
-            <Claude.Color size={22} />
-          )}
-        </View>
-        <View style={styles.rowCopy}>
-          <Text style={styles.clientTitle}>{label}</Text>
-        </View>
-      </View>
-
-      <View style={styles.group} accessibilityRole="radiogroup">
-        <ChoiceRow
-          title="Official login"
-          subtitle="Direct"
-          selected={direct}
-          disabled={disabled || direct}
-          onPress={onUseDirect}
-          isLast={connections.length === 0}
-        />
-        {connections.map((connection, index) => {
-          const needsModel = connectionRequiresModelSelection(
-            catalog,
-            client,
-            connection.id,
-          );
-          return (
-            <ConnectionChoiceRow
-              key={connection.id}
-              connection={connection}
-              catalog={catalog}
-              selected={selectedId === connection.id}
-              disabled={disabled}
-              isLast={index === connections.length - 1}
-              needsModel={needsModel}
-              onSelect={() => onSetDefault(connection)}
-              onOpenEditor={() => onOpenEditor({ kind: "edit", connection })}
-              onDelete={() => onDelete(connection)}
-              onDiscover={() => onDiscover(connection)}
-              onTestConnection={() => onTestConnection(connection)}
-            />
-          );
-        })}
-      </View>
-
-      <AnimatedPressable
-        style={styles.addEndpoint}
-        preset="press"
-        scale={0.99}
-        disabled={disabled}
-        accessibilityRole="button"
-        accessibilityLabel={`Add ${label} endpoint`}
-        accessibilityState={{ disabled }}
-        onPress={() => onOpenEditor({ kind: "create", client })}
-      >
-        <Ionicons name="add" size={18} color={colors.accentStrong} />
-        <Text style={styles.addEndpointText}>Add custom endpoint</Text>
-      </AnimatedPressable>
-    </View>
-  );
-}
-
-function ChoiceRow({
-  title,
-  subtitle,
-  selected,
-  disabled,
-  isLast,
-  onPress,
-}: {
-  title: string;
-  subtitle: string;
-  selected: boolean;
-  disabled: boolean;
-  isLast: boolean;
-  onPress(): void;
-}) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  return (
-    <AnimatedPressable
-      style={[styles.choiceRow, !isLast && styles.groupRowBorder]}
-      preset="press"
-      scale={0.995}
-      disabled={disabled}
-      accessibilityRole="radio"
-      accessibilityState={{ checked: selected, disabled }}
-      onPress={onPress}
-    >
-      <View style={styles.radioOuter}>
-        {selected ? <View style={styles.radioInner} /> : null}
-      </View>
-      <View style={styles.rowCopy}>
-        <Text style={styles.rowTitle}>{title}</Text>
-        <Text style={styles.rowSubtitle}>{subtitle}</Text>
-      </View>
-    </AnimatedPressable>
-  );
-}
-
-// Secondary identity: Base-URL hostname for custom gateways, preset label
-// for curated connections (daemon-provided, never hardcoded).
-*/
-function connectionSubtitle(
-  connection: ProviderConnection,
-  catalog: ProvidersSnapshot | null,
-): string {
-  if (connection.base_url) {
-    return providerBaseUrlHostname(connection.base_url);
-  }
-  const preset = catalog?.presets.find(
-    (item) => item.id === connection.preset_id,
-  );
-  return preset?.label ?? "Official endpoint";
-}
-
-function catalogAgeLabel(connection: ProviderConnection): string {
-  if (!connection.models_fetched_at) return "Models not synced";
-  const timestamp = Date.parse(connection.models_fetched_at);
-  if (!Number.isFinite(timestamp)) return "Models synced";
-  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
-  if (connection.models_stale || connection.models_warning)
-    return "Models stale";
-  if (minutes < 1) return "Models just now";
-  if (minutes < 60) return `Models ${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `Models ${hours}h ago`;
-  return `Models ${Math.round(hours / 24)}d ago`;
-}
-
-/* Obsolete connection-choice row retained outside the rendered Agent-first
- * surface until this file's style contract is fully pruned.
-function ConnectionChoiceRow({
-  connection,
-  catalog,
-  selected,
-  disabled,
-  isLast,
-  needsModel,
-  onSelect,
-  onOpenEditor,
-  onDelete,
-  onDiscover,
-  onTestConnection,
-}: {
-  connection: ProviderConnection;
-  catalog: ProvidersSnapshot;
-  selected: boolean;
-  disabled: boolean;
-  isLast: boolean;
-  // Default connection with no bound model: new Sessions would fail closed.
-  needsModel: boolean;
-  onSelect(): void;
-  onOpenEditor(): void;
-  onDelete(): void;
-  onDiscover(): void;
-  onTestConnection(): Promise<ProviderConnectionTestResult>;
-}) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  const [expanded, setExpanded] = useState(false);
-  const [testState, setTestState] = useState<ConnectionTestState>({
-    kind: "idle",
-  });
-  const ready = connection.credential_ready;
-  const subtitle = connectionSubtitle(connection, catalog);
-  const models = catalog.models[connection.id] ?? [];
-  const exposedCount = models.filter((model) => model.available).length;
-  const catalogLabel = catalogAgeLabel(connection);
-  const testing = testState.kind === "testing";
-
-  const handleTestConnection = async () => {
-    if (testing) return;
-    setTestState({ kind: "testing" });
-    try {
-      const result = await onTestConnection();
-      setTestState({
-        kind: "success",
-        modelCount: result.modelCount,
-        latencyMs: result.latencyMs,
-      });
-    } catch (testError) {
-      setTestState({
-        kind: "error",
-        message:
-          testError instanceof Error
-            ? testError.message
-            : "Connection test failed.",
-      });
-    }
-  };
-
-  return (
-    <View style={!isLast ? styles.groupRowBorder : undefined}>
-      <View style={styles.connectionRow}>
-        <AnimatedPressable
-          style={styles.connectionSelect}
-          preset="press"
-          scale={0.995}
-          disabled={disabled}
-          accessibilityRole="radio"
-          accessibilityState={{ checked: selected, disabled }}
-          accessibilityLabel={`${connection.name}, ${subtitle}, ${ready ? "connected" : "API key required"}${needsModel ? ", no model selected" : ""}`}
-          onPress={ready ? onSelect : onOpenEditor}
-        >
-          <View style={styles.radioOuter}>
-            {selected ? <View style={styles.radioInner} /> : null}
-          </View>
-          <View style={styles.rowCopy}>
-            <Text style={styles.rowTitle} numberOfLines={1}>
-              {connection.name}
-            </Text>
-            <Text style={styles.rowSubtitle} numberOfLines={1}>
-              {subtitle} · {exposedCount}/{models.length || "—"} exposed ·{" "}
-              {catalogLabel}
-            </Text>
-          </View>
-          {!ready ? <Text style={styles.keyRequired}>Add key</Text> : null}
-        </AnimatedPressable>
-        <Pressable
-          style={styles.expandButton}
-          hitSlop={6}
-          accessibilityRole="button"
-          accessibilityLabel={`${expanded ? "Hide" : "Show"} ${connection.name} actions`}
-          onPress={() => setExpanded((value) => !value)}
-        >
-          <Ionicons
-            name={expanded ? "chevron-up" : "ellipsis-horizontal"}
-            size={18}
-            color={colors.textTertiary}
-          />
-        </Pressable>
-      </View>
-      {expanded ? (
-        <View style={styles.connectionActions}>
-          {connection.models_warning ? (
-            <Text style={styles.catalogWarning} numberOfLines={2}>
-              {connection.models_warning}
-            </Text>
-          ) : null}
-          <ActionButton
-            label={testing ? "Testing…" : "Test Connection"}
-            onPress={() => void handleTestConnection()}
-            disabled={disabled || testing}
-          />
-          {ready ? (
-            <ActionButton
-              label="Sync models"
-              onPress={onDiscover}
-              disabled={disabled}
-            />
-          ) : null}
-          <ActionButton
-            label="Edit"
-            onPress={onOpenEditor}
-            disabled={disabled}
-            primary
-          />
-          <ActionButton
-            label="Delete"
-            onPress={onDelete}
-            disabled={disabled}
-            danger
-          />
-        </View>
-      ) : null}
-      {testState.kind === "success" ? (
-        <View style={styles.testResult}>
-          <Ionicons name="checkmark-circle" size={15} color={colors.success} />
-          <Text style={[styles.testResultText, { color: colors.success }]}>
-            Connected · {testState.latencyMs} ms
-            {testState.modelCount > 0
-              ? ` · ${testState.modelCount} models found`
-              : ""}
-          </Text>
-        </View>
-      ) : null}
-      {testState.kind === "error" ? (
-        <View style={styles.testResult}>
-          <Ionicons name="alert-circle" size={15} color={colors.dangerText} />
-          <Text style={[styles.testResultText, { color: colors.dangerText }]}>
-            {testState.message}
-          </Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function ActionButton({
-  label,
-  onPress,
-  disabled,
-  primary,
-  danger,
-}: {
-  label: string;
-  onPress(): void;
-  disabled: boolean;
-  primary?: boolean;
-  danger?: boolean;
-}) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  return (
-    <AnimatedPressable
-      style={[
-        styles.actionButton,
-        primary && styles.actionButtonPrimary,
-        danger && styles.actionButtonDanger,
-      ]}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      onPress={onPress}
-    >
-      <Text
-        style={[
-          styles.actionButtonText,
-          primary && styles.actionButtonPrimaryText,
-          danger && styles.actionButtonDangerText,
-        ]}
-      >
-        {label}
-      </Text>
-    </AnimatedPressable>
-  );
-}
-
-*/
-
 interface ProviderEditorSheetProps {
   editor: ProvidersEditorState;
   catalog: ProvidersSnapshot | null;
@@ -1143,7 +746,6 @@ interface ProviderEditorSheetProps {
     name: string;
     baseUrl: string;
     apiKey: string;
-    modelId: string;
   }): Promise<ProviderSaveOutcome> | ProviderSaveOutcome;
 }
 
@@ -1170,7 +772,6 @@ function ProviderEditorSheet({
   const insets = useSafeAreaInsets();
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  const [modelId, setModelId] = useState("");
   const [name, setName] = useState("");
   const [testState, setTestState] = useState<TestState>({ kind: "idle" });
   const sessionKey = providerEditorSessionKey(editor);
@@ -1182,7 +783,6 @@ function ProviderEditorSheet({
     if (providerEditorShouldResetFields(previous, sessionKey)) {
       setApiKey("");
       setBaseUrl(providerEditorInitialBaseUrl(editor));
-      setModelId(providerEditorInitialModelId(editor));
       setName(providerEditorInitialName(editor));
       setTestState({ kind: "idle" });
     }
@@ -1191,7 +791,6 @@ function ProviderEditorSheet({
   const resetFields = () => {
     setApiKey("");
     setBaseUrl("");
-    setModelId("");
     setName("");
     setTestState({ kind: "idle" });
   };
@@ -1282,7 +881,6 @@ function ProviderEditorSheet({
       name: name.trim(),
       baseUrl: baseUrl.trim(),
       apiKey,
-      modelId: modelId.trim(),
     });
     if (outcome.status === "saved") resetFields();
   };
@@ -1356,18 +954,6 @@ function ProviderEditorSheet({
               autoComplete="off"
               textContentType="URL"
               keyboardType="url"
-              containerStyle={styles.field}
-            />
-            <Text style={styles.fieldLabel}>Model ID</Text>
-            <MobileSingleLineInput
-              value={modelId}
-              onChangeText={setModelId}
-              editable={!mutating && !testing}
-              placeholder="Optional if models can be synced"
-              placeholderTextColor={colors.textSecondary}
-              accessibilityLabel="Model ID"
-              autoCapitalize="none"
-              autoCorrect={false}
               containerStyle={styles.field}
             />
           </>

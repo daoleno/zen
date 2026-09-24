@@ -735,10 +735,10 @@ func TestModelProfileCatalogMutationsDirSyncAppliedNotDurable(t *testing.T) {
 		t.Fatalf("update memory=%#v err=%v", got, err)
 	}
 
-	// SetDefault
+	// Select the connection for future Agent launches.
 	if err := conn.WriteJSON(map[string]any{
-		"type": "set_provider_default", "request_id": "default-ok",
-		"executor_id": modelprofiles.ExecutorCodex, "connection_id": "codex-main", "model_id": "up-2", "revision": 2,
+		"type": "set_provider_connection", "request_id": "connection-ok",
+		"executor_id": modelprofiles.ExecutorCodex, "connection_id": "codex-main", "revision": 2,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -754,7 +754,7 @@ func TestModelProfileCatalogMutationsDirSyncAppliedNotDurable(t *testing.T) {
 
 	// Clear default then Delete
 	if err := conn.WriteJSON(map[string]any{
-		"type": "set_provider_default", "request_id": "default-clear",
+		"type": "set_provider_connection", "request_id": "connection-clear",
 		"executor_id": modelprofiles.ExecutorCodex, "connection_id": "", "revision": 3,
 	}); err != nil {
 		t.Fatal(err)

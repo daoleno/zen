@@ -41,6 +41,7 @@ type durableSessionRoute struct {
 	ClientModelProvenance string                `json:"client_model_provenance"`
 	UpstreamBaseURL       string                `json:"upstream_base_url"`
 	UpstreamModel         string                `json:"upstream_model"`
+	RequestModelRouting   bool                  `json:"request_model_routing,omitempty"`
 	ReasoningEffort       string                `json:"reasoning_effort,omitempty"`
 	CodexControlSocket    string                `json:"codex_control_socket,omitempty"`
 	HistoryDomain         string                `json:"history_domain"`
@@ -81,6 +82,7 @@ type durableRouteFields struct {
 	ClientModelProvenance string          `json:"client_model_provenance"`
 	UpstreamBaseURL       string          `json:"upstream_base_url"`
 	UpstreamModel         string          `json:"upstream_model"`
+	RequestModelRouting   bool            `json:"request_model_routing,omitempty"`
 	ReasoningEffort       string          `json:"reasoning_effort,omitempty"`
 	CodexControlSocket    string          `json:"codex_control_socket,omitempty"`
 	HistoryDomain         string          `json:"history_domain"`
@@ -304,6 +306,12 @@ func restoreContractDriftReason(state SessionRouteState, verifier ProfileContrac
 }
 
 func profileFromBinding(b RouteBinding) Profile {
+	model := b.UpstreamModel
+	if b.RequestModelRouting {
+		// The verifier still needs the admitted client contract identity while
+		// the route deliberately carries no fixed upstream model.
+		model = b.ClientModel
+	}
 	return Profile{
 		ID:                    b.ProfileID,
 		Name:                  firstNonEmpty(b.ProfileName, b.ProfileID),
@@ -313,11 +321,12 @@ func profileFromBinding(b RouteBinding) Profile {
 		Protocol:              b.Protocol,
 		ClientModel:           b.ClientModel,
 		ClientModelProvenance: b.ClientModelProvenance,
-		Model:                 b.UpstreamModel,
+		Model:                 model,
 		BaseURL:               b.UpstreamBaseURL,
 		AuthMode:              b.AuthMode,
 		CredentialEnv:         b.CredentialEnv,
 		CredentialRef:         b.CredentialRef,
+		ModelPlaceholder:      b.RequestModelRouting,
 	}
 }
 
@@ -325,8 +334,11 @@ func assertPersistedMatchesAdmitted(b RouteBinding, admitted VerifiedProfileCont
 	if b.ClientModel != admitted.ClientModelID {
 		return fmt.Errorf("persisted client_model drift")
 	}
-	if b.UpstreamModel != admitted.UpstreamModelID {
+	if !b.RequestModelRouting && b.UpstreamModel != admitted.UpstreamModelID {
 		return fmt.Errorf("persisted upstream model drift")
+	}
+	if b.RequestModelRouting && b.UpstreamModel != "" {
+		return fmt.Errorf("request-level binding carries upstream model")
 	}
 	if normalizeID(b.ClientModelProvenance) != normalizeID(admitted.Provenance) {
 		return fmt.Errorf("persisted provenance drift")
@@ -363,7 +375,11 @@ func validateRestorableState(state SessionRouteState) error {
 	if err := RequireContractProvenance(b.ClientModelProvenance); err != nil {
 		return fmt.Errorf("%w: %v", ErrRouteSnapshotInvalid, err)
 	}
-	if err := ValidateModelID(b.UpstreamModel); err != nil {
+	if b.RequestModelRouting {
+		if (normalizeID(b.ExecutorID) != ExecutorClaude && normalizeID(b.ExecutorID) != ExecutorCodex) || b.UpstreamModel != "" {
+			return fmt.Errorf("%w: invalid request-level model binding", ErrRouteSnapshotInvalid)
+		}
+	} else if err := ValidateModelID(b.UpstreamModel); err != nil {
 		return fmt.Errorf("%w: model: %v", ErrRouteSnapshotInvalid, err)
 	}
 	if err := ValidateAuthMode(b.AuthMode, b.CredentialEnv, b.UpstreamBaseURL, b.Protocol); err != nil {
@@ -447,7 +463,11 @@ func validateLaunchedAgainstCurrent(state SessionRouteState) error {
 	if err := RequireContractProvenance(l.ClientModelProvenance); err != nil {
 		return fmt.Errorf("%w: launched provenance: %v", ErrRouteSnapshotInvalid, err)
 	}
-	if err := ValidateModelID(l.UpstreamModel); err != nil {
+	if l.RequestModelRouting {
+		if (normalizeID(l.ExecutorID) != ExecutorClaude && normalizeID(l.ExecutorID) != ExecutorCodex) || l.UpstreamModel != "" {
+			return fmt.Errorf("%w: invalid launched request-level model binding", ErrRouteSnapshotInvalid)
+		}
+	} else if err := ValidateModelID(l.UpstreamModel); err != nil {
 		return fmt.Errorf("%w: launched upstream model: %v", ErrRouteSnapshotInvalid, err)
 	}
 	if err := validateEnvelope(l.ClientEnvelope); err != nil {
@@ -478,6 +498,7 @@ func sessionStateToDurable(state SessionRouteState) (durableSessionRoute, error)
 		ClientModelProvenance: b.ClientModelProvenance,
 		UpstreamBaseURL:       b.UpstreamBaseURL,
 		UpstreamModel:         b.UpstreamModel,
+		RequestModelRouting:   b.RequestModelRouting,
 		ReasoningEffort:       normalizeID(b.ReasoningEffort),
 		CodexControlSocket:    normalizeSpace(b.CodexControlSocket),
 		HistoryDomain:         b.HistoryDomain,
@@ -525,6 +546,7 @@ func durableToSessionState(rec durableSessionRoute) (SessionRouteState, error) {
 		ClientModelProvenance: normalizeID(rec.ClientModelProvenance),
 		UpstreamBaseURL:       normalizeSpace(rec.UpstreamBaseURL),
 		UpstreamModel:         normalizeSpace(rec.UpstreamModel),
+		RequestModelRouting:   rec.RequestModelRouting,
 		ReasoningEffort:       normalizeID(rec.ReasoningEffort),
 		CodexControlSocket:    normalizeSpace(rec.CodexControlSocket),
 		HistoryDomain:         normalizeSpace(rec.HistoryDomain),
@@ -624,6 +646,7 @@ func bindingToDurableFields(b RouteBinding) durableRouteFields {
 		ClientModelProvenance: b.ClientModelProvenance,
 		UpstreamBaseURL:       b.UpstreamBaseURL,
 		UpstreamModel:         b.UpstreamModel,
+		RequestModelRouting:   b.RequestModelRouting,
 		ReasoningEffort:       normalizeID(b.ReasoningEffort),
 		CodexControlSocket:    normalizeSpace(b.CodexControlSocket),
 		HistoryDomain:         b.HistoryDomain,
@@ -667,6 +690,7 @@ func durableFieldsToBinding(f durableRouteFields) RouteBinding {
 		ClientModelProvenance: normalizeID(f.ClientModelProvenance),
 		UpstreamBaseURL:       normalizeSpace(f.UpstreamBaseURL),
 		UpstreamModel:         normalizeSpace(f.UpstreamModel),
+		RequestModelRouting:   f.RequestModelRouting,
 		ReasoningEffort:       normalizeID(f.ReasoningEffort),
 		CodexControlSocket:    normalizeSpace(f.CodexControlSocket),
 		HistoryDomain:         normalizeSpace(f.HistoryDomain),

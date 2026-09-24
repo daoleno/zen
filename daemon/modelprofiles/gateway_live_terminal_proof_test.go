@@ -18,7 +18,7 @@ package modelprofiles_test
 //
 // The proof: takeover enabled → the projected native config points plain
 // `codex` at the gateway → first prompt reaches upstream A through Zen with
-// the exact client model bytes → provider_set_default(B) flips the gateway's
+// the exact client model bytes → provider_set_connection(B) flips the gateway's
 // upstream → the SAME pane/PID sends the second prompt → it reaches upstream
 // B, and the rendered replies (A then B) prove the same process/thread
 // continued across the switch.
@@ -237,8 +237,7 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 		"  id = \"conn-proof-b\"\n  name = \"proof B\"\n  scope = \"account\"\n  client = \"codex\"\n" +
 		"  provider_id = \"custom\"\n  provider_label = \"Custom Gateway\"\n" +
 		"  base_url = \"" + upB.server.URL + "\"\n  auth_mode = \"none\"\n  credential_env = \"ZEN_PROVIDER_API_KEY\"\n\n" +
-		"[defaults]\n  codex = \"conn-proof-a\"\n\n" +
-		"[default_models]\n  codex = \"gpt-5.6-sol\"\n"
+		"[defaults]\n  codex = \"conn-proof-a\"\n"
 	zenDir := filepath.Join(zenHome, ".zen")
 	if err := os.MkdirAll(zenDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -370,10 +369,9 @@ func TestIsolatedDirectTerminalGatewayProof(t *testing.T) {
 		t.Fatal("provider_list returned no projection")
 	}
 	controlCall(t, socketPath, control.Request{
-		Type:       "provider_set_default",
+		Type:       "provider_set_connection",
 		ExecutorID: modelprofiles.ExecutorCodex,
 		ProfileID:  "conn-proof-b",
-		ModelID:    "gpt-5.6-sol",
 		Revision:   projResp.Providers.Revision,
 	})
 	statusResp = controlCall(t, socketPath, control.Request{Type: "codex_gateway_status"})
@@ -484,10 +482,7 @@ func TestIsolatedRealProviderWebSocketGatewayProof(t *testing.T) {
 
 	model := strings.TrimSpace(os.Getenv("ZEN_PROOF_MODEL"))
 	if model == "" {
-		model = store.DefaultModelID(modelprofiles.ClientCodex)
-	}
-	if model == "" {
-		t.Fatal("no Codex default model; set ZEN_PROOF_MODEL")
+		t.Fatal("set ZEN_PROOF_MODEL for the live proof")
 	}
 
 	scratch := t.TempDir()

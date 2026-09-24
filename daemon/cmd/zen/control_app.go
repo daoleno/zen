@@ -184,8 +184,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleProviderUpsert(req)
 	case "provider_delete":
 		return a.handleProviderDelete(req)
-	case "provider_set_default":
-		return a.handleProviderSetDefault(req)
+	case "provider_set_connection":
+		return a.handleProviderSetConnection(req)
 	case "provider_switch":
 		return a.handleProviderSwitch(req)
 	case "codex_gateway_status":
@@ -1803,7 +1803,7 @@ func (a *controlApp) handleProviderDelete(req control.Request) control.Response 
 	return a.providersMutationResponse(proj, err)
 }
 
-func (a *controlApp) handleProviderSetDefault(req control.Request) control.Response {
+func (a *controlApp) handleProviderSetConnection(req control.Request) control.Response {
 	if a == nil || a.profiles == nil {
 		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
 	}
@@ -1821,7 +1821,10 @@ func (a *controlApp) handleProviderSetDefault(req control.Request) control.Respo
 	if connectionID == "" {
 		connectionID = strings.TrimSpace(req.ProfileID)
 	}
-	proj, err := a.profiles.SetProviderDefault(executorID, connectionID, req.ModelID, req.Revision)
+	if strings.TrimSpace(req.ModelID) != "" {
+		return control.ErrorResponse(modelprofiles.CodeProfileInvalid, "connection selection payload must not include a model")
+	}
+	proj, err := a.profiles.SetProviderConnection(executorID, connectionID, req.Revision)
 	return a.providersMutationResponse(proj, err)
 }
 

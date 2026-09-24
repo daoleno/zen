@@ -40,7 +40,7 @@ func TestUnknownCodexModelLaunchAndCatalogPassThrough(t *testing.T) {
 	owner.discovery.put("opaque-gateway", []string{"gpt-5.6-luna", "gpt-5.6-sol"}, nil)
 	owner.mu.Unlock()
 
-	projection, err = owner.SetProviderDefault(ClientCodex, "opaque-gateway", model, projection.Revision)
+	projection, err = owner.SetProviderConnection(ClientCodex, "opaque-gateway", projection.Revision)
 	if err != nil {
 		t.Fatalf("set opaque default: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestUnknownCodexModelRuntimeAndEffectPassThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err = owner.SetProviderDefault(ClientCodex, "opaque-gateway", "gpt-5.4", projection.Revision)
+	projection, err = owner.SetProviderConnection(ClientCodex, "opaque-gateway", projection.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}

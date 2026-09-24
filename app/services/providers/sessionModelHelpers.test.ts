@@ -21,7 +21,7 @@ const selection: ThreadRuntimeSelection = {
 
 const snapshot: ProvidersSnapshot = {
   revision: 1,
-  defaults: { codex: { connection_id: "b", model_id: "gpt-5.5" } },
+  defaults: { codex: { connection_id: "b" } },
   presets: [],
   connections: [
     { id: "a", name: "Alpha", clients: ["codex"], credential_ready: true, advanced: false },

@@ -20,7 +20,7 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 	out := ProviderCatalogProjection{
 		Revision:    proj.Catalog.Revision,
 		Connections: make([]ProviderConnection, 0, len(proj.Views)),
-		Defaults:    map[string]ProviderDefault{},
+		Defaults:    map[string]ProviderConnectionSelection{},
 		Presets:     ListProviderPresets(),
 		Models:      map[string][]ProviderModelEntry{},
 		Gateway:     o.gatewayStatusProjection(),
@@ -42,24 +42,8 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 			// Prefer client-keyed entries when both exist.
 			continue
 		}
-		modelID := ""
-		if client != ClientClaude {
-			modelID = o.defaultModelLocked(client)
-		}
-		if client != ClientClaude && modelID == "" {
-			for _, view := range proj.Views {
-				if view.ID != profileID {
-					continue
-				}
-				if !isAccountConnection(view.Profile) {
-					modelID = view.Model
-				}
-				break
-			}
-		}
-		out.Defaults[client] = ProviderDefault{
+		out.Defaults[client] = ProviderConnectionSelection{
 			ConnectionID: profileID,
-			ModelID:      modelID,
 		}
 	}
 	return out, nil
@@ -112,13 +96,6 @@ func (o *Owner) decorateCatalogStatus(conn *ProviderConnection) {
 		return
 	}
 	conn.ModelCatalogStale = !cache.fresh(conn.ID)
-}
-
-func (o *Owner) defaultModelLocked(client string) string {
-	if o == nil || o.store == nil {
-		return ""
-	}
-	return o.store.DefaultModelID(client)
 }
 
 func (o *Owner) connectionReady(profile Profile) bool {
@@ -214,7 +191,7 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 		}
 		appendModelIDs(&ids, sources, o.modelsDev.modelIDs(providerKey), ModelSourceBundled)
 		if spec, ok := lookupPreset(inferPresetID(profile)); ok {
-			appendModelIDs(&ids, sources, []string{spec.DefaultModel[executorID]}, ModelSourceBundled)
+			appendModelIDs(&ids, sources, []string{spec.BuiltinModels[executorID]}, ModelSourceBundled)
 		}
 		source = ModelSourceBundled
 	}
@@ -291,12 +268,8 @@ func (o *Owner) connectionRequiredModels(profile Profile) []string {
 		add(profile.Model)
 	}
 	if o != nil && o.store != nil {
-		for _, client := range []string{ClientCodex, ClientClaude} {
-			connectionID, modelID := o.store.ClientDefault(client)
-			if normalizeID(connectionID) == normalizeID(profile.ID) {
-				add(modelID)
-			}
-		}
+		// Model rows are catalog/exposure state; Agent and Session selection own
+		// the runtime id.
 	}
 	if o != nil && o.table != nil {
 		for _, state := range o.table.Snapshot() {
@@ -817,64 +790,24 @@ func (o *Owner) CodexRoutedDefault() bool {
 	if o == nil || o.store == nil {
 		return false
 	}
-	connID, _ := o.store.ClientDefault(ClientCodex)
+	connID := o.store.ClientDefault(ClientCodex)
 	return normalizeID(connID) != ""
 }
 
-// SetProviderDefault sets the future-launch default connection for a client in
-// one catalog mutation and one atomic durable write. The gateway never owns a
-// model: modelID is the client's explicit selection (chosen from the synced
-// support allowlist) and is never fabricated from a preset or catalog. An empty
-// modelID preserves the existing client-selected model when the same connection
-// stays default. A different connection must provide its model atomically.
-func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID string, revision int64) (ProviderCatalogProjection, error) {
+// SetProviderConnection selects the future-launch connection for a client.
+// Model selection remains an Agent/session concern and is never persisted here.
+func (o *Owner) SetProviderConnection(clientOrExecutor, connectionID string, revision int64) (ProviderCatalogProjection, error) {
 	if o == nil || !o.started || o.store == nil {
 		return ProviderCatalogProjection{}, fmt.Errorf("%w: owner not started", ErrInvalid)
 	}
 	client := clientFromExecutor(clientOrExecutor)
 	connectionID = normalizeID(connectionID)
-	modelID = normalizeSpace(modelID)
-	if client == ClientClaude {
-		// Claude's model is selected by local Claude Code settings or an explicit
-		// Agent session request. Provider selection only chooses a connection.
-		modelID = ""
-	}
 	o.mu.Lock()
 	applyErr := func() error {
 		if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
 			return fmt.Errorf("%w: resolve prior provider switch: %v", ErrInvalid, err)
 		}
-		if connectionID == "" {
-			_, err := o.store.SetClientDefault(client, connectionID, modelID, revision)
-			return err
-		}
-		raw, err := o.store.Get(connectionID)
-		if err != nil {
-			return err
-		}
-		if client != ClientClaude && modelID == "" {
-			// Keep a complete existing seed only when the same connection remains
-			// default. A different connection must provide its model atomically.
-			currentConn, currentModel := o.store.ClientDefault(client)
-			if normalizeID(currentConn) == connectionID {
-				modelID = normalizeSpace(currentModel)
-			}
-			if modelID == "" {
-				return fmt.Errorf("%w: default runtime requires connection and model", ErrUpstreamModelRequired)
-			}
-		}
-		if client != ClientClaude {
-			target, err := CompileConnectionTarget(raw, client, modelID, "")
-			if err != nil {
-				return err
-			}
-			// Fail closed: never persist a client default whose model is only a
-			// compile probe placeholder (connection with no explicit model).
-			if target.ModelPlaceholder {
-				return ErrUpstreamModelRequired
-			}
-		}
-		_, err = o.store.SetClientDefault(client, connectionID, modelID, revision)
+		_, err := o.store.SetClientDefault(client, connectionID, revision)
 		return err
 	}()
 	o.mu.Unlock()
@@ -888,8 +821,8 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 	return projection, applyErr
 }
 
-// SwitchProvider atomically updates the future-launch default and retargets
-// routed Codex sessions. Claude uses SetProviderDefault: its interactive CLI
+// SwitchProvider atomically updates the future-launch connection and retargets
+// routed Codex sessions. Claude uses SetProviderConnection: its interactive CLI
 // cannot acknowledge a route-only active-session switch.
 func (o *Owner) SwitchProvider(clientOrExecutor, connectionID string, revision int64) (ProviderCatalogProjection, error) {
 	if o == nil || !o.started || o.store == nil || o.table == nil || o.routes == nil {
@@ -941,11 +874,7 @@ func (o *Owner) SetProviderModelSupport(connectionID string, enabledIDs []string
 			}
 		}
 	}
-	e, ok := o.discovery.get(connectionID)
-	if !ok || len(e.IDs) == 0 {
-		o.mu.Unlock()
-		return ProviderCatalogProjection{}, PersistResult{}, fmt.Errorf("%w: sync models before choosing support", ErrDiscoveryCacheInvalid)
-	}
+	e, _ := o.discovery.get(connectionID)
 
 	enabledSet := map[string]struct{}{}
 	for _, id := range enabledIDs {
@@ -954,20 +883,8 @@ func (o *Owner) SetProviderModelSupport(connectionID string, enabledIDs []string
 			enabledSet[id] = struct{}{}
 		}
 	}
-	for _, client := range []string{ClientCodex, ClientClaude} {
-		defaultConnectionID, defaultModelID := o.store.ClientDefault(client)
-		if normalizeID(defaultConnectionID) != connectionID {
-			continue
-		}
-		if _, enabled := enabledSet[normalizeSpace(defaultModelID)]; !enabled {
-			o.mu.Unlock()
-			return ProviderCatalogProjection{}, PersistResult{}, fmt.Errorf(
-				"%w: choose another complete default runtime before disabling model %q",
-				ErrUpstreamModelRequired,
-				defaultModelID,
-			)
-		}
-	}
+	// Exposed-model policy is independent from the selected connection and
+	// never has to preserve a Provider-owned default model.
 	// Discovery/cache entries are presentation choices only. Persist support
 	// toggles without treating the set as model identity admission.
 	reference := o.projectConnectionModels(profile, e)

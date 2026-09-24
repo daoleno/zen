@@ -78,11 +78,11 @@ func TestSettingsDefaultDoesNotMutateCurrentRuntime(t *testing.T) {
 		connA.ID: {"gpt-5.4"},
 		connB.ID: {"gpt-5.5"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault(ClientCodex, connB.ID, "", owner.Catalog().Revision); err == nil {
-		t.Fatal("different Provider default accepted without an atomic model")
+	if _, err := owner.SetProviderConnection(ClientCodex, connB.ID, owner.Catalog().Revision); err != nil {
+		t.Fatalf("connection-only Provider selection failed: %v", err)
 	}
 	launch, err := owner.PrepareLaunch(ExecutorCodex, connA.ID, "codex")
 	if err != nil {
@@ -93,7 +93,7 @@ func TestSettingsDefaultDoesNotMutateCurrentRuntime(t *testing.T) {
 	}
 	routeID := launch.State.Binding.RouteID
 
-	if _, err := owner.SetProviderDefault(ClientCodex, connB.ID, "gpt-5.5", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connB.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	selection, ok := owner.ThreadRuntime("thread-1")
@@ -110,7 +110,7 @@ func TestSettingsDefaultDoesNotMutateCurrentRuntime(t *testing.T) {
 
 	restored := start()
 	t.Cleanup(func() { _ = restored.Close() })
-	if def := restored.MustProjectForTest(t).Defaults[ClientCodex]; def.ConnectionID != connB.ID || def.ModelID != "gpt-5.5" {
+	if def := restored.MustProjectForTest(t).Defaults[ClientCodex]; def.ConnectionID != connB.ID {
 		t.Fatalf("future default not restored: %#v", def)
 	}
 	selection, ok = restored.ThreadRuntime("thread-1")
@@ -141,7 +141,7 @@ func TestSwitchProviderRetargetsSessionsAndPreservesInFlightRequests(t *testing.
 		connA.ID: {"gpt-5.4", "gpt-5.5"},
 		connB.ID: {"gpt-5.4", "gpt-5.5"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -235,7 +235,7 @@ func TestSwitchProviderRetargetsSessionsAndPreservesInFlightRequests(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := proj.Defaults[ClientCodex]; got.ConnectionID != connB.ID || got.ModelID != "gpt-5.4" {
+	if got := proj.Defaults[ClientCodex]; got.ConnectionID != connB.ID {
 		t.Fatalf("switch default not preserved: %#v", got)
 	}
 
@@ -265,7 +265,7 @@ func TestSwitchProviderRetargetsSessionsAndPreservesInFlightRequests(t *testing.
 	if got := newProviderCalls[0]; got.auth != "Bearer key-b" || got.model != "gpt-5.4" || got.effort != ReasoningEffortHigh {
 		t.Fatalf("thread-1 did not preserve model/effect on new provider: %#v", got)
 	}
-	if got := newProviderCalls[1]; got.auth != "Bearer key-b" || got.model != "gpt-5.5" || got.effort != ReasoningEffortLow {
+	if got := newProviderCalls[1]; got.auth != "Bearer key-b" || got.model != "gpt-5.4" || got.effort != ReasoningEffortLow {
 		t.Fatalf("thread-2 did not preserve model/effect on new provider: %#v", got)
 	}
 	routeFile, err := os.ReadFile(filepath.Join(root, "route-bindings.json"))
@@ -287,7 +287,7 @@ func TestSwitchProviderRetargetsSessionsAndPreservesInFlightRequests(t *testing.
 	_ = owner.Close()
 	restored := startSettingsSwitchOwner(t, root)
 	t.Cleanup(func() { _ = restored.Close() })
-	if def := restored.MustProjectForTest(t).Defaults[ClientCodex]; def.ConnectionID != connB.ID || def.ModelID != "gpt-5.4" {
+	if def := restored.MustProjectForTest(t).Defaults[ClientCodex]; def.ConnectionID != connB.ID {
 		t.Fatalf("future default not restored after switch: %#v", def)
 	}
 	selection1, ok = restored.ThreadRuntime("thread-1")
@@ -323,7 +323,7 @@ func TestSwitchProviderIgnoresTargetDiscoveryAndPreservesModels(t *testing.T) {
 		connectionA.ID: {"gpt-5.4", "gpt-5.5"},
 		connectionB.ID: {"gpt-5.4"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connectionA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connectionA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	for _, sessionID := range []string{"validation-thread-1", "validation-thread-2"} {
@@ -347,8 +347,8 @@ func TestSwitchProviderIgnoresTargetDiscoveryAndPreservesModels(t *testing.T) {
 		t.Fatalf("provider-only switch must ignore target discovery: %v", err)
 	}
 	after := captureProviderSwitchSnapshot(owner)
-	if after.Defaults[ClientCodex] != connectionB.ID || after.DefaultModels[ClientCodex] != before.DefaultModels[ClientCodex] {
-		t.Fatalf("default model was not preserved: before=%#v after=%#v", before, after)
+	if after.Defaults[ClientCodex] != connectionB.ID {
+		t.Fatalf("default connection was not selected: before=%#v after=%#v", before, after)
 	}
 	for _, sessionID := range []string{"validation-thread-1", "validation-thread-2"} {
 		runtime, ok := owner.ThreadRuntime(sessionID)
@@ -383,7 +383,7 @@ func TestSwitchProviderCredentialFailureChangesNothing(t *testing.T) {
 		connectionA.ID: {"gpt-5.4"},
 		connectionB.ID: {"gpt-5.4"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connectionA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connectionA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	for _, sessionID := range []string{"credential-thread-1", "credential-thread-2"} {
@@ -427,7 +427,7 @@ func TestSwitchProviderBlocksNewRouteAdmissionUntilWholeTransactionPublishes(t *
 		connectionA.ID: {"gpt-5.4"},
 		connectionB.ID: {"gpt-5.4"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connectionA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connectionA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	launch, err := owner.PrepareLaunch(ExecutorCodex, connectionA.ID, "codex")
@@ -462,8 +462,8 @@ func TestSwitchProviderBlocksNewRouteAdmissionUntilWholeTransactionPublishes(t *
 	case <-time.After(2 * time.Second):
 		t.Fatal("Provider switch never reached route persistence")
 	}
-	if connectionID, modelID := owner.store.ClientDefault(ClientCodex); connectionID != connectionA.ID || modelID != "gpt-5.4" {
-		t.Fatalf("default published before route transaction: connection=%q model=%q", connectionID, modelID)
+	if connectionID := owner.store.ClientDefault(ClientCodex); connectionID != connectionA.ID {
+		t.Fatalf("default published before route transaction: connection=%q", connectionID)
 	}
 
 	type flightResult struct {
@@ -494,8 +494,8 @@ func TestSwitchProviderBlocksNewRouteAdmissionUntilWholeTransactionPublishes(t *
 	if result.binding.ProfileID != connectionB.ID || result.binding.ClientModel != "gpt-5.4" {
 		t.Fatalf("new admission did not observe the complete switched binding: %#v", result.binding)
 	}
-	if connectionID, modelID := owner.store.ClientDefault(ClientCodex); connectionID != connectionB.ID || modelID != "gpt-5.4" {
-		t.Fatalf("default did not publish with route transaction: connection=%q model=%q", connectionID, modelID)
+	if connectionID := owner.store.ClientDefault(ClientCodex); connectionID != connectionB.ID {
+		t.Fatalf("default did not publish with route transaction: connection=%q", connectionID)
 	}
 }
 
@@ -518,7 +518,7 @@ func TestTerminalModelSwitchQueuedBehindGlobalSwitchUsesNewProvider(t *testing.T
 		connectionA.ID: {"gpt-5.4", "gpt-5.5"},
 		connectionB.ID: {"gpt-5.4", "gpt-5.5"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connectionA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connectionA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	launch, err := owner.PrepareLaunch(ExecutorCodex, connectionA.ID, "codex")
@@ -605,7 +605,7 @@ func TestSwitchProviderRollsBackOnRoutePersistFailure(t *testing.T) {
 		connA.ID: {"gpt-5.4"},
 		connB.ID: {"gpt-5.4"},
 	})
-	if _, err := owner.SetProviderDefault(ClientCodex, connA.ID, "gpt-5.4", owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connA.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	launch1, err := owner.PrepareLaunch(ExecutorCodex, connA.ID, "codex")

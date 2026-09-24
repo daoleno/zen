@@ -15,7 +15,7 @@ func TestClaudeActiveSelectionCannotOutrunNativeCLI(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := owner.SetProviderDefault(ClientClaude, first.ID, first.Model, owner.Catalog().Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientClaude, first.ID, owner.Catalog().Revision); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := owner.PrepareLaunch(ExecutorClaude, first.ID, "claude")
@@ -53,7 +53,7 @@ func TestClaudeActiveSelectionCannotOutrunNativeCLI(t *testing.T) {
 	if after.Generation != before.Generation || after.Binding.ProfileID != first.ID {
 		t.Fatalf("rejected mutation changed route: before=%#v after=%#v", before.Binding, after.Binding)
 	}
-	if projection, err := owner.SetProviderDefault(ClientClaude, second.ID, second.Model, owner.Catalog().Revision); err != nil ||
+	if projection, err := owner.SetProviderConnection(ClientClaude, second.ID, owner.Catalog().Revision); err != nil ||
 		projection.Defaults[ClientClaude].ConnectionID != second.ID {
 		t.Fatalf("future-launch default must remain selectable: projection=%#v err=%v", projection.Defaults, err)
 	}

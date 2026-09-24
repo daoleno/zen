@@ -61,12 +61,12 @@ func TestCompileProviderConnectionPassesThroughAnyValidModelSlug(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err = owner.SetProviderDefault(ClientCodex, "or", "invented/model", projection.Revision)
+	projection, err = owner.SetProviderConnection(ClientCodex, "or", projection.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := projection.Defaults[ClientCodex].ModelID; got != "invented/model" {
-		t.Fatalf("curated default model=%q", got)
+	if got := projection.Defaults[ClientCodex].ConnectionID; got != "or" {
+		t.Fatalf("curated default connection=%q", got)
 	}
 	profile, err := CompileProviderConnection(ProviderConnectionInput{
 		Name: "Custom", Client: ClientCodex, PresetID: ProviderPresetCustom,
@@ -515,13 +515,10 @@ func TestCustomDefaultDoesNotFabricateDiscoveredModel(t *testing.T) {
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("codex-auto", []string{"deepseek-v4-flash"}, nil)
 	owner.mu.Unlock()
-	// Settings must select the exact discovered model atomically; an empty
-	// model is refused rather than fabricated.
-	if _, err := owner.SetProviderDefault(ClientCodex, "codex-auto", "", projection.Revision); err == nil {
-		t.Fatal("empty default runtime was accepted")
+	if _, err := owner.SetProviderConnection(ClientCodex, "codex-auto", projection.Revision); err != nil {
+		t.Fatal(err)
 	}
-	// Discovery remains suggestions-only and must not fabricate a launch model.
-	if _, err := owner.PrepareLaunch(ExecutorCodex, "codex-auto", "codex"); !errors.Is(err, ErrUpstreamModelRequired) {
-		t.Fatalf("launch without explicit model must fail, got %v", err)
+	if _, err := owner.PrepareLaunch(ExecutorCodex, "codex-auto", "codex"); err != nil {
+		t.Fatalf("connection-only launch must not require a model: %v", err)
 	}
 }

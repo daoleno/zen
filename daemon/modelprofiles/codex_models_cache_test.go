@@ -217,7 +217,7 @@ func TestProviderProjectionFallsBackToCodexCacheAndIncludesExactDefaultsAndSessi
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err = owner.SetProviderDefault(ClientCodex, "fallback", "default-exact", projection.Revision)
+	projection, err = owner.SetProviderConnection(ClientCodex, "fallback", projection.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestProviderProjectionFallsBackToCodexCacheAndIncludesExactDefaultsAndSessi
 	if byID["cache-model"].Source != ModelSourceCodexCache || byID["cache-model"].DisplayName != "Cache Model" {
 		t.Fatalf("cache fallback=%#v", byID["cache-model"])
 	}
-	for _, exact := range []string{"default-exact", "session-exact"} {
+	for _, exact := range []string{"session-exact"} {
 		if !byID[exact].Available {
 			t.Fatalf("exact model %q missing: %#v", exact, projection.Models["fallback"])
 		}

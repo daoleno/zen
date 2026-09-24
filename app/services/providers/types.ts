@@ -39,10 +39,8 @@ export type ProviderPreset = {
   advanced: boolean;
 };
 
-export type ProviderDefault = {
+export type ProviderConnectionSelection = {
   connection_id: string;
-  /** Optional legacy Codex seed; Claude model ownership stays local. */
-  model_id?: string;
 };
 
 export type ProviderModel = {
@@ -72,7 +70,7 @@ export type ProviderModelEntry = ProviderModel;
 export type ProvidersSnapshot = {
   revision: number;
   connections: ProviderConnection[];
-  defaults: Record<string, ProviderDefault>;
+  defaults: Record<string, ProviderConnectionSelection>;
   presets: ProviderPreset[];
   models: Record<string, ProviderModel[]>;
   gateway?: GatewayStatus;
@@ -94,14 +92,14 @@ export type ProviderConnectionInput = {
   preset_id: string;
   client: ProviderClient | string;
   base_url?: string;
+  /** Optional exact catalog identity for advanced/manual catalog seeding. */
   model_id?: string;
   advanced?: boolean;
 };
 
-export type ProviderDefaultInput = {
+export type ProviderConnectionSelectionInput = {
   client: ProviderClient | string;
   connectionId: string;
-  modelId?: string | null;
   revision: number;
 };
 
@@ -183,7 +181,7 @@ export type UpsertProviderConnectionInput = {
   operation?: "create" | "update";
 };
 
-export type SetProviderDefaultInput = ProviderDefaultInput;
+export type SetProviderConnectionInput = ProviderConnectionSelectionInput;
 
 export type CreateSessionResult = {
   workerId: string;

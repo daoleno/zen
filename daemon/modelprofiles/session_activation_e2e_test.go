@@ -190,7 +190,7 @@ func TestThreadRuntimeSwitchE2E(t *testing.T) {
 	})
 	// A routed Codex default exists, so official-subscription stats must be
 	// suppressed and attributed to the serving routed Provider.
-	if _, err := owner.SetProviderDefault(ClientCodex, connA.ID, "gpt-5.6-sol", projC.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, connA.ID, projC.Revision); err != nil {
 		t.Fatal(err)
 	}
 

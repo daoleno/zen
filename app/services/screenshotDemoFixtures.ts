@@ -468,8 +468,8 @@ export const SCREENSHOT_PROVIDERS_FIXTURE: ProvidersSnapshot = {
     },
   ],
   defaults: {
-    codex: { connection_id: "conn-deepseek", model_id: "deepseek-v4-flash" },
-    claude: { connection_id: "conn-gateway", model_id: "claude-sonnet-4-6" },
+    codex: { connection_id: "conn-deepseek" },
+    claude: { connection_id: "conn-gateway" },
   },
   presets: [
     {

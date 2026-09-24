@@ -45,8 +45,11 @@ type discoveryEntry struct {
 	// listed here, so a catalog refresh never silently re-enables an
 	// explicitly disabled model while genuinely new models default enabled.
 	Disabled []string `json:"disabled,omitempty"`
-	Err      string   `json:"err,omitempty"`
-	Seq      uint64   `json:"seq,omitempty"`
+	// ExposurePolicySet distinguishes an explicit user exposure decision from
+	// an untouched presentation-only fallback catalog.
+	ExposurePolicySet bool   `json:"exposure_policy_set,omitempty"`
+	Err               string `json:"err,omitempty"`
+	Seq               uint64 `json:"seq,omitempty"`
 }
 
 type durableDiscoveryFile struct {
@@ -228,6 +231,7 @@ func (c *modelDiscoveryCache) putModels(key string, ids []string, metadata map[s
 	defer c.mu.Unlock()
 	prev := c.entries[key]
 	next := discoveryEntry{FetchedAt: c.now(), Seq: c.saveSeq.Load()}
+	next.ExposurePolicySet = prev.ExposurePolicySet
 	// The explicit support allowlist survives refresh: disabled ids are never
 	// re-enabled by a rediscovery, and new ids are not disabled.
 	next.Disabled = append([]string{}, prev.Disabled...)
@@ -275,9 +279,12 @@ func (c *modelDiscoveryCache) setDisabled(key string, disabled []string) bool {
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
 	if !ok {
-		return false
+		// Keep an exposure policy even before the first live sync. Projection
+		// will still derive fallback candidates from local/LKG sources.
+		e = discoveryEntry{}
 	}
 	e.Disabled = append([]string{}, disabled...)
+	e.ExposurePolicySet = true
 	c.entries[key] = e
 	return true
 }
@@ -561,7 +568,7 @@ func getModelsOnce(ctx context.Context, client *http.Client, endpoint string, pr
 			return nil, nil, fmt.Errorf("%w: %w (HTTP %d); check API key and model-list access", ErrUpstreamInvalid, errModelDiscoveryDenied, resp.StatusCode)
 		}
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-			return nil, nil, fmt.Errorf("%w: model listing unavailable (HTTP %d); API key not verified, enter a manual model ID to continue", ErrUpstreamInvalid, resp.StatusCode)
+			return nil, nil, fmt.Errorf("%w: model listing unavailable (HTTP %d); API key not verified; local and last-known-good candidates remain usable (manual model ID remains optional)", ErrUpstreamInvalid, resp.StatusCode)
 		}
 		return nil, nil, fmt.Errorf("%w: discovery status %d", ErrUpstreamInvalid, resp.StatusCode)
 	}

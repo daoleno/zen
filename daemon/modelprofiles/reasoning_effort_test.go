@@ -302,7 +302,7 @@ func TestReasoningEffortActivationE2E(t *testing.T) {
 	}
 	conn := proj.Connections[0]
 	seedModelCatalogs(t, owner, map[string][]string{conn.ID: {"gpt-5-codex"}})
-	if _, err := owner.SetProviderDefault(ClientCodex, conn.ID, "gpt-5-codex", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, conn.ID, proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -492,7 +492,7 @@ func TestReasoningEffortInFlightImmutable(t *testing.T) {
 	}
 	conn := proj.Connections[0]
 	seedModelCatalogs(t, owner, map[string][]string{conn.ID: {"gpt-5-codex"}})
-	if _, err := owner.SetProviderDefault(ClientCodex, conn.ID, "gpt-5-codex", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, conn.ID, proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := owner.PrepareLaunch(ExecutorCodex, conn.ID, "codex")
@@ -556,7 +556,7 @@ func TestReasoningEffortClaudeRejected(t *testing.T) {
 	}
 	conn := proj.Connections[0]
 	seedModelCatalogs(t, owner, map[string][]string{conn.ID: {"claude-sonnet-4-6"}})
-	if _, err := owner.SetProviderDefault(ClientClaude, conn.ID, "claude-sonnet-4-6", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientClaude, conn.ID, proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := owner.PrepareLaunchModel(ExecutorClaude, conn.ID, "claude-sonnet-4-6", "claude")

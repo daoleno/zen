@@ -21,69 +21,6 @@ import {
   curatedConnectionInput,
 } from "./presentation";
 
-export type DefaultRuntimeSeedAction =
-  { kind: "apply"; modelId: string } | { kind: "unavailable" };
-
-/**
- * Select the next Settings step before switching a Provider. A Provider
- * switch chooses a complete target seed without opening a model picker. The
- * Claude returns a connection-only action because its model belongs to local
- * Claude Code settings. Codex keeps the existing explicit seed path: manual
- * model IDs are valid opaque runtime identities, otherwise the target seed
- * and first exposed model provide the discovery path.
- */
-export function defaultRuntimeSeedAction(input: {
-  snapshot: ProvidersSnapshot;
-  client: string;
-  connectionId: string;
-}): DefaultRuntimeSeedAction {
-  if (input.client === "claude") {
-    return { kind: "apply", modelId: "" };
-  }
-  const connection = input.snapshot.connections.find(
-    (item) => item.id === input.connectionId,
-  );
-  const available = (input.snapshot.models[input.connectionId] ?? []).filter(
-    (model) => model.available && model.known !== false,
-  );
-  const current = input.snapshot.defaults[input.client];
-  const manualModelId = connection?.manual_model_id?.trim();
-  if (manualModelId) return { kind: "apply", modelId: manualModelId };
-  if (current?.connection_id === input.connectionId && current.model_id) {
-    const currentModel = available.find(
-      (model) => model.id === current.model_id,
-    );
-    if (currentModel) return { kind: "apply", modelId: current.model_id };
-  }
-  if (available.length === 0) return { kind: "unavailable" };
-  const availableIds = new Set(available.map((model) => model.id));
-  const candidates = [
-    connection?.manual_model_id,
-    current?.connection_id === input.connectionId
-      ? current.model_id
-      : undefined,
-    available[0]?.id,
-  ];
-  const modelId = candidates.find((candidate): candidate is string =>
-    Boolean(candidate && availableIds.has(candidate)),
-  );
-  return modelId ? { kind: "apply", modelId } : { kind: "unavailable" };
-}
-
-export function modelSupportChangeKeepsDefaultValid(input: {
-  snapshot: ProvidersSnapshot;
-  client: string;
-  connectionId: string;
-  enabledModelIds: string[];
-}): boolean {
-  const current = input.snapshot.defaults[input.client];
-  return !(
-    current?.connection_id === input.connectionId &&
-    current.model_id !== undefined &&
-    !input.enabledModelIds.includes(current.model_id)
-  );
-}
-
 export type CredentialFollowUp =
   | { kind: "discover"; connectionId: string }
   | { kind: "refresh_lock"; connectionId: string; reason: string }
@@ -158,8 +95,7 @@ export function customGatewayCreateInput(input: {
   client: string;
   name: string;
   baseUrl: string;
-  /** Optional explicit upstream model. Omit to stay discovery-driven; the
-   *  daemon fails closed at binding time instead of fabricating a model. */
+  /** Optional exact catalog identity. Omit to keep connection setup model-free. */
   modelId?: string;
 }) {
   return advancedConnectionInput(input);

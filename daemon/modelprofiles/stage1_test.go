@@ -309,6 +309,10 @@ func TestCompileCodexBuiltinOpenAIAndClaudeEnv(t *testing.T) {
 }
 
 func TestClaudeLaunchInheritsLocalModelUnlessSessionOverrides(t *testing.T) {
+	// Claude Code persists /model in the top-level model field of the user's
+	// ~/.claude/settings.json (settings.local.json only carries permissions).
+	// Zen deliberately does not read or log that value: omitting --model is the
+	// inheritance contract, while an explicit Session override is still exact.
 	profile := claudeMessagesProfile("claude-local", "claude-sonnet-4-6", "upstream-claude")
 	profile.AuthMode = AuthModeNone
 	profile.CredentialEnv = ""

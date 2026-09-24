@@ -75,7 +75,7 @@ func TestProviderProjectionCarriesCatalogMetadataAndFreshness(t *testing.T) {
 	}
 }
 
-func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
+func TestSetProviderConnectionAtomicSingleWrite(t *testing.T) {
 	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
 	creds := NewMemoryCredentialStore()
 	owner.creds = creds
@@ -87,7 +87,7 @@ func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := owner.Catalog().Revision
-	proj, err := owner.SetProviderDefault(ClientCodex, conn.ID, "deepseek-v4-flash", before)
+	proj, err := owner.SetProviderConnection(ClientCodex, conn.ID, before)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
 		t.Fatalf("revision=%d want %d", proj.Revision, before+1)
 	}
 	def := proj.Defaults[ClientCodex]
-	if def.ConnectionID != conn.ID || def.ModelID != "deepseek-v4-flash" {
+	if def.ConnectionID != conn.ID {
 		t.Fatalf("default=%#v", def)
 	}
 
@@ -109,7 +109,7 @@ func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	rev := failOwner.Catalog().Revision
-	if _, err := failOwner.SetProviderDefault(ClientCodex, conn2.ID, "deepseek-v4-flash", rev); err != nil {
+	if _, err := failOwner.SetProviderConnection(ClientCodex, conn2.ID, rev); err != nil {
 		t.Fatal(err)
 	}
 	rev = failOwner.Catalog().Revision
@@ -119,16 +119,16 @@ func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
 		}
 		return nil
 	})
-	_, err = failOwner.SetProviderDefault(ClientCodex, conn2.ID, "deepseek-v4-flash", rev)
+	_, err = failOwner.SetProviderConnection(ClientCodex, conn2.ID, rev)
 	if err == nil {
 		t.Fatal("expected persist failure")
 	}
 	if failOwner.Catalog().Revision != rev {
 		t.Fatalf("revision mutated on failure: %d", failOwner.Catalog().Revision)
 	}
-	got := failOwner.store.DefaultModelID(ClientCodex)
-	if got != "deepseek-v4-flash" {
-		t.Fatalf("model rolled forward on failure: %q", got)
+	got := failOwner.store.ClientDefault(ClientCodex)
+	if got != conn2.ID {
+		t.Fatalf("connection rolled forward on failure: %q", got)
 	}
 }
 
@@ -218,7 +218,7 @@ func TestDeleteProviderConnectionNonOrphaning(t *testing.T) {
 		owner, store := newOwner(t)
 		conn := seed(t, owner, store, "def")
 		rev := owner.Catalog().Revision
-		if _, err := owner.SetProviderDefault(ClientCodex, conn.ID, "deepseek-v4-flash", rev); err != nil {
+		if _, err := owner.SetProviderConnection(ClientCodex, conn.ID, rev); err != nil {
 			t.Fatal(err)
 		}
 		rev = owner.Catalog().Revision

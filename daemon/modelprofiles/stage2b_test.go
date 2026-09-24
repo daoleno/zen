@@ -310,7 +310,7 @@ func TestOwnerRawCommandBypassesProfiles(t *testing.T) {
 	}
 }
 
-func TestOwnerOfficialLoginBypassesWhenClientHasNoProviderDefault(t *testing.T) {
+func TestOwnerOfficialLoginBypassesWhenClientHasNoProviderConnectionSelection(t *testing.T) {
 	owner := startTestOwner(t, readyLookup("x"))
 	profile := codexResponsesProfile("available-but-not-selected", "gpt-5", "org/up-1")
 	if _, err := owner.UpsertProfile(profile, 0, true); err != nil {

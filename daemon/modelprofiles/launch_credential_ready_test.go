@@ -24,7 +24,7 @@ func TestPrepareLaunchCustomConnectionUsesStoreCredential(t *testing.T) {
 	if _, err := owner.SetProviderCredential("custom-gw", testStoreOnlySecret); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault(ClientCodex, "custom-gw", "up-1", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, "custom-gw", proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -61,7 +61,7 @@ func TestPrepareLaunchCustomConnectionFailClosedWithoutStoreOrEnv(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault(ClientCodex, "custom-gw", "up-1", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection(ClientCodex, "custom-gw", proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 	_, err = owner.PrepareLaunch(ExecutorCodex, "", "codex")

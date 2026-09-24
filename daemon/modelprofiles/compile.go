@@ -50,7 +50,14 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 
 	switch profile.ExecutorID {
 	case ExecutorCodex:
-		command, env, note, err := compileCodex(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL, opts.CodexModelCatalogPath, opts.CodexControlSocket)
+		launchModel := normalizeSpace(opts.ExplicitModelID)
+		// Legacy executor-scoped profiles already represent an Agent's local
+		// model contract. Account connections never take this fallback: their
+		// Provider catalog is not a launch default.
+		if launchModel == "" && normalizeID(profile.Scope) != ConnectionScopeAccount && !profile.ModelPlaceholder {
+			launchModel = normalizeSpace(admitted.ClientModelID)
+		}
+		command, env, note, err := compileCodex(baseCommand, launchModel, profile, loopbackRouteURL, opts.CodexModelCatalogPath, opts.CodexControlSocket)
 		if err != nil {
 			return ResolvedLaunch{}, err
 		}
@@ -94,15 +101,22 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 	}
 }
 
-func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRouteURL, modelCatalogPath, controlSocket string) (command string, env map[string]string, wsNote string, err error) {
+func compileCodex(baseCommand, explicitModel string, profile Profile, loopbackRouteURL, modelCatalogPath, controlSocket string) (command string, env map[string]string, wsNote string, err error) {
+	explicitModel = normalizeSpace(explicitModel)
 	switch profile.Protocol {
 	case ProtocolOpenAINative:
 		if normalizeSpace(controlSocket) != "" {
 			return "", nil, "", fmt.Errorf("%w: live control requires the responses route protocol", ErrInvalid)
 		}
-		return appendArgv(baseCommand, "--model", clientModel), nil, "", nil
+		if explicitModel == "" {
+			return baseCommand, nil, "", nil
+		}
+		return appendArgv(baseCommand, "--model", explicitModel), nil, "", nil
 	case ProtocolOpenAIResponses:
-		tuiCommand := appendArgv(baseCommand, "--model", clientModel)
+		tuiCommand := baseCommand
+		if explicitModel != "" {
+			tuiCommand = appendArgv(tuiCommand, "--model", explicitModel)
+		}
 		tuiCommand = appendConfig(tuiCommand, `model_provider="openai"`)
 		tuiCommand = appendConfig(tuiCommand, fmt.Sprintf("openai_base_url=%s", tomlString(loopbackRouteURL)))
 		// Deterministic per-connection Codex model catalog (ModelsResponse
@@ -123,7 +137,7 @@ func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRout
 			env[EnvOpenAIAPIKey] = LoopbackAuthPlaceholder
 		}
 		if socket := normalizeSpace(controlSocket); socket != "" {
-			command = compileCodexAppServerLive(baseCommand, clientModel, tuiCommand, socket, loopbackRouteURL, modelCatalogPath)
+			command = compileCodexAppServerLive(baseCommand, explicitModel, tuiCommand, socket, loopbackRouteURL, modelCatalogPath)
 		} else {
 			command = tuiCommand
 		}
@@ -148,9 +162,11 @@ func compileCodex(baseCommand, clientModel string, profile Profile, loopbackRout
 // socket so the daemon can kill it during Session teardown and sweep stale
 // artifacts after a daemon restart. The TUI replaces the pane shell via exec
 // so watcher foreground detection keeps seeing `codex`.
-func compileCodexAppServerLive(baseCommand, clientModel, tuiCommand, socket, loopbackRouteURL, modelCatalogPath string) string {
+func compileCodexAppServerLive(baseCommand, explicitModel, tuiCommand, socket, loopbackRouteURL, modelCatalogPath string) string {
 	appServer := "codex app-server --listen unix://" + shellQuote(socket)
-	appServer = appendConfig(appServer, fmt.Sprintf("model=%s", tomlString(clientModel)))
+	if explicitModel = normalizeSpace(explicitModel); explicitModel != "" {
+		appServer = appendConfig(appServer, fmt.Sprintf("model=%s", tomlString(explicitModel)))
+	}
 	appServer = appendConfig(appServer, `model_provider="openai"`)
 	appServer = appendConfig(appServer, fmt.Sprintf("openai_base_url=%s", tomlString(loopbackRouteURL)))
 	if path := normalizeSpace(modelCatalogPath); path != "" {

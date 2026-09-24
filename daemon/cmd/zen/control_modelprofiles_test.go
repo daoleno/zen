@@ -395,8 +395,8 @@ func TestControlCatalogMutationsDirSyncAppliedNotDurable(t *testing.T) {
 	}
 
 	setDef := app.HandleControlRequest(control.Request{
-		Type: "provider_set_default", ExecutorID: modelprofiles.ExecutorCodex,
-		ProfileID: profile.ID, ModelID: "up-2", Revision: 2,
+		Type: "provider_set_connection", ExecutorID: modelprofiles.ExecutorCodex,
+		ProfileID: profile.ID, Revision: 2,
 	})
 	assertApplied(setDef)
 	if setDef.Providers.Defaults[modelprofiles.ExecutorCodex].ConnectionID != profile.ID {
@@ -404,7 +404,7 @@ func TestControlCatalogMutationsDirSyncAppliedNotDurable(t *testing.T) {
 	}
 
 	clear := app.HandleControlRequest(control.Request{
-		Type: "provider_set_default", ExecutorID: modelprofiles.ExecutorCodex,
+		Type: "provider_set_connection", ExecutorID: modelprofiles.ExecutorCodex,
 		ProfileID: "", Revision: 3,
 	})
 	assertApplied(clear)

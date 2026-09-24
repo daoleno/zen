@@ -20,17 +20,15 @@ const (
 )
 
 type providerSwitchSnapshot struct {
-	Revision      int64               `json:"revision"`
-	Defaults      map[string]string   `json:"defaults"`
-	DefaultModels map[string]string   `json:"default_models"`
-	Routes        []SessionRouteState `json:"routes"`
+	Revision int64               `json:"revision"`
+	Defaults map[string]string   `json:"defaults"`
+	Routes   []SessionRouteState `json:"routes"`
 }
 
 type providerSwitchSnapshotDisk struct {
-	Revision      int64             `json:"revision"`
-	Defaults      map[string]string `json:"defaults"`
-	DefaultModels map[string]string `json:"default_models"`
-	Routes        json.RawMessage   `json:"routes"`
+	Revision int64             `json:"revision"`
+	Defaults map[string]string `json:"defaults"`
+	Routes   json.RawMessage   `json:"routes"`
 }
 
 func (s providerSwitchSnapshot) MarshalJSON() ([]byte, error) {
@@ -39,10 +37,9 @@ func (s providerSwitchSnapshot) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	disk := providerSwitchSnapshotDisk{
-		Revision:      s.Revision,
-		Defaults:      cloneDefaults(s.Defaults),
-		DefaultModels: cloneDefaults(s.DefaultModels),
-		Routes:        json.RawMessage(routes),
+		Revision: s.Revision,
+		Defaults: cloneDefaults(s.Defaults),
+		Routes:   json.RawMessage(routes),
 	}
 	return json.Marshal(disk)
 }
@@ -60,7 +57,6 @@ func (s *providerSwitchSnapshot) UnmarshalJSON(raw []byte) error {
 	}
 	s.Revision = disk.Revision
 	s.Defaults = cloneDefaults(disk.Defaults)
-	s.DefaultModels = cloneDefaults(disk.DefaultModels)
 	s.Routes = cloneSessionStates(routes)
 	return nil
 }
@@ -203,7 +199,7 @@ func (o *Owner) persistProviderSwitchSnapshot(snapshot providerSwitchSnapshot) e
 	o.store.mu.RLock()
 	profiles := cloneProfiles(o.store.profiles)
 	o.store.mu.RUnlock()
-	storeErr := o.store.persistLocked(snapshot.Revision, profiles, cloneDefaults(snapshot.Defaults), cloneDefaults(snapshot.DefaultModels))
+	storeErr := o.store.persistLocked(snapshot.Revision, profiles, cloneDefaults(snapshot.Defaults))
 	routeErr := o.routes.SaveStates(snapshot.Routes)
 	if storeErr != nil && !errors.Is(storeErr, ErrPersistDirSync) {
 		return storeErr
@@ -226,7 +222,6 @@ func (o *Owner) applyProviderSwitchSnapshot(snapshot providerSwitchSnapshot) {
 func (o *Owner) applyProviderSwitchSnapshotLocked(snapshot providerSwitchSnapshot) {
 	o.store.mu.Lock()
 	o.store.defaults = cloneDefaults(snapshot.Defaults)
-	o.store.defaultModels = cloneDefaults(snapshot.DefaultModels)
 	o.store.revision = snapshot.Revision
 	o.store.mu.Unlock()
 	routes := cloneSessionStates(snapshot.Routes)
@@ -262,21 +257,16 @@ func (o *Owner) switchProviderLocked(clientOrExecutor, connectionID string, revi
 		return PersistResult{}, fmt.Errorf("%w: expected revision %d, have %d", ErrConflict, revision, currentRevision)
 	}
 
-	currentConnectionID, currentModelID := o.store.ClientDefault(client)
+	currentConnectionID := o.store.ClientDefault(client)
 	currentConnectionID = normalizeID(currentConnectionID)
-	currentModelID = normalizeSpace(currentModelID)
-	if currentConnectionID == "" || currentModelID == "" {
-		return PersistResult{}, fmt.Errorf("%w: default runtime requires connection and model", ErrUpstreamModelRequired)
+	if currentConnectionID == "" {
+		return PersistResult{}, fmt.Errorf("%w: no connection selected", ErrNotFound)
 	}
 
 	defaults := map[string]string{}
-	defaultModels := map[string]string{}
 	o.store.mu.RLock()
 	for key, value := range o.store.defaults {
 		defaults[key] = value
-	}
-	for key, value := range o.store.defaultModels {
-		defaultModels[key] = value
 	}
 	o.store.mu.RUnlock()
 
@@ -289,11 +279,11 @@ func (o *Owner) switchProviderLocked(clientOrExecutor, connectionID string, revi
 	defer o.table.mu.Unlock()
 	states := o.table.snapshotLocked()
 
-	before := providerSwitchSnapshotFromState(currentRevision, defaults, defaultModels, states)
-	nextDefaults, nextModels := switchDefaultMaps(defaults, defaultModels, client, connectionID, currentModelID)
+	before := providerSwitchSnapshotFromState(currentRevision, defaults, states)
+	nextDefaults := switchDefaultMap(defaults, client, connectionID)
 	nextRevision := currentRevision + 1
 
-	defaultTarget, err := CompileConnectionTarget(raw, executorFromClient(client), currentModelID, "")
+	defaultTarget, err := CompileConnectionTarget(raw, executorFromClient(client), "", "")
 	if err != nil {
 		return PersistResult{}, err
 	}
@@ -337,7 +327,7 @@ func (o *Owner) switchProviderLocked(clientOrExecutor, connectionID string, revi
 		nextStates = append(nextStates, next)
 	}
 
-	after := providerSwitchSnapshotFromState(nextRevision, nextDefaults, nextModels, nextStates)
+	after := providerSwitchSnapshotFromState(nextRevision, nextDefaults, nextStates)
 	prepared := providerSwitchJournal{
 		SchemaVersion: providerSwitchJournalSchemaVersion,
 		State:         providerSwitchJournalStatePrepared,
@@ -414,9 +404,6 @@ func providerSwitchRollbackError(operation string, operationErr, rollbackErr err
 // admitProviderSwitchTargetLocked validates one exact preserved model/effect
 // against the target connection. Caller holds Owner.mu and RouteTable.mu.
 func (o *Owner) admitProviderSwitchTargetLocked(connection, target Profile) (VerifiedProfileContract, error) {
-	if target.ModelPlaceholder || normalizeSpace(target.Model) == "" {
-		return VerifiedProfileContract{}, ErrUpstreamModelRequired
-	}
 	if effort := normalizeID(target.ReasoningEffort); effort != "" {
 		if normalizeID(target.ExecutorID) != ExecutorCodex || !codexEffortAdmitted(target.ClientModel, effort) {
 			return VerifiedProfileContract{}, fmt.Errorf("%w: client model %s does not support effect %q", ErrReasoningEffortUnsupported, target.ClientModel, effort)
@@ -432,12 +419,11 @@ func (o *Owner) admitProviderSwitchTargetLocked(connection, target Profile) (Ver
 	return admitted, nil
 }
 
-func providerSwitchSnapshotFromState(revision int64, defaults, defaultModels map[string]string, routes []SessionRouteState) providerSwitchSnapshot {
+func providerSwitchSnapshotFromState(revision int64, defaults map[string]string, routes []SessionRouteState) providerSwitchSnapshot {
 	return providerSwitchSnapshot{
-		Revision:      revision,
-		Defaults:      cloneDefaults(defaults),
-		DefaultModels: cloneDefaults(defaultModels),
-		Routes:        cloneSessionStates(routes),
+		Revision: revision,
+		Defaults: cloneDefaults(defaults),
+		Routes:   cloneSessionStates(routes),
 	}
 }
 
@@ -449,25 +435,17 @@ func cloneSessionStates(states []SessionRouteState) []SessionRouteState {
 	return out
 }
 
-func switchDefaultMaps(defaults, defaultModels map[string]string, client, connectionID, modelID string) (map[string]string, map[string]string) {
+func switchDefaultMap(defaults map[string]string, client, connectionID string) map[string]string {
 	nextDefaults := cloneDefaults(defaults)
-	nextModels := cloneDefaults(defaultModels)
 	client = clientFromExecutor(client)
 	executorID := executorFromClient(client)
 	connectionID = normalizeID(connectionID)
-	modelID = normalizeSpace(modelID)
 	if connectionID == "" {
 		delete(nextDefaults, client)
 		delete(nextDefaults, executorID)
-		delete(nextModels, client)
-		return nextDefaults, nextModels
+		return nextDefaults
 	}
 	nextDefaults[client] = connectionID
 	nextDefaults[executorID] = connectionID
-	if modelID == "" {
-		delete(nextModels, client)
-	} else {
-		nextModels[client] = modelID
-	}
-	return nextDefaults, nextModels
+	return nextDefaults
 }

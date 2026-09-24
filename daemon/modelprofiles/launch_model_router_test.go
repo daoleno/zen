@@ -34,7 +34,7 @@ func TestLaunchCodexModelCatalogFileNeverFabricatesContextWindowOne(t *testing.T
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("xcode", []string{"gpt-5.6-sol", "vendor/private-alpha"}, nil)
 	owner.mu.Unlock()
-	proj, err = owner.SetProviderDefault(ClientCodex, "xcode", "gpt-5.6-sol", proj.Revision)
+	proj, err = owner.SetProviderConnection(ClientCodex, "xcode", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestRoutedLaunchCarriesGpt56SolToUpstreamUnchanged(t *testing.T) {
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("cf-api-fan", []string{"gpt-5.6-sol", "gpt-5.6-terra"}, nil)
 	owner.mu.Unlock()
-	proj, err = owner.SetProviderDefault(ClientCodex, "cf-api-fan", "gpt-5.6-sol", proj.Revision)
+	proj, err = owner.SetProviderConnection(ClientCodex, "cf-api-fan", proj.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}

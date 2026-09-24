@@ -64,21 +64,28 @@ Zen's credential store. The mobile form does not display stored secrets; leaving
 an existing key empty preserves it. Switching the current server rebinds the
 configuration. Selecting a Provider connection does not change the Brain
 executor. Provider settings own the connection, endpoint, credentials, model
-catalog, and exposed model scope; they do not own a default Claude model. A
+catalog, and exposed model scope; they do not own an Agent default model. A
 Claude Code launch with no Agent-level model request omits `--model`, so Claude
 Code inherits the local model saved through `/model` in its settings. An
-Agent-level model selection is passed only for that Session.
+Agent-level model selection is passed only for that Session. Codex follows the
+same contract: an empty launch override leaves model selection to the local
+Codex configuration and the first request model is routed unchanged.
 
-Provider model availability still comes only from the live Provider catalog and its
-last-known-good cache. Zen may enrich those already discovered rows from the
+Provider model availability prefers the live Provider catalog and its last-known-good
+cache. When discovery is unavailable, Zen projects local Codex/Claude contract
+IDs, installed caches, models.dev metadata and exact configured/session IDs as
+display-only candidates with a freshness warning; those fallback rows do not
+reject a custom Agent request. Zen may enrich discovered rows from the
 secret-free public `models.dev` metadata cache (display name, limits, capabilities,
 prices, and release date); that metadata never adds a routable model or re-enables
 one disabled in Settings. The cache refreshes in the background and can be manually
 refreshed through the daemon control path.
 For a custom Claude gateway, enter its endpoint root (including any proxy path,
-optionally ending in `/v1`) and the exact model ID. Model ID can be entered
-manually when the gateway has no `/models` endpoint; failed model discovery does
-not verify or invalidate the key. Zen routes managed Claude requests through its
+optionally ending in `/v1`). A model ID is an Agent/Session choice, not a
+connection requirement. When a gateway has no `/models` endpoint, Zen keeps
+last-known-good and local candidates for the Provider catalog; a Session may
+still start and its request model is passed through. Failed model discovery
+does not verify or invalidate the key. Zen routes managed Claude requests through its
 session-bound loopback and injects the saved upstream key there. The launch uses
 session-specific Claude settings to keep a pre-existing native settings file's
 endpoint or authentication environment from redirecting that managed session;

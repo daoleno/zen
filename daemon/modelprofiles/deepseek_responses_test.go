@@ -385,7 +385,7 @@ func TestCompileDeepSeekAccountConnectionIsClientScoped(t *testing.T) {
 	}
 }
 
-func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
+func TestSetProviderConnectionValidatesClientModel(t *testing.T) {
 	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
 	conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "DeepSeek", PresetID: ProviderPresetDeepSeek, Client: ClientCodex})
 	if err != nil {
@@ -396,21 +396,21 @@ func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 	}
 	rev := owner.Catalog().Revision
 
-	proj, err := owner.SetProviderDefault(ClientCodex, conn.ID, "deepseek-v4-flash", rev)
+	proj, err := owner.SetProviderConnection(ClientCodex, conn.ID, rev)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proj.Defaults[ClientCodex].ModelID != "deepseek-v4-flash" {
+	if proj.Defaults[ClientCodex].ConnectionID != conn.ID {
 		t.Fatalf("defaults=%#v", proj.Defaults)
 	}
 	rev = owner.Catalog().Revision
 
-	proj, err = owner.SetProviderDefault(ClientCodex, conn.ID, "deepseek-v4-pro", rev)
+	proj, err = owner.SetProviderConnection(ClientCodex, conn.ID, rev)
 	if err != nil {
 		t.Fatalf("Codex model slug must pass through curated preset: %v", err)
 	}
-	if owner.store.DefaultModelID(ClientCodex) != "deepseek-v4-pro" || proj.Defaults[ClientCodex].ModelID != "deepseek-v4-pro" {
-		t.Fatalf("default model was not preserved: store=%q projection=%#v", owner.store.DefaultModelID(ClientCodex), proj.Defaults[ClientCodex])
+	if proj.Defaults[ClientCodex].ConnectionID != conn.ID {
+		t.Fatalf("connection selection was not preserved: projection=%#v", proj.Defaults[ClientCodex])
 	}
 	rev = owner.Catalog().Revision
 
@@ -425,12 +425,9 @@ func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 	}
 	rev = owner.Catalog().Revision
 	// Claude Anthropic target accepts deepseek-v4-pro per that target's contract.
-	_, err = owner.SetProviderDefault(ClientClaude, claudeConn.ID, "deepseek-v4-pro", rev)
+	_, err = owner.SetProviderConnection(ClientClaude, claudeConn.ID, rev)
 	if err != nil {
 		t.Fatalf("claude pro: %v", err)
-	}
-	if owner.store.DefaultModelID(ClientClaude) != "" {
-		t.Fatalf("claude default=%q", owner.store.DefaultModelID(ClientClaude))
 	}
 }
 

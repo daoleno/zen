@@ -309,11 +309,11 @@ func TestGatewayStreamingResponseFlushesChunks(t *testing.T) {
 	_ = flushed
 }
 
-// TestSetProviderDefaultRetargetsGatewayUpstream is the Settings Provider
+// TestSetProviderConnectionRetargetsGatewayUpstream is the Settings Provider
 // selection regression: changing the default Codex connection must retarget
 // the machine-level gateway atomically (the same hook the isolated
 // direct-terminal live proof exercises end-to-end).
-func TestSetProviderDefaultRetargetsGatewayUpstream(t *testing.T) {
+func TestSetProviderConnectionRetargetsGatewayUpstream(t *testing.T) {
 	root := t.TempDir()
 	codexConfig := filepath.Join(root, "codex", "config.toml")
 	owner, err := StartOwner(OwnerConfig{
@@ -341,7 +341,7 @@ func TestSetProviderDefaultRetargetsGatewayUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault("codex", "conn-a", "gpt-5", projB.Catalog.Revision); err != nil {
+	if _, err := owner.SetProviderConnection("codex", "conn-a", projB.Catalog.Revision); err != nil {
 		t.Fatal(err)
 	}
 	pp, err := owner.ProjectProviders()
@@ -358,7 +358,7 @@ func TestSetProviderDefaultRetargetsGatewayUpstream(t *testing.T) {
 
 	// Settings Provider selection -> default moves to conn-b -> the gateway
 	// follows without touching the listener or any running process.
-	if _, err := owner.SetProviderDefault("codex", "conn-b", "gpt-5", setDefaultRevision); err != nil {
+	if _, err := owner.SetProviderConnection("codex", "conn-b", setDefaultRevision); err != nil {
 		t.Fatal(err)
 	}
 	if up, ok := owner.Gateway().Upstream(); !ok || up.ProfileID != "conn-b" {
@@ -425,7 +425,7 @@ func TestGatewayUpstreamCompilesAccountConnectionAuth(t *testing.T) {
 	if !isAccountConnection(raw) || normalizeID(raw.AuthMode) != AuthModeNone || normalizeSpace(raw.CredentialEnv) != "ZEN_PROVIDER_API_KEY" {
 		t.Fatalf("fixture is not a durable account connection: auth=%q env=%q", raw.AuthMode, raw.CredentialEnv)
 	}
-	if _, err := owner.SetProviderDefault("codex", "conn-gw-a", "gpt-5", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection("codex", "conn-gw-a", proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.EnableCodexGateway(""); err != nil {
@@ -524,7 +524,7 @@ func TestGatewayRequestPrefersSelectedProviderWhenModelIsShared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := owner.SetProviderDefault("codex", "conn-selected", "gpt-5", proj.Revision); err != nil {
+	if _, err := owner.SetProviderConnection("codex", "conn-selected", proj.Revision); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.EnableCodexGateway(""); err != nil {

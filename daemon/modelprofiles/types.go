@@ -132,10 +132,6 @@ var (
 	ErrRequestBodyMalformed        = errors.New("request body malformed")
 	ErrResponsesFeatureUnsupported = errors.New("responses feature unsupported by upstream capability envelope")
 	ErrUpstreamInvalid             = errors.New("upstream invalid")
-	// ErrUpstreamModelRequired means a connection has no explicit upstream model:
-	// compile produced only a probe placeholder (client contract id), which must
-	// never enter a RouteBinding. Run discovery and select a model first.
-	ErrUpstreamModelRequired = errors.New("connection has no upstream model; run discovery and select a model")
 	// ErrModelUnsupported means the selected model has no daemon-owned metadata
 	// (not in the versioned Codex model catalog). Managed Codex fails closed:
 	// an unknown model is never launched, activated, or routed under a hidden
@@ -226,11 +222,11 @@ type Profile struct {
 	// never a connection setting: the Session route owns the override and
 	// Settings stays Provider/Model-only. Empty means no override.
 	ReasoningEffort string `toml:"-" json:"-"`
-	// ModelPlaceholder is an internal compile-only marker set when a Custom/
-	// Advanced connection had no explicit upstream model and compilation fell
-	// back to the ClientModel contract id (probe validation only). It is never
-	// durable (toml/json excluded) and binding creation fails closed on it so a
-	// fabricated model can never reach a RouteBinding's UpstreamModel.
+	// ModelPlaceholder is an internal compile-only marker set when a connection
+	// has no explicit upstream model and compilation falls back to the client
+	// contract id for probe validation. It is never durable (toml/json excluded).
+	// Codex bindings fail closed on it; Claude bindings use request-level model
+	// routing so the local Claude settings / first request supplies the model.
 	ModelPlaceholder bool   `toml:"-" json:"-"`
 	BaseURL          string `toml:"base_url,omitempty" json:"base_url,omitempty"`
 	AuthMode         string `toml:"auth_mode,omitempty" json:"auth_mode,omitempty"`
@@ -314,8 +310,12 @@ type RouteBinding struct {
 	ClientModelProvenance string
 	UpstreamBaseURL       string
 	UpstreamModel         string
-	HistoryDomain         string
-	HistoryState          string // empty | may_contain_opaque
+	// RequestModelRouting marks a route whose Provider connection has no fixed
+	// upstream model. The first request supplies the model; UpstreamModel
+	// deliberately remains empty and is never a fabricated target.
+	RequestModelRouting bool
+	HistoryDomain       string
+	HistoryState        string // empty | may_contain_opaque
 	// HistoryPortability is sticky once set (CLI may resent old opaque blocks).
 	HistoryPortability string
 	ClientEnvelope     CapabilityEnvelope
@@ -523,19 +523,22 @@ func BindingDraftFromProfile(profile Profile, catalogRevision int64, activation 
 	if err := ValidateProfile(profile); err != nil {
 		return RouteBinding{}, err
 	}
-	// Fail closed: a probe placeholder (client contract id fabricated for
-	// Custom/Advanced connections without an explicit model) must never become
-	// the route's UpstreamModel — it is not synced from upstream discovery and
-	// upstreams routinely 503 unknown model ids.
-	if profile.ModelPlaceholder {
-		return RouteBinding{}, ErrUpstreamModelRequired
-	}
+	requestModelRouting := profile.ModelPlaceholder &&
+		((normalizeID(profile.ExecutorID) == ExecutorClaude && normalizeID(profile.Protocol) == ProtocolAnthropicMessages) ||
+			normalizeID(profile.ExecutorID) == ExecutorCodex)
+	// A placeholder is always request-level for a supported managed Agent. It
+	// never becomes a fixed route target; unsupported protocols are rejected by
+	// contract admission below.
 	if err := validateVerifiedProfileContract(admitted); err != nil {
 		return RouteBinding{}, err
 	}
 	routeProtocol, needsRoute := RouteProtocolFor(profile.Protocol)
 	if needsRoute && normalizeSpace(profile.BaseURL) == "" {
 		return RouteBinding{}, fmt.Errorf("%w: upstream base_url required for routed protocol", ErrInvalid)
+	}
+	upstreamModel := admitted.UpstreamModelID
+	if requestModelRouting {
+		upstreamModel = ""
 	}
 	return RouteBinding{
 		ExecutorID:            profile.ExecutorID,
@@ -548,7 +551,8 @@ func BindingDraftFromProfile(profile Profile, catalogRevision int64, activation 
 		ClientModel:           admitted.ClientModelID,
 		ClientModelProvenance: admitted.Provenance,
 		UpstreamBaseURL:       profile.BaseURL,
-		UpstreamModel:         admitted.UpstreamModelID,
+		UpstreamModel:         upstreamModel,
+		RequestModelRouting:   requestModelRouting,
 		ReasoningEffort:       normalizeID(profile.ReasoningEffort),
 		HistoryDomain:         admitted.HistoryDomain,
 		HistoryState:          HistoryStateEmpty,
