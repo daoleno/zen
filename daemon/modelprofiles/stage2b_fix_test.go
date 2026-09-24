@@ -603,7 +603,8 @@ func TestBuiltinVerifierOpenRouterCustomGatewayAndAlias(t *testing.T) {
 		t.Fatal("upstream envelope must mirror selected client contract")
 	}
 	// Custom gateway serving a daemon-known model: the exact slug is the single
-	// identity (client_model == model); unknown gateway-only slugs fail closed.
+	// identity (client_model == model); unknown gateway-only slugs remain opaque
+	// and are never aliased to a different identity.
 	customGW := openrouter
 	customGW.ID = "custom-gw"
 	customGW.ProviderID = "acme-gateway"

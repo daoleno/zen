@@ -132,10 +132,11 @@ var (
 	ErrRequestBodyMalformed        = errors.New("request body malformed")
 	ErrResponsesFeatureUnsupported = errors.New("responses feature unsupported by upstream capability envelope")
 	ErrUpstreamInvalid             = errors.New("upstream invalid")
-	// ErrModelUnsupported means the selected model has no daemon-owned metadata
-	// (not in the versioned Codex model catalog). Managed Codex fails closed:
-	// an unknown model is never launched, activated, or routed under a hidden
-	// compatibility identity.
+	// ErrModelUnsupported is returned when a model is empty or is rejected by a
+	// reliable connection catalog during request preflight. A live/LKG catalog
+	// or explicit exposed policy may reject an unsupported model; without that
+	// reliable evidence, a syntactically valid model remains opaque pass-through
+	// and the upstream decides whether it can serve it.
 	ErrModelUnsupported = errors.New("model is not supported for managed Codex")
 	// ErrReasoningEffortUnsupported means the requested Reasoning Effort is not
 	// admitted by the target Codex client model's daemon-owned effort contract.
@@ -225,8 +226,10 @@ type Profile struct {
 	// ModelPlaceholder is an internal compile-only marker set when a connection
 	// has no explicit upstream model and compilation falls back to the client
 	// contract id for probe validation. It is never durable (toml/json excluded).
-	// Codex bindings fail closed on it; Claude bindings use request-level model
-	// routing so the local Claude settings / first request supplies the model.
+	// For managed Codex and Claude it produces request-level model routing: a
+	// reliable live/LKG catalog or explicit exposed policy may preflight reject,
+	// while an unreliable/empty catalog passes the opaque request model through
+	// and lets the upstream decide.
 	ModelPlaceholder bool   `toml:"-" json:"-"`
 	BaseURL          string `toml:"base_url,omitempty" json:"base_url,omitempty"`
 	AuthMode         string `toml:"auth_mode,omitempty" json:"auth_mode,omitempty"`

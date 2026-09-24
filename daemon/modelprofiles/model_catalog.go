@@ -18,9 +18,11 @@ const ContractProvenanceCodexCatalog = "codex_catalog"
 
 // CodexModelMetadata is the daemon-owned, versioned, evidence-based metadata
 // for one known Codex model identity. Entries are pinned from the Codex CLI
-// model catalog / OpenAI Responses model contract; unknown models resolve
-// nowhere and fail closed for managed Codex (never masquerade under another
-// identity).
+// model catalog / OpenAI Responses model contract. Unknown identities have no
+// daemon-owned metadata, but remain opaque pass-through candidates when the
+// connection has no reliable catalog; they are never masqueraded as another
+// model. A reliable live/LKG catalog or explicit exposed policy may reject
+// them during request preflight.
 type CodexModelMetadata struct {
 	// Slug is the exact model identity — the Codex session model, the routed
 	// upstream model, and the UI-visible model are this one slug.

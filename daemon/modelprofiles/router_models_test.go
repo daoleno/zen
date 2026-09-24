@@ -209,8 +209,8 @@ func TestOwnerRouterServesSyncedModels(t *testing.T) {
 	}
 
 	// Two connections, two discovery catalogs: each route answers with its own.
-	// Both connections carry an explicit launch model so PrepareLaunch does not
-	// fail closed; the catalog surface is independent of the bound model.
+	// Both connections carry an explicit launch model; the catalog surface is
+	// independent of the bound model.
 	owner.mu.Lock()
 	owner.discovery = newModelDiscoveryCache()
 	owner.discovery.put("conn-a", []string{"gpt-5.6-sol", "gpt-5.4-mini"}, nil)
