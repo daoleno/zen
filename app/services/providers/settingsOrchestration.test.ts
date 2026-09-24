@@ -72,7 +72,7 @@ describe("future-thread default runtime policy", () => {
       client: "claude",
       connectionId: "b",
     });
-    expect(action).toEqual({ kind: "apply", modelId: "new-model" });
+    expect(action).toEqual({ kind: "apply", modelId: "" });
   });
 
   test("asks for discovery when the target has no available models", () => {

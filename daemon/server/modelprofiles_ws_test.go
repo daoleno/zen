@@ -994,7 +994,7 @@ func TestCreateSessionLaunchUsesExplicitModelSelection(t *testing.T) {
 	if plan.State.Binding.ClientModel != "claude-sonnet-4-6" || plan.State.Binding.UpstreamModel != "selected-model" {
 		t.Fatalf("launch ignored create_session model selection: client=%q upstream=%q", plan.State.Binding.ClientModel, plan.State.Binding.UpstreamModel)
 	}
-	if !strings.Contains(plan.Command, "--model claude-sonnet-4-6") {
+	if !strings.Contains(plan.Command, "--model selected-model") {
 		t.Fatalf("compiled Claude command=%q", plan.Command)
 	}
 }

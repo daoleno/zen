@@ -358,7 +358,7 @@ describe("Agent-first Providers surface contract", () => {
     expect(screenSource).toContain("defaultRuntimeSeedAction");
   });
 
-  test("model rows select the exact default model for the current Provider", () => {
+  test("model rows control the exposed model scope for the current Provider", () => {
     expect(presentationSource).toContain("Models");
     expect(presentationSource).toContain("modelSupportChoices(");
     expect(presentationSource).toContain("onSelectModel(");
@@ -369,14 +369,11 @@ describe("Agent-first Providers surface contract", () => {
     expect(presentationSource).toContain("modelChipSelected");
     expect(presentationSource).toContain("FlatList");
     expect(presentationSource).toContain("pickerListContent");
-    expect(presentationSource).toContain(
+    expect(presentationSource).not.toContain(
       "Choose the model for new ${providerClientLabel(picker.client)} sessions.",
     );
-    expect(presentationSource).toContain(
-      'accessibilityRole={selectingDefault ? "radio" : "checkbox"}',
-    );
-    expect(presentationSource).toContain("providerClientLabel(picker.client)");
-    expect(presentationSource).toContain("const selected = selectingDefault");
+    expect(presentationSource).not.toContain("selectingDefault");
+    expect(presentationSource).toContain('accessibilityRole="checkbox"');
     expect(screenSource).toContain("runSetModels");
     expect(screenSource).toContain("wsClient.setProviderModels");
     expect(screenSource).toContain("wsClient.setProviderDefault");

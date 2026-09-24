@@ -42,8 +42,11 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 			// Prefer client-keyed entries when both exist.
 			continue
 		}
-		modelID := o.defaultModelLocked(client)
-		if modelID == "" {
+		modelID := ""
+		if client != ClientClaude {
+			modelID = o.defaultModelLocked(client)
+		}
+		if client != ClientClaude && modelID == "" {
 			for _, view := range proj.Views {
 				if view.ID != profileID {
 					continue
@@ -831,6 +834,11 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 	client := clientFromExecutor(clientOrExecutor)
 	connectionID = normalizeID(connectionID)
 	modelID = normalizeSpace(modelID)
+	if client == ClientClaude {
+		// Claude's model is selected by local Claude Code settings or an explicit
+		// Agent session request. Provider selection only chooses a connection.
+		modelID = ""
+	}
 	o.mu.Lock()
 	applyErr := func() error {
 		if err := o.ensureProviderSwitchJournalClearedLocked(); err != nil {
@@ -844,7 +852,7 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 		if err != nil {
 			return err
 		}
-		if modelID == "" {
+		if client != ClientClaude && modelID == "" {
 			// Keep a complete existing seed only when the same connection remains
 			// default. A different connection must provide its model atomically.
 			currentConn, currentModel := o.store.ClientDefault(client)
@@ -855,15 +863,16 @@ func (o *Owner) SetProviderDefault(clientOrExecutor, connectionID, modelID strin
 				return fmt.Errorf("%w: default runtime requires connection and model", ErrUpstreamModelRequired)
 			}
 		}
-		target, err := CompileConnectionTarget(raw, client, modelID, "")
-		if err != nil {
-			return err
-		}
-		// Fail closed: never persist a client default whose model is only a
-		// compile probe placeholder (connection with no explicit model). The
-		// launch path resolves a deterministic supported model instead.
-		if target.ModelPlaceholder {
-			return ErrUpstreamModelRequired
+		if client != ClientClaude {
+			target, err := CompileConnectionTarget(raw, client, modelID, "")
+			if err != nil {
+				return err
+			}
+			// Fail closed: never persist a client default whose model is only a
+			// compile probe placeholder (connection with no explicit model).
+			if target.ModelPlaceholder {
+				return ErrUpstreamModelRequired
+			}
 		}
 		_, err = o.store.SetClientDefault(client, connectionID, modelID, revision)
 		return err

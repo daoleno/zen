@@ -74,7 +74,7 @@ func Compile(baseCommand string, profile Profile, opts CompileOptions) (Resolved
 		if strings.Contains(baseCommand, LoopbackAuthPlaceholder) {
 			return ResolvedLaunch{}, fmt.Errorf("%w: loopback placeholder must not appear in base command", ErrInvalid)
 		}
-		command, env, err := compileClaude(baseCommand, admitted.ClientModelID, profile, loopbackRouteURL)
+		command, env, err := compileClaude(baseCommand, opts.ExplicitModelID, profile, loopbackRouteURL)
 		if err != nil {
 			return ResolvedLaunch{}, err
 		}
@@ -179,7 +179,13 @@ func compileClaude(baseCommand, clientModel string, profile Profile, loopbackRou
 	if strings.HasSuffix(strings.TrimSuffix(loopbackRouteURL, "/"), "/v1") {
 		return "", nil, fmt.Errorf("%w: claude loopback url must be route root without /v1", ErrInvalid)
 	}
-	command = appendArgv(baseCommand, "--model", clientModel)
+	if clientModel = normalizeSpace(clientModel); clientModel != "" {
+		command = appendArgv(baseCommand, "--model", clientModel)
+	} else {
+		// Claude's local /model selection is persisted in the user's settings.
+		// Omitting --model is the documented way to inherit it for a new session.
+		command = baseCommand
+	}
 	env = map[string]string{EnvAnthropicBaseURL: loopbackRouteURL}
 	if normalizeID(profile.AuthMode) != AuthModeNativePassthrough {
 		env[EnvAnthropicAuthToken] = LoopbackAuthPlaceholder

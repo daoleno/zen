@@ -1034,6 +1034,7 @@ func (o *Owner) PrepareLaunchModel(executorID, profileID, modelOverride, baseCom
 			Credentials:           o.creds,
 			Verifier:              o.verifier,
 			CodexControlSocket:    controlSocket,
+			ExplicitModelID:       normalizeSpace(modelOverride),
 		})
 		if compileErr != nil {
 			return compileErr

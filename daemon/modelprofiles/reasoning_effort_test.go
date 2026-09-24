@@ -559,7 +559,7 @@ func TestReasoningEffortClaudeRejected(t *testing.T) {
 	if _, err := owner.SetProviderDefault(ClientClaude, conn.ID, "claude-sonnet-4-6", proj.Revision); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := owner.PrepareLaunch(ExecutorClaude, conn.ID, "claude")
+	plan, err := owner.PrepareLaunchModel(ExecutorClaude, conn.ID, "claude-sonnet-4-6", "claude")
 	if err != nil {
 		t.Fatal(err)
 	}

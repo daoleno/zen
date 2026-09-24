@@ -99,7 +99,7 @@ func TestRouterClaudeMessagesCountTokens(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		var obj map[string]any
 		_ = json.Unmarshal(body, &obj)
-		if obj["model"] != "claude-upstream" {
+		if obj["model"] != "claude-local-selection" {
 			t.Errorf("model=%v", obj["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -123,7 +123,7 @@ func TestRouterClaudeMessagesCountTokens(t *testing.T) {
 	root, _ := LoopbackClaudeRootURL(srv.Listener.Addr().String(), state.Binding.RouteID)
 
 	// /v1/messages?beta=true
-	req, _ := http.NewRequest(http.MethodPost, root+"/v1/messages?beta=true", bytes.NewReader([]byte(`{"model":"claude-upstream","max_tokens":1}`)))
+	req, _ := http.NewRequest(http.MethodPost, root+"/v1/messages?beta=true", bytes.NewReader([]byte(`{"model":"claude-local-selection","max_tokens":1}`)))
 	req.Header.Set("X-Api-Key", LoopbackAuthPlaceholder)
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	resp, err := http.DefaultClient.Do(req)
@@ -139,7 +139,7 @@ func TestRouterClaudeMessagesCountTokens(t *testing.T) {
 	}
 
 	// dedicated count_tokens
-	req, _ = http.NewRequest(http.MethodPost, root+"/v1/messages/count_tokens?beta=true", bytes.NewReader([]byte(`{"model":"claude-upstream"}`)))
+	req, _ = http.NewRequest(http.MethodPost, root+"/v1/messages/count_tokens?beta=true", bytes.NewReader([]byte(`{"model":"claude-local-selection"}`)))
 	req.Header.Set("X-Api-Key", "client-must-strip")
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	resp, err = http.DefaultClient.Do(req)

@@ -650,19 +650,6 @@ export default function ProvidersScreen() {
       modelPicker={modelPicker}
       onCloseModelPicker={() => setModelPicker(null)}
       onSelectModel={(client, connection, modelId) => {
-        if (modelPicker?.purpose === "default") {
-          void runMutation(() =>
-            wsClient.setProviderDefault(currentServerId!, {
-              client,
-              connectionId: connection.id,
-              modelId,
-              revision,
-            }),
-          ).then((result) => {
-            if (result) setModelPicker(null);
-          });
-          return;
-        }
         const enabledIds = toggleModelSupport(catalog, connection.id, modelId);
         if (
           !modelSupportChangeKeepsDefaultValid({
@@ -672,10 +659,7 @@ export default function ProvidersScreen() {
             enabledModelIds: enabledIds,
           })
         ) {
-          Alert.alert(
-            "Choose another default first",
-            "The default runtime model cannot be disabled.",
-          );
+          Alert.alert("Model is in use", "The selected runtime model cannot be disabled.");
           return;
         }
         void runSetModels(connection, enabledIds);

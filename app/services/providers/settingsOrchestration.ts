@@ -27,15 +27,19 @@ export type DefaultRuntimeSeedAction =
 /**
  * Select the next Settings step before switching a Provider. A Provider
  * switch chooses a complete target seed without opening a model picker. The
- * explicit manual model IDs are opaque valid runtime identities even when an
- * upstream does not expose a discoverable model catalog. Otherwise the target
- * default model and first exposed model provide the normal discovery path.
+ * Claude returns a connection-only action because its model belongs to local
+ * Claude Code settings. Codex keeps the existing explicit seed path: manual
+ * model IDs are valid opaque runtime identities, otherwise the target seed
+ * and first exposed model provide the discovery path.
  */
 export function defaultRuntimeSeedAction(input: {
   snapshot: ProvidersSnapshot;
   client: string;
   connectionId: string;
 }): DefaultRuntimeSeedAction {
+  if (input.client === "claude") {
+    return { kind: "apply", modelId: "" };
+  }
   const connection = input.snapshot.connections.find(
     (item) => item.id === input.connectionId,
   );
@@ -75,6 +79,7 @@ export function modelSupportChangeKeepsDefaultValid(input: {
   const current = input.snapshot.defaults[input.client];
   return !(
     current?.connection_id === input.connectionId &&
+    current.model_id !== undefined &&
     !input.enabledModelIds.includes(current.model_id)
   );
 }

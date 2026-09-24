@@ -363,15 +363,6 @@ function ProviderConnectionList({
         (connection) => connection.id === selectedDefault.connection_id,
       )
     : undefined;
-  const selectedModel = selectedConnection
-    ? (catalog.models[selectedConnection.id] ?? []).find(
-        (model) => model.id === selectedDefault?.model_id,
-      )
-    : undefined;
-  const selectedModelId =
-    selectedModel?.display_name?.trim() ||
-    selectedModel?.id ||
-    selectedDefault?.model_id;
   return (
     <View style={styles.providerList}>
       <View style={styles.agentSelector} accessibilityRole="tablist">
@@ -409,8 +400,8 @@ function ProviderConnectionList({
           </Text>
           <Text style={styles.sectionMeta} numberOfLines={1}>
             {selectedConnection
-              ? `${selectedConnection.name}${selectedModelId ? ` · ${selectedModelId}` : ""}`
-              : `Official login${selectedDefault?.model_id ? ` · ${selectedDefault.model_id}` : " · native account"}`}
+              ? selectedConnection.name
+              : "Official login · native account"}
           </Text>
         </View>
         <AnimatedPressable
@@ -1509,7 +1500,6 @@ function ModelSyncSheet({
   const usingLocalCatalog =
     choices.length > 0 &&
     choices.every((choice) => choice.model.source !== "discovered");
-  const selectingDefault = picker.purpose === "default";
   const saving = mutating;
   const normalizedQuery = query.trim().toLowerCase();
   const visibleChoices = choices.filter((choice) => {
@@ -1553,9 +1543,7 @@ function ModelSyncSheet({
         </Pressable>
       </View>
       <Text style={styles.pickerHint}>
-        {selectingDefault
-          ? `Choose the model for new ${providerClientLabel(picker.client)} sessions.`
-          : enabledCount === choices.length
+        {enabledCount === choices.length
             ? `${enabledCount} models exposed`
             : `${enabledCount} of ${choices.length} models exposed`}
       </Text>
@@ -1588,15 +1576,9 @@ function ModelSyncSheet({
         extraData={{
           saving,
           disabled,
-          selectingDefault,
-          selectedModel: catalog.defaults[picker.client]?.model_id,
         }}
         renderItem={({ item: choice }) => {
-          const selected = selectingDefault
-            ? catalog.defaults[picker.client]?.connection_id ===
-                picker.connection.id &&
-              catalog.defaults[picker.client]?.model_id === choice.model.id
-            : choice.current;
+          const selected = choice.current;
           const chipDisabled = saving || disabled;
           return (
             <Pressable
@@ -1607,20 +1589,14 @@ function ModelSyncSheet({
                 chipDisabled && styles.modelChipDisabled,
               ]}
               disabled={chipDisabled}
-              accessibilityRole={selectingDefault ? "radio" : "checkbox"}
+              accessibilityRole="checkbox"
               accessibilityState={{
                 checked: selected,
                 disabled: chipDisabled,
                 busy: saving,
               }}
               accessibilityLabel={`${choice.model.display_name?.trim() || choice.model.id}, ${
-                selectingDefault
-                  ? selected
-                    ? "selected default"
-                    : "available default"
-                  : selected
-                    ? "exposed"
-                    : "hidden"
+                selected ? "exposed" : "hidden"
               }`}
               onPress={() =>
                 onSelectModel(picker.client, picker.connection, choice.model.id)

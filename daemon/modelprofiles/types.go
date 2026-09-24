@@ -287,6 +287,10 @@ type CompileOptions struct {
 	Credentials             CredentialStore
 	Verifier                ProfileContractVerifier
 	VerifiedProfileContract VerifiedProfileContract
+	// ExplicitModelID is a per-session model requested by the Agent UI. An
+	// empty value preserves the executor's local model configuration (Claude's
+	// /model setting in ~/.claude/settings.json).
+	ExplicitModelID string
 	// CodexControlSocket, when set, launches the Codex session in app-server
 	// live-control mode: a headless `codex app-server` owns the thread and the
 	// TUI attaches via `--remote`, exposing the native thread/settings/update

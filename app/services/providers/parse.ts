@@ -216,20 +216,19 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
       return null;
     }
     // Direct/native login is represented by the supported client's explicit
-    // empty default. Other connection defaults must remain complete and
-    // reference a real client-compatible connection.
+    // empty default. Claude connection defaults intentionally omit model_id;
+    // its model belongs to local Claude Code configuration or the Session.
     if (!connectionId) {
       if (modelId) return null;
       defaults[client] = { connection_id: "", model_id: "" };
       continue;
     }
-    if (!modelId || !connectionIds.has(connectionId)) return null;
+    if (!connectionIds.has(connectionId)) return null;
     const connection = connections.find((item) => item.id === connectionId);
     if (!connection?.clients.includes(client)) return null;
-    defaults[client] = {
-      connection_id: connectionId,
-      model_id: modelId,
-    };
+    defaults[client] = modelId
+      ? { connection_id: connectionId, model_id: modelId }
+      : { connection_id: connectionId };
   }
 
   const modelsRecord = asRecord(record.models);

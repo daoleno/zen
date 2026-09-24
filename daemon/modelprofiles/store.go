@@ -223,7 +223,13 @@ func (s *Store) ResolveProfileWithModel(executorID, profileID, modelOverride str
 	}
 	profile, ok := s.profiles[profileID]
 	modelOverride = normalizeSpace(modelOverride)
-	if modelOverride == "" {
+	if modelOverride != "" {
+		if err := ValidateModelID(modelOverride); err != nil {
+			s.mu.RUnlock()
+			return Profile{}, fmt.Errorf("%w: model override: %v", ErrInvalid, err)
+		}
+	}
+	if modelOverride == "" && executorID != ExecutorClaude {
 		modelOverride = strings.TrimSpace(s.defaultModels[clientFromExecutor(executorID)])
 	}
 	s.mu.RUnlock()
@@ -628,6 +634,11 @@ func (s *Store) parseCatalogExtras(doc fileDocument, profiles map[string]Profile
 	defaultModels = map[string]string{}
 	for client, modelID := range doc.DefaultModels {
 		client = clientFromExecutor(client)
+		// Claude's model selection belongs to the local Claude Code settings.
+		// Ignore legacy Provider-level records on load.
+		if client == ClientClaude {
+			continue
+		}
 		modelID = normalizeSpace(modelID)
 		if client == "" || modelID == "" {
 			continue

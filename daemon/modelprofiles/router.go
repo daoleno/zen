@@ -219,6 +219,30 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
 			return
 		}
+		if requestModel == "" {
+			writeRouteError(w, http.StatusBadRequest, ErrModelUnsupported)
+			return
+		}
+		if binding.RouteProtocol == RouteProtocolAnthropicMessages && r.models != nil {
+			entries, catalogErr := r.models(binding.ProfileID)
+			if catalogErr != nil && !errors.Is(catalogErr, ErrNotFound) {
+				writeRouteError(w, http.StatusServiceUnavailable, catalogErr)
+				return
+			}
+			if len(entries) > 0 {
+				served := false
+				for _, entry := range entries {
+					if entry.Available && normalizeSpace(entry.ID) == requestModel {
+						served = true
+						break
+					}
+				}
+				if !served {
+					writeRouteError(w, http.StatusNotFound, fmt.Errorf("%w: %s", ErrModelUnsupported, requestModel))
+					return
+				}
+			}
+		}
 
 		requestEffort, requestEffortPresent := requestEffortFromBody(body)
 		explicitModelSwitch, signalErr := requestHasModelSwitchSignal(body)
@@ -296,7 +320,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// guessing whether a mismatch came from a stale request or /model.
 		bindingModel := normalizeSpace(binding.UpstreamModel)
 		bindingEffort := normalizeID(binding.ReasoningEffort)
-		if requestModel != bindingModel {
+		// Claude Code's request model is the local /model selection. Preserve
+		// it for request-level Provider routing; a fixed launch binding must
+		// not silently replace that choice. Codex keeps its acknowledged
+		// binding rewrite because its native thread model is daemon-controlled.
+		if binding.RouteProtocol != RouteProtocolAnthropicMessages && requestModel != bindingModel {
 			rewritten, err = rewriteRequestModel(body, bindingModel)
 			if err != nil {
 				writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)

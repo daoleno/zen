@@ -41,7 +41,8 @@ export type ProviderPreset = {
 
 export type ProviderDefault = {
   connection_id: string;
-  model_id: string;
+  /** Optional legacy Codex seed; Claude model ownership stays local. */
+  model_id?: string;
 };
 
 export type ProviderModel = {

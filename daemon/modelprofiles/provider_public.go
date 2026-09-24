@@ -58,10 +58,12 @@ type ProviderConnection struct {
 	Advanced              bool   `json:"advanced,omitempty"`
 }
 
-// ProviderDefault is the future-launch default for one product client.
+// ProviderDefault is the future-launch connection selection for one product
+// client. ModelID is retained only for the existing Codex seed path; Claude
+// leaves it empty because its model belongs to local Claude Code settings.
 type ProviderDefault struct {
 	ConnectionID string `json:"connection_id"`
-	ModelID      string `json:"model_id"`
+	ModelID      string `json:"model_id,omitempty"`
 }
 
 // ProviderModelEntry is a catalog/discovery model id with availability only.

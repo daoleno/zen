@@ -84,11 +84,10 @@ export function providerClientForCommand(command: string): ProviderClient | null
 }
 
 /**
- * The authoritative launch selection for a new Session: the client's default
- * connection plus its client-selected model. Null when the client has no
- * Provider connection (direct official login) or the snapshot is missing.
- * The daemon resolves a deterministic supported-model fallback when the
- * selected model is no longer supported.
+ * The authoritative connection selection for a new Session. Claude's model
+ * remains empty here so Claude Code can inherit its local /model setting;
+ * Codex may still carry its legacy explicit seed until its local config path
+ * is migrated.
  */
 export function launchSelectionFromSnapshot(
   snapshot: ProvidersSnapshot | null | undefined,
@@ -103,15 +102,14 @@ export function launchSelectionFromSnapshot(
   if (!connection) return null;
   return {
     connectionId: connection.id,
-    modelId: entry.model_id?.trim() || "",
+    modelId: client === "claude" ? "" : entry.model_id?.trim() || "",
   };
 }
 
 /**
  * The client-selected model bound to a connection via the client default, or
- * null when the connection is not the client default or no model is selected
- * yet. This is the single source the UI shows under a connection row; the
- * client (never the gateway) owns this selection for new Sessions.
+ * null when the connection is not the client default or no model is selected.
+ * Claude deliberately has no Provider-bound model.
  */
 export function boundModelForConnection(
   snapshot: ProvidersSnapshot | null | undefined,
@@ -119,6 +117,7 @@ export function boundModelForConnection(
   connectionId: string,
 ): string | null {
   const normalizedClient = normalizeProviderClient(client);
+  if (normalizedClient === "claude") return null;
   const defaultEntry = snapshot?.defaults[normalizedClient];
   if (!defaultEntry) return null;
   if (
@@ -127,7 +126,7 @@ export function boundModelForConnection(
   ) {
     return null;
   }
-  const modelId = normalizeProviderId(defaultEntry.model_id);
+  const modelId = normalizeProviderId(defaultEntry.model_id ?? "");
   return modelId || null;
 }
 
@@ -150,7 +149,10 @@ export function connectionRequiresModelSelection(
   ) {
     return false;
   }
-  return !normalizeProviderId(defaultEntry.model_id);
+  return (
+    normalizedClient !== "claude" &&
+    !normalizeProviderId(defaultEntry.model_id ?? "")
+  );
 }
 
 /**

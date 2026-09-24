@@ -429,7 +429,7 @@ func TestSetProviderDefaultValidatesClientModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude pro: %v", err)
 	}
-	if owner.store.DefaultModelID(ClientClaude) != "deepseek-v4-pro" {
+	if owner.store.DefaultModelID(ClientClaude) != "" {
 		t.Fatalf("claude default=%q", owner.store.DefaultModelID(ClientClaude))
 	}
 }

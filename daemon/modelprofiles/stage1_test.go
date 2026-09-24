@@ -308,6 +308,32 @@ func TestCompileCodexBuiltinOpenAIAndClaudeEnv(t *testing.T) {
 	}
 }
 
+func TestClaudeLaunchInheritsLocalModelUnlessSessionOverrides(t *testing.T) {
+	profile := claudeMessagesProfile("claude-local", "claude-sonnet-4-6", "upstream-claude")
+	profile.AuthMode = AuthModeNone
+	profile.CredentialEnv = ""
+	base := CompileOptions{
+		LoopbackRouteURL:        "http://127.0.0.1:4317/r/rt_local",
+		CatalogRevision:         1,
+		VerifiedProfileContract: contractFor(profile),
+	}
+	resolved, err := Compile("claude", profile, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(resolved.Command, "--model") {
+		t.Fatalf("local Claude model must be inherited when no session override exists: %q", resolved.Command)
+	}
+	base.ExplicitModelID = "claude-opus-4-1"
+	resolved, err = Compile("claude", profile, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resolved.Command, "--model claude-opus-4-1") {
+		t.Fatalf("explicit session model was not preserved: %q", resolved.Command)
+	}
+}
+
 func TestRouteTableActivateContractAndHistoryRules(t *testing.T) {
 	table := NewRouteTable()
 	table.SetLookup(readyLookup("x"))

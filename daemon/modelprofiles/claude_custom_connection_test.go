@@ -74,7 +74,7 @@ func TestSavedCustomClaudeLaunchRoutesSelectedModelAndKey(t *testing.T) {
 	if discoveryErr == nil || !manualFound || !bundledFound {
 		t.Fatalf("missing /models must keep manual model, add local candidates, and return an honest warning: entries=%#v warning=%t", discovery.Entries, discoveryErr != nil)
 	}
-	created, err = owner.SetProviderDefault(ClientClaude, conn.ID, model, created.Revision)
+	created, err = owner.SetProviderDefault(ClientClaude, conn.ID, "", created.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestSavedCustomClaudeLaunchRoutesSelectedModelAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.Defaults[ClientClaude] != (ProviderDefault{ConnectionID: conn.ID, ModelID: model}) {
+	if reopened.Defaults[ClientClaude] != (ProviderDefault{ConnectionID: conn.ID, ModelID: ""}) {
 		t.Fatalf("default/manual model not restored: %#v", reopened.Defaults)
 	}
 	reopenedManual := false
@@ -103,12 +103,12 @@ func TestSavedCustomClaudeLaunchRoutesSelectedModelAndKey(t *testing.T) {
 	if !reopenedManual || !reopenedBundled || len(reopened.Connections) != 1 || reopened.Connections[0].ModelCatalogWarning == "" || !reopened.Connections[0].ModelCatalogStale {
 		t.Fatalf("reopened fallback/warning projection is not truthful: connection=%#v models=%#v", reopened.Connections[0], reopened.Models[conn.ID])
 	}
-	plan, err := owner.PrepareLaunch(ExecutorClaude, "", "claude")
+	plan, err := owner.PrepareLaunchModel(ExecutorClaude, "", model, "claude")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if plan.State.Binding.ProfileID != conn.ID || plan.State.Binding.UpstreamModel != model ||
-		!strings.Contains(plan.Command, "--model claude-sonnet-4-6") || plan.Env[EnvAnthropicAuthToken] != LoopbackAuthPlaceholder ||
+		!strings.Contains(plan.Command, "--model "+model) || plan.Env[EnvAnthropicAuthToken] != LoopbackAuthPlaceholder ||
 		plan.Env[EnvAnthropicAPIKey] != LoopbackClaudeAPIKeyPlaceholder {
 		t.Fatalf("wrong managed launch identity: profile=%q model=%q command=%q", plan.State.Binding.ProfileID, plan.State.Binding.UpstreamModel, plan.Command)
 	}

@@ -658,6 +658,15 @@ describe("Model sync and default binding policy", () => {
     });
     expect(launchSelectionFromSnapshot(snapshot, "claude")).toBeNull();
     expect(
+      launchSelectionFromSnapshot(
+        {
+          ...snapshot,
+          defaults: { claude: { connection_id: "c1", model_id: "legacy" } },
+        },
+        "claude",
+      ),
+    ).toEqual({ connectionId: "c1", modelId: "" });
+    expect(
       launchSelectionFromSnapshot({ ...snapshot, defaults: {} }, "codex"),
     ).toBeNull();
   });

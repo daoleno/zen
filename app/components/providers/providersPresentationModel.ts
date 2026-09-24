@@ -26,7 +26,7 @@ export type ProvidersEditorState =
  * support. Persisted only after a successful `set_provider_models` write.
  */
 export type ModelSyncPickerState = {
-  purpose: "support" | "default";
+  purpose: "support";
   client: ProviderClient;
   connection: ProviderConnection;
   models: ProviderModel[];

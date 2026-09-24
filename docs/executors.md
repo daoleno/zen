@@ -62,7 +62,12 @@ its own login flow. For a custom Codex or Claude endpoint, **Settings > Provider
 Models and accounts** stores the supplied API key on the current daemon through
 Zen's credential store. The mobile form does not display stored secrets; leaving
 an existing key empty preserves it. Switching the current server rebinds the
-configuration. Selecting a model connection does not change the Brain executor.
+configuration. Selecting a Provider connection does not change the Brain
+executor. Provider settings own the connection, endpoint, credentials, model
+catalog, and exposed model scope; they do not own a default Claude model. A
+Claude Code launch with no Agent-level model request omits `--model`, so Claude
+Code inherits the local model saved through `/model` in its settings. An
+Agent-level model selection is passed only for that Session.
 
 Provider model availability still comes only from the live Provider catalog and its
 last-known-good cache. Zen may enrich those already discovered rows from the
@@ -115,7 +120,7 @@ Update granularity is intentionally limited to what each current Zen adapter rec
 
 The CLIs themselves have richer direct protocols that the current tmux/transcript integration does not own: Codex app-server emits item-keyed assistant/reasoning/output deltas, Claude supports `stream-json` with partial message events, and Cursor supports `stream-json --stream-partial-output`. Genuine delta support for those providers requires a daemon-owned structured executor runtime that owns process or app-server I/O, translates native lifecycle notifications into this reducer, persists reconnectable snapshots, and coordinates send/interrupt/terminal attachment. Adding flags to the existing interactive tmux command is not sufficient, and parsing raw NDJSON from terminal chrome would violate the protocol boundary.
 
-On Linux, managed Claude sessions read project JSONL from the owning process's `CLAUDE_CONFIG_DIR` (or its `HOME/.claude`) when available. Other hosts retain the established default-home lookup; custom per-process config roots have not been verified there. On all hosts, an explicit `--resume <id>` binds only that ID, even when its transcript is older than the ordinary discovery window; if the file is missing, Zen does not select a different same-directory chat. Settings can change Claude's Provider/model default for future launches, but Zen does not claim that changing the gateway route updates an already-running interactive Claude process. Its active Provider/model picker is unavailable until a native process-control owner can acknowledge such changes; the existing session and transcript remain intact.
+On Linux, managed Claude sessions read project JSONL from the owning process's `CLAUDE_CONFIG_DIR` (or its `HOME/.claude`) when available. Other hosts retain the established default-home lookup; custom per-process config roots have not been verified there. On all hosts, an explicit `--resume <id>` binds only that ID, even when its transcript is older than the ordinary discovery window; if the file is missing, Zen does not select a different same-directory chat. Provider connection changes apply to future launches, but Zen does not claim that changing the gateway route updates an already-running interactive Claude process. Its active Provider/model picker is unavailable until a native process-control owner can acknowledge such changes; the existing session and transcript remain intact.
 
 Zen does not synthesize timed typewriter output and does not derive structured Chat from terminal screenshots, prompt echoes, or pane chrome. The live Terminal path remains independent and unchanged.
 
