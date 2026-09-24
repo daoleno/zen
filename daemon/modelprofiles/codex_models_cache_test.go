@@ -192,12 +192,13 @@ func TestProviderProjectionWithoutInstalledOrDiscoveredMetadata(t *testing.T) {
 		ExecutorID: ExecutorCodex,
 		Model:      "gpt-5.6-sol",
 	}, discoveryEntry{})
-	if len(entries) != 1 {
-		t.Fatalf("entries=%#v want one required model", entries)
+	byID := map[string]ProviderModelEntry{}
+	for _, entry := range entries {
+		byID[entry.ID] = entry
 	}
-	entry := entries[0]
-	if entry.ID != "gpt-5.6-sol" || entry.Source != ModelSourceManual || !entry.Available || !entry.Known {
-		t.Fatalf("entry=%#v", entry)
+	entry, ok := byID["gpt-5.6-sol"]
+	if !ok || entry.Source != ModelSourceBundled || !entry.Available || !entry.Known {
+		t.Fatalf("required local entry=%#v all=%#v", entry, entries)
 	}
 	if entry.DisplayName == "" || entry.ReasoningEffortDefault == "" || len(entry.ReasoningEfforts) == 0 {
 		t.Fatalf("pinned metadata missing: %#v", entry)

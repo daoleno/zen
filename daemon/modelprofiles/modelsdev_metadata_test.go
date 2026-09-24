@@ -64,6 +64,19 @@ func TestModelsDevMetadataNeverAddsOrEnablesModels(t *testing.T) {
 	}
 }
 
+func TestModelsDevMetadataModelIDsAreValidatedAndProviderScoped(t *testing.T) {
+	catalog := &modelsDevCatalog{Models: map[string]map[string]modelPresentationMetadata{
+		"anthropic": {"claude-sonnet-4-6": {}, "not valid": {}},
+		"openai":    {"gpt-5": {}},
+	}}
+	if got := catalog.modelIDs("anthropic"); len(got) != 1 || got[0] != "claude-sonnet-4-6" {
+		t.Fatalf("anthropic ids=%v", got)
+	}
+	if got := catalog.modelIDs("openai"); len(got) != 1 || got[0] != "gpt-5" {
+		t.Fatalf("openai ids=%v", got)
+	}
+}
+
 func TestModelsDevMetadataFillsOnlyMissingLiveFields(t *testing.T) {
 	catalog := &modelsDevCatalog{UpdatedAt: time.Now().UTC(), Models: map[string]map[string]modelPresentationMetadata{"openai": {
 		"shared": {DisplayName: "Models Name", ContextWindow: 100, InputPricePerMillion: floatPtr(2), ReleaseDate: "2025-01-01"},

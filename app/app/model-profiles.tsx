@@ -469,7 +469,7 @@ export default function ProvidersScreen() {
       } else {
         Alert.alert(
           "Models unavailable",
-          "No model list was returned. Add a Model ID in Edit, or retry Sync models later.",
+          "The upstream model list is unavailable. Zen is using its local model catalog; Sync can refresh it.",
         );
       }
     } catch (discoverError) {
@@ -563,7 +563,7 @@ export default function ProvidersScreen() {
           [connection.id]: {
             kind: "error",
             message:
-              "No model catalog is available. Edit this Provider and enter a Model ID.",
+              "No local model catalog is available. Edit this Provider to enter a Model ID.",
           },
         }));
         return;

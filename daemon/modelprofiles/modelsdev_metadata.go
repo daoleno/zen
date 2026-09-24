@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +77,26 @@ func (c *modelsDevCatalog) lookup(provider, id string) (modelPresentationMetadat
 	items := c.Models[strings.ToLower(strings.TrimSpace(provider))]
 	item, ok := items[strings.TrimSpace(id)]
 	return item, c.UpdatedAt, ok
+}
+
+// modelIDs returns validated ids present in the local models.dev cache. This
+// cache is metadata-only input and is used here only as a local fallback.
+func (c *modelsDevCatalog) modelIDs(provider string) []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	items := c.Models[strings.ToLower(strings.TrimSpace(provider))]
+	ids := make([]string, 0, len(items))
+	for id := range items {
+		id = normalizeSpace(id)
+		if ValidateModelID(id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	c.mu.RUnlock()
+	sort.Strings(ids)
+	return ids
 }
 
 func (c *modelsDevCatalog) refresh(ctx context.Context) error {

@@ -61,8 +61,18 @@ func TestSavedCustomClaudeLaunchRoutesSelectedModelAndKey(t *testing.T) {
 		t.Fatalf("unavailable model listing must not claim invalid credentials: %v", testErr)
 	}
 	discovery, discoveryErr := owner.DiscoverProviderModelsDetailed(conn.ID, true)
-	if discoveryErr == nil || len(discovery.Entries) != 1 || discovery.Entries[0].ID != model {
-		t.Fatalf("missing /models must keep manual model with an honest warning: entries=%d warning=%t", len(discovery.Entries), discoveryErr != nil)
+	manualFound := false
+	bundledFound := false
+	for _, entry := range discovery.Entries {
+		if entry.ID == model && entry.Available && entry.Source == ModelSourceManual {
+			manualFound = true
+		}
+		if entry.Source == ModelSourceBundled && entry.Available {
+			bundledFound = true
+		}
+	}
+	if discoveryErr == nil || !manualFound || !bundledFound {
+		t.Fatalf("missing /models must keep manual model, add local candidates, and return an honest warning: entries=%#v warning=%t", discovery.Entries, discoveryErr != nil)
 	}
 	created, err = owner.SetProviderDefault(ClientClaude, conn.ID, model, created.Revision)
 	if err != nil {
@@ -77,9 +87,21 @@ func TestSavedCustomClaudeLaunchRoutesSelectedModelAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.Defaults[ClientClaude] != (ProviderDefault{ConnectionID: conn.ID, ModelID: model}) ||
-		len(reopened.Models[conn.ID]) != 1 || reopened.Models[conn.ID][0].ID != model {
+	if reopened.Defaults[ClientClaude] != (ProviderDefault{ConnectionID: conn.ID, ModelID: model}) {
 		t.Fatalf("default/manual model not restored: %#v", reopened.Defaults)
+	}
+	reopenedManual := false
+	reopenedBundled := false
+	for _, entry := range reopened.Models[conn.ID] {
+		if entry.ID == model && entry.Available && entry.Source == ModelSourceManual {
+			reopenedManual = true
+		}
+		if entry.Source == ModelSourceBundled && entry.Available {
+			reopenedBundled = true
+		}
+	}
+	if !reopenedManual || !reopenedBundled || len(reopened.Connections) != 1 || reopened.Connections[0].ModelCatalogWarning == "" || !reopened.Connections[0].ModelCatalogStale {
+		t.Fatalf("reopened fallback/warning projection is not truthful: connection=%#v models=%#v", reopened.Connections[0], reopened.Models[conn.ID])
 	}
 	plan, err := owner.PrepareLaunch(ExecutorClaude, "", "claude")
 	if err != nil {

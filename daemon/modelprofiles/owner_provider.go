@@ -183,19 +183,42 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 		executorID = executorFromClient(profile.Client)
 	}
 	localIDs, localMetadata, _ := loadInstalledCodexModelCatalog()
-	ids := discovered.IDs
+	ids := append([]string(nil), discovered.IDs...)
 	metadata := cloneModelMetadataMap(discovered.Metadata)
 	fallbackMetadata := localMetadata
 	source := ModelSourceDiscovered
+	sources := map[string]string{}
 	if discovered.Err != "" || len(ids) == 0 {
+		ids = nil
+		metadata = nil
+		// LastGood is the first fallback because it reflects this provider's
+		// own prior response and may contain provider-specific identities.
+		appendModelIDs(&ids, sources, discovered.LastGood, ModelSourceLKG)
+		metadata = cloneModelMetadataMap(discovered.LastGoodMeta)
 		if executorID == ExecutorCodex {
-			ids = localIDs
-			metadata = localMetadata
-			source = ModelSourceCodexCache
-		} else {
-			ids = discovered.LastGood
-			metadata = cloneModelMetadataMap(discovered.LastGoodMeta)
-			source = ModelSourceLKG
+			appendModelIDs(&ids, sources, localIDs, ModelSourceCodexCache)
+			for _, entry := range CodexModelCatalogEntries() {
+				appendModelIDs(&ids, sources, []string{entry.Slug}, ModelSourceBundled)
+			}
+		} else if executorID == ExecutorClaude {
+			for id := range builtinClaudeClients {
+				appendModelIDs(&ids, sources, []string{id}, ModelSourceBundled)
+			}
+		}
+		providerKey := strings.ToLower(normalizeSpace(profile.ProviderID))
+		if providerKey == "" {
+			providerKey = strings.ToLower(executorID)
+		}
+		appendModelIDs(&ids, sources, o.modelsDev.modelIDs(providerKey), ModelSourceBundled)
+		if spec, ok := lookupPreset(inferPresetID(profile)); ok {
+			appendModelIDs(&ids, sources, []string{spec.DefaultModel[executorID]}, ModelSourceBundled)
+		}
+		source = ModelSourceBundled
+	}
+	required := o.connectionRequiredModels(profile)
+	for _, id := range required {
+		if _, ok := sources[normalizeSpace(id)]; !ok {
+			sources[normalizeSpace(id)] = ModelSourceManual
 		}
 	}
 	if executorID == ExecutorCodex {
@@ -221,12 +244,30 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 				mergeModelPresentationMetadata(metadata[id], localMetadata[id]))
 		}
 	}
-	required := o.connectionRequiredModels(profile)
-	providerKey := strings.ToLower(executorID)
-	if providerKey == ExecutorCodex {
-		providerKey = "openai"
+	providerKey := strings.ToLower(normalizeSpace(profile.ProviderID))
+	if providerKey == "" {
+		providerKey = strings.ToLower(executorID)
 	}
-	return projectCatalogModelEntries(ids, metadata, source, discovered.Disabled, required, fallbackMetadata, executorID == ExecutorCodex, o.modelsDev, providerKey)
+	return projectCatalogModelEntriesWithSources(ids, metadata, source, sources, discovered.Disabled, required, fallbackMetadata, executorID == ExecutorCodex, o.modelsDev, providerKey)
+}
+
+func appendModelIDs(ids *[]string, sources map[string]string, candidates []string, source string) {
+	seen := make(map[string]struct{}, len(*ids))
+	for _, id := range *ids {
+		seen[normalizeSpace(id)] = struct{}{}
+	}
+	for _, id := range candidates {
+		id = normalizeSpace(id)
+		if ValidateModelID(id) != nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		*ids = append(*ids, id)
+		sources[id] = source
+	}
 }
 
 func (o *Owner) connectionRequiredModels(profile Profile) []string {
@@ -266,6 +307,10 @@ func (o *Owner) connectionRequiredModels(profile Profile) []string {
 }
 
 func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentationMetadata, source string, disabled, required []string, fallbackMetadata map[string]modelPresentationMetadata, codex bool, modelsDev *modelsDevCatalog, providerKey string) []ProviderModelEntry {
+	return projectCatalogModelEntriesWithSources(ids, metadata, source, nil, disabled, required, fallbackMetadata, codex, modelsDev, providerKey)
+}
+
+func projectCatalogModelEntriesWithSources(ids []string, metadata map[string]modelPresentationMetadata, source string, sources map[string]string, disabled, required []string, fallbackMetadata map[string]modelPresentationMetadata, codex bool, modelsDev *modelsDevCatalog, providerKey string) []ProviderModelEntry {
 	disabledSet := map[string]struct{}{}
 	for _, id := range disabled {
 		disabledSet[normalizeSpace(id)] = struct{}{}
@@ -334,7 +379,13 @@ func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentat
 		out = append(out, entry)
 	}
 	for _, id := range ids {
-		add(id, source, false)
+		entrySource := source
+		if sources != nil {
+			if candidate := sources[normalizeSpace(id)]; candidate != "" {
+				entrySource = candidate
+			}
+		}
+		add(id, entrySource, false)
 	}
 	for _, id := range required {
 		add(id, ModelSourceManual, true)

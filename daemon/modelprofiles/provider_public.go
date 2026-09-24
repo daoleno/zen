@@ -69,7 +69,7 @@ type ProviderModelEntry struct {
 	ID                     string   `json:"id"`
 	DisplayName            string   `json:"display_name,omitempty"`
 	Available              bool     `json:"available"`
-	Source                 string   `json:"source"` // codex_cache | discovered | lkg | manual
+	Source                 string   `json:"source"` // codex_cache | discovered | lkg | bundled | manual
 	ReasoningEffortDefault string   `json:"reasoning_effort_default,omitempty"`
 	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
 	ContextWindowTokens    int64    `json:"context_window_tokens,omitempty"`

@@ -1506,6 +1506,9 @@ function ModelSyncSheet({
     picker.models,
   );
   const enabledCount = choices.filter((choice) => choice.current).length;
+  const usingLocalCatalog =
+    choices.length > 0 &&
+    choices.every((choice) => choice.model.source !== "discovered");
   const selectingDefault = picker.purpose === "default";
   const saving = mutating;
   const normalizedQuery = query.trim().toLowerCase();
@@ -1556,6 +1559,11 @@ function ModelSyncSheet({
             ? `${enabledCount} models exposed`
             : `${enabledCount} of ${choices.length} models exposed`}
       </Text>
+      {usingLocalCatalog ? (
+        <Text style={styles.pickerNotice}>
+          Upstream models are unavailable. Showing the local model catalog; Sync can refresh it.
+        </Text>
+      ) : null}
       <MobileSingleLineInput
         value={query}
         onChangeText={setQuery}
@@ -2091,6 +2099,13 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       marginTop: 2,
     },
     pickerHint: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textSecondary,
+      paddingHorizontal: 16,
+      paddingBottom: 10,
+    },
+    pickerNotice: {
       ...UiTextMetrics,
       ...TypeScale.caption,
       color: colors.textSecondary,
