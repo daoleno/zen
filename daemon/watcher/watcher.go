@@ -1600,6 +1600,14 @@ func (w *Watcher) collectMissingPollEvidence(missing []missingPollWorker, probe 
 		if !current {
 			continue
 		}
+		// A newly-created target can be absent from one successful inventory
+		// while tmux is still publishing the window. Keep the in-memory owner
+		// when an exact target probe still proves Zen's durable marker; the next
+		// poll will observe the window normally. Removing it here makes the
+		// readiness handoff report a false foreign-target ownership failure.
+		if owned, ownershipErr := w.targetIsDurablyOwned(item.id); ownershipErr == nil && owned {
+			continue
+		}
 		if item.turn.TurnID != "" && !TurnImmutable(item.turn.Status) {
 			if err := w.resolveRemovedTurnFacts(item.id, item.workerSnap, item.turn, probe); err != nil {
 				continue // Retain the projection so the next inventory retries persistence, never input.

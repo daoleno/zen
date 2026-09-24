@@ -1340,6 +1340,38 @@ func TestClaudeCommandDetection(t *testing.T) {
 	}
 }
 
+func TestClaudeInputReadyAcceptsCommandOverride(t *testing.T) {
+	content := "Claude Code v2.1.214\n\n❯\u00a0\n⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n"
+	for _, command := range []string{
+		"claude",
+		"claude --model gpt-6-sol --permission-mode bypassPermissions",
+		"env CLAUDE_CONFIG_DIR=/tmp/zen -- claude --dangerously-skip-permissions",
+	} {
+		if !isWorkerInputReady(command, content) {
+			t.Fatalf("Claude command %q should accept the ready pane", command)
+		}
+	}
+}
+
+func TestMissingOwnedWorkerIsRetainedAcrossTransientInventoryGap(t *testing.T) {
+	w := New(time.Hour)
+	w.targetOwnershipResolver = func(string) (bool, error) { return true, nil }
+	worker := &classifier.Worker{ID: "zen-worker-claude:@1", Command: "claude", PaneAlive: true}
+	w.workers[worker.ID] = worker
+	w.workerEpoch[worker.ID] = 1
+
+	missing := []missingPollWorker{{
+		id: worker.ID, epoch: 1, owner: worker, workerSnap: *worker,
+	}}
+	retained := w.collectMissingPollEvidence(missing, nil)
+	if len(retained) != 0 {
+		t.Fatalf("owned startup target was treated as missing: %#v", retained)
+	}
+	if w.workers[worker.ID] != worker {
+		t.Fatal("transient inventory gap should retain the in-memory owner")
+	}
+}
+
 func TestProviderCommandDetectionDirectAndEnvWrapped(t *testing.T) {
 	const zenPathWrap = "env PATH='/opt/zen/bin':$PATH"
 	// Exact Host form from withZenCLIOnPath(shellQuote(dir)): quoted dir may
