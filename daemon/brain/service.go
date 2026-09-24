@@ -3375,7 +3375,11 @@ func (s *Service) hostLaunchCommand(executor work.WorkerExecutor, resumeSessionI
 		}
 		return withZenCLIOnPath(command), nil
 	case work.WorkerProviderClaude:
-		command = work.HardenClaudeCommand(command)
+		prepared, prepareErr := work.PrepareDelegatedCommand(provider, command)
+		if prepareErr != nil {
+			return "", prepareErr
+		}
+		command = prepared
 		if resumeSessionID != "" {
 			var err error
 			command, err = work.WithProviderResumeToken(provider, command, resumeSessionID)

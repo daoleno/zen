@@ -84,6 +84,27 @@ func HardenClaudeCommand(command string) string {
 	return command + " " + ClaudeFullAuthorizationFlag
 }
 
+// PrepareDelegatedCommand applies the provider adapter's launch contract for
+// a delegated Worker. The control plane calls this once for every executor;
+// it must not grow provider-specific spawn or send branches of its own.
+func PrepareDelegatedCommand(provider, command string) (string, error) {
+	provider = strings.TrimSpace(provider)
+	switch provider {
+	case WorkerProviderCodex:
+		return HardenCodexDelegatedCommand(command), nil
+	case WorkerProviderClaude:
+		return HardenClaudeCommand(command), nil
+	case WorkerProviderOpenCode:
+		return HardenOpenCodeDelegatedCommand(command)
+	case WorkerProviderDSH:
+		return EnsureDSHSessionLaunchCommand(command)
+	case WorkerProviderPi:
+		return EnsurePiSessionLaunchCommand(command)
+	default:
+		return strings.TrimSpace(command), nil
+	}
+}
+
 // HardenOpenCodeDelegatedCommand returns an OpenCode launch command configured
 // for non-interactive delegated execution by ensuring exact argv `--auto`.
 // Equals forms (`--auto=false`, `--auto=true`, …) are invalid and rejected

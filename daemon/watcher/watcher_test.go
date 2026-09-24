@@ -2364,6 +2364,17 @@ func TestClaudeInputReadyManagedLoopbackPane(t *testing.T) {
 	}
 }
 
+func TestClaudeInputReadyIgnoresStaleStartupOverlayBeforeCurrentComposer(t *testing.T) {
+	pane := "Claude Code v2.1.281\nLoading model...\nStarting Claude...\n" +
+		"Messages restored from the previous startup.\n" +
+		"Old startup output retained in the pane scrollback.\n" +
+		"\n❯ Try \"fix lint errors\"\n" +
+		"manual mode on · ? for shortcuts\n"
+	if !isClaudeInputReady(pane) {
+		t.Fatal("stale startup overlay must not block the current ready composer")
+	}
+}
+
 func TestClaudeReadinessRecognizesCommandOverrides(t *testing.T) {
 	pane := "Claude Code v2.1.281\n❯\nmanual mode on · ? for shortcuts"
 	for _, command := range []string{

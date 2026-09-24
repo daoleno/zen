@@ -114,6 +114,26 @@ func TestHardenClaudeCommandDefaultsToClaude(t *testing.T) {
 	}
 }
 
+func TestPrepareDelegatedCommandUsesOneProviderAdapterBoundary(t *testing.T) {
+	cases := []struct {
+		provider string
+		command  string
+		want     string
+	}{
+		{WorkerProviderCodex, "codex", "codex " + CodexFullAuthorizationFlag},
+		{WorkerProviderClaude, "claude", "claude " + ClaudeFullAuthorizationFlag},
+	}
+	for _, tc := range cases {
+		got, err := PrepareDelegatedCommand(tc.provider, tc.command)
+		if err != nil {
+			t.Fatalf("provider %q: %v", tc.provider, err)
+		}
+		if got != tc.want {
+			t.Fatalf("provider %q command = %q, want %q", tc.provider, got, tc.want)
+		}
+	}
+}
+
 func TestScheduledActionCommandRecognizesExactUnattendedArgv(t *testing.T) {
 	tests := []struct {
 		name, executorID, command, kind, want string

@@ -3950,10 +3950,20 @@ func isClaudeInputReady(content string) bool {
 	if len(composers) == 0 || len(footers) == 0 || footers[len(footers)-1][0] < composers[len(composers)-1][1] {
 		return false
 	}
-	// Evaluate overlays after the latest header. Startup prompts and model
-	// pickers in scrollback must never make an otherwise non-empty pane ready.
+	// Evaluate overlays in the current composer window. Claude keeps startup
+	// text in scrollback after the TUI becomes usable; treating words such as
+	// "loading" from that old epoch as live state causes a ready Worker to
+	// time out and the shared handoff to report input-not-ready.
 	if headers := claudeHeaderRe.FindAllStringIndex(content, -1); len(headers) > 0 {
 		current := content[headers[len(headers)-1][0]:]
+		composers := claudeComposerRe.FindAllStringIndex(current, -1)
+		if len(composers) > 0 {
+			composerStart := composers[len(composers)-1][0] - 96
+			if composerStart < 0 {
+				composerStart = 0
+			}
+			current = current[composerStart:]
+		}
 		if claudeBlockedOverlayRe.MatchString(current) {
 			return false
 		}

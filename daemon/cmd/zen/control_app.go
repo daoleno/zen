@@ -1541,46 +1541,15 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 			command = executorName
 		}
 		provider := work.InferWorkerProvider(executor.Kind, command, executorName, executor.Name)
-		if provider == work.WorkerProviderCodex {
-			// Brain-delegated Codex sessions must run non-interactively with
-			// the most permissive available authorization mode so internal
-			// progress commands do not block on approval prompts.
-			command = work.HardenCodexDelegatedCommand(command)
-		} else if provider == work.WorkerProviderClaude {
-			// Brain-delegated Claude sessions must run non-interactively with
-			// the most permissive authorization mode so internal progress
-			// commands do not block on approval prompts.
-			command = work.HardenClaudeCommand(command)
-		} else if provider == work.WorkerProviderOpenCode {
-			hardened, hardenErr := work.HardenOpenCodeDelegatedCommand(command)
-			if hardenErr != nil {
-				return "", hardenErr
-			}
-			command = hardened
-		} else if provider == work.WorkerProviderDSH {
-			return work.EnsureDSHSessionLaunchCommand(command)
-		} else if provider == work.WorkerProviderPi {
-			var ensureErr error
-			command, ensureErr = work.EnsurePiSessionLaunchCommand(command)
-			if ensureErr != nil {
-				return "", ensureErr
-			}
+		prepared, prepareErr := work.PrepareDelegatedCommand(provider, command)
+		if prepareErr != nil {
+			return "", prepareErr
 		}
+		command = prepared
 		return command, nil
 	}
 	provider := work.InferWorkerProvider(executorName)
-	if provider == work.WorkerProviderCodex {
-		return work.HardenCodexDelegatedCommand(executorName), nil
-	} else if provider == work.WorkerProviderClaude {
-		return work.HardenClaudeCommand(executorName), nil
-	} else if provider == work.WorkerProviderOpenCode {
-		return work.HardenOpenCodeDelegatedCommand(executorName)
-	} else if provider == work.WorkerProviderDSH {
-		return work.EnsureDSHSessionLaunchCommand(executorName)
-	} else if provider == work.WorkerProviderPi {
-		return work.EnsurePiSessionLaunchCommand(executorName)
-	}
-	return executorName, nil
+	return work.PrepareDelegatedCommand(provider, executorName)
 }
 
 func (a *controlApp) brainCallerDelegatedExecutor(workerID string) (string, bool) {

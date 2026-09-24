@@ -117,6 +117,13 @@ actionable error instead of silently falling back to Anthropic login. To run
 the unmodified native CLI, invoke its absolute path (or temporarily remove
 the Zen install directory from `PATH`).
 
+This shell takeover is only the interactive user entry point. Brain and other
+control-plane callers use the executor catalog name `claude` through the
+provider-neutral `zen worker spawn -executor claude` and `zen worker send`
+protocol. They do not invoke `zen claude`, add a Claude-specific completion
+path, or use a separate Worker lifecycle; Claude-specific startup and input
+readiness remain inside its executor adapter.
+
 ## Custom executors
 
 Any `[[executors]]` entry with `name` + `command` overrides or extends the map. Unknown tools are treated as custom tmux-backed agents.
