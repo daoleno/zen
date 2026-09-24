@@ -265,7 +265,11 @@ export function ProvidersPresentation({
   );
 }
 
-function GatewayStatusRow({ status }: { status: ProvidersSnapshot["gateway"] }) {
+function GatewayStatusRow({
+  status,
+}: {
+  status: NonNullable<ProvidersSnapshot["gateway"]>;
+}) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const endpoint = status.endpoint ?? status.address ?? "Unavailable";
