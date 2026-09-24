@@ -10,6 +10,7 @@ export type ProviderClient = (typeof PROVIDER_CLIENTS)[number];
 
 export type ProviderConnection = {
   id: string;
+  slug?: string;
   name: string;
   preset_id?: string;
   clients: string[];
@@ -70,6 +71,15 @@ export type ProvidersSnapshot = {
   defaults: Record<string, ProviderDefault>;
   presets: ProviderPreset[];
   models: Record<string, ProviderModel[]>;
+  gateway?: GatewayStatus;
+};
+
+export type GatewayStatus = {
+  running: boolean;
+  address?: string;
+  endpoint?: string;
+  protocols: string[];
+  model_count: number;
 };
 
 export type ProviderCatalogProjection = ProvidersSnapshot;

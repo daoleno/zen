@@ -122,6 +122,40 @@ func (s *Store) Projection() (Catalog, []ProfileView) {
 	return s.catalogLocked(), s.viewsLocked()
 }
 
+// MigrateProviderSlugs assigns and durably persists missing public slugs
+// without changing the catalog revision. It is called by the Owner startup
+// path; plain Store loads remain byte-preserving for callers that only inspect
+// legacy catalogs.
+func (s *Store) MigrateProviderSlugs() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneProfiles(s.profiles)
+	changed := false
+	for id, profile := range next {
+		if profile.Slug != "" {
+			continue
+		}
+		profile.Slug = ProviderSlugFor(profile.Name, profile.ID)
+		updated, err := ensureProviderSlug(profile, next)
+		if err != nil {
+			return err
+		}
+		next[id] = updated
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	if err := s.persistLocked(s.revision, next, cloneDefaults(s.defaults), cloneDefaults(s.defaultModels)); err != nil {
+		return err
+	}
+	s.profiles = next
+	return nil
+}
+
 func (s *Store) viewsLocked() []ProfileView {
 	out := make([]ProfileView, 0, len(s.profiles))
 	for _, id := range sortedProfileIDs(s.profiles) {
@@ -354,6 +388,11 @@ func (s *Store) Create(profile Profile, expectedRevision int64) (Catalog, error)
 	if _, exists := s.profiles[profile.ID]; exists {
 		return Catalog{}, fmt.Errorf("%w: %s", ErrDuplicateID, profile.ID)
 	}
+	var slugErr error
+	profile, slugErr = ensureProviderSlug(profile, s.profiles)
+	if slugErr != nil {
+		return Catalog{}, slugErr
+	}
 	if profileNameInUse(s.profiles, profile.Name, "") {
 		return Catalog{}, fmt.Errorf("%w: %q", ErrDuplicateName, profile.Name)
 	}
@@ -382,6 +421,14 @@ func (s *Store) Update(profile Profile, expectedRevision int64) (Catalog, error)
 	existing, ok := s.profiles[profile.ID]
 	if !ok {
 		return Catalog{}, fmt.Errorf("%w: %s", ErrNotFound, profile.ID)
+	}
+	if profile.Slug == "" {
+		profile.Slug = existing.Slug
+	}
+	var slugErr error
+	profile, slugErr = ensureProviderSlug(profile, s.profiles)
+	if slugErr != nil {
+		return Catalog{}, slugErr
 	}
 	if profileNameInUse(s.profiles, profile.Name, profile.ID) {
 		return Catalog{}, fmt.Errorf("%w: %q", ErrDuplicateName, profile.Name)
@@ -521,6 +568,9 @@ func (s *Store) load() error {
 	profiles := map[string]Profile{}
 	for _, profile := range doc.Profiles {
 		profile = normalizeProfile(profile)
+		if profile.Slug == "" {
+			profile.Slug = ProviderSlugFor(profile.Name, profile.ID)
+		}
 		if _, exists := profiles[profile.ID]; exists {
 			return fmt.Errorf("%w: %s", ErrDuplicateID, profile.ID)
 		}

@@ -42,6 +42,7 @@ type ProviderPreset struct {
 // presentation only and must never be submitted as a credential.
 type ProviderConnection struct {
 	ID              string   `json:"id"`
+	Slug            string   `json:"slug"`
 	Name            string   `json:"name"`
 	PresetID        string   `json:"preset_id,omitempty"`
 	Clients         []string `json:"clients,omitempty"`
@@ -88,6 +89,15 @@ type ProviderCatalogProjection struct {
 	Defaults    map[string]ProviderDefault      `json:"defaults"`
 	Presets     []ProviderPreset                `json:"presets"`
 	Models      map[string][]ProviderModelEntry `json:"models"`
+	Gateway     GatewayStatus                   `json:"gateway"`
+}
+
+type GatewayStatus struct {
+	Running    bool     `json:"running"`
+	Address    string   `json:"address,omitempty"`
+	Endpoint   string   `json:"endpoint,omitempty"`
+	Protocols  []string `json:"protocols"`
+	ModelCount int      `json:"model_count"`
 }
 
 // ProviderConnectionInput is the public mutation shape for create/update.

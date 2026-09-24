@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,7 +20,14 @@ import (
 // endpoint. The takeover projection bakes this address into ~/.codex/config.toml
 // exactly once; every daemon restart must bind the same address (or repair the
 // projection) before takeover can claim active.
-const DefaultGatewayListenAddr = "127.0.0.1:38777"
+const DefaultGatewayListenAddr = "127.0.0.1:3425"
+
+const (
+	GatewayProtocolResponses = RouteProtocolResponses
+	GatewayProtocolAnthropic = RouteProtocolAnthropicMessages
+	GatewayRetryAttempts     = 2
+	GatewayRetryBackoff      = 100 * time.Millisecond
+)
 
 // MaxGatewayRequestBodyBytes is the loopback DoS ceiling for Codex request
 // bodies. The gateway streams bytes through and does not parse JSON, so this
@@ -43,23 +51,30 @@ type GatewayUpstream struct {
 	CredentialRef string
 }
 
+// GatewayRequestResolver selects a ready Provider from the request model id.
+// It returns only secret-free connection state; Gateway resolves credentials
+// privately at dispatch time.
+type GatewayRequestResolver func(protocol, modelID string) (GatewayUpstream, error)
+
 // Gateway is Zen's stable loopback Codex endpoint. It proxies requests to the
 // currently selected upstream connection, preserving the request bytes and
 // client model exactly. Provider switching swaps the upstream atomically; the
 // next request from every routed Codex process uses the new connection without
 // CLI restart, Session kill/resume, or model substitution.
 type Gateway struct {
-	mu        sync.RWMutex
-	upstream  GatewayUpstream
-	creds     CredentialStore
-	lookup    func(string) (string, bool)
-	client    *http.Client
-	maxBody   int64
-	addr      string
-	ln        net.Listener
-	server    *http.Server
-	statePath string
-	ws        *wsConnRegistry
+	mu             sync.RWMutex
+	upstream       GatewayUpstream
+	creds          CredentialStore
+	lookup         func(string) (string, bool)
+	client         *http.Client
+	maxBody        int64
+	addr           string
+	ln             net.Listener
+	server         *http.Server
+	statePath      string
+	ws             *wsConnRegistry
+	resolve        GatewayRequestResolver
+	listenFallback bool
 }
 
 // GatewayOption configures Gateway construction (tests).
@@ -92,16 +107,25 @@ func WithGatewayMaxBody(n int64) GatewayOption {
 	}
 }
 
+func WithGatewayRequestResolver(resolve GatewayRequestResolver) GatewayOption {
+	return func(g *Gateway) { g.resolve = resolve }
+}
+
+func WithGatewayListenFallback(enabled bool) GatewayOption {
+	return func(g *Gateway) { g.listenFallback = enabled }
+}
+
 // NewGateway constructs the machine-level Codex gateway. addr is the stable
 // loopback listen address (DefaultGatewayListenAddr in production).
 func NewGateway(addr string, creds CredentialStore, opts ...GatewayOption) *Gateway {
 	g := &Gateway{
-		creds:     creds,
-		client:    NewSafeHTTPClient(5 * time.Minute),
-		maxBody:   MaxGatewayRequestBodyBytes,
-		addr:      strings.TrimSpace(addr),
-		statePath: "",
-		ws:        newWSConnRegistry(),
+		creds:          creds,
+		client:         NewSafeHTTPClient(5 * time.Minute),
+		maxBody:        MaxGatewayRequestBodyBytes,
+		addr:           strings.TrimSpace(addr),
+		statePath:      "",
+		ws:             newWSConnRegistry(),
+		listenFallback: true,
 	}
 	for _, opt := range opts {
 		opt(g)
@@ -145,6 +169,15 @@ func (g *Gateway) Listen() error {
 		return fmt.Errorf("%w: gateway listen address is required", ErrInvalid)
 	}
 	ln, err := net.Listen("tcp", g.addr)
+	if err != nil && g.listenFallback && isDefaultGatewayAddress(g.addr) {
+		for port := 3426; port <= 3445 && err != nil; port++ {
+			candidate := fmt.Sprintf("127.0.0.1:%d", port)
+			ln, err = net.Listen("tcp", candidate)
+			if err == nil {
+				g.addr = candidate
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("%w: gateway listen %s: %v", ErrInvalid, g.addr, err)
 	}
@@ -299,7 +332,7 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 		return
 	}
 	upstream, ok := g.Upstream()
-	if !ok {
+	if !ok && g.resolve == nil {
 		// Honest connection failure: never silently bypass to an old upstream.
 		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: gateway has no selected Provider", ErrUpstreamInvalid))
 		return
@@ -358,17 +391,41 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 		return
 	}
 
+	var bodyBytes []byte
+	var err error
+	if req.Body != nil && req.ContentLength != 0 {
+		bodyBytes, err = io.ReadAll(http.MaxBytesReader(w, req.Body, maxBody))
+		if err != nil {
+			writeRouteError(w, http.StatusRequestEntityTooLarge, ErrRequestBodyTooLarge)
+			return
+		}
+	}
+	if g.resolve != nil && req.Method == http.MethodPost {
+		modelID, parseErr := gatewayModelID(bodyBytes)
+		if parseErr != nil {
+			writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
+			return
+		}
+		protocol := gatewayProtocolForPath(req.URL.Path)
+		upstream, err = g.resolve(protocol, modelID)
+		if err != nil {
+			writeGatewayResolutionError(w, err)
+			return
+		}
+	}
+	if upstream.BaseURL == "" {
+		writeRouteError(w, http.StatusServiceUnavailable, ErrUpstreamInvalid)
+		return
+	}
 	target, err := gatewayUpstreamRequestURL(upstream.BaseURL, req.URL)
 	if err != nil {
 		writeRouteError(w, http.StatusBadGateway, ErrUpstreamInvalid)
 		return
 	}
 
-	body := req.Body
-	if body == nil {
-		body = http.NoBody
-	} else {
-		body = http.MaxBytesReader(w, body, maxBody)
+	body := io.Reader(http.NoBody)
+	if bodyBytes != nil {
+		body = bytes.NewReader(bodyBytes)
 	}
 	upReq, err := http.NewRequestWithContext(req.Context(), req.Method, target, body)
 	if err != nil {
@@ -389,12 +446,27 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 	// Body bytes and Content-Encoding are forwarded as-is. The rewriting
 	// router decodes at the edge; the gateway must not.
 
-	resp, err := g.client.Do(upReq)
-	if err != nil {
-		if isRequestBodyTooLarge(err) {
-			writeRouteError(w, http.StatusRequestEntityTooLarge, ErrRequestBodyTooLarge)
-			return
+	var resp *http.Response
+	for attempt := 0; attempt < GatewayRetryAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-req.Context().Done():
+				writeRouteError(w, http.StatusGatewayTimeout, req.Context().Err())
+				return
+			case <-time.After(GatewayRetryBackoff):
+			}
+			upReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
+		resp, err = g.client.Do(upReq)
+		if err == nil && resp.StatusCode < 500 {
+			break
+		}
+		if resp != nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}
+	if err != nil {
 		status, typed := classifyUpstreamDoError(err)
 		writeRouteError(w, status, typed)
 		return
@@ -405,6 +477,46 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 	if err := streamCopyFlush(w, resp.Body); err != nil {
 		return
 	}
+}
+
+func isDefaultGatewayAddress(addr string) bool {
+	return strings.TrimSpace(addr) == DefaultGatewayListenAddr
+}
+
+func gatewayProtocolForPath(path string) string {
+	if strings.HasSuffix(path, "/messages") {
+		return GatewayProtocolAnthropic
+	}
+	return GatewayProtocolResponses
+}
+
+func gatewayModelID(body []byte) (string, error) {
+	if len(body) == 0 {
+		return "", fmt.Errorf("model is required")
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	model := strings.TrimSpace(payload.Model)
+	if model == "" || len(model) > MaxModelIDLength {
+		return "", fmt.Errorf("model is required")
+	}
+	return model, nil
+}
+
+func writeGatewayResolutionError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	if errors.Is(err, ErrCredentialNotReady) {
+		status = http.StatusBadGateway
+	} else if errors.Is(err, ErrNotFound) || errors.Is(err, ErrModelUnsupported) {
+		status = http.StatusNotFound
+	} else if errors.Is(err, ErrConflict) {
+		status = http.StatusBadRequest
+	}
+	writeRouteError(w, status, err)
 }
 
 func isRequestBodyTooLarge(err error) bool {

@@ -240,6 +240,9 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := store.MigrateProviderSlugs(); err != nil {
+		return nil, fmt.Errorf("migrate provider slugs: %w", err)
+	}
 	store.SetLookup(lookup)
 	if err := reauthorizeCatalogProfiles(store, verifier); err != nil {
 		return nil, err

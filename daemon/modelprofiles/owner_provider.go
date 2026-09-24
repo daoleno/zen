@@ -23,6 +23,7 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		Defaults:    map[string]ProviderDefault{},
 		Presets:     ListProviderPresets(),
 		Models:      map[string][]ProviderModelEntry{},
+		Gateway:     o.gatewayStatusProjection(),
 	}
 	for _, view := range proj.Views {
 		conn := providerConnectionFromProfile(view.Profile, o.connectionReady(view.Profile))
@@ -59,6 +60,26 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		}
 	}
 	return out, nil
+}
+
+func (o *Owner) gatewayStatusProjection() GatewayStatus {
+	status := GatewayStatus{Protocols: []string{GatewayProtocolResponses, GatewayProtocolAnthropic}}
+	if o == nil || o.gateway == nil {
+		return status
+	}
+	status.Running = o.gateway.Listening()
+	status.Address = o.gateway.ActualAddr()
+	if status.Address != "" {
+		status.Endpoint = "http://" + status.Address
+	}
+	for _, entries := range o.ProjectCatalog().Views {
+		for _, entry := range func() []ProviderModelEntry { models, _ := o.modelsForConnection(entries.Profile, false); return models }() {
+			if entry.Available {
+				status.ModelCount++
+			}
+		}
+	}
+	return status
 }
 
 func (o *Owner) decorateCatalogStatus(conn *ProviderConnection) {
@@ -391,6 +412,7 @@ func providerConnectionFromProfile(profile Profile, ready bool) ProviderConnecti
 	}
 	conn := ProviderConnection{
 		ID:              profile.ID,
+		Slug:            profile.Slug,
 		Name:            profile.Name,
 		PresetID:        presetID,
 		Clients:         clients,

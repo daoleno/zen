@@ -196,8 +196,11 @@ const (
 // product client and omit executor/protocol/client_model/auth_mode; those are
 // compiled for that client at launch/activate.
 type Profile struct {
-	ID    string `toml:"id" json:"id"`
-	Name  string `toml:"name" json:"name"`
+	ID   string `toml:"id" json:"id"`
+	Name string `toml:"name" json:"name"`
+	// Slug is the stable public Provider identifier used in gateway model ids.
+	// ID remains the canonical random connection identity.
+	Slug  string `toml:"slug,omitempty" json:"slug,omitempty"`
 	Scope string `toml:"scope,omitempty" json:"scope,omitempty"`
 	// Client scopes an account connection to exactly one product client.
 	Client        string `toml:"client,omitempty" json:"client,omitempty"`

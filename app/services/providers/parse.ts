@@ -95,6 +95,7 @@ export function parseProviderConnection(
   if (!record) return null;
   assertSecretFree(record);
   const id = asString(record.id);
+  const slug = asString(record.slug) || id;
   const name = asString(record.name);
   const clients = parseClients(record.clients);
   if (
@@ -109,6 +110,7 @@ export function parseProviderConnection(
   const advanced = record.advanced === true;
   return {
     id,
+    slug,
     name,
     preset_id: asString(record.preset_id) || undefined,
     clients,
@@ -242,7 +244,15 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
     models[id] ??= [];
   }
 
-  return { revision, connections, defaults, presets, models };
+  const gatewayRecord = asRecord(record.gateway);
+  const gateway = {
+    running: gatewayRecord?.running === true,
+    address: asString(gatewayRecord?.address) || undefined,
+    endpoint: asString(gatewayRecord?.endpoint) || undefined,
+    protocols: asStringArray(gatewayRecord?.protocols) ?? [],
+    model_count: asFiniteNumber(gatewayRecord?.model_count) ?? 0,
+  };
+  return { revision, connections, defaults, presets, models, gateway };
 }
 
 export function parseThreadRuntimeSelection(

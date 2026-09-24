@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import * as Clipboard from "expo-clipboard";
 import {
   ActivityIndicator,
   Pressable,
@@ -213,6 +214,15 @@ export function ProvidersPresentation({
 
         {catalog ? (
           <>
+            <GatewayStatusRow
+              status={
+                catalog.gateway ?? {
+                  running: false,
+                  protocols: [],
+                  model_count: 0,
+                }
+              }
+            />
             {CLIENTS.map((client) => (
               <ClientConnectionCard
                 key={client}
@@ -252,6 +262,37 @@ export function ProvidersPresentation({
         />
       ) : null}
     </SafeAreaView>
+  );
+}
+
+function GatewayStatusRow({ status }: { status: ProvidersSnapshot["gateway"] }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const endpoint = status.endpoint ?? status.address ?? "Unavailable";
+  return (
+    <View style={styles.gatewayStatus}>
+      <View style={styles.gatewayStatusCopy}>
+        <View style={styles.gatewayStatusTitleRow}>
+          <Ionicons name="radio-outline" size={16} color={status.running ? colors.success : colors.textTertiary} />
+          <Text style={styles.gatewayStatusTitle}>Zen Provider Gateway</Text>
+          <Text style={styles.gatewayStatusState}>{status.running ? "Running" : "Unavailable"}</Text>
+        </View>
+        <Text style={styles.gatewayStatusMeta}>{endpoint}</Text>
+        <Text style={styles.gatewayStatusMeta}>
+          {status.protocols.join(" / ") || "No protocols"} · {status.model_count} exposed models
+        </Text>
+      </View>
+      {status.endpoint ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Copy gateway endpoint"
+          onPress={() => void Clipboard.setStringAsync(status.endpoint ?? "")}
+          style={styles.gatewayCopy}
+        >
+          <Ionicons name="copy-outline" size={18} color={colors.accentStrong} />
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -1126,6 +1167,22 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       gap: 6,
     },
     noticeText: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textPrimary },
+    gatewayStatus: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      padding: 12,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.bgSurface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    gatewayStatusCopy: { flex: 1, minWidth: 0, gap: 2 },
+    gatewayStatusTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+    gatewayStatusTitle: { ...UiTextMetrics, ...TypeScale.label, color: colors.textPrimary, fontWeight: "700" },
+    gatewayStatusState: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textSecondary },
+    gatewayStatusMeta: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary },
+    gatewayCopy: { padding: 8 },
     clientSection: { gap: 10 },
     clientHeader: {
       minHeight: 46,

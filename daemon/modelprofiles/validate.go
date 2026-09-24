@@ -12,6 +12,7 @@ import (
 
 var (
 	profileIDRE     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	providerSlugRE  = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
 	providerIDRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	credentialEnvRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	credentialRefRE = regexp.MustCompile(`^provider:[a-z][a-z0-9_-]{0,63}(:[a-z0-9_-]{1,64})?$`)
@@ -44,6 +45,17 @@ func ValidateProviderName(name string) error {
 	return nil
 }
 
+func ValidateProviderSlug(slug string) error {
+	slug = normalizeID(slug)
+	if slug == "" {
+		return nil
+	}
+	if !providerSlugRE.MatchString(slug) {
+		return fmt.Errorf("%w: provider slug must match %s", ErrInvalid, providerSlugRE.String())
+	}
+	return nil
+}
+
 // ValidateProfile checks durable profile fields without reading secret values.
 func ValidateProfile(profile Profile) error {
 	if isAccountConnection(profile) {
@@ -62,6 +74,9 @@ func ValidateProfile(profile Profile) error {
 	}
 	if normalizeSpace(profile.Name) == "" {
 		return fmt.Errorf("%w: profile name is required", ErrInvalid)
+	}
+	if err := ValidateProviderSlug(profile.Slug); err != nil {
+		return err
 	}
 	if err := ValidateProviderName(profile.Name); err != nil {
 		return fmt.Errorf("%w: name: %v", ErrInvalid, err)
@@ -376,6 +391,7 @@ func requireAuthReady(profile Profile, store CredentialStore, lookup func(string
 func normalizeProfile(profile Profile) Profile {
 	profile.ID = normalizeID(profile.ID)
 	profile.Name = normalizeSpace(profile.Name)
+	profile.Slug = normalizeID(profile.Slug)
 	profile.Scope = normalizeID(profile.Scope)
 	profile.Client = clientFromExecutor(profile.Client)
 	profile.ExecutorID = normalizeID(profile.ExecutorID)

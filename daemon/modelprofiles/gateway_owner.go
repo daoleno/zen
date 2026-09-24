@@ -55,7 +55,7 @@ func (o *Owner) startGateway(cfg OwnerConfig) error {
 		return nil
 	}
 	stateDir := strings.TrimSpace(cfg.GatewayStateDir)
-	gateway := NewGateway(addr, cfg.Credentials)
+	gateway := NewGateway(addr, cfg.Credentials, WithGatewayRequestResolver(o.resolveGatewayRequest))
 	if stateDir != "" {
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
 			return fmt.Errorf("%w: create gateway state dir: %v", ErrInvalid, err)
@@ -102,6 +102,65 @@ func (o *Owner) startGateway(cfg OwnerConfig) error {
 		}
 	}
 	return nil
+}
+
+func (o *Owner) resolveGatewayRequest(protocol, modelID string) (GatewayUpstream, error) {
+	if o == nil || o.store == nil {
+		return GatewayUpstream{}, ErrNotFound
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return GatewayUpstream{}, ErrModelUnsupported
+	}
+	wantClient := ClientCodex
+	if protocol == GatewayProtocolAnthropic {
+		wantClient = ClientClaude
+	}
+	parts := strings.SplitN(modelID, "/", 2)
+	wantSlug, wantModel := "", modelID
+	if len(parts) == 2 {
+		wantSlug, wantModel = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+	var matches []Profile
+	for _, profile := range o.store.Catalog().Profiles {
+		if clientFromExecutor(profile.Client) != wantClient || !o.connectionReady(profile) {
+			continue
+		}
+		if wantSlug != "" && !strings.EqualFold(profile.Slug, wantSlug) {
+			continue
+		}
+		target, err := CompileConnectionTarget(profile, wantClient, wantModel, "")
+		if err != nil || routeProtocolFor(target.Protocol) != protocol {
+			continue
+		}
+		entries, _ := o.modelsForConnection(profile, false)
+		available := false
+		for _, entry := range entries {
+			if entry.ID == wantModel && entry.Available {
+				available = true
+				break
+			}
+		}
+		if available || (len(entries) == 0 && target.Model == wantModel) {
+			matches = append(matches, target)
+		}
+	}
+	if len(matches) == 0 {
+		return GatewayUpstream{}, fmt.Errorf("%w: %s", ErrNotFound, modelID)
+	}
+	if len(matches) > 1 {
+		return GatewayUpstream{}, fmt.Errorf("%w: ambiguous model %s", ErrConflict, modelID)
+	}
+	return GatewayUpstreamFromProfile(matches[0]), nil
+}
+
+func routeProtocolFor(protocol string) string {
+	switch normalizeID(protocol) {
+	case ProtocolAnthropicMessages:
+		return GatewayProtocolAnthropic
+	default:
+		return GatewayProtocolResponses
+	}
 }
 
 func gatewayStateFilePath(stateDir string) string {

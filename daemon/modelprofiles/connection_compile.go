@@ -98,6 +98,7 @@ func CompileConnectionTarget(conn Profile, clientOrExecutor, modelOverride, effo
 	// Preserve durable connection identity fields.
 	target.ID = conn.ID
 	target.Name = conn.Name
+	target.Slug = conn.Slug
 	target.Scope = "" // ephemeral target is executor-scoped for routing
 	target.Client = ""
 	target.CredentialEnv = conn.CredentialEnv
@@ -131,6 +132,9 @@ func validateAccountConnection(profile Profile) error {
 	}
 	if normalizeSpace(profile.Name) == "" {
 		return fmt.Errorf("%w: profile name is required", ErrInvalid)
+	}
+	if err := ValidateProviderSlug(profile.Slug); err != nil {
+		return err
 	}
 	if err := ValidateProviderName(profile.Name); err != nil {
 		return fmt.Errorf("%w: name: %v", ErrInvalid, err)
