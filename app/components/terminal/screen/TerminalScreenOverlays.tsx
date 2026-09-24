@@ -58,6 +58,7 @@ export interface TerminalScreenOverlaysProps {
   onRetryRouteSheet(): void;
   onActivateSessionModel(choice: ThreadRuntimeChoice): void;
   onOpenModel?(): void;
+  onOpenDSHWeb?(): void;
   onNewTerminal(): void;
   onCloseMenu(): void;
   onRename(): void;
@@ -106,6 +107,7 @@ export function TerminalScreenOverlays({
   onRetryRouteSheet,
   onActivateSessionModel,
   onOpenModel,
+  onOpenDSHWeb,
   onNewTerminal,
   onCloseMenu,
   onRename,
@@ -185,6 +187,7 @@ export function TerminalScreenOverlays({
         onRename={onRename}
         onOpenLinkedWork={onOpenLinkedWork}
         onOpenModel={onOpenModel}
+        onOpenDSHWeb={onOpenDSHWeb}
         onToggleRenderMode={onToggleRenderMode}
         onTerminate={onTerminate}
       />

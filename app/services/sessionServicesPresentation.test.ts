@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  dshWebServiceURL,
   hasServiceTerminal,
+  isDSHWebService,
   isPersistentService,
   serviceSourceLabel,
   serviceWorkerLabel,
@@ -33,8 +35,15 @@ function persistentRow(): DiscoveredSessionService {
     port: 3080,
     protocol: "tcp",
     binds: ["127.0.0.1"],
-    urls: [],
-    local_only: true,
+    urls: [
+      {
+        label: "LAN",
+        url: "http://192.168.1.42:3080",
+        address: "192.168.1.42",
+        kind: "lan",
+      },
+    ],
+    local_only: false,
     source: "persistent",
     unit: "dsh-web.service",
     state: "active",
@@ -44,6 +53,14 @@ function persistentRow(): DiscoveredSessionService {
 }
 
 describe("session service source", () => {
+  test("projects DSH Web only from an active registered service URL", () => {
+    const service = persistentRow();
+    expect(isDSHWebService(service)).toBe(true);
+    expect(dshWebServiceURL([service])).toBe("http://192.168.1.42:3080");
+    expect(dshWebServiceURL([{ ...service, state: "inactive" }])).toBeNull();
+    expect(dshWebServiceURL([{ ...service, urls: [] }])).toBeNull();
+    expect(dshWebServiceURL([{ ...service, unit: "other.service" }])).toBeNull();
+  });
   test("session rows keep a live terminal target", () => {
     const service = sessionRow();
     expect(isPersistentService(service)).toBe(false);

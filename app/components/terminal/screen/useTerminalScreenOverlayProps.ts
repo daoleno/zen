@@ -49,6 +49,7 @@ interface UseTerminalScreenOverlayPropsInput {
   onRetryRouteSheet(): void;
   onActivateSessionModel(choice: ThreadRuntimeChoice): void;
   onOpenModel?(): void;
+  onOpenDSHWeb?(): void;
   setNewTerminalVisible(value: boolean): void;
   setRenameVisible(value: boolean): void;
   setRenameDraft(value: string): void;
@@ -95,6 +96,7 @@ export function useTerminalScreenOverlayProps({
   onRetryRouteSheet,
   onActivateSessionModel,
   onOpenModel,
+  onOpenDSHWeb,
   setNewTerminalVisible,
   setRenameVisible,
   setRenameDraft,
@@ -160,6 +162,7 @@ export function useTerminalScreenOverlayProps({
       onRetryRouteSheet,
       onActivateSessionModel,
       onOpenModel,
+      onOpenDSHWeb,
       onNewTerminal: openNewTerminal,
       onCloseMenu: closeMenu,
       onRename: openRenameModal,
@@ -191,6 +194,7 @@ export function useTerminalScreenOverlayProps({
       onCloseResourceSheet,
       onCloseRouteSheet,
       onOpenModel,
+      onOpenDSHWeb,
       onRetryResourceSheet,
       onRetryRouteSheet,
       onToggleRenderMode,

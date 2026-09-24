@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { Alert, Linking } from "react-native";
 import { useWorkers } from "../../../store/workers";
 import { useBrain } from "../../../store/brain";
 import { useWork } from "../../../store/work";
@@ -16,12 +17,15 @@ import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 import { useSessionResourceSheet } from "./useSessionResourceSheet";
 import { useSessionProviderSheet } from "./useSessionProviderSheet";
+import { dshWebServiceURL } from "../../../services/sessionServicesPresentation";
+import { wsClient } from "../../../services/websocket";
 
 export default function TerminalScreen() {
   const { state } = useWorkers();
   const { state: brainState } = useBrain();
   const { state: workState } = useWork();
   const { setCurrentSession } = useCurrentSession();
+  const [dshWebURL, setDshWebURL] = useState<string | null>(null);
   const {
     workerId,
     serverId,
@@ -129,6 +133,31 @@ export default function TerminalScreen() {
     setRenameDraft,
     setRenameVisible,
   });
+
+  useEffect(() => {
+    if (presentedWorker.kind !== "dsh" || connectionState !== "connected" || !serverId) {
+      setDshWebURL(null);
+      return;
+    }
+    let cancelled = false;
+    void wsClient.listSessionServices(serverId).then((snapshot) => {
+      if (!cancelled) {
+        setDshWebURL(
+          dshWebServiceURL(snapshot.services),
+        );
+      }
+    }).catch(() => {
+      if (!cancelled) setDshWebURL(null);
+    });
+    return () => { cancelled = true; };
+  }, [connectionState, presentedWorker.kind, serverId]);
+
+  const openDSHWeb = useCallback(() => {
+    if (!dshWebURL) return;
+    void Linking.openURL(dshWebURL).catch((error: any) => {
+      Alert.alert("Could not open DSH Web", error?.message || dshWebURL);
+    });
+  }, [dshWebURL]);
 
   const navigationActions = useTerminalNavigationActions({
     sessionKey,
@@ -251,6 +280,7 @@ export default function TerminalScreen() {
       openModel: modelActionAvailable
         ? openModel
         : undefined,
+      openDSHWeb: dshWebURL ? openDSHWeb : undefined,
       modelActionAvailable,
       composerModelControl: routeSheet.composerControl,
       onComposerModelControlPress: () => {

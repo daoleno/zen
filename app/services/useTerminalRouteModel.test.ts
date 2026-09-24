@@ -19,6 +19,7 @@ describe("supportsChatInterface", () => {
   test("plain terminal is not a structured chat agent", () => {
     expect(supportsChatInterface("terminal")).toBe(false);
     expect(supportsChatInterface("shell")).toBe(false);
+    expect(supportsChatInterface("dsh")).toBe(false);
   });
 
   test("generic provider is eligible through structured-events capability", () => {
@@ -43,6 +44,7 @@ describe("defaultInterfaceRenderModeForKind", () => {
 
   test("plain terminal defaults to terminal", () => {
     expect(defaultInterfaceRenderModeForKind("terminal")).toBe("terminal");
+    expect(defaultInterfaceRenderModeForKind("dsh")).toBe("terminal");
   });
 
   test("generic structured capability defaults to chat", () => {
@@ -82,6 +84,16 @@ describe("resolveInterfaceRenderMode", () => {
       resolveInterfaceRenderMode({
         kind: "terminal",
         sessionKey: "server:shell-1",
+        storedModes: {},
+      }),
+    ).toBe("terminal");
+  });
+
+  test("DSH defaults to its native terminal/session surface when unset", () => {
+    expect(
+      resolveInterfaceRenderMode({
+        kind: "dsh",
+        sessionKey: "server:dsh-1",
         storedModes: {},
       }),
     ).toBe("terminal");

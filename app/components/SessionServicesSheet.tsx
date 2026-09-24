@@ -14,6 +14,7 @@ import { BottomSheetFrame } from "./ui/BottomSheetFrame";
 import {
   groupSessionServices,
   hasServiceTerminal,
+  isDSHWebService,
   presentSessionServiceURL,
   serviceSourceLabel,
   serviceWorkerLabel,
@@ -209,6 +210,7 @@ function ServicePortRow({
   const urls = (service.urls ?? []).map(presentSessionServiceURL);
   const commandDetail = serviceCommandDetail(service);
   const persistent = !hasServiceTerminal(service) && service.source === "persistent";
+  const dshWeb = isDSHWebService(service);
   const statusDetail = (service.status_detail || "").trim();
 
   return (
@@ -287,7 +289,26 @@ function ServicePortRow({
 
         <ServiceTunnelControls service={service} onOpenURL={onOpenURL} />
         <View style={styles.linkRow}>
-          {urls.length > 0 ? (
+          {dshWeb ? (
+            urls.length > 0 ? (
+              <TouchableOpacity
+                style={styles.linkChip}
+                onPress={() => onOpenURL(urls[0]!.url)}
+                activeOpacity={0.82}
+                accessibilityLabel={`Open DSH Web for port ${service.port}`}
+              >
+                <Ionicons name="globe-outline" size={13} color={colors.textSecondary} />
+                <Text style={styles.linkLabel}>Open Web</Text>
+                <Text style={styles.linkHost} numberOfLines={1}>{urls[0]!.address}</Text>
+                <Ionicons name="open-outline" size={12} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.localChip} accessibilityLabel="DSH Web unavailable">
+                <Ionicons name="globe-outline" size={13} color={colors.textSecondary} />
+                <Text style={styles.localLabel}>Web unavailable</Text>
+              </View>
+            )
+          ) : urls.length > 0 ? (
             urls.map((item) => (
               <TouchableOpacity
                 key={item.key}

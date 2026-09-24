@@ -34,6 +34,7 @@ interface TerminalActionPopoverProps {
   onRename(): void;
   onOpenLinkedWork(): void;
   onOpenModel?(): void;
+  onOpenDSHWeb?(): void;
   onToggleRenderMode?(): void;
   onTerminate(): void;
 }
@@ -55,6 +56,7 @@ export function TerminalActionPopover({
   onRename,
   onOpenLinkedWork,
   onOpenModel,
+  onOpenDSHWeb,
   onToggleRenderMode,
   onTerminate,
 }: TerminalActionPopoverProps) {
@@ -94,6 +96,15 @@ export function TerminalActionPopover({
       icon: "hardware-chip-outline",
       label: "Model",
       onPress: onOpenModel,
+    });
+  }
+
+  if (onOpenDSHWeb) {
+    actions.push({
+      key: "dsh-web",
+      icon: "globe-outline",
+      label: "Open Web",
+      onPress: onOpenDSHWeb,
     });
   }
 

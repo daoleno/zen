@@ -10,7 +10,22 @@ export const PI_COMMAND = "pi";
 export const OPENCODE_COMMAND = "opencode";
 export const OPENCODE_AUTO_COMMAND = "opencode --auto";
 
-export type SupportedAgentID = "claude" | "codex" | "cursor" | "grok" | "pi" | "opencode" | "dsh";
+/** DSH is a native session/terminal launcher; its browser UI is a service. */
+export const DSH_CAPABILITIES = {
+  chat: false,
+  mode: "terminal",
+  nativeModelSelection: true,
+  webServiceUnit: "dsh-web.service",
+} as const;
+
+export type SupportedAgentID =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "grok"
+  | "pi"
+  | "opencode"
+  | "dsh";
 
 export interface SupportedAgentTarget {
   id: SupportedAgentID;
@@ -21,7 +36,13 @@ export interface SupportedAgentTarget {
 }
 
 export const SUPPORTED_AGENT_TARGETS: SupportedAgentTarget[] = [
- { id: "dsh", handle: "dsh", label: "DSH", command: DSH_COMMAND, description: "DeepSeek Harness with its native saved model and settings." },
+  {
+    id: "dsh",
+    handle: "dsh",
+    label: "DSH",
+    command: DSH_COMMAND,
+    description: "Native DSH session with optional Web access.",
+  },
   {
     id: "claude",
     handle: "claude",

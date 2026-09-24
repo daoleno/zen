@@ -1,11 +1,18 @@
 # DSH Sessions
 
-DSH is an additive New Chat and executor choice. Codex host and delegated defaults
-remain unchanged. Zen launches the installed `dsh` web profile on loopback behind
-an exact Session bridge; it does not embed Cordis or the DSH web application in
-React Native. The installed headless CLI cannot resume interactive sessions; ACP
-is text-only/fresh-session-only and SDK JSON-RPC lacks cancellation. Those narrower
-interfaces are not advertised as the mobile Session implementation.
+DSH is a native New Session launcher, not a normal Zen Provider Chat or TUI. Codex
+host and delegated defaults remain unchanged. Zen launches the installed `dsh` web
+profile on loopback behind an exact Session bridge; it does not embed Cordis or the
+DSH web application in React Native. The installed launcher contract exposes the
+browser command as `dsh web` / `dsh --profile web` with `--host` and `--port`; it
+does not provide a DSH terminal UI. Zen's small terminal surface is an input bridge
+only, while the native RPC and persisted Session history remain authoritative.
+
+When the registered `dsh-web.service` is active, Zen exposes its server-projected
+LAN or Tailscale URL as `Open Web`. No URL is fabricated for an absent, inactive,
+loopback-only, or otherwise undiscovered service. The action uses the existing
+authenticated service discovery and URL-opening path, so phones never receive a
+localhost-only assumption.
 
 The bridge owns one native session ID, an exclusive lock and a private Unix socket.
 Native session logs live under the daemon state's `provider-sessions/dsh/logs`.

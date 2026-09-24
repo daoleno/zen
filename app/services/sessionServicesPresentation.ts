@@ -1,10 +1,28 @@
 import type { SessionService, SessionServiceURL } from "./sessionServices";
+import { DSH_CAPABILITIES } from "./agentCommands";
 import { compactCommandLabel } from "./pathDisplay";
 
 export type DiscoveredSessionService = SessionService & {
   serverId: string;
   serverName: string;
 };
+
+export function isDSHWebService(
+  service: Pick<DiscoveredSessionService, "source" | "unit">,
+): boolean {
+  return service.source === "persistent" && service.unit === DSH_CAPABILITIES.webServiceUnit;
+}
+
+/** Returns only a server-projected URL for a live registered DSH web service. */
+export function dshWebServiceURL(
+  services: Array<Pick<DiscoveredSessionService, "source" | "unit" | "state" | "urls">>,
+): string | null {
+  const service = services.find(
+    (candidate) =>
+      isDSHWebService(candidate) && candidate.state === "active" && candidate.urls.length > 0,
+  );
+  return service?.urls[0]?.url || null;
+}
 
 export type SessionServiceGroup = {
   key: string;

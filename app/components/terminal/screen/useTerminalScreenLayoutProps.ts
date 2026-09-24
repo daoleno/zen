@@ -88,6 +88,7 @@ interface UseTerminalScreenLayoutPropsInput {
   closeResourceSheet(): void;
   retryResourceSheet(): void;
   openModel?: () => void;
+  openDSHWeb?: () => void;
   modelActionAvailable?: boolean;
   composerModelControl?: ComposerModelControlPresentation | null;
   onComposerModelControlPress?: () => void;
@@ -160,6 +161,7 @@ export function useTerminalScreenLayoutProps({
   closeResourceSheet,
   retryResourceSheet,
   openModel,
+  openDSHWeb,
   modelActionAvailable = false,
   composerModelControl,
   onComposerModelControlPress,
@@ -274,6 +276,7 @@ export function useTerminalScreenLayoutProps({
     onOpenModel: modelActionAvailable
       ? openModel
       : undefined,
+    onOpenDSHWeb: openDSHWeb,
     setNewTerminalVisible,
     setRenameVisible,
     setRenameDraft,

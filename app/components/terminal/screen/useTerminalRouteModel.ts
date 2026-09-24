@@ -141,7 +141,7 @@ export function supportsChatInterface(
     kind === "cursor" ||
     kind === "grok" ||
     kind === "pi" ||
-    kind === "opencode" || kind === "dsh"
+    kind === "opencode"
   );
 }
 
