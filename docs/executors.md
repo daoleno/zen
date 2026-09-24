@@ -78,6 +78,10 @@ session-bound loopback and injects the saved upstream key there. The launch uses
 session-specific Claude settings to keep a pre-existing native settings file's
 endpoint or authentication environment from redirecting that managed session;
 native-login sessions retain their own authentication behavior.
+This loopback handoff applies to App-managed Claude launches that Zen creates
+as a Claude session. Typing `claude` inside an ordinary shell is not associated
+with a Provider route, because Zen does not inspect or rewrite arbitrary shell
+processes; use an App-managed Claude launch when a selected Provider must apply.
 
 ## Custom executors
 

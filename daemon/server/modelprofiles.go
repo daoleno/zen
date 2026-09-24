@@ -718,7 +718,7 @@ func (s *Server) sendModelProfileError(conn *websocket.Conn, requestID string, e
 	s.sendErrorWithRequestID(conn, requestID, code, err.Error())
 }
 
-func (s *Server) createSessionWithProfiles(preferredTarget string, opts watcher.CreateSessionOptions, profileID string) (string, *modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
+func (s *Server) createSessionWithProfiles(preferredTarget string, opts watcher.CreateSessionOptions, profileID, modelID string) (string, *modelprofiles.WireSessionSnapshot, modelprofiles.PersistResult, error) {
 	owner := s.modelProfiles()
 	if owner == nil {
 		workerID, err := s.watcher.CreateSession(preferredTarget, opts)
@@ -726,7 +726,7 @@ func (s *Server) createSessionWithProfiles(preferredTarget string, opts watcher.
 	}
 
 	executorID := strings.TrimSpace(profileExecutorHint(opts.Command, profileID))
-	plan, err := owner.PrepareLaunch(executorID, profileID, opts.Command)
+	plan, err := prepareSessionLaunch(owner, executorID, profileID, modelID, opts.Command)
 	if err != nil && !plan.Persist.Applied && !plan.Bypass {
 		return "", nil, plan.Persist, err
 	}
@@ -752,6 +752,12 @@ func (s *Server) createSessionWithProfiles(preferredTarget string, opts watcher.
 		commitErr = modelprofiles.ErrPersistDirSync
 	}
 	return workerID, &snap, persist, commitErr
+}
+
+// prepareSessionLaunch keeps the WebSocket create_session contract aligned with
+// the control path: a client-selected model is an explicit launch override.
+func prepareSessionLaunch(owner *modelprofiles.Owner, executorID, profileID, modelID, command string) (modelprofiles.SessionLaunchPlan, error) {
+	return owner.PrepareLaunchModel(executorID, profileID, strings.TrimSpace(modelID), command)
 }
 
 func profileExecutorHint(command, profileID string) string {

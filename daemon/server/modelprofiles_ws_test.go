@@ -973,6 +973,32 @@ func commitTestRoute(t *testing.T, owner *modelprofiles.Owner, workerID string) 
 	}
 }
 
+func TestCreateSessionLaunchUsesExplicitModelSelection(t *testing.T) {
+	owner := startProfileOwner(t)
+	profile := modelprofiles.Profile{
+		ID: "claude-selected", Name: "Claude Selected", ExecutorID: modelprofiles.ExecutorClaude,
+		ProviderID: "fixture", ProviderLabel: "Fixture Claude",
+		Protocol: modelprofiles.ProtocolAnthropicMessages, ClientModel: "claude-sonnet-4-6", Model: "default-model",
+		ClientModelProvenance: modelprofiles.ContractProvenanceBuiltinCatalog,
+		BaseURL:               "https://gateway.example/v1",
+		AuthMode:              modelprofiles.AuthModeXAPIKeyEnv,
+		CredentialEnv:         "ANTHROPIC_API_KEY",
+	}
+	if _, err := owner.UpsertProfile(profile, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := prepareSessionLaunch(owner, modelprofiles.ExecutorClaude, profile.ID, "selected-model", "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.State.Binding.ClientModel != "claude-sonnet-4-6" || plan.State.Binding.UpstreamModel != "selected-model" {
+		t.Fatalf("launch ignored create_session model selection: client=%q upstream=%q", plan.State.Binding.ClientModel, plan.State.Binding.UpstreamModel)
+	}
+	if !strings.Contains(plan.Command, "--model claude-sonnet-4-6") {
+		t.Fatalf("compiled Claude command=%q", plan.Command)
+	}
+}
+
 func TestKillWorkerRouteAwareTeardown(t *testing.T) {
 	owner := startProfileOwner(t)
 	srv := New(nil, watcher.New(time.Second), nil, nil, nil, nil, nil)

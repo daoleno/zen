@@ -1065,7 +1065,7 @@ func (s *Server) handleSessionLifecycleMessage(conn *websocket.Conn, raw clientM
 			Cwd:     raw.Cwd,
 			Command: command,
 			Name:    raw.Name,
-		}, connectionID)
+		}, connectionID, raw.ModelID)
 		if err != nil && (!persist.Applied || strings.TrimSpace(workerID) == "") {
 			code := "create_session_failed"
 			if mapped := modelprofiles.ControlErrorCode(err); mapped != "" && mapped != modelprofiles.CodeProfilesUnavailable {
