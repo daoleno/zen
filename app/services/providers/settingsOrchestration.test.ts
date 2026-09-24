@@ -126,6 +126,23 @@ describe("future-thread default runtime policy", () => {
     ).toEqual({ kind: "apply", modelId: "m2" });
   });
 
+  test("uses an opaque manual model when discovery has no models", () => {
+    expect(
+      defaultRuntimeSeedAction({
+        snapshot: {
+          ...snapshot,
+          defaults: {},
+          connections: [
+            { ...snapshot.connections[1], manual_model_id: "vendor/manual" },
+          ],
+          models: { ...snapshot.models, b: [] },
+        },
+        client: "codex",
+        connectionId: "b",
+      }),
+    ).toEqual({ kind: "apply", modelId: "vendor/manual" });
+  });
+
   test("refuses support changes that disable the selected default model", () => {
     expect(
       modelSupportChangeKeepsDefaultValid({

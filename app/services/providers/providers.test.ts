@@ -100,15 +100,17 @@ describe("Provider DTO parse", () => {
     });
     const snapshot = parseProvidersSnapshot({
       revision: 1,
-      connections: [{
-        id: "c1",
-        name: "Gateway",
-        clients: ["codex"],
-        credential_ready: true,
-        models_fetched_at: "2026-09-24T00:00:00Z",
-        models_stale: true,
-        models_warning: "using last known good models",
-      }],
+      connections: [
+        {
+          id: "c1",
+          name: "Gateway",
+          clients: ["codex"],
+          credential_ready: true,
+          models_fetched_at: "2026-09-24T00:00:00Z",
+          models_stale: true,
+          models_warning: "using last known good models",
+        },
+      ],
       defaults: {},
       presets: [],
       models: { c1: [model] },
@@ -164,6 +166,36 @@ describe("Provider DTO parse", () => {
     expect(defaultClientsForConnection(catalog!, "c1")).toEqual(["codex"]);
   });
 
+  test("preserves an explicit direct-login empty default", () => {
+    const catalog = parseProvidersSnapshot({
+      revision: 4,
+      connections: [
+        {
+          id: "c1",
+          name: "Gateway",
+          clients: ["codex"],
+          credential_ready: true,
+        },
+      ],
+      defaults: { codex: { connection_id: "", model_id: "" } },
+      presets: [],
+      models: { c1: [] },
+    });
+    expect(catalog?.defaults.codex).toEqual({
+      connection_id: "",
+      model_id: "",
+    });
+    expect(
+      parseProvidersSnapshot({
+        revision: 4,
+        connections: [],
+        defaults: { codex: { connection_id: "", model_id: "stray" } },
+        presets: [],
+        models: {},
+      }),
+    ).toBeNull();
+  });
+
   test("rejects credential keys in catalog payloads", () => {
     expect(() =>
       parseProvidersSnapshot({
@@ -186,7 +218,10 @@ describe("Provider DTO parse", () => {
 
   test("rejects old shared connections without one client owner", () => {
     const raw = providerSnapshot();
-    raw.connections[0] = { ...raw.connections[0]!, clients: ["codex", "claude"] };
+    raw.connections[0] = {
+      ...raw.connections[0]!,
+      clients: ["codex", "claude"],
+    };
     expect(parseProvidersSnapshot(raw)).toBeNull();
   });
 
@@ -352,9 +387,9 @@ describe("Provider Settings and Plus presentation policy", () => {
       ],
       models: { ...before.models, c3: [] },
     };
-    expect(
-      createdConnectionFromMutation(before, created, "deepseek").id,
-    ).toBe("c3");
+    expect(createdConnectionFromMutation(before, created, "deepseek").id).toBe(
+      "c3",
+    );
 
     const ambiguous = {
       ...created,
@@ -558,7 +593,6 @@ describe("Model sync and default binding policy", () => {
     expect(boundModelForConnection(null, "codex", "c1")).toBeNull();
   });
 
-
   test("support chips mark the gateway's exposed models", () => {
     const snapshot = providerSnapshot();
     const connection = snapshot.connections[0]!;
@@ -590,12 +624,20 @@ describe("Model sync and default binding policy", () => {
         ],
       },
     });
-    expect(enabledModelIds(snapshot, "c1")).toEqual(["gpt-5.6-sol", "gpt-5.4-mini"]);
+    expect(enabledModelIds(snapshot, "c1")).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.4-mini",
+    ]);
     expect(toggleModelSupport(snapshot, "c1", "gpt-5.6-sol")).toEqual([
       "gpt-5.4-mini",
     ]);
     const reenabled = toggleModelSupport(
-      { ...snapshot, models: { c1: snapshot.models.c1!.map((m) => ({ ...m, available: false })) } },
+      {
+        ...snapshot,
+        models: {
+          c1: snapshot.models.c1!.map((m) => ({ ...m, available: false })),
+        },
+      },
       "c1",
       "gpt-5.6-sol",
     );

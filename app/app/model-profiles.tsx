@@ -468,8 +468,8 @@ export default function ProvidersScreen() {
         );
       } else {
         Alert.alert(
-          "Connection successful",
-          "The endpoint accepted the saved API key but reported no models.",
+          "Models unavailable",
+          "No model list was returned. Add a Model ID in Edit, or retry Sync models later.",
         );
       }
     } catch (discoverError) {
@@ -545,7 +545,7 @@ export default function ProvidersScreen() {
             [connection.id]: {
               kind: "error",
               message:
-                "Could not set this Provider as default. Retry or sync models.",
+                "Could not set this Provider as default. Check the Model ID and retry.",
             },
           }));
         } else {
@@ -562,7 +562,8 @@ export default function ProvidersScreen() {
           ...previous,
           [connection.id]: {
             kind: "error",
-            message: "Sync models before selecting this Provider.",
+            message:
+              "No model catalog is available. Edit this Provider and enter a Model ID.",
           },
         }));
         return;

@@ -368,6 +368,10 @@ function ProviderConnectionList({
         (model) => model.id === selectedDefault?.model_id,
       )
     : undefined;
+  const selectedModelId =
+    selectedModel?.display_name?.trim() ||
+    selectedModel?.id ||
+    selectedDefault?.model_id;
   return (
     <View style={styles.providerList}>
       <View style={styles.agentSelector} accessibilityRole="tablist">
@@ -405,7 +409,7 @@ function ProviderConnectionList({
           </Text>
           <Text style={styles.sectionMeta} numberOfLines={1}>
             {selectedConnection
-              ? `${selectedConnection.name}${selectedModel ? ` · ${selectedModel.display_name?.trim() || selectedModel.id}` : ""}`
+              ? `${selectedConnection.name}${selectedModelId ? ` · ${selectedModelId}` : ""}`
               : `Official login${selectedDefault?.model_id ? ` · ${selectedDefault.model_id}` : " · native account"}`}
           </Text>
         </View>

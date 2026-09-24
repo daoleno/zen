@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,50 @@ import (
 	"github.com/daoleno/zen/daemon/modelprofiles"
 	"github.com/daoleno/zen/daemon/watcher"
 )
+
+func TestProvidersCatalogPayloadIncludesGatewayStatus(t *testing.T) {
+	proj := modelprofiles.ProviderCatalogProjection{
+		Revision: 9,
+		Defaults: map[string]modelprofiles.ProviderDefault{},
+		Presets:  []modelprofiles.ProviderPreset{},
+		Models:   map[string][]modelprofiles.ProviderModelEntry{},
+		Gateway: modelprofiles.GatewayStatus{
+			Running:    true,
+			Address:    "127.0.0.1:4318",
+			Endpoint:   "http://127.0.0.1:4318/v1",
+			Protocols:  []string{"openai", "anthropic"},
+			ModelCount: 3,
+		},
+	}
+	payload := (&Server{}).providersCatalogPayload(
+		"req-gateway",
+		proj,
+		modelprofiles.PersistResult{Applied: true, Durable: true},
+		nil,
+	)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	gateway, ok := decoded["gateway"].(map[string]any)
+	if !ok {
+		t.Fatalf("gateway payload=%#v", decoded["gateway"])
+	}
+	if gateway["running"] != true || gateway["address"] != "127.0.0.1:4318" || gateway["endpoint"] != "http://127.0.0.1:4318/v1" {
+		t.Fatalf("gateway identity=%#v", gateway)
+	}
+	if gateway["model_count"] != float64(3) {
+		t.Fatalf("gateway model_count=%#v", gateway["model_count"])
+	}
+	protocols, ok := gateway["protocols"].([]any)
+	if !ok || len(protocols) != 2 || protocols[0] != "openai" || protocols[1] != "anthropic" {
+		t.Fatalf("gateway protocols=%#v", gateway["protocols"])
+	}
+}
 
 func TestCreateSessionWithProfilesCompilesAndBypasses(t *testing.T) {
 	root := t.TempDir()

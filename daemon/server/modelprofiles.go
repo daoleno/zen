@@ -691,6 +691,7 @@ func (s *Server) providersCatalogPayload(requestID string, proj modelprofiles.Pr
 		"defaults":    proj.Defaults,
 		"presets":     proj.Presets,
 		"models":      proj.Models,
+		"gateway":     proj.Gateway,
 	}
 	if outcome, durable := modelprofiles.WirePersistFields(persist); outcome != "" {
 		payload["persistence_outcome"] = outcome

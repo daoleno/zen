@@ -54,7 +54,9 @@ function asRevision(value: unknown): number | null {
 }
 
 function asFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function assertSecretFree(value: unknown, seen = new Set<unknown>()): void {
@@ -210,14 +212,18 @@ export function parseProvidersSnapshot(raw: unknown): ProvidersSnapshot | null {
     const entry = asRecord(rawDefault);
     const connectionId = asString(entry?.connection_id);
     const modelId = asString(entry?.model_id);
-    if (
-      !isSupportedProviderClient(client) ||
-      !connectionId ||
-      !modelId ||
-      !connectionIds.has(connectionId)
-    ) {
+    if (!isSupportedProviderClient(client)) {
       return null;
     }
+    // Direct/native login is represented by the supported client's explicit
+    // empty default. Other connection defaults must remain complete and
+    // reference a real client-compatible connection.
+    if (!connectionId) {
+      if (modelId) return null;
+      defaults[client] = { connection_id: "", model_id: "" };
+      continue;
+    }
+    if (!modelId || !connectionIds.has(connectionId)) return null;
     const connection = connections.find((item) => item.id === connectionId);
     if (!connection?.clients.includes(client)) return null;
     defaults[client] = {
@@ -273,14 +279,16 @@ export function parseThreadRuntimeSelection(
     provider_label: asString(record.provider_label) || undefined,
     model_id: asString(record.model_id),
     reasoning_effort: asString(record.reasoning_effort) || undefined,
-    reasoning_effort_default: asString(record.reasoning_effort_default) || undefined,
+    reasoning_effort_default:
+      asString(record.reasoning_effort_default) || undefined,
     reasoning_efforts: asStringArray(record.reasoning_efforts),
     credential_ready: record.credential_ready === true,
     hot_switchable: record.hot_switchable === true,
   };
   if (
     !selection.session_id ||
-    (!isSupportedProviderClient(selection.client) && selection.client !== "dsh") ||
+    (!isSupportedProviderClient(selection.client) &&
+      selection.client !== "dsh") ||
     !selection.connection_id ||
     !selection.connection_name ||
     !selection.model_id ||
@@ -291,7 +299,9 @@ export function parseThreadRuntimeSelection(
     return null;
   }
   if (selection.client === "dsh" && Array.isArray(record.native_models)) {
-    selection.native_models = record.native_models.map(parseProviderModel).filter((model): model is ProviderModel => model !== null);
+    selection.native_models = record.native_models
+      .map(parseProviderModel)
+      .filter((model): model is ProviderModel => model !== null);
   }
   return selection;
 }
@@ -304,7 +314,8 @@ export function parseProviderModelsResult(
   if (!record || !Array.isArray(record.models)) return null;
   assertSecretFree(record);
   const connectionId = asString(record.connection_id);
-  if (!connectionId || connectionId !== expectedConnectionId.trim()) return null;
+  if (!connectionId || connectionId !== expectedConnectionId.trim())
+    return null;
   const models: ProviderModel[] = [];
   const ids = new Set<string>();
   for (const item of record.models) {
@@ -335,8 +346,7 @@ export function parseProviderCredentialResult(
   const connectionId = asString(record.connection_id);
   if (
     !connectionId ||
-    (expectedConnectionId &&
-      connectionId !== expectedConnectionId.trim()) ||
+    (expectedConnectionId && connectionId !== expectedConnectionId.trim()) ||
     typeof record.credential_ready !== "boolean"
   ) {
     return null;
@@ -388,16 +398,23 @@ export function assertThreadRuntimeMatches(
   selection: ThreadRuntimeSelection,
   input: {
     workerId: string;
-    runtime: { connectionId: string; modelId: string; effect?: string; useDefaultEffect?: boolean };
+    runtime: {
+      connectionId: string;
+      modelId: string;
+      effect?: string;
+      useDefaultEffect?: boolean;
+    };
   },
 ): boolean {
   return (
     selection.session_id === normalizeProviderId(input.workerId) &&
-    selection.connection_id === normalizeProviderId(input.runtime.connectionId) &&
+    selection.connection_id ===
+      normalizeProviderId(input.runtime.connectionId) &&
     selection.model_id === normalizeProviderId(input.runtime.modelId) &&
     (input.runtime.useDefaultEffect
       ? !selection.reasoning_effort
       : !input.runtime.effect ||
-        selection.reasoning_effort === normalizeProviderId(input.runtime.effect))
+        selection.reasoning_effort ===
+          normalizeProviderId(input.runtime.effect))
   );
 }

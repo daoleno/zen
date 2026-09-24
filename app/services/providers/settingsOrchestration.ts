@@ -27,10 +27,9 @@ export type DefaultRuntimeSeedAction =
 /**
  * Select the next Settings step before switching a Provider. A Provider
  * switch chooses a complete target seed without opening a model picker. The
- * explicit connection model wins when it is currently exposed, followed by
- * the target's current default and then the first exposed model. Never send a
- * provider-only switch with an empty runtime model: the daemon correctly
- * rejects that state because a future Session could not launch.
+ * explicit manual model IDs are opaque valid runtime identities even when an
+ * upstream does not expose a discoverable model catalog. Otherwise the target
+ * default model and first exposed model provide the normal discovery path.
  */
 export function defaultRuntimeSeedAction(input: {
   snapshot: ProvidersSnapshot;
@@ -44,6 +43,8 @@ export function defaultRuntimeSeedAction(input: {
     (model) => model.available && model.known !== false,
   );
   const current = input.snapshot.defaults[input.client];
+  const manualModelId = connection?.manual_model_id?.trim();
+  if (manualModelId) return { kind: "apply", modelId: manualModelId };
   if (current?.connection_id === input.connectionId && current.model_id) {
     const currentModel = available.find(
       (model) => model.id === current.model_id,
