@@ -2295,3 +2295,39 @@ func TestClassifyPaneAndApplyProgressInvalidation(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeInputReadyCurrentTUIAndWrappedFooter(t *testing.T) {
+	ready := `
+ ▐▛███▛█   Claude Code v2.1.281
+  ▝▝ ▝▝    ~/workspace/zen
+────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for
+  shortcuts · ← for agents
+`
+	if !isClaudeInputReady(ready) {
+		t.Fatal("current Claude idle pane with wrapped footer should be ready")
+	}
+	for name, pane := range map[string]string{
+		"model picker": "Claude Code v2.1.281\nSelect a model\n❯\nmanual mode on · ? for shortcuts",
+		"draft":        "Claude Code v2.1.281\n❯ existing draft\nmanual mode on · ? for shortcuts",
+		"trust prompt": "Claude Code v2.1.281\nTrust this folder?\n❯\nmanual mode on · ? for shortcuts",
+	} {
+		if isClaudeInputReady(pane) {
+			t.Errorf("%s must not be ready", name)
+		}
+	}
+}
+
+func TestClaudeReadinessRecognizesCommandOverrides(t *testing.T) {
+	pane := "Claude Code v2.1.281\n❯\nmanual mode on · ? for shortcuts"
+	for _, command := range []string{
+		"claude --dangerously-skip-permissions",
+		"env PROFILE=worker claude --permission-mode bypassPermissions",
+	} {
+		if !needsInputReadinessWait(command, "") || !isWorkerInputReady(command, pane) {
+			t.Fatalf("Claude command override %q was not recognized as ready", command)
+		}
+	}
+}

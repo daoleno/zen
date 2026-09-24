@@ -28,7 +28,11 @@ const tmuxSendInputChunkBytes = 1024
 const initialInputReadyTimeout = 8 * time.Second
 const codexInputStartupStallTimeout = 30 * time.Second
 const cursorInputReadyTimeout = 25 * time.Second
-const claudeInputReadyTimeout = 12 * time.Second
+
+// Claude Code can spend several seconds rendering its first TUI (especially
+// after a cold install/update). Keep this bounded, but long enough that the
+// ready pane is not mistaken for a failed spawn.
+const claudeInputReadyTimeout = 20 * time.Second
 const grokInputReadyTimeout = 15 * time.Second
 const piInputReadyTimeout = 15 * time.Second
 const openCodeInputReadyTimeout = 15 * time.Second
@@ -51,7 +55,12 @@ var codexFooterReadyRe = regexp.MustCompile(`(?im)^[\t \x{00A0}]*(?:model:\s*)?g
 // claudeComposerRe lists U+00A0 explicitly and still rejects nonempty drafts.
 var claudeHeaderRe = regexp.MustCompile(`Claude Code v?\d+\.\d+\.\d+`)
 var claudeComposerRe = regexp.MustCompile(`(?m)^[\t \x{00A0}]*❯[\t \x{00A0}]*$`)
-var claudeModeFooterRe = regexp.MustCompile(`(?i)(bypass permissions|manual mode).*(shift\+tab|shortcuts|\?)`)
+
+// The footer wraps at narrow worker panes, so the two footer tokens may land
+// on adjacent lines. Keep the span bounded to the current footer and require
+// a mode token plus its keyboard affordance; arbitrary pane text cannot pass.
+var claudeModeFooterRe = regexp.MustCompile(`(?is)(bypass permissions|manual mode)[\s\S]{0,160}(shift\+tab|shortcuts|\?)`)
+var claudeBlockedOverlayRe = regexp.MustCompile(`(?is)(select a model|choose a model|loading|starting claude|trust (?:this|the contents)|press enter to continue|sign[ -]?in|api key|permission required)`)
 
 // Grok TUI ready: model/footer chrome plus the empty/ready composer prompt glyph.
 var grokChromeReadyRe = regexp.MustCompile(`(?im)(\bgrok\s+[0-9]|always-approve|enter\s*:\s*send|shift\+tab:mode)`)
@@ -3930,9 +3939,23 @@ func isClaudeInputReady(content string) bool {
 	// Header: numeric Claude Code version marker
 	// Composer: empty input line with prompt glyph (spaces/tabs/NBSP only)
 	// Footer: mode indication (bypass permissions or manual mode)
-	return claudeHeaderRe.MatchString(content) &&
-		claudeComposerRe.MatchString(content) &&
-		claudeModeFooterRe.MatchString(content)
+	if !claudeHeaderRe.MatchString(content) || !claudeComposerRe.MatchString(content) {
+		return false
+	}
+	composers := claudeComposerRe.FindAllStringIndex(content, -1)
+	footers := claudeModeFooterRe.FindAllStringIndex(content, -1)
+	if len(composers) == 0 || len(footers) == 0 || footers[len(footers)-1][0] < composers[len(composers)-1][1] {
+		return false
+	}
+	// Evaluate overlays after the latest header. Startup prompts and model
+	// pickers in scrollback must never make an otherwise non-empty pane ready.
+	if headers := claudeHeaderRe.FindAllStringIndex(content, -1); len(headers) > 0 {
+		current := content[headers[len(headers)-1][0]:]
+		if claudeBlockedOverlayRe.MatchString(current) {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *Watcher) activitySignal(worker classifier.Worker, paneContent string, panePID int, processes map[int]processInfo) classifier.ActivitySignal {
