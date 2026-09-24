@@ -2,11 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as Clipboard from "expo-clipboard";
 import {
   ActivityIndicator,
+  FlatList,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -29,8 +31,6 @@ import type {
   ProvidersSnapshot,
 } from "../../services/providers";
 import {
-  connectionRequiresModelSelection,
-  connectionsForClient,
   modelSupportChoices,
   providerBaseUrlHostname,
   providerClientLabel,
@@ -151,6 +151,11 @@ export function ProvidersPresentation({
   const canMutate =
     currentServerAvailable && !offline && !unavailable && Boolean(catalog);
   const writeLocked = mutating || Boolean(requiresRefreshBeforeMutation);
+  const [selectedClient, setSelectedClient] = useState<ProviderClient>("codex");
+
+  useEffect(() => {
+    if (!catalog) setSelectedClient("codex");
+  }, [catalog]);
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
@@ -222,17 +227,10 @@ export function ProvidersPresentation({
 
         {catalog ? (
           <>
-            <GatewayStatusRow
-              status={
-                catalog.gateway ?? {
-                  running: false,
-                  protocols: [],
-                  model_count: 0,
-                }
-              }
-            />
             <ProviderConnectionList
               catalog={catalog}
+              selectedClient={selectedClient}
+              onSelectClient={setSelectedClient}
               disabled={!canMutate || writeLocked}
               switchStates={switchStates}
               onUseDirect={onUseDirect}
@@ -241,6 +239,15 @@ export function ProvidersPresentation({
               onDelete={onDelete}
               onDiscover={onDiscover}
               onTestConnection={onTestConnectionById}
+            />
+            <GatewayStatusRow
+              status={
+                catalog.gateway ?? {
+                  running: false,
+                  protocols: [],
+                  model_count: 0,
+                }
+              }
             />
           </>
         ) : null}
@@ -314,6 +321,8 @@ function GatewayStatusRow({
 
 function ProviderConnectionList({
   catalog,
+  selectedClient,
+  onSelectClient,
   disabled,
   switchStates,
   onUseDirect,
@@ -324,6 +333,8 @@ function ProviderConnectionList({
   onTestConnection,
 }: {
   catalog: ProvidersSnapshot;
+  selectedClient: ProviderClient;
+  onSelectClient(client: ProviderClient): void;
   disabled: boolean;
   switchStates: Record<string, { kind: "pending" | "error"; message?: string }>;
   onUseDirect(client: ProviderClient): void;
@@ -340,29 +351,73 @@ function ProviderConnectionList({
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
   const connections = catalog.connections.filter((connection) => {
+    if (!connection.clients.includes(selectedClient)) return false;
     if (!normalizedQuery) return true;
-    const clients = connection.clients.map(providerClientLabel).join(" ");
-    return `${connection.name} ${connectionSubtitle(connection, catalog)} ${clients}`
+    return `${connection.name} ${connectionSubtitle(connection, catalog)}`
       .toLowerCase()
       .includes(normalizedQuery);
   });
+  const selectedDefault = catalog.defaults[selectedClient];
+  const selectedConnection = selectedDefault?.connection_id
+    ? catalog.connections.find(
+        (connection) => connection.id === selectedDefault.connection_id,
+      )
+    : undefined;
+  const selectedModel = selectedConnection
+    ? (catalog.models[selectedConnection.id] ?? []).find(
+        (model) => model.id === selectedDefault?.model_id,
+      )
+    : undefined;
   return (
     <View style={styles.providerList}>
-      <View style={styles.providerListHeader}>
+      <View style={styles.agentSelector} accessibilityRole="tablist">
+        {CLIENTS.map((client) => {
+          const selected = selectedClient === client;
+          return (
+            <Pressable
+              key={client}
+              style={[styles.agentTab, selected && styles.agentTabSelected]}
+              accessibilityRole="tab"
+              accessibilityState={{ selected }}
+              onPress={() => onSelectClient(client)}
+            >
+              {client === "codex" ? (
+                <Codex.Color size={18} />
+              ) : (
+                <Claude.Color size={18} />
+              )}
+              <Text
+                style={[
+                  styles.agentTabText,
+                  selected && styles.agentTabTextSelected,
+                ]}
+              >
+                {providerClientLabel(client)}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <View style={styles.agentSummary}>
         <View style={styles.providerListCopy}>
-          <Text style={styles.sectionTitle}>Providers</Text>
-          <Text style={styles.sectionMeta}>
-            {catalog.connections.length} saved connection
-            {catalog.connections.length === 1 ? "" : "s"}
+          <Text style={styles.sectionTitle}>
+            {providerClientLabel(selectedClient)}
+          </Text>
+          <Text style={styles.sectionMeta} numberOfLines={1}>
+            {selectedConnection
+              ? `${selectedConnection.name}${selectedModel ? ` · ${selectedModel.display_name?.trim() || selectedModel.id}` : ""}`
+              : `Official login${selectedDefault?.model_id ? ` · ${selectedDefault.model_id}` : " · native account"}`}
           </Text>
         </View>
         <AnimatedPressable
           style={styles.iconActionAccent}
           preset="press"
           accessibilityRole="button"
-          accessibilityLabel="Add Provider"
+          accessibilityLabel={`Add ${providerClientLabel(selectedClient)} Provider`}
           disabled={disabled}
-          onPress={() => onOpenEditor({ kind: "create", client: "codex" })}
+          onPress={() =>
+            onOpenEditor({ kind: "create", client: selectedClient })
+          }
         >
           <Ionicons name="add" size={20} color={colors.accentStrong} />
         </AnimatedPressable>
@@ -371,54 +426,52 @@ function ProviderConnectionList({
         value={query}
         onChangeText={setQuery}
         editable={!disabled}
-        placeholder="Search Providers"
+        placeholder={`Search ${providerClientLabel(selectedClient)} Providers`}
         placeholderTextColor={colors.textSecondary}
         accessibilityLabel="Search Providers"
         autoCapitalize="none"
         autoCorrect={false}
         containerStyle={styles.providerSearch}
       />
-      <View style={styles.directRow}>
+      <View style={styles.directRow} accessibilityRole="radiogroup">
         <View style={styles.directCopy}>
           <Text style={styles.rowTitle}>Official login</Text>
           <Text style={styles.rowSubtitle}>
             Direct · uses the native account
           </Text>
         </View>
-        <View style={styles.directActions}>
-          {CLIENTS.map((client) => {
-            const selected = catalog.defaults[client]?.connection_id === "";
-            return (
-              <Pressable
-                key={client}
-                style={[
-                  styles.clientPill,
-                  selected && styles.clientPillSelected,
-                ]}
-                accessibilityRole="radio"
-                accessibilityLabel={`${providerClientLabel(client)} official login`}
-                accessibilityState={{ checked: selected, disabled }}
-                disabled={disabled || selected}
-                onPress={() => onUseDirect(client)}
-              >
-                {client === "codex" ? (
-                  <Codex.Color size={16} />
-                ) : (
-                  <Claude.Color size={16} />
-                )}
-                <Text style={styles.clientPillText}>
-                  {providerClientLabel(client)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        <Pressable
+          style={styles.radioButton}
+          accessibilityRole="radio"
+          accessibilityLabel={`${providerClientLabel(selectedClient)} official login`}
+          accessibilityState={{
+            checked: selectedDefault?.connection_id === "",
+            disabled,
+          }}
+          disabled={disabled || selectedDefault?.connection_id === ""}
+          onPress={() => onUseDirect(selectedClient)}
+        >
+          <Ionicons
+            name={
+              selectedDefault?.connection_id === ""
+                ? "checkmark-circle"
+                : "ellipse-outline"
+            }
+            size={22}
+            color={
+              selectedDefault?.connection_id === ""
+                ? colors.accentStrong
+                : colors.textTertiary
+            }
+          />
+        </Pressable>
       </View>
       {connections.map((connection) => (
         <ProviderConnectionRow
           key={connection.id}
           connection={connection}
           catalog={catalog}
+          client={selectedClient}
           disabled={disabled}
           switchState={switchStates[connection.id]}
           onSetDefault={onSetDefault}
@@ -429,7 +482,11 @@ function ProviderConnectionList({
         />
       ))}
       {connections.length === 0 ? (
-        <Text style={styles.emptyText}>No Providers match this search.</Text>
+        <Text style={styles.emptyText}>
+          {normalizedQuery
+            ? "No Providers match this search."
+            : "No saved Providers for this Agent yet."}
+        </Text>
       ) : null}
     </View>
   );
@@ -438,6 +495,7 @@ function ProviderConnectionList({
 function ProviderConnectionRow({
   connection,
   catalog,
+  client,
   disabled,
   switchState,
   onSetDefault,
@@ -448,6 +506,7 @@ function ProviderConnectionRow({
 }: {
   connection: ProviderConnection;
   catalog: ProvidersSnapshot;
+  client: ProviderClient;
   disabled: boolean;
   switchState?: { kind: "pending" | "error"; message?: string };
   onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
@@ -461,19 +520,15 @@ function ProviderConnectionRow({
   const [testState, setTestState] = useState<ConnectionTestState>({
     kind: "idle",
   });
+  const [expanded, setExpanded] = useState(false);
   const models = catalog.models[connection.id] ?? [];
   const exposedCount = models.filter(
     (model) => model.available && model.known !== false,
   ).length;
-  const clients = connection.clients.filter(
-    (client): client is ProviderClient =>
-      client === "codex" || client === "claude",
-  );
-  const selectedClient = clients.find(
-    (client) => catalog.defaults[client]?.connection_id === connection.id,
-  );
+  const selected = catalog.defaults[client]?.connection_id === connection.id;
   const ready = connection.credential_ready;
   const testing = testState.kind === "testing";
+  const onSetDefaultForClient = () => onSetDefault(client, connection);
   const handleTest = async () => {
     if (testing) return;
     setTestState({ kind: "testing" });
@@ -494,101 +549,173 @@ function ProviderConnectionRow({
   };
   return (
     <View style={styles.providerRow}>
-      <View style={styles.providerRowTop}>
+      <AnimatedPressable
+        style={styles.providerSelect}
+        preset="press"
+        disabled={disabled}
+        accessibilityRole="radio"
+        accessibilityState={{ checked: selected, disabled: disabled || !ready }}
+        accessibilityLabel={`${connection.name}, ${connectionSubtitle(connection, catalog)}${ready ? "" : ", API key required"}`}
+        onPress={ready ? onSetDefaultForClient : onOpenEditor}
+      >
+        <View
+          style={[styles.radioOuter, selected && styles.radioOuterSelected]}
+        >
+          {selected ? (
+            <Ionicons name="checkmark" size={14} color={colors.textOnAccent} />
+          ) : null}
+        </View>
         <View style={styles.providerRowCopy}>
-          <View style={styles.providerNameLine}>
-            <Text style={styles.rowTitle} numberOfLines={1}>
-              {connection.name}
-            </Text>
-            {selectedClient ? (
-              <Text style={styles.defaultMarker}>Default</Text>
-            ) : null}
-          </View>
-          <Text style={styles.rowSubtitle} numberOfLines={1}>
-            {connectionSubtitle(connection, catalog)} ·{" "}
-            {providerClientLabel(clients[0] ?? "")} · {exposedCount} models ·{" "}
-            {catalogAgeLabel(connection)}
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {connection.name}
           </Text>
-          <Text
-            style={[
-              styles.readyState,
-              { color: ready ? colors.success : colors.warning },
-            ]}
-          >
-            {ready ? "Ready" : "API key required"}
+          <Text style={styles.rowSubtitle} numberOfLines={1}>
+            {connectionSubtitle(connection, catalog)} · {exposedCount} models ·{" "}
+            {catalogAgeLabel(connection)}
           </Text>
         </View>
         {switchState?.kind === "pending" ? (
           <ActivityIndicator size="small" color={colors.accent} />
         ) : null}
-      </View>
-      {connection.models_warning ? (
-        <Text style={styles.catalogWarning}>{connection.models_warning}</Text>
-      ) : null}
+      </AnimatedPressable>
+      {!ready ? <Text style={styles.keyRequired}>Key required</Text> : null}
       {switchState?.kind === "error" ? (
         <Text style={styles.inlineError}>{switchState.message}</Text>
       ) : null}
       <View style={styles.providerActions}>
-        {clients.map((client) => {
-          const selected =
-            catalog.defaults[client]?.connection_id === connection.id;
-          return (
-            <AnimatedPressable
-              key={client}
-              style={[
-                styles.primaryAction,
-                selected && styles.primaryActionSelected,
-              ]}
-              preset="press"
-              disabled={disabled || !ready || selected}
-              accessibilityRole="button"
-              accessibilityLabel={`${selected ? "Current default" : "Use"} ${connection.name} for ${providerClientLabel(client)}`}
-              onPress={() => onSetDefault(client, connection)}
-            >
-              <Ionicons
-                name={selected ? "checkmark" : "radio-button-on-outline"}
-                size={16}
-                color={colors.accentStrong}
-              />
-              <Text style={styles.primaryActionText}>
-                {selected
-                  ? "Default"
-                  : `Use for ${providerClientLabel(client)}`}
-              </Text>
-            </AnimatedPressable>
-          );
-        })}
-        <IconAction
+        <ActionButton
           label="Models"
-          icon="layers-outline"
           onPress={onDiscover}
           disabled={disabled || !ready}
         />
-        <IconAction
-          label="Sync models"
-          icon="sync-outline"
-          onPress={onDiscover}
-          disabled={disabled || !ready}
-        />
-        <IconAction
-          label="Test connection"
-          icon={testing ? "hourglass-outline" : "pulse-outline"}
-          onPress={() => void handleTest()}
-          disabled={disabled || testing}
-        />
-        <IconAction
+        <ActionButton
           label="Edit"
-          icon="create-outline"
           onPress={onOpenEditor}
           disabled={disabled}
+          primary
         />
-        <IconAction
-          label="Delete"
-          icon="trash-outline"
-          onPress={onDelete}
-          disabled={disabled}
-          danger
-        />
+        <Pressable
+          style={styles.moreAction}
+          accessibilityRole="button"
+          accessibilityLabel={`${expanded ? "Hide" : "Show"} ${connection.name} actions`}
+          onPress={() => setExpanded((value) => !value)}
+        >
+          <Ionicons
+            name={expanded ? "chevron-up" : "ellipsis-horizontal"}
+            size={19}
+            color={colors.textTertiary}
+          />
+        </Pressable>
+      </View>
+      {expanded ? (
+        <View style={styles.secondaryActions}>
+          <IconAction
+            label="Test connection"
+            icon={testing ? "hourglass-outline" : "pulse-outline"}
+            onPress={() => void handleTest()}
+            disabled={disabled || testing}
+          />
+          <IconAction
+            label="Edit"
+            icon="create-outline"
+            onPress={onOpenEditor}
+            disabled={disabled}
+          />
+          <IconAction
+            label="Delete"
+            icon="trash-outline"
+            onPress={onDelete}
+            disabled={disabled}
+            danger
+          />
+        </View>
+      ) : null}
+      {testState.kind === "success" ? (
+        <Text style={[styles.testResultText, { color: colors.success }]}>
+          Connected · {testState.latencyMs} ms
+          {testState.modelCount > 0
+            ? ` · ${testState.modelCount} models found`
+            : ""}
+        </Text>
+      ) : null}
+      {testState.kind === "error" ? (
+        <Text style={[styles.testResultText, { color: colors.dangerText }]}>
+          {testState.message}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ActionButton({
+  label,
+  onPress,
+  disabled,
+  primary,
+}: {
+  label: string;
+  onPress(): void;
+  disabled: boolean;
+  primary?: boolean;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  return (
+    <AnimatedPressable
+      style={[styles.actionButton, primary && styles.actionButtonPrimary]}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      onPress={onPress}
+    >
+      <Text
+        style={[
+          styles.actionButtonText,
+          primary && styles.actionButtonPrimaryText,
+        ]}
+      >
+        {label}
+      </Text>
+    </AnimatedPressable>
+  );
+}
+
+function IconAction({
+  label,
+  icon,
+  onPress,
+  disabled,
+  danger,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress(): void;
+  disabled: boolean;
+  danger?: boolean;
+}) {
+  const colors = useAppColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={5}
+    >
+      <Ionicons
+        name={icon}
+        size={19}
+        color={danger ? colors.dangerText : colors.textSecondary}
+      />
+    </Pressable>
+  );
+}
+
+/* Secondary identity: Base-URL hostname for custom gateways, preset label
+ * for curated connections (daemon-provided, never hardcoded). */
+/* Obsolete client-first components retained only as inert source during the
+ * scoped migration; the ProviderConnectionList above is the rendered path.
       </View>
       {testState.kind === "success" ? (
         <Text style={[styles.testResultText, { color: colors.success }]}>
@@ -773,8 +900,9 @@ function ChoiceRow({
   );
 }
 
-/** Secondary identity: Base-URL hostname for custom gateways, preset label
- *  for curated connections (daemon-provided, never hardcoded). */
+// Secondary identity: Base-URL hostname for custom gateways, preset label
+// for curated connections (daemon-provided, never hardcoded).
+*/
 function connectionSubtitle(
   connection: ProviderConnection,
   catalog: ProvidersSnapshot | null,
@@ -802,6 +930,8 @@ function catalogAgeLabel(connection: ProviderConnection): string {
   return `Models ${Math.round(hours / 24)}d ago`;
 }
 
+/* Obsolete connection-choice row retained outside the rendered Agent-first
+ * surface until this file's style contract is fully pruned.
 function ConnectionChoiceRow({
   connection,
   catalog,
@@ -820,7 +950,7 @@ function ConnectionChoiceRow({
   selected: boolean;
   disabled: boolean;
   isLast: boolean;
-  /** Default connection with no bound model: new Sessions would fail closed. */
+  // Default connection with no bound model: new Sessions would fail closed.
   needsModel: boolean;
   onSelect(): void;
   onOpenEditor(): void;
@@ -998,6 +1128,8 @@ function ActionButton({
     </AnimatedPressable>
   );
 }
+
+*/
 
 interface ProviderEditorSheetProps {
   editor: ProvidersEditorState;
@@ -1359,7 +1491,11 @@ function ModelSyncSheet({
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const [query, setQuery] = useState("");
+  useEffect(() => {
+    setQuery("");
+  }, [picker.connection.id, picker.purpose]);
   const choices = modelSupportChoices(
     catalog,
     picker.connection,
@@ -1381,9 +1517,13 @@ function ModelSyncSheet({
       visible
       onClose={onClose}
       align="bottom"
+      avoidKeyboard
       cardStyle={[
         styles.pickerCard,
-        { paddingBottom: Math.max(insets.bottom, 16) },
+        {
+          paddingBottom: Math.max(insets.bottom, 16),
+          maxHeight: Math.min(windowHeight * 0.86, 720),
+        },
       ]}
     >
       <View style={styles.pickerHeader}>
@@ -1423,8 +1563,23 @@ function ModelSyncSheet({
         autoCorrect={false}
         containerStyle={styles.pickerSearch}
       />
-      <View style={styles.chipWrap}>
-        {visibleChoices.map((choice) => {
+      <FlatList
+        data={visibleChoices}
+        keyExtractor={(choice) => choice.model.id}
+        style={[
+          styles.pickerList,
+          { maxHeight: Math.max(180, Math.min(windowHeight * 0.55, 520)) },
+        ]}
+        contentContainerStyle={styles.pickerListContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+        extraData={{
+          saving,
+          disabled,
+          selectingDefault,
+          selectedModel: catalog.defaults[picker.client]?.model_id,
+        }}
+        renderItem={({ item: choice }) => {
           const selected = selectingDefault
             ? catalog.defaults[picker.client]?.connection_id ===
                 picker.connection.id &&
@@ -1435,7 +1590,7 @@ function ModelSyncSheet({
             <Pressable
               key={choice.model.id}
               style={[
-                styles.modelChip,
+                styles.modelRow,
                 selected && styles.modelChipSelected,
                 chipDisabled && styles.modelChipDisabled,
               ]}
@@ -1464,38 +1619,43 @@ function ModelSyncSheet({
                 size={15}
                 color={selected ? colors.accentStrong : colors.textTertiary}
               />
-              <Text
-                style={[
-                  styles.modelChipText,
-                  selected && { color: colors.accentStrong },
-                ]}
-                numberOfLines={1}
-              >
-                {choice.model.display_name?.trim() || choice.model.id}
-              </Text>
-              <Text style={styles.modelChipMeta} numberOfLines={1}>
-                {choice.model.source}
-                {choice.model.context_window_tokens
-                  ? ` · ${Math.round(choice.model.context_window_tokens / 1000)}k ctx`
-                  : ""}
-              </Text>
+              <View style={styles.modelRowCopy}>
+                <Text
+                  style={[
+                    styles.modelChipText,
+                    selected && { color: colors.accentStrong },
+                  ]}
+                >
+                  {choice.model.display_name?.trim() || choice.model.id}
+                </Text>
+                <Text style={styles.modelChipMeta} numberOfLines={1}>
+                  {choice.model.id} · {choice.model.source}
+                  {choice.model.context_window_tokens
+                    ? ` · ${Math.round(choice.model.context_window_tokens / 1000)}k ctx`
+                    : ""}
+                </Text>
+              </View>
             </Pressable>
           );
-        })}
-        {saving ? (
-          <View style={styles.pickerSavingRow}>
-            <ActivityIndicator size="small" color={colors.accent} />
-            <Text style={styles.pickerSavingText}>Saving…</Text>
-          </View>
-        ) : null}
-        {!saving && visibleChoices.length === 0 ? (
-          <Text style={styles.pickerEmpty}>
-            {choices.length === 0
-              ? "No models were reported by this endpoint."
-              : "No models match this search."}
-          </Text>
-        ) : null}
-      </View>
+        }}
+        ListFooterComponent={
+          saving ? (
+            <View style={styles.pickerSavingRow}>
+              <ActivityIndicator size="small" color={colors.accent} />
+              <Text style={styles.pickerSavingText}>Saving…</Text>
+            </View>
+          ) : null
+        }
+        ListEmptyComponent={
+          !saving ? (
+            <Text style={styles.pickerEmpty}>
+              {choices.length === 0
+                ? "No models were reported by this endpoint."
+                : "No models match this search."}
+            </Text>
+          ) : null
+        }
+      />
     </RisingSheet>
   );
 }
@@ -1578,6 +1738,35 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
     },
     gatewayCopy: { padding: 8 },
     providerList: { gap: 10 },
+    agentSelector: {
+      flexDirection: "row",
+      gap: 8,
+      padding: 4,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfaceSubtle,
+    },
+    agentTab: {
+      flex: 1,
+      minHeight: 42,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 7,
+      borderRadius: Radii.xs,
+    },
+    agentTabSelected: { backgroundColor: colors.bgSurface },
+    agentTabText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textSecondary,
+    },
+    agentTabTextSelected: { color: colors.textPrimary, fontWeight: "700" },
+    agentSummary: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingTop: 4,
+    },
     providerListHeader: {
       flexDirection: "row",
       alignItems: "center",
@@ -1615,6 +1804,7 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.surfaceSubtle,
     },
     directCopy: { flex: 1, minWidth: 0 },
+    radioButton: { padding: 4 },
     directActions: { gap: 6 },
     clientPill: {
       minHeight: 30,
@@ -1639,6 +1829,12 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
     },
+    providerSelect: {
+      minHeight: 54,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+    },
     providerRowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
     providerRowCopy: { flex: 1, minWidth: 0, gap: 2 },
     providerNameLine: { flexDirection: "row", alignItems: "center", gap: 7 },
@@ -1660,6 +1856,18 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       flexWrap: "wrap",
       gap: 12,
       paddingTop: 3,
+    },
+    moreAction: {
+      minHeight: 40,
+      minWidth: 40,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    secondaryActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 18,
+      paddingTop: 4,
     },
     primaryAction: {
       minHeight: 34,
@@ -1748,6 +1956,10 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderColor: colors.accent,
       alignItems: "center",
       justifyContent: "center",
+    },
+    radioOuterSelected: {
+      backgroundColor: colors.accent,
+      borderColor: colors.accent,
     },
     radioInner: {
       width: 10,
@@ -1845,11 +2057,13 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.surfaceSubtle,
     },
     pickerCard: {
+      width: "100%",
+      flexShrink: 1,
       backgroundColor: colors.bgSurface,
       borderTopLeftRadius: Radii.sm,
       borderTopRightRadius: Radii.sm,
       overflow: "hidden",
-      maxHeight: 560,
+      maxHeight: "86%",
     },
     pickerHeader: {
       flexDirection: "row",
@@ -1883,27 +2097,21 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       marginHorizontal: 16,
       marginBottom: 10,
     },
-    pickerList: { paddingHorizontal: 16, paddingBottom: 8 },
-    chipWrap: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      gap: 8,
-      paddingHorizontal: 16,
-      paddingBottom: 8,
-    },
-    modelChip: {
-      minHeight: 34,
-      maxWidth: "100%",
+    pickerList: { flexGrow: 0, flexShrink: 1, marginHorizontal: 16 },
+    pickerListContent: { paddingBottom: 8, gap: 8 },
+    modelRow: {
+      minHeight: 52,
       flexDirection: "row",
       alignItems: "center",
       gap: 6,
-      borderRadius: 17,
+      borderRadius: Radii.xs,
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.surfacePressed,
       paddingHorizontal: 11,
       paddingVertical: 6,
     },
+    modelRowCopy: { flex: 1, minWidth: 0, gap: 2 },
     modelChipSelected: {
       borderColor: colors.accent,
       backgroundColor: colors.accentSoft,

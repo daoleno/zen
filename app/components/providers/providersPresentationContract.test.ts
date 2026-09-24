@@ -249,12 +249,15 @@ describe("Provider display-name helpers", () => {
   });
 });
 
-describe("client-first Providers surface contract", () => {
-  test("renders Provider-first searchable rows with explicit model actions", () => {
+describe("Agent-first Providers surface contract", () => {
+  test("renders Agent-scoped rows with explicit model actions", () => {
     expect(presentationSource).toContain("ProviderConnectionList");
-    expect(presentationSource).toContain('placeholder="Search Providers"');
+    expect(presentationSource).toContain("agentSelector");
+    expect(presentationSource).toContain("selectedClient");
+    expect(presentationSource).toContain(
+      "placeholder={`Search ${providerClientLabel(selectedClient)} Providers`}",
+    );
     expect(presentationSource).toContain('label="Models"');
-    expect(presentationSource).toContain("defaultMarker");
     expect(presentationSource).toContain("exposedCount");
     expect(presentationSource).toContain('switchState?.kind === "error"');
   });
@@ -271,16 +274,15 @@ describe("client-first Providers surface contract", () => {
       'const CLIENTS: ProviderClient[] = ["codex", "claude"]',
     );
     expect(presentationSource).toContain("Official login");
-    expect(presentationSource).toContain('subtitle="Direct"');
-    expect(presentationSource).toContain("onUseDirect(client)");
+    expect(presentationSource).toContain("onUseDirect(selectedClient)");
   });
 
   test("uses the official Codex and Claude marks", () => {
     expect(presentationSource).toContain(
       'import { Claude, Codex } from "@lobehub/icons-rn"',
     );
-    expect(presentationSource).toContain("<Codex.Color size={22} />");
-    expect(presentationSource).toContain("<Claude.Color size={22} />");
+    expect(presentationSource).toContain("<Codex.Color size={18} />");
+    expect(presentationSource).toContain("<Claude.Color size={18} />");
   });
 
   test("does not expose upstream vendor presets as hardcoded copy", () => {
@@ -342,7 +344,7 @@ describe("client-first Providers surface contract", () => {
   });
 
   test("connection actions sync models through discovery into a picker", () => {
-    expect(presentationSource).toContain('label="Sync models"');
+    expect(presentationSource).toContain('label="Models"');
     expect(presentationSource).toContain("onPress={onDiscover}");
     expect(presentationSource).toContain("Test connection");
     expect(screenSource).toContain("discoverProviderModels");
@@ -356,7 +358,7 @@ describe("client-first Providers surface contract", () => {
     expect(screenSource).toContain("defaultRuntimeSeedAction");
   });
 
-  test("model chips select the exact default model for the current Provider", () => {
+  test("model rows select the exact default model for the current Provider", () => {
     expect(presentationSource).toContain("Models");
     expect(presentationSource).toContain("modelSupportChoices(");
     expect(presentationSource).toContain("onSelectModel(");
@@ -365,7 +367,8 @@ describe("client-first Providers surface contract", () => {
     expect(presentationSource).toContain("defaultMarker");
     expect(presentationSource).not.toContain("pickerCurrentLabel");
     expect(presentationSource).toContain("modelChipSelected");
-    expect(presentationSource).toContain("chipWrap");
+    expect(presentationSource).toContain("FlatList");
+    expect(presentationSource).toContain("pickerListContent");
     expect(presentationSource).toContain(
       "Choose the model for new ${providerClientLabel(picker.client)} sessions.",
     );

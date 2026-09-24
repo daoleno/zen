@@ -44,19 +44,11 @@ export function defaultRuntimeSeedAction(input: {
     (model) => model.available && model.known !== false,
   );
   const current = input.snapshot.defaults[input.client];
-  if (
-    current?.connection_id === input.connectionId &&
-    current.model_id &&
-    !connection?.models_stale &&
-    !connection?.models_warning
-  ) {
+  if (current?.connection_id === input.connectionId && current.model_id) {
     const currentModel = available.find(
       (model) => model.id === current.model_id,
     );
     if (currentModel) return { kind: "apply", modelId: current.model_id };
-  }
-  if (connection?.models_stale || connection?.models_warning) {
-    return { kind: "unavailable" };
   }
   if (available.length === 0) return { kind: "unavailable" };
   const availableIds = new Set(available.map((model) => model.id));

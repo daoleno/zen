@@ -108,18 +108,22 @@ describe("future-thread default runtime policy", () => {
     ).toEqual({ kind: "apply", modelId: "manual" });
   });
 
-  test("does not auto-select from a stale catalog", () => {
+  test("keeps a valid cached model selectable when metadata is stale", () => {
     expect(
       defaultRuntimeSeedAction({
         snapshot: {
           ...snapshot,
           defaults: {},
           connections: [{ ...snapshot.connections[1], models_stale: true }],
+          models: {
+            ...snapshot.models,
+            b: [{ id: "m2", available: true, source: "cached" }],
+          },
         },
         client: "codex",
         connectionId: "b",
       }),
-    ).toEqual({ kind: "unavailable" });
+    ).toEqual({ kind: "apply", modelId: "m2" });
   });
 
   test("refuses support changes that disable the selected default model", () => {
