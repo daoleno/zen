@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, View } from "react-native";
 import { Claude, Codex, Grok } from "@lobehub/icons-rn";
-import { Colors, useAppTheme } from "../../constants/tokens";
+import { useAppTheme, type AppColors } from "../../constants/tokens";
 import type { BrainExecutorRef } from "../../store/brain";
 import { brainAdapterProviderKey } from "./brainPresentation";
 import { CursorMark } from "../icons/CursorMark";
@@ -49,7 +49,7 @@ export function BrainExecutorIcon({ adapter, size = 18 }: BrainExecutorIconProps
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     frame: {
       borderRadius: 12,

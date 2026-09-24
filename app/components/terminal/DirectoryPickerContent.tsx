@@ -1,9 +1,10 @@
 import React, { useMemo } from "react";
 import { FlatList, StyleSheet, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Colors, useAppColors } from "../../constants/tokens";
+import { useAppColors, type AppColors } from "../../constants/tokens";
 import { displayPathSubtitle } from "../../services/pathDisplay";
-import { AppButton, AppText, IconButton, StateView } from "../ui";
+import { Button, AppText, IconButton } from "../ui";
+import { EmptyState } from "../ui/EmptyState";
 import type { DirectoryPickerEntry } from "./directoryPickerState";
 
 export type { DirectoryPickerEntry };
@@ -57,9 +58,9 @@ export function DirectoryPickerContent({
       </View>
 
       {loading ? (
-        <StateView loading />
+        <EmptyState size="inline" busy />
       ) : error ? (
-        <StateView detail={error} danger />
+        <EmptyState size="inline" detail={error} tone="danger" />
       ) : (
         <FlatList
           data={entries}
@@ -84,24 +85,24 @@ export function DirectoryPickerContent({
               />
             </TouchableOpacity>
           )}
-          ListEmptyComponent={<StateView detail="No subdirectories" />}
+          ListEmptyComponent={<EmptyState size="inline" detail="No subdirectories" />}
         />
       )}
 
       <View style={styles.actions}>
-        <AppButton
+        <Button
           label="Select This Directory"
-          variant="primary"
+          variant="filled"
           onPress={onSelectCurrent}
           disabled={loading || !currentPath}
         />
-        <AppButton label="Cancel" variant="secondary" onPress={onClose} />
+        <Button label="Cancel" variant="plain" onPress={onClose} />
       </View>
     </>
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     header: {
       marginBottom: 12,

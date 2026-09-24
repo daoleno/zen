@@ -49,7 +49,7 @@ import {
   WORK_OBSERVATORY_PULL,
 } from "../../components/work/workSignalObservatoryInteraction";
 import { RisingSheet } from "../../components/ui/RisingSheet";
-import { CompactEmptyState } from "../../components/ui/CompactEmptyState";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { sessionEmptyState } from "../../services/sessionEmptyState";
 import { WorkerListRowContainer } from "../../components/workers/WorkerListRowContainer";
 import { WorkerSessionSelectionBar } from "../../components/workers/WorkerSessionSelectionBar";
@@ -1027,7 +1027,7 @@ export default function InboxScreen() {
             alwaysBounceVertical
             showsVerticalScrollIndicator={false}
           >
-            <CompactEmptyState title={empty.title} icon={empty.icon} busy={empty.busy}
+            <EmptyState title={empty.title} icon={empty.icon} busy={empty.busy}
               detail={primaryIssue?.detail}
               action={empty.action ? {
                 label: creatingServerId ? "Starting..." : empty.label,

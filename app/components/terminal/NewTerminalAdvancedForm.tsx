@@ -4,8 +4,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
-import { AppButton, AppText, IconButton } from '../ui';
+import { Typography, useAppColors, type AppColors } from '../../constants/tokens';
+import { Button, AppText, IconButton } from '../ui';
 
 interface NewTerminalAdvancedFormProps {
   cwd: string;
@@ -95,9 +95,9 @@ export function NewTerminalAdvancedForm({
         autoComplete="off"
       />
 
-      <AppButton
+      <Button
         label={submitting ? 'Starting...' : 'Launch'}
-        variant="primary"
+        variant="filled"
         onPress={onSubmit}
         disabled={!canSubmit}
         style={styles.launchBtn}
@@ -106,7 +106,7 @@ export function NewTerminalAdvancedForm({
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     advancedSection: {
       marginTop: 4,

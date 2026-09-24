@@ -28,7 +28,7 @@ import {
 } from "../../components/brain/brainPresentation";
 import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
 import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
-import { CompactEmptyState } from "../../components/ui/CompactEmptyState";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { setServerAutoConnect } from "../../services/storage";
 import { ChatCanvas } from "../../components/terminal/ChatCanvas";
 import { CHAT_CHROME_HORIZONTAL_INSET } from "../../components/terminal/chatChromeMetrics";
@@ -36,10 +36,10 @@ import { InterfaceChatSurface } from "../../components/terminal/InterfaceChatSur
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { buildChatChrome } from "../../theme";
 import {
-  Colors,
   TypeScale,
   useAppColors,
   useAppTheme,
+  type AppColors,
 } from "../../constants/tokens";
 import { wsClient } from "../../services/websocket";
 import { shouldShowBrainLoadingState } from "../../services/connectionLifecycle";
@@ -584,7 +584,7 @@ function BrainLoadingState({
 }) {
   return (
     <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
-      <CompactEmptyState
+      <EmptyState
         icon={hasServer ? "cloud-offline-outline" : "server-outline"}
         title={!hasServer ? "Connect your computer" : connected ? "Connecting to Brain" : "Brain is offline"}
         busy={connected}
@@ -673,7 +673,7 @@ function activeExecutorMentionAtEnd(
   return null;
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     screen: {
       flex: 1,

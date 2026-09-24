@@ -4,12 +4,12 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import type { TerminalThemeChrome } from '../../constants/terminalThemes';
 import {
-  Colors,
   Radii,
   TypeScale,
   Typography,
   UiTextMetrics,
   useAppColors,
+  type AppColors,
 } from '../../constants/tokens';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
 import type { AgentKind } from '../../services/workerPresentation';
@@ -195,7 +195,7 @@ export function TelegramChatHeader({
 }
 
 function resolveChipSurface(
-  colors: typeof Colors,
+  colors: AppColors,
   chrome?: TerminalThemeChrome,
 ): string {
   if (!chrome) {
@@ -216,7 +216,7 @@ function resolveChipSurface(
   return colors.bgSurface;
 }
 
-function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
+function createStyles(colors: AppColors, chrome?: TerminalThemeChrome) {
   const chipSurface = resolveChipSurface(colors, chrome);
   const titleColor = chrome?.text ?? colors.textPrimary;
   const subtitleColor = chrome?.textMuted ?? colors.textSecondary;

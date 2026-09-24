@@ -2,11 +2,11 @@ import React, { useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  Colors,
   TypeScale,
   UiTextMetrics,
   type WorkerStatus,
   useAppColors,
+  type AppColors,
 } from '../../constants/tokens';
 import type { AgentKind } from '../../services/workerPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
@@ -164,7 +164,7 @@ export function WorkerSessionRow({
   );
 }
 
-function previewToneColor(tone: SessionPreviewTone, colors: typeof Colors): string {
+function previewToneColor(tone: SessionPreviewTone, colors: AppColors): string {
   switch (tone) {
     case 'accent':
       return colors.accent;
@@ -179,7 +179,7 @@ function previewToneColor(tone: SessionPreviewTone, colors: typeof Colors): stri
   }
 }
 
-function workerStatusColor(status: WorkerStatus, colors: typeof Colors): string {
+function workerStatusColor(status: WorkerStatus, colors: AppColors): string {
   switch (status) {
     case 'failed':
       return colors.statusFailed;
@@ -194,7 +194,7 @@ function workerStatusColor(status: WorkerStatus, colors: typeof Colors): string 
   }
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     iconSlot: {
       width: 44,

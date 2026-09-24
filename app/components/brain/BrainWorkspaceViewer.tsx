@@ -18,7 +18,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Colors, Typography, useAppColors } from "../../constants/tokens";
+import { Typography, useAppColors, type AppColors } from "../../constants/tokens";
 import { compactPathLabel } from "../../services/pathDisplay";
 import {
   wsClient,
@@ -545,7 +545,7 @@ function compactWorkspaceLabel(path?: string) {
   return value || "Workspace";
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     sheetCard: {
       height: "90%",

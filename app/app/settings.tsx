@@ -35,7 +35,6 @@ import {
   useCameraPermissions,
 } from "expo-camera";
 import {
-  Colors,
   Radii,
   TypeScale,
   Typography,
@@ -43,6 +42,7 @@ import {
   useAppColors,
   useAppTheme,
   shadow,
+  type AppColors,
 } from "../constants/tokens";
 import { useZenTheme, type ResolvedZenTheme } from "../theme";
 import { ZEN_DARK_APP_COLORS } from "../theme/primitives";
@@ -1596,7 +1596,7 @@ function telegramConnectionStateLabel(
 
 function telegramConnectionStateColor(
   state: TelegramConnectionStatus["state"],
-  colors: typeof Colors = Colors,
+  colors: AppColors,
 ): string {
   switch (state) {
     case "connected":
@@ -1623,7 +1623,7 @@ function formatConnectionTime(value: string): string {
 
 function connectionColor(
   state: ConnectionState,
-  colors: typeof Colors = Colors,
+  colors: AppColors,
 ): string {
   switch (state) {
     case "connected":
@@ -1644,7 +1644,7 @@ function formatLatency(latencyMs: number): string {
 
 function latencyColor(
   latencyMs: number,
-  colors: typeof Colors = Colors,
+  colors: AppColors,
 ): string {
   if (latencyMs <= 120) {
     return colors.statusRunning;

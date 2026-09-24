@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { TypeScale, Typography, useAppColors } from "../../constants/tokens";
 import { ZenLogoMark } from "../ui/ZenLogoMark";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
-import { CompactEmptyState } from "../ui/CompactEmptyState";
+import { EmptyState } from "../ui/EmptyState";
 
 const GUIDE = "https://github.com/daoleno/zen/blob/main/docs/";
 export const COMPUTER_SETUP_STEPS = [
@@ -36,7 +36,7 @@ export function OnboardingPresentation({ serverName, connection, error, onPair, 
           <Text style={[styles.brandName, { color: colors.textPrimary }]}>Zen</Text>
         </View>
         {paired ? (
-          <CompactEmptyState
+          <EmptyState
             title={connected ? "Your computer is connected" : connecting ? "Connecting to your computer" : "Your server is offline"}
             detail={error || serverName}
             icon={connected ? "checkmark-circle-outline" : "server-outline"}

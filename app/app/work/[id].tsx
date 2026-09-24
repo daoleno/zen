@@ -13,7 +13,7 @@ import { useCurrentServer } from "../../store/currentServer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { Colors, Radii, Spacing, Typography, useAppColors, shadow } from "../../constants/tokens";
+import { Radii, Spacing, Typography, useAppColors, shadow, type AppColors } from "../../constants/tokens";
 import { useWork, type WorkItem } from "../../store/work";
 import {
   WorkEditor,
@@ -466,7 +466,7 @@ function usefulInlineText(value?: string): string {
     .trim();
 }
 
-function workStatusInfo(item: WorkItem, colors: typeof Colors = Colors): {
+function workStatusInfo(item: WorkItem, colors: AppColors): {
   icon: IconName;
   label: string;
   color: string;
@@ -566,7 +566,7 @@ function OverflowMenu({
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
   screen: {
     flex: 1,
@@ -772,7 +772,7 @@ function createStyles(colors: typeof Colors) {
   });
 }
 
-function createMenuStyles(colors: typeof Colors) {
+function createMenuStyles(colors: AppColors) {
   return StyleSheet.create({
   card: {
     marginHorizontal: Spacing.md,

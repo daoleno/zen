@@ -3,6 +3,7 @@ import {
   ZEN_DARK_APP_COLORS,
   ZEN_DARK_CHAT_PALETTE,
   ZEN_DARK_DATA_VISUALIZATION,
+  ZEN_DARK_MATERIALS,
   ZEN_DARK_SURFACE_PALETTE,
 } from '../primitives';
 import { TELEGRAM_AVATAR_COLORS } from './shared';
@@ -15,6 +16,7 @@ export const classicDarkTheme: ZenThemeDefinition = {
   colors: ZEN_DARK_APP_COLORS,
   chat: ZEN_DARK_CHAT_PALETTE,
   surfaces: ZEN_DARK_SURFACE_PALETTE,
+  materials: ZEN_DARK_MATERIALS,
   dataVisualization: ZEN_DARK_DATA_VISUALIZATION,
   avatarColors: TELEGRAM_AVATAR_COLORS,
 };
