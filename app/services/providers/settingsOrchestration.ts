@@ -22,36 +22,55 @@ import {
 } from "./presentation";
 
 export type DefaultRuntimeSeedAction =
-  | { kind: "preserve"; modelId: string }
-  | { kind: "choose"; models: ProviderModelsResult["models"] }
-  | { kind: "unavailable" };
+  { kind: "apply"; modelId: string } | { kind: "unavailable" };
 
 /**
  * Select the next Settings step before switching a Provider. A Provider
- * switch can preserve a complete client model seed (including when the target
- * catalog has not been synced yet), or it must ask the user to choose one
- * from the target connection's synced catalog. Never send a provider-only
- * switch with an empty runtime model: the daemon correctly rejects that state
- * because a future Session could not launch.
+ * switch chooses a complete target seed without opening a model picker. The
+ * explicit connection model wins when it is currently exposed, followed by
+ * the target's current default and then the first exposed model. Never send a
+ * provider-only switch with an empty runtime model: the daemon correctly
+ * rejects that state because a future Session could not launch.
  */
 export function defaultRuntimeSeedAction(input: {
   snapshot: ProvidersSnapshot;
   client: string;
   connectionId: string;
 }): DefaultRuntimeSeedAction {
-  const current = input.snapshot.defaults[input.client];
+  const connection = input.snapshot.connections.find(
+    (item) => item.id === input.connectionId,
+  );
   const available = (input.snapshot.models[input.connectionId] ?? []).filter(
     (model) => model.available && model.known !== false,
   );
+  const current = input.snapshot.defaults[input.client];
   if (
-    current?.connection_id &&
+    current?.connection_id === input.connectionId &&
     current.model_id &&
-    (input.client !== "claude" || current.connection_id === input.connectionId)
+    !connection?.models_stale &&
+    !connection?.models_warning
   ) {
-    return { kind: "preserve", modelId: current.model_id };
+    const currentModel = available.find(
+      (model) => model.id === current.model_id,
+    );
+    if (currentModel) return { kind: "apply", modelId: current.model_id };
+  }
+  if (connection?.models_stale || connection?.models_warning) {
+    return { kind: "unavailable" };
   }
   if (available.length === 0) return { kind: "unavailable" };
-  return { kind: "choose", models: available };
+  const availableIds = new Set(available.map((model) => model.id));
+  const candidates = [
+    connection?.manual_model_id,
+    current?.connection_id === input.connectionId
+      ? current.model_id
+      : undefined,
+    available[0]?.id,
+  ];
+  const modelId = candidates.find((candidate): candidate is string =>
+    Boolean(candidate && availableIds.has(candidate)),
+  );
+  return modelId ? { kind: "apply", modelId } : { kind: "unavailable" };
 }
 
 export function modelSupportChangeKeepsDefaultValid(input: {
@@ -82,7 +101,10 @@ export function planAfterCredentialWrite(input: {
   result: ProviderCredentialResult;
 }): CredentialFollowUp {
   const classification = classifyMutationPersistence(input.result.persistence);
-  if (classification === "ambiguous" || classification === "applied_uncertain") {
+  if (
+    classification === "ambiguous" ||
+    classification === "applied_uncertain"
+  ) {
     return {
       kind: "refresh_lock",
       connectionId: input.connectionId,
@@ -191,9 +213,7 @@ export function mergeDiscoveredModels(input: {
   };
 }
 
-export function settleCredentialPersistence(
-  persistence: MutationPersistence,
-): {
+export function settleCredentialPersistence(persistence: MutationPersistence): {
   applied: boolean;
   durable: boolean;
   ambiguous: boolean;

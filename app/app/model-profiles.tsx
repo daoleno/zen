@@ -59,6 +59,9 @@ export default function ProvidersScreen() {
   );
   const [requiresRefreshBeforeMutation, setRequiresRefreshBeforeMutation] =
     useState(false);
+  const [switchStates, setSwitchStates] = useState<
+    Record<string, { kind: "pending" | "error"; message?: string }>
+  >({});
 
   currentServerIdRef.current = currentServerId;
   catalogRef.current = catalog;
@@ -72,6 +75,7 @@ export default function ProvidersScreen() {
     setRefreshing(false);
     setDurabilityWarning(null);
     setRequiresRefreshBeforeMutation(false);
+    setSwitchStates({});
     setCatalog(null);
     setError(null);
     catalogRef.current = null;
@@ -106,9 +110,7 @@ export default function ProvidersScreen() {
             ? loadError
             : new ProviderError(
                 "unknown",
-                loadError instanceof Error
-                  ? loadError.message
-                  : "Load failed",
+                loadError instanceof Error ? loadError.message : "Load failed",
                 "unknown",
                 true,
               ),
@@ -243,11 +245,9 @@ export default function ProvidersScreen() {
     }
     if (ownerRef.current.catalogRequiresRefresh()) {
       syncWriteLockUi();
-      Alert.alert(
-        "Refresh required",
-        "Refresh Providers before saving.",
-        [{ text: "Refresh", onPress: () => void loadCatalog({ soft: true }) }],
-      );
+      Alert.alert("Refresh required", "Refresh Providers before saving.", [
+        { text: "Refresh", onPress: () => void loadCatalog({ soft: true }) },
+      ]);
       return { status: "create_failed" };
     }
     const admission = ownerRef.current.admitCatalogMutation();
@@ -259,30 +259,28 @@ export default function ProvidersScreen() {
     let transientApiKey = input.apiKey;
     setMutating(true);
     try {
-      const result = await wsClient.upsertProviderConnection(
-        currentServerId,
-        {
-          revision,
-          operation: input.connection ? "update" : "create",
-          connection: advancedConnectionInput({
-            existingId: input.connection?.id,
-            name: input.name,
-            client: input.client,
-            baseUrl: input.baseUrl,
-            modelId: input.modelId,
-            presetId: input.connection?.preset_id,
-            // Curated connections keep the official endpoint; only
-            // custom/advanced connections carry an editable Base URL.
-            advanced: input.connection
-              ? Boolean(input.connection.base_url)
-              : true,
-          }),
-          credential: transientApiKey.trim() || undefined,
-        },
-      );
+      const result = await wsClient.upsertProviderConnection(currentServerId, {
+        revision,
+        operation: input.connection ? "update" : "create",
+        connection: advancedConnectionInput({
+          existingId: input.connection?.id,
+          name: input.name,
+          client: input.client,
+          baseUrl: input.baseUrl,
+          modelId: input.modelId,
+          presetId: input.connection?.preset_id,
+          // Curated connections keep the official endpoint; only
+          // custom/advanced connections carry an editable Base URL.
+          advanced: input.connection
+            ? Boolean(input.connection.base_url)
+            : true,
+        }),
+        credential: transientApiKey.trim() || undefined,
+      });
       transientApiKey = "";
       assertNoCredentialRetention(result.snapshot);
-      if (!ownerRef.current.isCurrent(token)) return { status: "create_failed" };
+      if (!ownerRef.current.isCurrent(token))
+        return { status: "create_failed" };
       const classification = classifyMutationPersistence(result.persistence);
       ownerRef.current.settleCatalogMutation(token, {
         refreshRequired:
@@ -311,9 +309,10 @@ export default function ProvidersScreen() {
       // identified uniquely from the revision diff.
       let connection: ProviderConnection;
       if (input.connection) {
-        connection = result.snapshot.connections.find(
-          (item) => item.id === input.connection?.id,
-        ) ?? input.connection;
+        connection =
+          result.snapshot.connections.find(
+            (item) => item.id === input.connection?.id,
+          ) ?? input.connection;
       } else {
         try {
           connection = resolveCreatedConnection({
@@ -359,13 +358,10 @@ export default function ProvidersScreen() {
               ownerRef.current.settleCatalogMutation(discoverToken, {
                 refreshRequired: Boolean(
                   discovery.persistenceWarning &&
-                    discovery.persistenceDurable === false,
+                  discovery.persistenceDurable === false,
                 ),
               });
-              if (
-                discovery.persistenceWarning ||
-                discovery.discoveryWarning
-              ) {
+              if (discovery.persistenceWarning || discovery.discoveryWarning) {
                 setDurabilityWarning(
                   discovery.persistenceWarning ??
                     discovery.discoveryWarning ??
@@ -399,7 +395,8 @@ export default function ProvidersScreen() {
       return { status: "saved" };
     } catch (saveError) {
       transientApiKey = "";
-      if (!ownerRef.current.isCurrent(token)) return { status: "create_failed" };
+      if (!ownerRef.current.isCurrent(token))
+        return { status: "create_failed" };
       ownerRef.current.settleCatalogMutation(token, {
         refreshRequired: providerMutationRequiresRefresh(saveError),
       });
@@ -443,7 +440,8 @@ export default function ProvidersScreen() {
       if (!ownerRef.current.isCurrent(token)) return;
       ownerRef.current.settleCatalogMutation(token, {
         refreshRequired: Boolean(
-          discovery.persistenceWarning && discovery.persistenceDurable === false,
+          discovery.persistenceWarning &&
+          discovery.persistenceDurable === false,
         ),
       });
       if (discovery.persistenceWarning || discovery.discoveryWarning) {
@@ -508,48 +506,67 @@ export default function ProvidersScreen() {
 
   /** Settings persists only a complete runtime seed for future Sessions. */
   const switchPreferredProvider = useCallback(
-    (client: ProviderClient, connection: ProviderConnection) => {
+    async (client: ProviderClient, connection: ProviderConnection) => {
       if (!catalog) return;
       const action = defaultRuntimeSeedAction({
         snapshot: catalog,
         client,
         connectionId: connection.id,
       });
-      if (action.kind === "preserve") {
-        if (catalog.defaults[client]?.connection_id === connection.id) {
+      if (action.kind === "apply") {
+        if (
+          catalog.defaults[client]?.connection_id === connection.id &&
+          catalog.defaults[client]?.model_id === action.modelId
+        ) {
           return;
         }
-        // Claude has no owned native active-switch control; its default only
-        // applies to future sessions. Codex retains its routed switch behavior.
-        void runMutation(() =>
-          client === "claude"
-            ? wsClient.setProviderDefault(currentServerId!, {
+        setSwitchStates((previous) => ({
+          ...previous,
+          [connection.id]: { kind: "pending" },
+        }));
+        const current = catalog.defaults[client];
+        const result = await runMutation(() =>
+          client === "codex" && current?.model_id === action.modelId
+            ? wsClient.switchProvider(currentServerId!, {
                 client,
                 connectionId: connection.id,
-                modelId: catalog.defaults[client]?.model_id,
                 revision,
               })
-            : wsClient.switchProvider(currentServerId!, {
+            : wsClient.setProviderDefault(currentServerId!, {
                 client,
                 connectionId: connection.id,
+                modelId: action.modelId,
                 revision,
               }),
         );
+        if (!result) {
+          setSwitchStates((previous) => ({
+            ...previous,
+            [connection.id]: {
+              kind: "error",
+              message:
+                "Could not set this Provider as default. Retry or sync models.",
+            },
+          }));
+        } else {
+          setSwitchStates((previous) => {
+            const next = { ...previous };
+            delete next[connection.id];
+            return next;
+          });
+        }
         return;
       }
       if (action.kind === "unavailable") {
-        Alert.alert(
-          "Sync models first",
-          "A default runtime requires both a Provider and a valid model.",
-        );
+        setSwitchStates((previous) => ({
+          ...previous,
+          [connection.id]: {
+            kind: "error",
+            message: "Sync models before selecting this Provider.",
+          },
+        }));
         return;
       }
-      setModelPicker({
-        purpose: "default",
-        client,
-        connection,
-        models: action.models,
-      });
     },
     [catalog, currentServerId, revision, runMutation],
   );
@@ -625,6 +642,7 @@ export default function ProvidersScreen() {
       onSetDefault={(client, connection) => {
         void switchPreferredProvider(client, connection);
       }}
+      switchStates={switchStates}
       onDiscover={(connection) => {
         void runDiscover(connection);
       }}
@@ -645,12 +663,14 @@ export default function ProvidersScreen() {
           return;
         }
         const enabledIds = toggleModelSupport(catalog, connection.id, modelId);
-        if (!modelSupportChangeKeepsDefaultValid({
-          snapshot: catalog!,
-          client,
-          connectionId: connection.id,
-          enabledModelIds: enabledIds,
-        })) {
+        if (
+          !modelSupportChangeKeepsDefaultValid({
+            snapshot: catalog!,
+            client,
+            connectionId: connection.id,
+            enabledModelIds: enabledIds,
+          })
+        ) {
           Alert.alert(
             "Choose another default first",
             "The default runtime model cannot be disabled.",
@@ -679,7 +699,14 @@ export default function ProvidersScreen() {
           connection.clients[0] ?? "codex",
         );
       }}
-      onSaveProvider={async ({ client, connection, name, baseUrl, apiKey, modelId }) => {
+      onSaveProvider={async ({
+        client,
+        connection,
+        name,
+        baseUrl,
+        apiKey,
+        modelId,
+      }) => {
         const outcome = await saveProvider({
           client,
           connection,

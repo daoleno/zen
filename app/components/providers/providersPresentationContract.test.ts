@@ -12,7 +12,10 @@ import {
   providerEditorShouldResetFields,
   type ProvidersEditorState,
 } from "./providersPresentationModel";
-import { providerBaseUrlHostname, providerNameIssue } from "../../services/providers/presentation";
+import {
+  providerBaseUrlHostname,
+  providerNameIssue,
+} from "../../services/providers/presentation";
 import type { ProvidersSnapshot } from "../../services/providers/types";
 
 const presentationSource = readFileSync(
@@ -51,14 +54,21 @@ function connection(
   };
 }
 
-function snapshot(connections: ReturnType<typeof connection>[]): ProvidersSnapshot {
+function snapshot(
+  connections: ReturnType<typeof connection>[],
+): ProvidersSnapshot {
   return {
     revision: 1,
     connections,
     defaults: {},
     presets: [
       { id: "openai", label: "OpenAI", clients: ["codex"], advanced: false },
-      { id: "custom", label: "Custom Gateway", clients: ["codex", "claude"], advanced: true },
+      {
+        id: "custom",
+        label: "Custom Gateway",
+        clients: ["codex", "claude"],
+        advanced: true,
+      },
     ],
     models: {},
   };
@@ -77,18 +87,16 @@ describe("unified Add/Edit Provider editor", () => {
   };
 
   test("create requires name, Base URL and API key", () => {
-    expect(
-      providerEditorCanSave({ ...base, createMode: true }),
-    ).toBe(true);
+    expect(providerEditorCanSave({ ...base, createMode: true })).toBe(true);
     expect(
       providerEditorCanSave({ ...base, createMode: true, apiKey: "" }),
     ).toBe(false);
     expect(
       providerEditorCanSave({ ...base, createMode: true, baseUrl: "" }),
     ).toBe(false);
-    expect(
-      providerEditorCanSave({ ...base, createMode: true, name: "" }),
-    ).toBe(false);
+    expect(providerEditorCanSave({ ...base, createMode: true, name: "" })).toBe(
+      false,
+    );
   });
 
   test("edit may save with an empty API key (preserve stored secret)", () => {
@@ -114,12 +122,12 @@ describe("unified Add/Edit Provider editor", () => {
   });
 
   test("client identity is part of the editor target", () => {
-    expect(
-      providerEditorSessionKey({ kind: "create", client: "codex" }),
-    ).toBe("create:codex");
-    expect(
-      providerEditorSessionKey({ kind: "create", client: "claude" }),
-    ).toBe("create:claude");
+    expect(providerEditorSessionKey({ kind: "create", client: "codex" })).toBe(
+      "create:codex",
+    );
+    expect(providerEditorSessionKey({ kind: "create", client: "claude" })).toBe(
+      "create:claude",
+    );
     expect(
       providerEditorShouldResetFields("create:codex", "create:claude"),
     ).toBe(true);
@@ -138,14 +146,18 @@ describe("unified Add/Edit Provider editor", () => {
       "https://api.example.com/v1",
     );
     expect(providerEditorInitialModelId(edit)).toBe("");
-    expect(providerEditorInitialModelId({
-      kind: "edit",
-      connection: connection("conn-model", { manual_model_id: "vendor/claude" }),
-    })).toBe("vendor/claude");
+    expect(
+      providerEditorInitialModelId({
+        kind: "edit",
+        connection: connection("conn-model", {
+          manual_model_id: "vendor/claude",
+        }),
+      }),
+    ).toBe("vendor/claude");
     expect(providerEditorRequiresBaseUrl(edit)).toBe(true);
-    expect(providerEditorRequiresBaseUrl({ kind: "create", client: "codex" })).toBe(
-      true,
-    );
+    expect(
+      providerEditorRequiresBaseUrl({ kind: "create", client: "codex" }),
+    ).toBe(true);
   });
 
   test("curated connections hide the Base URL field", () => {
@@ -211,9 +223,7 @@ describe("Provider display-name helpers", () => {
   });
 
   test("names are trimmed, bounded and case-insensitively unique", () => {
-    const catalog = snapshot([
-      connection("conn-a", { name: "Alpha gateway" }),
-    ]);
+    const catalog = snapshot([connection("conn-a", { name: "Alpha gateway" })]);
     expect(providerNameIssue({ name: "  ", snapshot: catalog })).toMatch(
       /required/,
     );
@@ -240,11 +250,17 @@ describe("Provider display-name helpers", () => {
 });
 
 describe("client-first Providers surface contract", () => {
+  test("renders Provider-first searchable rows with explicit model actions", () => {
+    expect(presentationSource).toContain("ProviderConnectionList");
+    expect(presentationSource).toContain('placeholder="Search Providers"');
+    expect(presentationSource).toContain('label="Models"');
+    expect(presentationSource).toContain("defaultMarker");
+    expect(presentationSource).toContain("exposedCount");
+    expect(presentationSource).toContain('switchState?.kind === "error"');
+  });
   test("uses the shared mobile input and never raw TextInput", () => {
     expect(presentationSource).not.toMatch(/<TextInput\b/);
-    expect(presentationSource).toContain(
-      'from "../ui/MobileSingleLineInput"',
-    );
+    expect(presentationSource).toContain('from "../ui/MobileSingleLineInput"');
     expect(
       (presentationSource.match(/<MobileSingleLineInput\b/g) ?? []).length,
     ).toBeGreaterThanOrEqual(3);
@@ -333,9 +349,10 @@ describe("client-first Providers surface contract", () => {
     expect(screenSource).toContain("clientForConnection(");
   });
 
-  test("settings chooses a model before switching a provider without a complete seed", () => {
-    expect(screenSource).toContain("wsClient.switchProvider");
-    expect(screenSource).toContain('purpose: "default"');
+  test("settings applies a deterministic model without opening the picker", () => {
+    expect(screenSource).toContain("wsClient.setProviderDefault");
+    expect(screenSource).toContain("action.modelId");
+    expect(screenSource).not.toContain('purpose: "default"');
     expect(screenSource).toContain("defaultRuntimeSeedAction");
   });
 
@@ -345,20 +362,22 @@ describe("client-first Providers surface contract", () => {
     expect(presentationSource).toContain("onSelectModel(");
     expect(presentationSource).toContain("picker.client,");
     expect(presentationSource).not.toContain("Choose model");
-    expect(presentationSource).not.toMatch(/>Default</);
+    expect(presentationSource).toContain("defaultMarker");
     expect(presentationSource).not.toContain("pickerCurrentLabel");
     expect(presentationSource).toContain("modelChipSelected");
     expect(presentationSource).toContain("chipWrap");
     expect(presentationSource).toContain(
       "Choose the model for new ${providerClientLabel(picker.client)} sessions.",
     );
-    expect(presentationSource).toContain('accessibilityRole={selectingDefault ? "radio" : "checkbox"}');
+    expect(presentationSource).toContain(
+      'accessibilityRole={selectingDefault ? "radio" : "checkbox"}',
+    );
     expect(presentationSource).toContain("providerClientLabel(picker.client)");
     expect(presentationSource).toContain("const selected = selectingDefault");
     expect(screenSource).toContain("runSetModels");
     expect(screenSource).toContain("wsClient.setProviderModels");
     expect(screenSource).toContain("wsClient.setProviderDefault");
-    expect(screenSource).toContain("wsClient.switchProvider");
+    expect(screenSource).toContain("wsClient.setProviderDefault");
     expect(screenSource).toContain("toggleModelSupport(");
     expect(screenSource).not.toContain("firstSupportedModel(");
   });

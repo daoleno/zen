@@ -11,7 +11,10 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Claude, Codex } from "@lobehub/icons-rn";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import {
   Radii,
   TypeScale,
@@ -77,6 +80,10 @@ export interface ProvidersPresentationProps {
   onDelete(connection: ProviderConnection): void;
   onUseDirect(client: ProviderClient): void;
   onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
+  switchStates?: Record<
+    string,
+    { kind: "pending" | "error"; message?: string }
+  >;
   onDiscover(connection: ProviderConnection): void;
   modelPicker: ModelSyncPickerState | null;
   onCloseModelPicker(): void;
@@ -129,6 +136,7 @@ export function ProvidersPresentation({
   onDelete,
   onUseDirect,
   onSetDefault,
+  switchStates = {},
   onDiscover,
   modelPicker,
   onCloseModelPicker,
@@ -223,20 +231,17 @@ export function ProvidersPresentation({
                 }
               }
             />
-            {CLIENTS.map((client) => (
-              <ClientConnectionCard
-                key={client}
-                client={client}
-                catalog={catalog}
-                disabled={!canMutate || writeLocked}
-                onUseDirect={() => onUseDirect(client)}
-                onSetDefault={(connection) => onSetDefault(client, connection)}
-                onOpenEditor={onOpenEditor}
-                onDelete={onDelete}
-                onDiscover={onDiscover}
-                onTestConnection={onTestConnectionById}
-              />
-            ))}
+            <ProviderConnectionList
+              catalog={catalog}
+              disabled={!canMutate || writeLocked}
+              switchStates={switchStates}
+              onUseDirect={onUseDirect}
+              onSetDefault={onSetDefault}
+              onOpenEditor={onOpenEditor}
+              onDelete={onDelete}
+              onDiscover={onDiscover}
+              onTestConnection={onTestConnectionById}
+            />
           </>
         ) : null}
       </ScrollView>
@@ -277,13 +282,20 @@ function GatewayStatusRow({
     <View style={styles.gatewayStatus}>
       <View style={styles.gatewayStatusCopy}>
         <View style={styles.gatewayStatusTitleRow}>
-          <Ionicons name="radio-outline" size={16} color={status.running ? colors.success : colors.textTertiary} />
+          <Ionicons
+            name="radio-outline"
+            size={16}
+            color={status.running ? colors.success : colors.textTertiary}
+          />
           <Text style={styles.gatewayStatusTitle}>Zen Provider Gateway</Text>
-          <Text style={styles.gatewayStatusState}>{status.running ? "Running" : "Unavailable"}</Text>
+          <Text style={styles.gatewayStatusState}>
+            {status.running ? "Running" : "Unavailable"}
+          </Text>
         </View>
         <Text style={styles.gatewayStatusMeta}>{endpoint}</Text>
         <Text style={styles.gatewayStatusMeta}>
-          {status.protocols.join(" / ") || "No protocols"} · {status.model_count} exposed models
+          {status.protocols.join(" / ") || "No protocols"} ·{" "}
+          {status.model_count} exposed models
         </Text>
       </View>
       {status.endpoint ? (
@@ -297,6 +309,333 @@ function GatewayStatusRow({
         </Pressable>
       ) : null}
     </View>
+  );
+}
+
+function ProviderConnectionList({
+  catalog,
+  disabled,
+  switchStates,
+  onUseDirect,
+  onSetDefault,
+  onOpenEditor,
+  onDelete,
+  onDiscover,
+  onTestConnection,
+}: {
+  catalog: ProvidersSnapshot;
+  disabled: boolean;
+  switchStates: Record<string, { kind: "pending" | "error"; message?: string }>;
+  onUseDirect(client: ProviderClient): void;
+  onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
+  onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
+  onDelete(connection: ProviderConnection): void;
+  onDiscover(connection: ProviderConnection): void;
+  onTestConnection(
+    connection: ProviderConnection,
+  ): Promise<ProviderConnectionTestResult>;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const connections = catalog.connections.filter((connection) => {
+    if (!normalizedQuery) return true;
+    const clients = connection.clients.map(providerClientLabel).join(" ");
+    return `${connection.name} ${connectionSubtitle(connection, catalog)} ${clients}`
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
+  return (
+    <View style={styles.providerList}>
+      <View style={styles.providerListHeader}>
+        <View style={styles.providerListCopy}>
+          <Text style={styles.sectionTitle}>Providers</Text>
+          <Text style={styles.sectionMeta}>
+            {catalog.connections.length} saved connection
+            {catalog.connections.length === 1 ? "" : "s"}
+          </Text>
+        </View>
+        <AnimatedPressable
+          style={styles.iconActionAccent}
+          preset="press"
+          accessibilityRole="button"
+          accessibilityLabel="Add Provider"
+          disabled={disabled}
+          onPress={() => onOpenEditor({ kind: "create", client: "codex" })}
+        >
+          <Ionicons name="add" size={20} color={colors.accentStrong} />
+        </AnimatedPressable>
+      </View>
+      <MobileSingleLineInput
+        value={query}
+        onChangeText={setQuery}
+        editable={!disabled}
+        placeholder="Search Providers"
+        placeholderTextColor={colors.textSecondary}
+        accessibilityLabel="Search Providers"
+        autoCapitalize="none"
+        autoCorrect={false}
+        containerStyle={styles.providerSearch}
+      />
+      <View style={styles.directRow}>
+        <View style={styles.directCopy}>
+          <Text style={styles.rowTitle}>Official login</Text>
+          <Text style={styles.rowSubtitle}>
+            Direct · uses the native account
+          </Text>
+        </View>
+        <View style={styles.directActions}>
+          {CLIENTS.map((client) => {
+            const selected = catalog.defaults[client]?.connection_id === "";
+            return (
+              <Pressable
+                key={client}
+                style={[
+                  styles.clientPill,
+                  selected && styles.clientPillSelected,
+                ]}
+                accessibilityRole="radio"
+                accessibilityLabel={`${providerClientLabel(client)} official login`}
+                accessibilityState={{ checked: selected, disabled }}
+                disabled={disabled || selected}
+                onPress={() => onUseDirect(client)}
+              >
+                {client === "codex" ? (
+                  <Codex.Color size={16} />
+                ) : (
+                  <Claude.Color size={16} />
+                )}
+                <Text style={styles.clientPillText}>
+                  {providerClientLabel(client)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+      {connections.map((connection) => (
+        <ProviderConnectionRow
+          key={connection.id}
+          connection={connection}
+          catalog={catalog}
+          disabled={disabled}
+          switchState={switchStates[connection.id]}
+          onSetDefault={onSetDefault}
+          onOpenEditor={() => onOpenEditor({ kind: "edit", connection })}
+          onDelete={() => onDelete(connection)}
+          onDiscover={() => onDiscover(connection)}
+          onTestConnection={() => onTestConnection(connection)}
+        />
+      ))}
+      {connections.length === 0 ? (
+        <Text style={styles.emptyText}>No Providers match this search.</Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ProviderConnectionRow({
+  connection,
+  catalog,
+  disabled,
+  switchState,
+  onSetDefault,
+  onOpenEditor,
+  onDelete,
+  onDiscover,
+  onTestConnection,
+}: {
+  connection: ProviderConnection;
+  catalog: ProvidersSnapshot;
+  disabled: boolean;
+  switchState?: { kind: "pending" | "error"; message?: string };
+  onSetDefault(client: ProviderClient, connection: ProviderConnection): void;
+  onOpenEditor(): void;
+  onDelete(): void;
+  onDiscover(): void;
+  onTestConnection(): Promise<ProviderConnectionTestResult>;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const [testState, setTestState] = useState<ConnectionTestState>({
+    kind: "idle",
+  });
+  const models = catalog.models[connection.id] ?? [];
+  const exposedCount = models.filter(
+    (model) => model.available && model.known !== false,
+  ).length;
+  const clients = connection.clients.filter(
+    (client): client is ProviderClient =>
+      client === "codex" || client === "claude",
+  );
+  const selectedClient = clients.find(
+    (client) => catalog.defaults[client]?.connection_id === connection.id,
+  );
+  const ready = connection.credential_ready;
+  const testing = testState.kind === "testing";
+  const handleTest = async () => {
+    if (testing) return;
+    setTestState({ kind: "testing" });
+    try {
+      const result = await onTestConnection();
+      setTestState({
+        kind: "success",
+        modelCount: result.modelCount,
+        latencyMs: result.latencyMs,
+      });
+    } catch (error) {
+      setTestState({
+        kind: "error",
+        message:
+          error instanceof Error ? error.message : "Connection test failed.",
+      });
+    }
+  };
+  return (
+    <View style={styles.providerRow}>
+      <View style={styles.providerRowTop}>
+        <View style={styles.providerRowCopy}>
+          <View style={styles.providerNameLine}>
+            <Text style={styles.rowTitle} numberOfLines={1}>
+              {connection.name}
+            </Text>
+            {selectedClient ? (
+              <Text style={styles.defaultMarker}>Default</Text>
+            ) : null}
+          </View>
+          <Text style={styles.rowSubtitle} numberOfLines={1}>
+            {connectionSubtitle(connection, catalog)} ·{" "}
+            {providerClientLabel(clients[0] ?? "")} · {exposedCount} models ·{" "}
+            {catalogAgeLabel(connection)}
+          </Text>
+          <Text
+            style={[
+              styles.readyState,
+              { color: ready ? colors.success : colors.warning },
+            ]}
+          >
+            {ready ? "Ready" : "API key required"}
+          </Text>
+        </View>
+        {switchState?.kind === "pending" ? (
+          <ActivityIndicator size="small" color={colors.accent} />
+        ) : null}
+      </View>
+      {connection.models_warning ? (
+        <Text style={styles.catalogWarning}>{connection.models_warning}</Text>
+      ) : null}
+      {switchState?.kind === "error" ? (
+        <Text style={styles.inlineError}>{switchState.message}</Text>
+      ) : null}
+      <View style={styles.providerActions}>
+        {clients.map((client) => {
+          const selected =
+            catalog.defaults[client]?.connection_id === connection.id;
+          return (
+            <AnimatedPressable
+              key={client}
+              style={[
+                styles.primaryAction,
+                selected && styles.primaryActionSelected,
+              ]}
+              preset="press"
+              disabled={disabled || !ready || selected}
+              accessibilityRole="button"
+              accessibilityLabel={`${selected ? "Current default" : "Use"} ${connection.name} for ${providerClientLabel(client)}`}
+              onPress={() => onSetDefault(client, connection)}
+            >
+              <Ionicons
+                name={selected ? "checkmark" : "radio-button-on-outline"}
+                size={16}
+                color={colors.accentStrong}
+              />
+              <Text style={styles.primaryActionText}>
+                {selected
+                  ? "Default"
+                  : `Use for ${providerClientLabel(client)}`}
+              </Text>
+            </AnimatedPressable>
+          );
+        })}
+        <IconAction
+          label="Models"
+          icon="layers-outline"
+          onPress={onDiscover}
+          disabled={disabled || !ready}
+        />
+        <IconAction
+          label="Sync models"
+          icon="sync-outline"
+          onPress={onDiscover}
+          disabled={disabled || !ready}
+        />
+        <IconAction
+          label="Test connection"
+          icon={testing ? "hourglass-outline" : "pulse-outline"}
+          onPress={() => void handleTest()}
+          disabled={disabled || testing}
+        />
+        <IconAction
+          label="Edit"
+          icon="create-outline"
+          onPress={onOpenEditor}
+          disabled={disabled}
+        />
+        <IconAction
+          label="Delete"
+          icon="trash-outline"
+          onPress={onDelete}
+          disabled={disabled}
+          danger
+        />
+      </View>
+      {testState.kind === "success" ? (
+        <Text style={[styles.testResultText, { color: colors.success }]}>
+          Connected · {testState.latencyMs} ms
+          {testState.modelCount > 0
+            ? ` · ${testState.modelCount} models found`
+            : ""}
+        </Text>
+      ) : null}
+      {testState.kind === "error" ? (
+        <Text style={[styles.testResultText, { color: colors.dangerText }]}>
+          {testState.message}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function IconAction({
+  label,
+  icon,
+  onPress,
+  disabled,
+  danger,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress(): void;
+  disabled: boolean;
+  danger?: boolean;
+}) {
+  const colors = useAppColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={5}
+    >
+      <Ionicons
+        name={icon}
+        size={19}
+        color={danger ? colors.dangerText : colors.textSecondary}
+      />
+    </Pressable>
   );
 }
 
@@ -319,7 +658,9 @@ function ClientConnectionCard({
   onOpenEditor(editor: NonNullable<ProvidersEditorState>): void;
   onDelete(connection: ProviderConnection): void;
   onDiscover(connection: ProviderConnection): void;
-  onTestConnection(connection: ProviderConnection): Promise<ProviderConnectionTestResult>;
+  onTestConnection(
+    connection: ProviderConnection,
+  ): Promise<ProviderConnectionTestResult>;
 }) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -452,7 +793,8 @@ function catalogAgeLabel(connection: ProviderConnection): string {
   const timestamp = Date.parse(connection.models_fetched_at);
   if (!Number.isFinite(timestamp)) return "Models synced";
   const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
-  if (connection.models_stale || connection.models_warning) return "Models stale";
+  if (connection.models_stale || connection.models_warning)
+    return "Models stale";
   if (minutes < 1) return "Models just now";
   if (minutes < 60) return `Models ${minutes}m ago`;
   const hours = Math.round(minutes / 60);
@@ -541,12 +883,11 @@ function ConnectionChoiceRow({
               {connection.name}
             </Text>
             <Text style={styles.rowSubtitle} numberOfLines={1}>
-              {subtitle} · {exposedCount}/{models.length || "—"} exposed · {catalogLabel}
+              {subtitle} · {exposedCount}/{models.length || "—"} exposed ·{" "}
+              {catalogLabel}
             </Text>
           </View>
-          {!ready ? (
-            <Text style={styles.keyRequired}>Add key</Text>
-          ) : null}
+          {!ready ? <Text style={styles.keyRequired}>Add key</Text> : null}
         </AnimatedPressable>
         <Pressable
           style={styles.expandButton}
@@ -575,7 +916,11 @@ function ConnectionChoiceRow({
             disabled={disabled || testing}
           />
           {ready ? (
-            <ActionButton label="Sync models" onPress={onDiscover} disabled={disabled} />
+            <ActionButton
+              label="Sync models"
+              onPress={onDiscover}
+              disabled={disabled}
+            />
           ) : null}
           <ActionButton
             label="Edit"
@@ -583,7 +928,12 @@ function ConnectionChoiceRow({
             disabled={disabled}
             primary
           />
-          <ActionButton label="Delete" onPress={onDelete} disabled={disabled} danger />
+          <ActionButton
+            label="Delete"
+            onPress={onDelete}
+            disabled={disabled}
+            danger
+          />
         </View>
       ) : null}
       {testState.kind === "success" ? (
@@ -730,7 +1080,7 @@ function ProviderEditorSheet({
   const requiresBaseUrl = providerEditorRequiresBaseUrl(editor);
   const endpoint = requiresBaseUrl
     ? baseUrl.trim()
-    : connection?.base_url ?? "";
+    : (connection?.base_url ?? "");
   const testing = testState.kind === "testing";
   const nameIssue = providerNameIssue({
     name,
@@ -862,9 +1212,7 @@ function ProviderEditorSheet({
           autoCorrect={false}
           containerStyle={styles.field}
         />
-        {nameIssue ? (
-          <Text style={styles.fieldError}>{nameIssue}</Text>
-        ) : null}
+        {nameIssue ? <Text style={styles.fieldError}>{nameIssue}</Text> : null}
 
         {requiresBaseUrl ? (
           <>
@@ -937,7 +1285,11 @@ function ProviderEditorSheet({
             {testing ? (
               <ActivityIndicator size="small" color={colors.textPrimary} />
             ) : (
-              <Ionicons name="pulse-outline" size={18} color={colors.textPrimary} />
+              <Ionicons
+                name="pulse-outline"
+                size={18}
+                color={colors.textPrimary}
+              />
             )}
             <Text style={styles.testButtonText}>
               {testing ? "Testing…" : "Test connection"}
@@ -947,7 +1299,11 @@ function ProviderEditorSheet({
 
         {testState.kind === "success" ? (
           <View style={styles.testResult}>
-            <Ionicons name="checkmark-circle" size={17} color={colors.success} />
+            <Ionicons
+              name="checkmark-circle"
+              size={17}
+              color={colors.success}
+            />
             <Text style={[styles.testResultText, { color: colors.success }]}>
               Connected · {testState.latencyMs} ms
               {testState.modelCount > 0
@@ -1160,9 +1516,22 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.bgSurface,
       gap: 6,
     },
-    stateTitle: { ...UiTextMetrics, ...TypeScale.title, color: colors.textPrimary },
-    stateBody: { ...UiTextMetrics, ...TypeScale.body, color: colors.textSecondary },
-    link: { ...UiTextMetrics, ...TypeScale.body, color: colors.accent, fontWeight: "600" },
+    stateTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.title,
+      color: colors.textPrimary,
+    },
+    stateBody: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textSecondary,
+    },
+    link: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.accent,
+      fontWeight: "600",
+    },
     notice: {
       padding: 12,
       borderRadius: Radii.xs,
@@ -1170,7 +1539,11 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.bgSurface,
       gap: 6,
     },
-    noticeText: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textPrimary },
+    noticeText: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textPrimary,
+    },
     gatewayStatus: {
       flexDirection: "row",
       alignItems: "center",
@@ -1182,11 +1555,135 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderColor: colors.border,
     },
     gatewayStatusCopy: { flex: 1, minWidth: 0, gap: 2 },
-    gatewayStatusTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-    gatewayStatusTitle: { ...UiTextMetrics, ...TypeScale.label, color: colors.textPrimary, fontWeight: "700" },
-    gatewayStatusState: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textSecondary },
-    gatewayStatusMeta: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary },
+    gatewayStatusTitleRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    gatewayStatusTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textPrimary,
+      fontWeight: "700",
+    },
+    gatewayStatusState: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textSecondary,
+    },
+    gatewayStatusMeta: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+    },
     gatewayCopy: { padding: 8 },
+    providerList: { gap: 10 },
+    providerListHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      paddingTop: 4,
+    },
+    providerListCopy: { flex: 1, minWidth: 0 },
+    sectionTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.title,
+      color: colors.textPrimary,
+    },
+    sectionMeta: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      marginTop: 2,
+    },
+    iconActionAccent: {
+      width: 38,
+      height: 38,
+      borderRadius: Radii.xs,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.accentSoft,
+    },
+    providerSearch: { marginBottom: 2 },
+    directRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      padding: 12,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.surfaceSubtle,
+    },
+    directCopy: { flex: 1, minWidth: 0 },
+    directActions: { gap: 6 },
+    clientPill: {
+      minHeight: 30,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      paddingHorizontal: 8,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.bgSurface,
+    },
+    clientPillSelected: { backgroundColor: colors.accentSoft },
+    clientPillText: {
+      ...UiTextMetrics,
+      ...TypeScale.micro,
+      color: colors.textSecondary,
+    },
+    providerRow: {
+      gap: 8,
+      padding: 12,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.bgSurface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    providerRowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
+    providerRowCopy: { flex: 1, minWidth: 0, gap: 2 },
+    providerNameLine: { flexDirection: "row", alignItems: "center", gap: 7 },
+    defaultMarker: {
+      ...UiTextMetrics,
+      ...TypeScale.micro,
+      color: colors.accentStrong,
+      fontWeight: "700",
+    },
+    readyState: { ...UiTextMetrics, ...TypeScale.micro, fontWeight: "600" },
+    inlineError: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.dangerText,
+    },
+    providerActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 12,
+      paddingTop: 3,
+    },
+    primaryAction: {
+      minHeight: 34,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      paddingHorizontal: 9,
+      borderRadius: Radii.xs,
+      backgroundColor: colors.accentSoft,
+    },
+    primaryActionSelected: { backgroundColor: colors.surfaceSubtle },
+    primaryActionText: {
+      ...UiTextMetrics,
+      ...TypeScale.micro,
+      color: colors.accentStrong,
+      fontWeight: "600",
+    },
+    emptyText: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textTertiary,
+      textAlign: "center",
+      paddingVertical: 22,
+    },
     clientSection: { gap: 10 },
     clientHeader: {
       minHeight: 46,
@@ -1203,7 +1700,12 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       justifyContent: "center",
       backgroundColor: colors.surfaceSubtle,
     },
-    clientTitle: { ...UiTextMetrics, ...TypeScale.compact, color: colors.textPrimary, fontWeight: "700" },
+    clientTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
+      color: colors.textPrimary,
+      fontWeight: "700",
+    },
     group: {
       overflow: "hidden",
       borderRadius: Radii.xs,
@@ -1211,7 +1713,10 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
     },
-    groupRowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle },
+    groupRowBorder: {
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
     choiceRow: {
       minHeight: 66,
       flexDirection: "row",
@@ -1220,7 +1725,11 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       paddingHorizontal: 14,
       paddingVertical: 10,
     },
-    connectionRow: { minHeight: 66, flexDirection: "row", alignItems: "stretch" },
+    connectionRow: {
+      minHeight: 66,
+      flexDirection: "row",
+      alignItems: "stretch",
+    },
     connectionSelect: {
       flex: 1,
       minWidth: 0,
@@ -1240,11 +1749,30 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       alignItems: "center",
       justifyContent: "center",
     },
-    radioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.accent },
+    radioInner: {
+      width: 10,
+      height: 10,
+      borderRadius: 5,
+      backgroundColor: colors.accent,
+    },
     rowCopy: { flex: 1, minWidth: 0 },
-    rowTitle: { ...UiTextMetrics, ...TypeScale.body, color: colors.textPrimary },
-    rowSubtitle: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 2 },
-    keyRequired: { ...UiTextMetrics, ...TypeScale.micro, color: colors.warning, paddingHorizontal: 4 },
+    rowTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textPrimary,
+    },
+    rowSubtitle: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      marginTop: 2,
+    },
+    keyRequired: {
+      ...UiTextMetrics,
+      ...TypeScale.micro,
+      color: colors.warning,
+      paddingHorizontal: 4,
+    },
     connectionActions: {
       flexDirection: "row",
       flexWrap: "wrap",
@@ -1267,7 +1795,11 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
     },
     actionButtonPrimary: { backgroundColor: colors.accentSoft },
     actionButtonDanger: { backgroundColor: colors.dangerSoft },
-    actionButtonText: { ...UiTextMetrics, ...TypeScale.label, color: colors.textPrimary },
+    actionButtonText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textPrimary,
+    },
     actionButtonPrimaryText: { color: colors.accentStrong },
     actionButtonDangerText: { color: colors.dangerText },
     addEndpoint: {
@@ -1279,7 +1811,12 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderRadius: Radii.xs,
       backgroundColor: colors.accentSoft,
     },
-    addEndpointText: { ...UiTextMetrics, ...TypeScale.label, color: colors.accentStrong, fontWeight: "600" },
+    addEndpointText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.accentStrong,
+      fontWeight: "600",
+    },
     editorCard: {
       backgroundColor: colors.bgSurface,
       borderTopLeftRadius: Radii.sm,
@@ -1288,8 +1825,17 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       maxHeight: 600,
     },
     editorContent: { paddingHorizontal: 16, paddingTop: 8, gap: 8 },
-    editorHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 2 },
-    editorTitle: { ...UiTextMetrics, ...TypeScale.title, color: colors.textPrimary },
+    editorHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 2,
+    },
+    editorTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.title,
+      color: colors.textPrimary,
+    },
     editorClose: {
       width: 36,
       height: 36,
@@ -1315,8 +1861,17 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       paddingBottom: 4,
     },
     pickerCopy: { flex: 1, minWidth: 0 },
-    pickerTitle: { ...UiTextMetrics, ...TypeScale.title, color: colors.textPrimary },
-    pickerSubtitle: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginTop: 2 },
+    pickerTitle: {
+      ...UiTextMetrics,
+      ...TypeScale.title,
+      color: colors.textPrimary,
+    },
+    pickerSubtitle: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      marginTop: 2,
+    },
     pickerHint: {
       ...UiTextMetrics,
       ...TypeScale.caption,
@@ -1380,7 +1935,11 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       gap: 8,
       paddingVertical: 14,
     },
-    pickerSavingText: { ...UiTextMetrics, ...TypeScale.body, color: colors.textSecondary },
+    pickerSavingText: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textSecondary,
+    },
     pickerEmpty: {
       ...UiTextMetrics,
       ...TypeScale.body,
@@ -1388,16 +1947,40 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       textAlign: "center",
       paddingVertical: 20,
     },
-    editorRetryHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.warning, marginBottom: 4 },
-    fieldLabel: { ...UiTextMetrics, ...TypeScale.label, color: colors.textSecondary, marginTop: 8, marginBottom: 2, marginHorizontal: 2 },
+    editorRetryHint: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.warning,
+      marginBottom: 4,
+    },
+    fieldLabel: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.textSecondary,
+      marginTop: 8,
+      marginBottom: 2,
+      marginHorizontal: 2,
+    },
     field: {
       borderRadius: Radii.xs,
       backgroundColor: colors.inputBackground,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
     },
-    fieldError: { ...UiTextMetrics, ...TypeScale.caption, color: colors.dangerText, marginHorizontal: 2, marginTop: 3 },
-    fieldHint: { ...UiTextMetrics, ...TypeScale.caption, color: colors.textTertiary, marginHorizontal: 2, marginTop: 3 },
+    fieldError: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.dangerText,
+      marginHorizontal: 2,
+      marginTop: 3,
+    },
+    fieldHint: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      marginHorizontal: 2,
+      marginTop: 3,
+    },
     testButton: {
       minHeight: 46,
       marginTop: 8,
@@ -1410,8 +1993,19 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
     },
-    testButtonText: { ...UiTextMetrics, ...TypeScale.body, color: colors.textPrimary, fontWeight: "600" },
-    testResult: { flexDirection: "row", alignItems: "flex-start", gap: 7, paddingHorizontal: 2, paddingTop: 2 },
+    testButtonText: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textPrimary,
+      fontWeight: "600",
+    },
+    testResult: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 7,
+      paddingHorizontal: 2,
+      paddingTop: 2,
+    },
     testResultText: { ...UiTextMetrics, ...TypeScale.caption, flex: 1 },
     saveButton: {
       minHeight: 50,
@@ -1422,6 +2016,11 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.accent,
     },
     buttonDisabled: { opacity: 0.45 },
-    saveButtonText: { ...UiTextMetrics, ...TypeScale.body, color: colors.textOnAccent, fontWeight: "700" },
+    saveButtonText: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
+      color: colors.textOnAccent,
+      fontWeight: "700",
+    },
   });
 }
