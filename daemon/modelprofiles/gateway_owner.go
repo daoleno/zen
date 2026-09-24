@@ -141,6 +141,9 @@ func (o *Owner) resolveGatewayRequest(protocol, modelID string) (GatewayUpstream
 		if err != nil || routeProtocolFor(target.Protocol) != protocol {
 			continue
 		}
+		if o.gatewayModelDisabled(profile.ID, wantModel) {
+			continue
+		}
 		entries, _ := o.modelsForConnection(profile, false)
 		available := false
 		for _, entry := range entries {
@@ -171,6 +174,28 @@ func (o *Owner) resolveGatewayRequest(protocol, modelID string) (GatewayUpstream
 		return GatewayUpstream{}, fmt.Errorf("%w: ambiguous model %s", ErrConflict, modelID)
 	}
 	return GatewayUpstreamFromProfile(matches[0]), nil
+}
+
+func (o *Owner) gatewayModelDisabled(connectionID, modelID string) bool {
+	if o == nil {
+		return false
+	}
+	o.mu.Lock()
+	cache := o.discovery
+	o.mu.Unlock()
+	if cache == nil {
+		return false
+	}
+	entry, ok := cache.get(connectionID)
+	if !ok {
+		return false
+	}
+	for _, disabled := range entry.Disabled {
+		if normalizeSpace(disabled) == normalizeSpace(modelID) {
+			return true
+		}
+	}
+	return false
 }
 
 func routeProtocolFor(protocol string) string {

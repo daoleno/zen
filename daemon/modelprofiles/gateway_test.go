@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -551,6 +552,76 @@ func TestGatewayRequestPrefersSelectedProviderWhenModelIsShared(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("neither upstream saw the gateway request")
 	}
+}
+
+func TestGatewayRequestRejectsUnknownAmbiguousAndDisabledModels(t *testing.T) {
+	newOwner := func(t *testing.T) *Owner {
+		t.Helper()
+		owner := startBuiltinVerifierOwner(t)
+		creds := NewMemoryCredentialStore()
+		owner.creds = creds
+		owner.router.creds = creds
+		return owner
+	}
+	t.Run("unknown", func(t *testing.T) {
+		owner := newOwner(t)
+		proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+			ID: "conn-known", Name: "known", Client: ClientCodex, PresetID: ProviderPresetCustom,
+			BaseURL: "https://provider.example/v1", ModelID: "known-model", Advanced: true,
+		}, "secret", 0, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner.mu.Lock()
+		owner.discovery.put("conn-known", []string{"known-model"}, nil)
+		owner.mu.Unlock()
+		if _, err := owner.resolveGatewayRequest(GatewayProtocolResponses, "missing-model"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("unknown model error = %v", err)
+		}
+		_ = proj
+	})
+
+	t.Run("ambiguous", func(t *testing.T) {
+		owner := newOwner(t)
+		proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+			ID: "conn-a", Name: "a", Client: ClientCodex, PresetID: ProviderPresetCustom,
+			BaseURL: "https://a.example/v1", ModelID: "shared-model", Advanced: true,
+		}, "secret", 0, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proj, err = owner.UpsertProviderConnection(ProviderConnectionInput{
+			ID: "conn-b", Name: "b", Client: ClientCodex, PresetID: ProviderPresetCustom,
+			BaseURL: "https://b.example/v1", ModelID: "shared-model", Advanced: true,
+		}, "secret", proj.Revision, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner.mu.Lock()
+		owner.discovery.put("conn-a", []string{"shared-model"}, nil)
+		owner.discovery.put("conn-b", []string{"shared-model"}, nil)
+		owner.mu.Unlock()
+		if _, err := owner.resolveGatewayRequest(GatewayProtocolResponses, "shared-model"); !errors.Is(err, ErrConflict) {
+			t.Fatalf("ambiguous model error = %v", err)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		owner := newOwner(t)
+		if _, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+			ID: "conn-disabled", Name: "disabled", Client: ClientCodex, PresetID: ProviderPresetCustom,
+			BaseURL: "https://disabled.example/v1", ModelID: "disabled-model", Advanced: true,
+		}, "secret", 0, true); err != nil {
+			t.Fatal(err)
+		}
+		owner.mu.Lock()
+		owner.discovery.put("conn-disabled", []string{"disabled-model"}, nil)
+		owner.discovery.setDisabled("conn-disabled", []string{"disabled-model"})
+		owner.mu.Unlock()
+		if _, err := owner.resolveGatewayRequest(GatewayProtocolResponses, "disabled-model"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("disabled model error = %v", err)
+		}
+	})
 }
 
 // TestGatewayUpstreamFlapDoesNotChangeListener: switching upstream never
