@@ -2320,6 +2320,38 @@ func TestClaudeInputReadyCurrentTUIAndWrappedFooter(t *testing.T) {
 	}
 }
 
+func TestClaudeInputReadyManagedLoopbackPane(t *testing.T) {
+	// Captured from Claude Code 2.1.281 after the managed loopback API-key
+	// startup choice was dismissed. The status line and medium-effort marker
+	// are current UI chrome; the empty NBSP composer and bypass footer are the
+	// readiness evidence. No provider request or user prompt is involved.
+	ready := "" +
+		" ▐▛███▛█   Claude Code v2.1.281\n" +
+		"▝▜██████▀  Opus 5.5 (1M context) · API Usage Billing\n" +
+		"  ▝▝ ▝▝    ~/workspace/zen\n" +
+		"\n" +
+		"● agents-md: no CLAUDE.md found; AGENTS.md loaded: /home/daoleno/workspace/zen/AGENTS.md\n" +
+		"\n" +
+		"                                                                                ◐ medium · /effort\n" +
+		"────────────────────────────────────────────────────────────────────────────────────────────────────\n" +
+		"❯\u00a0                                   \n" +
+		"────────────────────────────────────────────────────────────────────────────────────────────────────\n" +
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n"
+	if !isClaudeInputReady(ready) {
+		t.Fatal("managed Claude loopback ready pane should be input-ready")
+	}
+
+	for name, pane := range map[string]string{
+		"custom API key overlay": "Detected a custom API key in your environment\nDo you want to use this API key?\n❯ No (recommended)",
+		"connection retry spinner": "Claude Code v2.1.281\n❯\u00a0\n✻ Connection refused — retrying\n  ◐ medium · /effort\n" +
+			"⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents",
+	} {
+		if isClaudeInputReady(pane) {
+			t.Errorf("%s must not be ready", name)
+		}
+	}
+}
+
 func TestClaudeReadinessRecognizesCommandOverrides(t *testing.T) {
 	pane := "Claude Code v2.1.281\n❯\nmanual mode on · ? for shortcuts"
 	for _, command := range []string{

@@ -60,7 +60,7 @@ var claudeComposerRe = regexp.MustCompile(`(?m)^[\t \x{00A0}]*❯[\t \x{00A0}]*$
 // on adjacent lines. Keep the span bounded to the current footer and require
 // a mode token plus its keyboard affordance; arbitrary pane text cannot pass.
 var claudeModeFooterRe = regexp.MustCompile(`(?is)(bypass permissions|manual mode)[\s\S]{0,160}(shift\+tab|shortcuts|\?)`)
-var claudeBlockedOverlayRe = regexp.MustCompile(`(?is)(select a model|choose a model|loading|starting claude|trust (?:this|the contents)|press enter to continue|sign[ -]?in|api key|permission required)`)
+var claudeBlockedOverlayRe = regexp.MustCompile(`(?is)(select a model|choose a model|loading|starting claude|trust (?:this|the contents)|press enter to continue|sign[ -]?in|api key|permission required|connection refused|reconnect(?:ing|ed)?|retrying|esc to interrupt|(?:^|\n)\s*(?:working|thinking)\.{0,3})`)
 
 // Grok TUI ready: model/footer chrome plus the empty/ready composer prompt glyph.
 var grokChromeReadyRe = regexp.MustCompile(`(?im)(\bgrok\s+[0-9]|always-approve|enter\s*:\s*send|shift\+tab:mode)`)
