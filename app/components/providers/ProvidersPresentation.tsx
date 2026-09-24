@@ -402,6 +402,19 @@ function connectionSubtitle(
   return preset?.label ?? "Official endpoint";
 }
 
+function catalogAgeLabel(connection: ProviderConnection): string {
+  if (!connection.models_fetched_at) return "Models not synced";
+  const timestamp = Date.parse(connection.models_fetched_at);
+  if (!Number.isFinite(timestamp)) return "Models synced";
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+  if (connection.models_stale || connection.models_warning) return "Models stale";
+  if (minutes < 1) return "Models just now";
+  if (minutes < 60) return `Models ${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `Models ${hours}h ago`;
+  return `Models ${Math.round(hours / 24)}d ago`;
+}
+
 function ConnectionChoiceRow({
   connection,
   catalog,
@@ -436,6 +449,9 @@ function ConnectionChoiceRow({
   });
   const ready = connection.credential_ready;
   const subtitle = connectionSubtitle(connection, catalog);
+  const models = catalog.models[connection.id] ?? [];
+  const exposedCount = models.filter((model) => model.available).length;
+  const catalogLabel = catalogAgeLabel(connection);
   const testing = testState.kind === "testing";
 
   const handleTestConnection = async () => {
@@ -480,7 +496,7 @@ function ConnectionChoiceRow({
               {connection.name}
             </Text>
             <Text style={styles.rowSubtitle} numberOfLines={1}>
-              {subtitle}
+              {subtitle} · {exposedCount}/{models.length || "—"} exposed · {catalogLabel}
             </Text>
           </View>
           {!ready ? (
@@ -503,6 +519,11 @@ function ConnectionChoiceRow({
       </View>
       {expanded ? (
         <View style={styles.connectionActions}>
+          {connection.models_warning ? (
+            <Text style={styles.catalogWarning} numberOfLines={2}>
+              {connection.models_warning}
+            </Text>
+          ) : null}
           <ActionButton
             label={testing ? "Testing…" : "Test Connection"}
             onPress={() => void handleTestConnection()}
@@ -937,6 +958,7 @@ function ModelSyncSheet({
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
+  const [query, setQuery] = useState("");
   const choices = modelSupportChoices(
     catalog,
     picker.connection,
@@ -945,6 +967,13 @@ function ModelSyncSheet({
   const enabledCount = choices.filter((choice) => choice.current).length;
   const selectingDefault = picker.purpose === "default";
   const saving = mutating;
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleChoices = choices.filter((choice) => {
+    if (!normalizedQuery) return true;
+    return `${choice.model.id} ${choice.model.display_name ?? ""} ${choice.model.source}`
+      .toLowerCase()
+      .includes(normalizedQuery);
+  });
 
   return (
     <RisingSheet
@@ -982,8 +1011,19 @@ function ModelSyncSheet({
             ? `${enabledCount} models exposed`
             : `${enabledCount} of ${choices.length} models exposed`}
       </Text>
+      <MobileSingleLineInput
+        value={query}
+        onChangeText={setQuery}
+        editable={!saving}
+        placeholder="Search model IDs or names"
+        placeholderTextColor={colors.textSecondary}
+        accessibilityLabel="Search models"
+        autoCapitalize="none"
+        autoCorrect={false}
+        containerStyle={styles.pickerSearch}
+      />
       <View style={styles.chipWrap}>
-        {choices.map((choice) => {
+        {visibleChoices.map((choice) => {
           const selected = selectingDefault
             ? catalog.defaults[picker.client]?.connection_id ===
                 picker.connection.id &&
@@ -1032,6 +1072,12 @@ function ModelSyncSheet({
               >
                 {choice.model.display_name?.trim() || choice.model.id}
               </Text>
+              <Text style={styles.modelChipMeta} numberOfLines={1}>
+                {choice.model.source}
+                {choice.model.context_window_tokens
+                  ? ` · ${Math.round(choice.model.context_window_tokens / 1000)}k ctx`
+                  : ""}
+              </Text>
             </Pressable>
           );
         })}
@@ -1041,9 +1087,11 @@ function ModelSyncSheet({
             <Text style={styles.pickerSavingText}>Saving…</Text>
           </View>
         ) : null}
-        {!saving && choices.length === 0 ? (
+        {!saving && visibleChoices.length === 0 ? (
           <Text style={styles.pickerEmpty}>
-            No models were reported by this endpoint.
+            {choices.length === 0
+              ? "No models were reported by this endpoint."
+              : "No models match this search."}
           </Text>
         ) : null}
       </View>
@@ -1215,6 +1263,10 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       paddingHorizontal: 16,
       paddingBottom: 10,
     },
+    pickerSearch: {
+      marginHorizontal: 16,
+      marginBottom: 10,
+    },
     pickerList: { paddingHorizontal: 16, paddingBottom: 8 },
     chipWrap: {
       flexDirection: "row",
@@ -1246,6 +1298,19 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       ...TypeScale.label,
       color: colors.textSecondary,
       flexShrink: 1,
+    },
+    modelChipMeta: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.textTertiary,
+      flexShrink: 1,
+    },
+    catalogWarning: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
+      color: colors.warning,
+      paddingHorizontal: 2,
+      paddingBottom: 2,
     },
     pickerSavingRow: {
       flexDirection: "row",

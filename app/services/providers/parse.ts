@@ -53,6 +53,10 @@ function asRevision(value: unknown): number | null {
     : null;
 }
 
+function asFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function assertSecretFree(value: unknown, seen = new Set<unknown>()): void {
   if (!value || typeof value !== "object" || seen.has(value)) return;
   seen.add(value);
@@ -118,6 +122,9 @@ export function parseProviderConnection(
     // Masked hint only: the daemon never projects the full stored secret, and
     // the hint is presentation-only (never submitted as a credential).
     credential_hint: asString(record.credential_hint) || undefined,
+    models_fetched_at: asString(record.models_fetched_at) || undefined,
+    models_stale: record.models_stale === true ? true : undefined,
+    models_warning: asString(record.models_warning) || undefined,
   };
 }
 
@@ -153,6 +160,14 @@ export function parseProviderModel(raw: unknown): ProviderModel | null {
     reasoning_effort_default:
       asString(record.reasoning_effort_default) || undefined,
     reasoning_efforts: asStringArray(record.reasoning_efforts),
+    context_window_tokens: asFiniteNumber(record.context_window_tokens),
+    modalities: asStringArray(record.modalities),
+    temperature_supported:
+      typeof record.temperature_supported === "boolean"
+        ? record.temperature_supported
+        : undefined,
+    input_price_per_million: asFiniteNumber(record.input_price_per_million),
+    output_price_per_million: asFiniteNumber(record.output_price_per_million),
   };
 }
 

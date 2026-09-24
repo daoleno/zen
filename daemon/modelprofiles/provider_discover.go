@@ -606,6 +606,11 @@ func parseModelsCatalogResponse(body []byte) ([]string, map[string]modelPresenta
 		DefaultReasoningLevel    string                       `json:"default_reasoning_level"`
 		SupportedReasoningLevels []CodexReasoningEffortPreset `json:"supported_reasoning_levels"`
 		ContextWindow            int64                        `json:"context_window"`
+		Modalities               []string                     `json:"modalities"`
+		TemperatureSupported     *bool                        `json:"temperature_supported"`
+		Temperature              *bool                        `json:"temperature"`
+		InputPricePerMillion     *float64                     `json:"input_price_per_million"`
+		OutputPricePerMillion    *float64                     `json:"output_price_per_million"`
 	}
 	var obj struct {
 		Data   []modelRecord `json:"data"`
@@ -631,11 +636,19 @@ func parseModelsCatalogResponse(body []byte) ([]string, map[string]modelPresenta
 		}
 		seen[id] = struct{}{}
 		out = append(out, id)
+		temperature := record.TemperatureSupported
+		if temperature == nil {
+			temperature = record.Temperature
+		}
 		metadata[id] = normalizeModelPresentationMetadata(modelPresentationMetadata{
 			DisplayName:              record.DisplayName,
 			DefaultReasoningLevel:    record.DefaultReasoningLevel,
 			SupportedReasoningLevels: record.SupportedReasoningLevels,
 			ContextWindow:            record.ContextWindow,
+			Modalities:               record.Modalities,
+			TemperatureSupported:     temperature,
+			InputPricePerMillion:     record.InputPricePerMillion,
+			OutputPricePerMillion:    record.OutputPricePerMillion,
 		})
 	}
 	for _, m := range obj.Data {

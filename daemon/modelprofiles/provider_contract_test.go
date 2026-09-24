@@ -37,6 +37,44 @@ func TestCompileProviderConnectionCuratedOmitsModel(t *testing.T) {
 	}
 }
 
+func TestProviderProjectionCarriesCatalogMetadataAndFreshness(t *testing.T) {
+	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
+	conn, err := CompileProviderConnection(ProviderConnectionInput{Name: "Gateway", PresetID: ProviderPresetCustom, Client: ClientCodex, BaseURL: "https://gateway.example/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.UpsertProfile(conn, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	owner.mu.Lock()
+	owner.discovery = newModelDiscoveryCache()
+	owner.discovery.putModels(conn.ID, []string{"gpt-5.5"}, map[string]modelPresentationMetadata{
+		"gpt-5.5": {DisplayName: "GPT-5.5", ContextWindow: 272000, Modalities: []string{"text", "image"}},
+	}, nil)
+	owner.mu.Unlock()
+
+	projection := mustProject(t, owner)
+	entry := projection.Models[conn.ID][0]
+	if entry.DisplayName != "GPT-5.5" || entry.ContextWindowTokens != 272000 || len(entry.Modalities) != 2 {
+		t.Fatalf("metadata=%#v", entry)
+	}
+	if projection.Connections[0].ModelCatalogFetchedAt == "" || projection.Connections[0].ModelCatalogStale {
+		t.Fatalf("freshness=%#v", projection.Connections[0])
+	}
+
+	owner.mu.Lock()
+	owner.discovery.mu.Lock()
+	e := owner.discovery.entries[conn.ID]
+	e.Err = "using last known good models"
+	owner.discovery.entries[conn.ID] = e
+	owner.discovery.mu.Unlock()
+	owner.mu.Unlock()
+	projection = mustProject(t, owner)
+	if !projection.Connections[0].ModelCatalogStale || projection.Connections[0].ModelCatalogWarning == "" {
+		t.Fatalf("stale projection=%#v", projection.Connections[0])
+	}
+}
+
 func TestSetProviderDefaultAtomicSingleWrite(t *testing.T) {
 	owner := startTestOwner(t, func(string) (string, bool) { return "ready", true })
 	creds := NewMemoryCredentialStore()

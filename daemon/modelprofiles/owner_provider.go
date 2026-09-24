@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ProjectProviders returns the Provider-first Settings projection.
@@ -26,6 +27,9 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 	for _, view := range proj.Views {
 		conn := providerConnectionFromProfile(view.Profile, o.connectionReady(view.Profile))
 		conn.CredentialHint = o.providerCredentialHint(view.Profile)
+		if o != nil {
+			o.decorateCatalogStatus(&conn)
+		}
 		out.Connections = append(out.Connections, conn)
 		entries, _ := o.modelsForConnection(view.Profile, false)
 		out.Models[conn.ID] = entries
@@ -55,6 +59,35 @@ func (o *Owner) ProjectProviders() (ProviderCatalogProjection, error) {
 		}
 	}
 	return out, nil
+}
+
+func (o *Owner) decorateCatalogStatus(conn *ProviderConnection) {
+	if o == nil || conn == nil {
+		return
+	}
+	o.mu.Lock()
+	cache := o.discovery
+	loadWarning := o.discoveryLoadWarning
+	o.mu.Unlock()
+	if loadWarning != nil {
+		conn.ModelCatalogWarning = loadWarning.Error()
+	}
+	if cache == nil {
+		return
+	}
+	entry, ok := cache.get(conn.ID)
+	if !ok {
+		return
+	}
+	if !entry.FetchedAt.IsZero() {
+		conn.ModelCatalogFetchedAt = entry.FetchedAt.UTC().Format(time.RFC3339)
+	}
+	if warning := strings.TrimSpace(entry.Err); warning != "" {
+		conn.ModelCatalogWarning = warning
+		conn.ModelCatalogStale = true
+		return
+	}
+	conn.ModelCatalogStale = !cache.fresh(conn.ID)
 }
 
 func (o *Owner) defaultModelLocked(client string) string {
@@ -235,13 +268,18 @@ func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentat
 			available = false
 		}
 		entry := ProviderModelEntry{ID: id, Available: available, Source: entrySource}
+		modelMetadata := mergeModelPresentationMetadata(metadata[id], fallbackMetadata[id])
+		entry.DisplayName = modelMetadata.DisplayName
+		entry.ReasoningEffortDefault = modelMetadata.DefaultReasoningLevel
+		for _, preset := range modelMetadata.SupportedReasoningLevels {
+			entry.ReasoningEfforts = append(entry.ReasoningEfforts, preset.Effort)
+		}
+		entry.ContextWindowTokens = modelMetadata.ContextWindow
+		entry.Modalities = append([]string(nil), modelMetadata.Modalities...)
+		entry.TemperatureSupported = modelMetadata.TemperatureSupported
+		entry.InputPricePerMillion = modelMetadata.InputPricePerMillion
+		entry.OutputPricePerMillion = modelMetadata.OutputPricePerMillion
 		if codex {
-			modelMetadata := mergeModelPresentationMetadata(metadata[id], fallbackMetadata[id])
-			entry.DisplayName = modelMetadata.DisplayName
-			entry.ReasoningEffortDefault = modelMetadata.DefaultReasoningLevel
-			for _, preset := range modelMetadata.SupportedReasoningLevels {
-				entry.ReasoningEfforts = append(entry.ReasoningEfforts, preset.Effort)
-			}
 			entry.Known = entry.DisplayName != "" || entry.ReasoningEffortDefault != "" || len(entry.ReasoningEfforts) > 0 || modelMetadata.ContextWindow > 0
 		}
 		out = append(out, entry)

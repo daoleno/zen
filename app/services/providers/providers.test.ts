@@ -81,6 +81,44 @@ function providerSnapshot(
 }
 
 describe("Provider DTO parse", () => {
+  test("keeps catalog freshness and capability metadata secret-free", () => {
+    const model = parseProviderModel({
+      id: "gpt-5.5",
+      available: true,
+      source: "discovered",
+      context_window_tokens: 272000,
+      modalities: ["text", "image"],
+      temperature_supported: false,
+      input_price_per_million: 1.25,
+    });
+    expect(model).toMatchObject({
+      id: "gpt-5.5",
+      context_window_tokens: 272000,
+      modalities: ["text", "image"],
+      temperature_supported: false,
+      input_price_per_million: 1.25,
+    });
+    const snapshot = parseProvidersSnapshot({
+      revision: 1,
+      connections: [{
+        id: "c1",
+        name: "Gateway",
+        clients: ["codex"],
+        credential_ready: true,
+        models_fetched_at: "2026-09-24T00:00:00Z",
+        models_stale: true,
+        models_warning: "using last known good models",
+      }],
+      defaults: {},
+      presets: [],
+      models: { c1: [model] },
+    });
+    expect(snapshot?.connections[0]).toMatchObject({
+      models_fetched_at: "2026-09-24T00:00:00Z",
+      models_stale: true,
+    });
+  });
+
   test("parses curated catalog without leaking secret keys", () => {
     const catalog = parseProvidersSnapshot({
       revision: 3,

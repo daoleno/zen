@@ -26,6 +26,9 @@ export type ProviderConnection = {
    * logically empty and this value is never submitted as a credential.
    */
   credential_hint?: string;
+  models_fetched_at?: string;
+  models_stale?: boolean;
+  models_warning?: string;
 };
 
 export type ProviderPreset = {
@@ -47,6 +50,11 @@ export type ProviderModel = {
   source: string;
   reasoning_effort_default?: string;
   reasoning_efforts?: string[];
+  context_window_tokens?: number;
+  modalities?: string[];
+  temperature_supported?: boolean;
+  input_price_per_million?: number;
+  output_price_per_million?: number;
   /**
    * Whether daemon-owned display/effect metadata exists for this model.
    * Unknown gateway-only models remain selectable opaque identities.

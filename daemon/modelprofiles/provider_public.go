@@ -49,7 +49,12 @@ type ProviderConnection struct {
 	ManualModelID   string   `json:"manual_model_id,omitempty"`
 	CredentialReady bool     `json:"credential_ready"`
 	CredentialHint  string   `json:"credential_hint,omitempty"`
-	Advanced        bool     `json:"advanced,omitempty"`
+	// Catalog status is secret-free and describes the last model directory
+	// observation for this connection. An empty timestamp means unsynced.
+	ModelCatalogFetchedAt string `json:"models_fetched_at,omitempty"`
+	ModelCatalogStale     bool   `json:"models_stale,omitempty"`
+	ModelCatalogWarning   string `json:"models_warning,omitempty"`
+	Advanced              bool   `json:"advanced,omitempty"`
 }
 
 // ProviderDefault is the future-launch default for one product client.
@@ -66,6 +71,11 @@ type ProviderModelEntry struct {
 	Source                 string   `json:"source"` // codex_cache | discovered | lkg | manual
 	ReasoningEffortDefault string   `json:"reasoning_effort_default,omitempty"`
 	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
+	ContextWindowTokens    int64    `json:"context_window_tokens,omitempty"`
+	Modalities             []string `json:"modalities,omitempty"`
+	TemperatureSupported   *bool    `json:"temperature_supported,omitempty"`
+	InputPricePerMillion   *float64 `json:"input_price_per_million,omitempty"`
+	OutputPricePerMillion  *float64 `json:"output_price_per_million,omitempty"`
 	// Known marks daemon-owned display/effect metadata for managed Codex.
 	// Unknown gateway-only models remain valid opaque identities.
 	Known bool `json:"known,omitempty"`
