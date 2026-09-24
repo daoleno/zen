@@ -239,6 +239,16 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeRouteError(w, http.StatusBadRequest, ErrModelUnsupported)
 			return
 		}
+		if parsed.Endpoint == EndpointAnthropicMessages || parsed.Endpoint == EndpointAnthropicCountTokens {
+			if normalizedModel, ok := normalizeClaudeContextModel(requestModel); ok {
+				requestModel = normalizedModel
+				rewritten, err = rewriteRequestModel(rewritten, requestModel)
+				if err != nil {
+					writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
+					return
+				}
+			}
+		}
 		if r.modelCatalog != nil || r.models != nil {
 			catalog := RouteModelCatalog{}
 			var catalogErr error
@@ -446,6 +456,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := streamCopyFlush(w, resp.Body); err != nil {
 		return
 	}
+}
+
+// normalizeClaudeContextModel removes Claude Code's explicit one-million
+// token context display suffix. It is intentionally narrow: only Claude model
+// IDs on Anthropic endpoints with the exact `[1m]` suffix are normalized.
+func normalizeClaudeContextModel(model string) (string, bool) {
+	const suffix = "[1m]"
+	if !strings.HasPrefix(model, "claude-") || !strings.HasSuffix(model, suffix) {
+		return model, false
+	}
+	base := strings.TrimSuffix(model, suffix)
+	if base == "claude-" {
+		return model, false
+	}
+	return base, true
 }
 
 // serveRouteWebSocket transparently proxies a Codex Responses-over-WebSocket

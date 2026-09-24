@@ -98,6 +98,59 @@ func TestClaudeRouteRejectsModelOutsideProviderCatalog(t *testing.T) {
 	}
 }
 
+func TestClaudeRouteNormalizesOneMillionContextModelSuffix(t *testing.T) {
+	var gotModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotModel = body.Model
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+	table := NewRouteTable()
+	profile := routedClaude(upstream.URL, "claude-opus-5-5", "claude-opus-5-5")
+	state, err := table.BindLaunch("claude-context", profile, 1, verifiedAuth(profile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(table, WithRouterModelCatalog(func(string) ([]ProviderModelEntry, error) {
+		return []ProviderModelEntry{{ID: "claude-opus-5-5", Available: true}}, nil
+	}))
+	srv := httptest.NewServer(router.Handler())
+	defer srv.Close()
+	root, _ := LoopbackClaudeRootURL(srv.Listener.Addr().String(), state.Binding.RouteID)
+
+	for _, test := range []struct {
+		name       string
+		model      string
+		wantStatus int
+		wantModel  string
+	}{
+		{name: "context suffix", model: "claude-opus-5-5[1m]", wantStatus: http.StatusOK, wantModel: "claude-opus-5-5"},
+		{name: "plain model", model: "claude-opus-5-5", wantStatus: http.StatusOK, wantModel: "claude-opus-5-5"},
+		{name: "unrelated unknown", model: "claude-opus-5-5[2m]", wantStatus: http.StatusNotFound, wantModel: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gotModel = ""
+			req, reqErr := http.NewRequest(http.MethodPost, root+"/v1/messages", bytes.NewBufferString(`{"model":"`+test.model+`"}`))
+			if reqErr != nil {
+				t.Fatal(reqErr)
+			}
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr != nil {
+				t.Fatal(doErr)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != test.wantStatus || gotModel != test.wantModel {
+				t.Fatalf("status=%d model=%q, want status=%d model=%q", resp.StatusCode, gotModel, test.wantStatus, test.wantModel)
+			}
+		})
+	}
+}
+
 func TestClaudeRoutePassesModelWhenCatalogIsUnavailable(t *testing.T) {
 	var gotModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
