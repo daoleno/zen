@@ -558,6 +558,21 @@ fi
 mv -f "$INSTALL_TEMP" "$target" || die "could not atomically install $target"
 INSTALL_TEMP=
 
+# Keep the user-facing `claude` name stable while routing each process through
+# Zen. The wrapper carries no credentials and deliberately resolves the native
+# Claude binary from the remaining PATH entries.
+claude_wrapper=$INSTALL_DIR/claude
+claude_wrapper_temp=$(mktemp "$INSTALL_DIR/.claude-wrapper.XXXXXX") || die "could not create Claude wrapper"
+cat >"$claude_wrapper_temp" <<'EOF'
+#!/bin/sh
+set -eu
+ZEN_CLAUDE_WRAPPER="$0"
+export ZEN_CLAUDE_WRAPPER
+exec zen claude "$@"
+EOF
+chmod 0755 "$claude_wrapper_temp"
+mv -f "$claude_wrapper_temp" "$claude_wrapper" || die "could not install Claude wrapper"
+
 IMMEDIATE_PATH_COMMAND=
 PROFILE_UPDATED=
 append_profile_path

@@ -83,6 +83,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleWorkerList()
 	case "worker_spawn":
 		return a.handleWorkerSpawn(req)
+	case "claude_launch":
+		return a.handleClaudeLaunch(req)
 	case "worker_send":
 		return a.handleWorkerSend(req)
 	case "worker_capture":
@@ -211,6 +213,43 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 	default:
 		return control.ErrorResponse("unknown_request", fmt.Sprintf("Unknown control request: %s", req.Type))
 	}
+}
+
+// handleClaudeLaunch prepares and commits a route for a direct, interactive
+// Claude process. The process is owned by the caller rather than tmux; the
+// synthetic session id lets the router authenticate requests without relying
+// on inherited shell state.
+func (a *controlApp) handleClaudeLaunch(req control.Request) control.Response {
+	if a == nil || a.profiles == nil {
+		return control.ErrorResponse(modelprofiles.CodeProfilesUnavailable, "Zen model routing is unavailable.")
+	}
+	command := strings.TrimSpace(req.Command)
+	if command == "" {
+		return control.ErrorResponse("claude_command_required", "native Claude command is required")
+	}
+	plan, err := a.profiles.PrepareLaunchModel(modelprofiles.ExecutorClaude, strings.TrimSpace(req.ConnectionID), strings.TrimSpace(req.ModelID), command)
+	if err != nil {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(err), err.Error())
+	}
+	if plan.Bypass || !plan.Applied {
+		return control.ErrorResponse(modelprofiles.CodeProfileNotFound, "No Zen Claude Provider connection is selected.")
+	}
+	sessionID := strings.TrimSpace(req.WorkerID)
+	if sessionID == "" {
+		sessionID = "cli:claude:" + uuid.NewString()
+	}
+	_, snap, persist, commitErr := a.profiles.CommitLaunch(plan.ProvisionalID, sessionID)
+	if !persist.Applied {
+		_, _ = a.profiles.AbortLaunch(plan.ProvisionalID)
+		if commitErr == nil {
+			commitErr = fmt.Errorf("Claude route commit was not applied")
+		}
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(commitErr), commitErr.Error())
+	}
+	if commitErr != nil {
+		return control.ErrorResponse(modelprofiles.ControlErrorCode(commitErr), commitErr.Error())
+	}
+	return control.Response{OK: true, LaunchCommand: plan.Command, LaunchEnv: plan.Env, LaunchSessionID: sessionID, SessionRoute: &snap}
 }
 
 func (a *controlApp) handleTelegramSetup(req control.Request) control.Response {

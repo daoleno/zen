@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -58,6 +59,15 @@ type cliConfig struct {
 	json     bool
 }
 
+func directClaudePID(sessionID string) (int, bool) {
+	const prefix = "cli:claude:"
+	if !strings.HasPrefix(sessionID, prefix) {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(sessionID, prefix))
+	return pid, err == nil && pid > 0
+}
+
 func main() {
 	if err := run(os.Args[1:], os.Stderr); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -100,6 +110,8 @@ func run(args []string, stderr io.Writer) error {
 			return runTelegramCommand(args[1:], stderr)
 		case "codex-gateway":
 			return runCodexGatewayCommand(args[1:], stderr)
+		case "claude":
+			return runClaudeCommand(args[1:], stderr)
 		case "devices":
 			return runDevicesCommand(args[1:], stderr)
 		case "desktop-helper":
@@ -284,6 +296,13 @@ func runDaemon(args []string, stderr io.Writer) error {
 		ModelsObserved: sc.ObserveModels,
 		Credentials:    credentialStore,
 		SessionProbe: func(id string) (modelprofiles.SessionLiveness, error) {
+			if pid, ok := directClaudePID(id); ok {
+				process, findErr := os.FindProcess(pid)
+				if findErr == nil && process.Signal(syscall.Signal(0)) == nil {
+					return modelprofiles.SessionLivenessPresent, nil
+				}
+				return modelprofiles.SessionLivenessAbsent, nil
+			}
 			presence, err := w.ProbeSession(id)
 			if err != nil {
 				return modelprofiles.SessionLivenessUnknown, err

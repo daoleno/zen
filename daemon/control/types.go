@@ -117,6 +117,9 @@ type Response struct {
 	Gateway            *modelprofiles.TakeoverStatus            `json:"codex_gateway,omitempty"`
 	ThreadRuntime      *modelprofiles.ThreadRuntimeSelection    `json:"thread_runtime,omitempty"`
 	SessionRoute       *modelprofiles.WireSessionSnapshot       `json:"session_route,omitempty"`
+	LaunchCommand      string                                   `json:"launch_command,omitempty"`
+	LaunchEnv          map[string]string                        `json:"launch_env,omitempty"`
+	LaunchSessionID    string                                   `json:"launch_session_id,omitempty"`
 	Binding            *modelprofiles.WireBinding               `json:"binding,omitempty"`
 	TelegramStatus     *telegramchannel.Status                  `json:"telegram_status,omitempty"`
 	TelegramBinding    *telegramchannel.BindingChallenge        `json:"telegram_binding,omitempty"`

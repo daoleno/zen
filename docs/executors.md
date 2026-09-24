@@ -57,6 +57,19 @@ Recommendations:
 
 ## Credentials
 
+### Direct Claude entry design
+
+Zen follows the boundary documented by [yetone/magpie](https://github.com/yetone/magpie):
+Magpie uses a localhost gateway and per-agent process/config projection, while
+its Claude subscription path invokes the genuine local Claude binary. Zen's
+equivalent path is implemented in `daemon/cmd/zen/claude_cli.go` (PATH shim,
+environment scrub, native binary resolution), `daemon/cmd/zen/control_app.go`
+(`claude_launch` route binding), and `daemon/modelprofiles/compile.go`
+(route-scoped `ANTHROPIC_BASE_URL` and non-secret placeholders). The installer
+writes only the credential-free `~/.local/bin/claude` shim; provider credentials
+remain in Zen's private store and are injected by the daemon router at request
+time.
+
 For **Official login / Direct**, authenticate each CLI on the daemon host using
 its own login flow. For a custom Codex or Claude endpoint, **Settings > Providers >
 Models and accounts** stores the supplied API key on the current daemon through
@@ -90,10 +103,19 @@ session-bound loopback and injects the saved upstream key there. The launch uses
 session-specific Claude settings to keep a pre-existing native settings file's
 endpoint or authentication environment from redirecting that managed session;
 native-login sessions retain their own authentication behavior.
-This loopback handoff applies to App-managed Claude launches that Zen creates
-as a Claude session. Typing `claude` inside an ordinary shell is not associated
-with a Provider route, because Zen does not inspect or rewrite arbitrary shell
-processes; use an App-managed Claude launch when a selected Provider must apply.
+This loopback handoff applies to every Claude launch started through Zen. The
+release installer places a small `claude` shim beside `zen`; from any new
+terminal it asks the daemon for a route-scoped launch plan and then `exec`s the
+native Claude binary. The shim removes inherited `ANTHROPIC_*` and Bedrock /
+Vertex / Foundry overrides before applying only the process-local Zen values.
+It never writes credentials to shell startup files. The native binary is
+resolved from the remaining `PATH` entries, so the shim cannot recurse.
+
+The direct entry requires the Zen daemon and a saved Claude Provider
+connection/default. If no Zen Claude connection is selected it fails with an
+actionable error instead of silently falling back to Anthropic login. To run
+the unmodified native CLI, invoke its absolute path (or temporarily remove
+the Zen install directory from `PATH`).
 
 ## Custom executors
 
