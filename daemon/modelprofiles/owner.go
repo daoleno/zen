@@ -124,6 +124,7 @@ type Owner struct {
 	listenerBackupHad    bool
 	listenerBackupSet    bool
 	discovery            *modelDiscoveryCache
+	modelsDev            *modelsDevCatalog
 	modelsObserved       func([]string)
 	discoveryPath        string
 	discoveryLoadWarning error
@@ -295,6 +296,12 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 		codexControlDir: codexControlDir,
 		nativeMonitors:  map[string]*codexctl.Monitor{},
 	}
+	modelsDevPath := ""
+	if strings.TrimSpace(cfg.DiscoveryPath) != "" {
+		modelsDevPath = filepath.Join(filepath.Dir(cfg.DiscoveryPath), modelsDevCacheFile)
+	}
+	o.modelsDev = newModelsDevCatalog(modelsDevPath)
+	_ = o.modelsDev.load()
 	if err := o.recoverProviderSwitchJournal(); err != nil {
 		_ = o.Close()
 		return nil, err
@@ -303,6 +310,10 @@ func StartOwner(cfg OwnerConfig) (*Owner, error) {
 	if err := o.startGateway(cfg); err != nil {
 		_ = o.Close()
 		return nil, err
+	}
+	// Metadata enrichment is advisory and never part of startup or first request.
+	if o.modelsDev.stale() {
+		go func() { _ = o.modelsDev.refresh(context.Background()) }()
 	}
 	if o.discoveryPath != "" {
 		if err := o.discovery.load(o.discoveryPath); err != nil {

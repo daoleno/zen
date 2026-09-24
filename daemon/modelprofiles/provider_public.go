@@ -77,6 +77,9 @@ type ProviderModelEntry struct {
 	TemperatureSupported   *bool    `json:"temperature_supported,omitempty"`
 	InputPricePerMillion   *float64 `json:"input_price_per_million,omitempty"`
 	OutputPricePerMillion  *float64 `json:"output_price_per_million,omitempty"`
+	ReleaseDate            string   `json:"release_date,omitempty"`
+	MetadataSource         string   `json:"metadata_source,omitempty"` // live | lkg | models_dev
+	MetadataFetchedAt      string   `json:"metadata_fetched_at,omitempty"`
 	// Known marks daemon-owned display/effect metadata for managed Codex.
 	// Unknown gateway-only models remain valid opaque identities.
 	Known bool `json:"known,omitempty"`

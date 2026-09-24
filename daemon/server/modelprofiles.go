@@ -57,6 +57,9 @@ func (s *Server) handleModelProfileMessage(conn *websocket.Conn, raw clientMessa
 	case "discover_provider_models":
 		s.handleDiscoverProviderModels(conn, raw)
 		return true
+	case "refresh_models_dev_metadata":
+		s.handleRefreshModelsDevMetadata(conn, raw)
+		return true
 	case "test_provider_connection":
 		s.handleTestProviderConnection(conn, raw)
 		return true
@@ -94,6 +97,20 @@ func (s *Server) handleModelProfileMessage(conn *websocket.Conn, raw clientMessa
 	default:
 		return false
 	}
+}
+
+func (s *Server) handleRefreshModelsDevMetadata(conn *websocket.Conn, raw clientMessage) {
+	owner := s.modelProfiles()
+	if owner == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, modelprofiles.CodeProfilesUnavailable, "Providers are not available.")
+		return
+	}
+	err := owner.RefreshModelsDevMetadata(context.Background())
+	payload := map[string]any{"type": "models_dev_metadata_refresh", "request_id": raw.RequestID, "ok": err == nil}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	s.sendJSON(conn, payload)
 }
 
 func (s *Server) handleListProviders(conn *websocket.Conn, raw clientMessage) {

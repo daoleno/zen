@@ -63,6 +63,13 @@ Models and accounts** stores the supplied API key on the current daemon through
 Zen's credential store. The mobile form does not display stored secrets; leaving
 an existing key empty preserves it. Switching the current server rebinds the
 configuration. Selecting a model connection does not change the Brain executor.
+
+Provider model availability still comes only from the live Provider catalog and its
+last-known-good cache. Zen may enrich those already discovered rows from the
+secret-free public `models.dev` metadata cache (display name, limits, capabilities,
+prices, and release date); that metadata never adds a routable model or re-enables
+one disabled in Settings. The cache refreshes in the background and can be manually
+refreshed through the daemon control path.
 For a custom Claude gateway, enter its endpoint root (including any proxy path,
 optionally ending in `/v1`) and the exact model ID. Model ID can be entered
 manually when the gateway has no `/models` endpoint; failed model discovery does

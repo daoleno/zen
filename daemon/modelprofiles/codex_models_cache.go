@@ -21,6 +21,7 @@ type modelPresentationMetadata struct {
 	TemperatureSupported     *bool                        `json:"temperature_supported,omitempty"`
 	InputPricePerMillion     *float64                     `json:"input_price_per_million,omitempty"`
 	OutputPricePerMillion    *float64                     `json:"output_price_per_million,omitempty"`
+	ReleaseDate              string                       `json:"release_date,omitempty"`
 }
 
 func metadataFromWire(entry CodexModelCatalogWireEntry) modelPresentationMetadata {
@@ -35,6 +36,7 @@ func metadataFromWire(entry CodexModelCatalogWireEntry) modelPresentationMetadat
 func normalizeModelPresentationMetadata(metadata modelPresentationMetadata) modelPresentationMetadata {
 	metadata.DisplayName = normalizeSpace(metadata.DisplayName)
 	metadata.DefaultReasoningLevel = normalizeID(metadata.DefaultReasoningLevel)
+	metadata.ReleaseDate = normalizeSpace(metadata.ReleaseDate)
 	seen := map[string]struct{}{}
 	efforts := make([]CodexReasoningEffortPreset, 0, len(metadata.SupportedReasoningLevels))
 	for _, preset := range metadata.SupportedReasoningLevels {
@@ -134,7 +136,14 @@ func mergeModelPresentationMetadata(primary, fallback modelPresentationMetadata)
 	if primary.OutputPricePerMillion == nil {
 		primary.OutputPricePerMillion = fallback.OutputPricePerMillion
 	}
+	if primary.ReleaseDate == "" {
+		primary.ReleaseDate = fallback.ReleaseDate
+	}
 	return normalizeModelPresentationMetadata(primary)
+}
+
+func isEmptyModelPresentationMetadata(m modelPresentationMetadata) bool {
+	return m.DisplayName == "" && m.DefaultReasoningLevel == "" && len(m.SupportedReasoningLevels) == 0 && m.ContextWindow == 0 && len(m.Modalities) == 0 && m.TemperatureSupported == nil && m.InputPricePerMillion == nil && m.OutputPricePerMillion == nil && m.ReleaseDate == ""
 }
 
 func codexModelsCacheCandidates() []string {

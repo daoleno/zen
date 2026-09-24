@@ -222,7 +222,11 @@ func (o *Owner) projectConnectionModels(profile Profile, discovered discoveryEnt
 		}
 	}
 	required := o.connectionRequiredModels(profile)
-	return projectCatalogModelEntries(ids, metadata, source, discovered.Disabled, required, fallbackMetadata, executorID == ExecutorCodex)
+	providerKey := strings.ToLower(executorID)
+	if providerKey == ExecutorCodex {
+		providerKey = "openai"
+	}
+	return projectCatalogModelEntries(ids, metadata, source, discovered.Disabled, required, fallbackMetadata, executorID == ExecutorCodex, o.modelsDev, providerKey)
 }
 
 func (o *Owner) connectionRequiredModels(profile Profile) []string {
@@ -261,7 +265,7 @@ func (o *Owner) connectionRequiredModels(profile Profile) []string {
 	return out
 }
 
-func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentationMetadata, source string, disabled, required []string, fallbackMetadata map[string]modelPresentationMetadata, codex bool) []ProviderModelEntry {
+func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentationMetadata, source string, disabled, required []string, fallbackMetadata map[string]modelPresentationMetadata, codex bool, modelsDev *modelsDevCatalog, providerKey string) []ProviderModelEntry {
 	disabledSet := map[string]struct{}{}
 	for _, id := range disabled {
 		disabledSet[normalizeSpace(id)] = struct{}{}
@@ -289,7 +293,28 @@ func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentat
 			available = false
 		}
 		entry := ProviderModelEntry{ID: id, Available: available, Source: entrySource}
-		modelMetadata := mergeModelPresentationMetadata(metadata[id], fallbackMetadata[id])
+		liveMetadata := metadata[id]
+		modelMetadata := mergeModelPresentationMetadata(liveMetadata, fallbackMetadata[id])
+		metadataSource := ""
+		metadataFetchedAt := ""
+		if !isEmptyModelPresentationMetadata(liveMetadata) {
+			metadataSource = "live"
+		}
+		if modelsDev != nil {
+			if dev, fetched, ok := modelsDev.lookup(providerKey, id); ok {
+				modelMetadata = mergeModelPresentationMetadata(modelMetadata, dev)
+				if !isEmptyModelPresentationMetadata(dev) {
+					if metadataSource == "live" {
+						metadataSource = "live+models_dev"
+					} else {
+						metadataSource = "models_dev"
+					}
+				}
+				if !fetched.IsZero() {
+					metadataFetchedAt = fetched.UTC().Format(time.RFC3339)
+				}
+			}
+		}
 		entry.DisplayName = modelMetadata.DisplayName
 		entry.ReasoningEffortDefault = modelMetadata.DefaultReasoningLevel
 		for _, preset := range modelMetadata.SupportedReasoningLevels {
@@ -300,6 +325,9 @@ func projectCatalogModelEntries(ids []string, metadata map[string]modelPresentat
 		entry.TemperatureSupported = modelMetadata.TemperatureSupported
 		entry.InputPricePerMillion = modelMetadata.InputPricePerMillion
 		entry.OutputPricePerMillion = modelMetadata.OutputPricePerMillion
+		entry.ReleaseDate = modelMetadata.ReleaseDate
+		entry.MetadataSource = metadataSource
+		entry.MetadataFetchedAt = metadataFetchedAt
 		if codex {
 			entry.Known = entry.DisplayName != "" || entry.ReasoningEffortDefault != "" || len(entry.ReasoningEfforts) > 0 || modelMetadata.ContextWindow > 0
 		}

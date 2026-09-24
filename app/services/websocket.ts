@@ -977,6 +977,31 @@ export class MultiServerWebSocketClient {
     });
   }
 
+  refreshModelsDevMetadata(serverId: string): Promise<void> {
+    const requestId = newProviderRequestId();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("models_dev_metadata_refresh", handleResult);
+        this.off("error", handleError);
+      };
+      const handleResult = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        if (payload.ok === true) resolve();
+        else reject(new ProviderError(PROVIDER_ERROR_CODES.invalid, payload.error || "Metadata refresh failed.", "invalid", true));
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup(); reject(providerErrorFromPayload(payload));
+      };
+      const timer = setTimeout(() => { cleanup(); reject(new ProviderError(PROVIDER_ERROR_CODES.timeout, "Timed out while refreshing model metadata.", "timeout", true)); }, 20000);
+      this.on("models_dev_metadata_refresh", handleResult);
+      this.on("error", handleError);
+      this.sendRequestNow(serverId, { type: "refresh_models_dev_metadata", request_id: requestId }, cleanup, reject);
+    });
+  }
+
   testProviderConnection(
     serverId: string,
     input: { client: "codex" | "claude"; baseUrl: string; apiKey: string },

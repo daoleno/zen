@@ -56,6 +56,9 @@ export type ProviderModel = {
   temperature_supported?: boolean;
   input_price_per_million?: number;
   output_price_per_million?: number;
+  release_date?: string;
+  metadata_source?: string;
+  metadata_fetched_at?: string;
   /**
    * Whether daemon-owned display/effect metadata exists for this model.
    * Unknown gateway-only models remain selectable opaque identities.

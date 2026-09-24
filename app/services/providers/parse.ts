@@ -170,6 +170,9 @@ export function parseProviderModel(raw: unknown): ProviderModel | null {
         : undefined,
     input_price_per_million: asFiniteNumber(record.input_price_per_million),
     output_price_per_million: asFiniteNumber(record.output_price_per_million),
+    release_date: asString(record.release_date) || undefined,
+    metadata_source: asString(record.metadata_source) || undefined,
+    metadata_fetched_at: asString(record.metadata_fetched_at) || undefined,
   };
 }
 

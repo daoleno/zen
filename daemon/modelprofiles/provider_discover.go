@@ -351,7 +351,6 @@ func (o *Owner) DiscoverProviderModelsDetailed(connectionID string, force bool) 
 		out.PersistenceDurable = len(e.LastGood) > 0 && out.PersistenceWarning == ""
 		return out, nil
 	}
-
 	probe := profile
 	if isAccountConnection(profile) {
 		client := executorFromClient(profile.Client)
