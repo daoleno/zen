@@ -51,10 +51,13 @@ var codexFooterReadyRe = regexp.MustCompile(`(?im)^[\t \x{00A0}]*(?:model:\s*)?g
 // Distinguishes ready state from startup/loading/safety screens. Version
 // matcher is intentionally not pinned to major version 2.
 //
-// Empty composers are often "❯" + U+00A0. Go regexp \s does not match NBSP, so
-// claudeComposerRe lists U+00A0 explicitly and still rejects nonempty drafts.
+// Empty composers are often "❯" + U+00A0. Recent Claude versions also render
+// a built-in suggestion such as `❯ Try "fix lint errors"` in the empty
+// composer. Go regexp \s does not match NBSP, so claudeComposerRe lists it
+// explicitly while accepting only this fixed placeholder shape, not arbitrary
+// nonempty drafts.
 var claudeHeaderRe = regexp.MustCompile(`Claude Code v?\d+\.\d+\.\d+`)
-var claudeComposerRe = regexp.MustCompile(`(?m)^[\t \x{00A0}]*❯[\t \x{00A0}]*$`)
+var claudeComposerRe = regexp.MustCompile(`(?m)^[\t \x{00A0}]*❯(?:[\t \x{00A0}]*(?:Try[\t ]+(?:"[^"\n]+"|“[^”\n]+”|'[^'\n]+')))?[\t \x{00A0}]*$`)
 
 // The footer wraps at narrow worker panes, so the two footer tokens may land
 // on adjacent lines. Keep the span bounded to the current footer and require

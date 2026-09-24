@@ -1308,6 +1308,18 @@ func TestClaudeInputReadyRequiresAllThreeIndicators(t *testing.T) {
 		t.Fatal("exact @224 Claude ready pane with NBSP composer should be input-ready")
 	}
 
+	// Claude 2.1.281 renders a built-in suggestion in the otherwise empty
+	// composer. It must be treated as empty, while an actual draft remains
+	// blocked by the narrow placeholder matcher.
+	readyPlaceholder := "Claude Code v2.1.281\n\n❯ Try \"fix lint errors\"\n" + bypassFooter + "\n"
+	if !isWorkerInputReady("claude", readyPlaceholder) {
+		t.Fatal("Claude built-in Try placeholder should be input-ready")
+	}
+	placeholderDraft := "Claude Code v2.1.281\n\n❯ please fix lint errors\n" + bypassFooter + "\n"
+	if isWorkerInputReady("claude", placeholderDraft) {
+		t.Fatal("Claude real draft should not be input-ready")
+	}
+
 	// Ready state: version + empty NBSP composer + mode footer (manual mode).
 	readyManual := "Claude Code v2.1.214\nMessages here\n\n❯\u00a0\n" + manualFooter + "\n"
 	if !isWorkerInputReady("claude", readyManual) {
