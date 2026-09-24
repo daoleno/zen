@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -213,8 +214,8 @@ func TestGatewayProxiesModelsSurface(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	if !bytes.Contains(raw, []byte("gpt-5.6-sol")) {
-		t.Fatalf("models surface was not proxied: %s", raw)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("models surface status = %d body=%s", resp.StatusCode, raw)
 	}
 }
 
@@ -233,6 +234,44 @@ func TestGatewayStatePersistsListenAddrAndUpstreamProfile(t *testing.T) {
 	}
 	if listenAddr == "" {
 		t.Fatal("persisted listen address is empty")
+	}
+}
+
+func TestGatewayDefaultFallbackPersistsActualLoopbackAddress(t *testing.T) {
+	blocker, err := net.Listen("tcp", DefaultGatewayListenAddr)
+	if err == nil {
+		defer blocker.Close()
+	}
+	root := t.TempDir()
+	statePath := filepath.Join(root, "gateway-state.json")
+	g := NewGateway(DefaultGatewayListenAddr, NewMemoryCredentialStore())
+	g.SetGatewayStatePath(statePath)
+	if err := g.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	actual := g.ActualAddr()
+	if actual == "" || !strings.HasPrefix(actual, "127.0.0.1:") {
+		t.Fatalf("actual gateway address = %q", actual)
+	}
+	if actual == DefaultGatewayListenAddr {
+		t.Fatalf("test did not exercise fallback; default port was unexpectedly available")
+	}
+	listenAddr, _, err := LoadGatewayState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listenAddr != actual {
+		t.Fatalf("persisted listen address = %q, want actual %q", listenAddr, actual)
+	}
+	_ = g.Close()
+
+	restarted := NewGateway(listenAddr, NewMemoryCredentialStore(), WithGatewayListenFallback(false))
+	if err := restarted.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if restarted.ActualAddr() != actual {
+		t.Fatalf("restart bound %q, want persisted %q", restarted.ActualAddr(), actual)
 	}
 }
 
@@ -428,6 +467,89 @@ func TestGatewayUpstreamCompilesAccountConnectionAuth(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("upstream never saw the authorized gateway request")
+	}
+}
+
+// TestGatewayRequestPrefersSelectedProviderWhenModelIsShared is the live
+// Codex failure: several ready connections advertise the same model id, and
+// the gateway used to reject the request as ambiguous instead of using the
+// Provider the user has selected.
+func TestGatewayRequestPrefersSelectedProviderWhenModelIsShared(t *testing.T) {
+	root := t.TempDir()
+	owner, err := StartOwner(OwnerConfig{
+		ProfilesPath:    filepath.Join(root, "profiles.toml"),
+		RoutesPath:      filepath.Join(root, "routes.json"),
+		ListenerPath:    filepath.Join(root, "listener.json"),
+		GatewayAddr:     "127.0.0.1:0",
+		GatewayStateDir: filepath.Join(root, "gateway"),
+		CodexConfigPath: filepath.Join(root, "codex", "config.toml"),
+		Credentials:     NewMemoryCredentialStore(),
+		Lookup:          readyLookup("secret"),
+		Verifier:        BuiltinEnvelopeVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+
+	hit := make(chan string, 2)
+	newUpstream := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer secret" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			hit <- name
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"resp-`+name+`"}`)
+		}))
+	}
+	other := newUpstream("other")
+	selected := newUpstream("selected")
+	t.Cleanup(other.Close)
+	t.Cleanup(selected.Close)
+
+	proj, err := owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "conn-other", Name: "other", Client: ClientCodex, PresetID: ProviderPresetCustom,
+		BaseURL: other.URL + "/v1", ModelID: "gpt-5",
+	}, "secret", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err = owner.UpsertProviderConnection(ProviderConnectionInput{
+		ID: "conn-selected", Name: "selected", Client: ClientCodex, PresetID: ProviderPresetCustom,
+		BaseURL: selected.URL + "/v1", ModelID: "gpt-5",
+	}, "secret", proj.Revision, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.SetProviderDefault("codex", "conn-selected", "gpt-5", proj.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.EnableCodexGateway(""); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+owner.Gateway().ActualAddr()+"/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	rawBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("gateway request status = %d body=%s", resp.StatusCode, rawBody)
+	}
+	select {
+	case name := <-hit:
+		if name != "selected" {
+			t.Fatalf("shared model was routed to %q, want the selected Provider", name)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("neither upstream saw the gateway request")
 	}
 }
 

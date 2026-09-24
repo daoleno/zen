@@ -678,6 +678,9 @@ func classifyUpstreamDoError(err error) (int, error) {
 	if errors.Is(err, context.Canceled) {
 		return http.StatusBadGateway, ErrUpstreamInvalid
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout, ErrUpstreamInvalid
+	}
 	msg := err.Error()
 	if strings.Contains(msg, "blocked") || strings.Contains(msg, "ssrf") {
 		return http.StatusBadGateway, ErrUpstreamSSRF

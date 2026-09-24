@@ -2,11 +2,14 @@ package modelprofiles
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestProviderGatewayResolvesResponsesAndAnthropicWithoutTranslation(t *testing.T) {
@@ -89,5 +92,147 @@ func TestProviderGatewayRejectsNonLoopbackRequests(t *testing.T) {
 	g.ServeHTTP(res, req)
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("status=%d", res.Code)
+	}
+}
+
+func TestProviderGatewayNeverBindsNonLoopback(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:0", "[::]:0", ":0"} {
+		g := NewGateway(addr, NewMemoryCredentialStore())
+		if err := g.Listen(); err == nil {
+			_ = g.Close()
+			t.Errorf("gateway accepted non-loopback address %q", addr)
+		}
+	}
+}
+
+func TestProviderGatewayAllowsOnlyResponsesAndAnthropicMessages(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+	g := NewGateway("127.0.0.1:0", NewMemoryCredentialStore(), WithGatewayRequestResolver(func(string, string) (GatewayUpstream, error) {
+		return GatewayUpstream{ProfileID: "p", BaseURL: upstream.URL, Protocol: ProtocolOpenAIResponses}, nil
+	}))
+	if err := g.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	for _, path := range []string{"/v1/chat/completions", "/v1/gemini", "/v1/models", "/v1/messages/count_tokens"} {
+		req := httptest.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+path, strings.NewReader(`{"model":"gpt-5"}`))
+		req.RemoteAddr = "127.0.0.1:1234"
+		res := httptest.NewRecorder()
+		g.ServeHTTP(res, req)
+		if res.Code != http.StatusNotFound {
+			t.Errorf("path %s status = %d, want 404", path, res.Code)
+		}
+	}
+	for _, path := range []string{"/v1/responses", "/v1/messages"} {
+		req := httptest.NewRequest(http.MethodGet, "http://"+g.ActualAddr()+path, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		res := httptest.NewRecorder()
+		g.ServeHTTP(res, req)
+		if res.Code != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s status = %d, want 405", path, res.Code)
+		}
+	}
+}
+
+func TestProviderGatewayPreservesFinalUpstreamStatusAfterBoundedRetry(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+	g := NewGateway("127.0.0.1:0", NewMemoryCredentialStore(), WithGatewayRequestResolver(func(string, string) (GatewayUpstream, error) {
+		return GatewayUpstream{ProfileID: "p", BaseURL: upstream.URL, Protocol: ProtocolOpenAIResponses}, nil
+	}))
+	if err := g.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	req := httptest.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+"/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	res := httptest.NewRecorder()
+	g.ServeHTTP(res, req)
+	if res.Code != http.StatusBadGateway || calls.Load() != GatewayRetryAttempts {
+		t.Fatalf("status=%d calls=%d, want final 502 after %d attempts", res.Code, calls.Load(), GatewayRetryAttempts)
+	}
+}
+
+func TestProviderGatewayPreservesUnauthorizedAndNotFoundStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(status)
+			}))
+			defer upstream.Close()
+			g := NewGateway("127.0.0.1:0", NewMemoryCredentialStore(), WithGatewayRequestResolver(func(string, string) (GatewayUpstream, error) {
+				return GatewayUpstream{ProfileID: "p", BaseURL: upstream.URL, Protocol: ProtocolOpenAIResponses}, nil
+			}))
+			if err := g.Listen(); err != nil {
+				t.Fatal(err)
+			}
+			defer g.Close()
+			req := httptest.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+"/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+			req.RemoteAddr = "127.0.0.1:1234"
+			res := httptest.NewRecorder()
+			g.ServeHTTP(res, req)
+			if res.Code != status || calls.Load() != 1 {
+				t.Fatalf("status=%d calls=%d, want status %d with no retry", res.Code, calls.Load(), status)
+			}
+		})
+	}
+}
+
+func TestProviderGatewayMapsTimeoutToGatewayTimeout(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})}
+	g := NewGateway("127.0.0.1:0", NewMemoryCredentialStore(), WithGatewayClient(client), WithGatewayRequestResolver(func(string, string) (GatewayUpstream, error) {
+		return GatewayUpstream{ProfileID: "p", BaseURL: "http://127.0.0.1:1", Protocol: ProtocolOpenAIResponses}, nil
+	}), WithGatewayMaxBody(1024))
+	if err := g.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	req := httptest.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+"/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	res := httptest.NewRecorder()
+	g.ServeHTTP(res, req)
+	if res.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status=%d, want 504 for upstream timeout classification", res.Code)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestProviderGatewayRetryBackoffIsBounded(t *testing.T) {
+	start := time.Now()
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+	g := NewGateway("127.0.0.1:0", NewMemoryCredentialStore(), WithGatewayRequestResolver(func(string, string) (GatewayUpstream, error) {
+		return GatewayUpstream{ProfileID: "p", BaseURL: upstream.URL, Protocol: ProtocolOpenAIResponses}, nil
+	}))
+	if err := g.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	req := httptest.NewRequest(http.MethodPost, "http://"+g.ActualAddr()+"/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	res := httptest.NewRecorder()
+	g.ServeHTTP(res, req)
+	if elapsed := time.Since(start); elapsed > time.Second || calls.Load() != GatewayRetryAttempts {
+		t.Fatalf("elapsed=%s calls=%d, want bounded retry", elapsed, calls.Load())
 	}
 }

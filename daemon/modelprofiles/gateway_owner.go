@@ -55,6 +55,14 @@ func (o *Owner) startGateway(cfg OwnerConfig) error {
 		return nil
 	}
 	stateDir := strings.TrimSpace(cfg.GatewayStateDir)
+	statePath := gatewayStateFilePath(stateDir)
+	listenAddr, _, stateErr := LoadGatewayState(statePath)
+	if stateErr != nil {
+		return stateErr
+	}
+	if listenAddr != "" {
+		addr = listenAddr
+	}
 	gateway := NewGateway(addr, cfg.Credentials, WithGatewayRequestResolver(o.resolveGatewayRequest))
 	if stateDir != "" {
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
@@ -72,7 +80,7 @@ func (o *Owner) startGateway(cfg OwnerConfig) error {
 		return nil
 	}
 	// Restore the same listener address / upstream profile across restarts.
-	listenAddr, profileID, err := LoadGatewayState(gatewayStateFilePath(stateDir))
+	_, profileID, err := LoadGatewayState(statePath)
 	if err != nil {
 		return err
 	}
@@ -89,9 +97,9 @@ func (o *Owner) startGateway(cfg OwnerConfig) error {
 		if state.Enabled {
 			// Repair the live projection to the same address before the
 			// takeover can claim active (daemon restart path).
-			repairAddr := strings.TrimSpace(state.ListenAddr)
+			repairAddr := gateway.ActualAddr()
 			if repairAddr == "" {
-				repairAddr = strings.TrimSpace(listenAddr)
+				repairAddr = strings.TrimSpace(state.ListenAddr)
 			}
 			if repairAddr == "" {
 				repairAddr = addr
@@ -149,6 +157,17 @@ func (o *Owner) resolveGatewayRequest(protocol, modelID string) (GatewayUpstream
 		return GatewayUpstream{}, fmt.Errorf("%w: %s", ErrNotFound, modelID)
 	}
 	if len(matches) > 1 {
+		// The same model is often installed on every Codex connection. The
+		// selected client default is the current Provider; only a model that
+		// the default does not expose stays an honest conflict.
+		selected := normalizeID(o.store.DefaultProfileID(executorFromClient(wantClient)))
+		if selected != "" {
+			for _, match := range matches {
+				if normalizeID(match.ID) == selected {
+					return GatewayUpstreamFromProfile(match), nil
+				}
+			}
+		}
 		return GatewayUpstream{}, fmt.Errorf("%w: ambiguous model %s", ErrConflict, modelID)
 	}
 	return GatewayUpstreamFromProfile(matches[0]), nil
@@ -179,6 +198,11 @@ func (o *Owner) EnableCodexGateway(listenAddr string) (TakeoverStatus, error) {
 	listenAddr = strings.TrimSpace(listenAddr)
 	if listenAddr == "" {
 		listenAddr = DefaultGatewayListenAddr
+	}
+	if gateway := o.Gateway(); gateway != nil && isDefaultGatewayAddress(listenAddr) {
+		if actual := gateway.ActualAddr(); actual != "" {
+			listenAddr = actual
+		}
 	}
 	status, err := o.takeover.Enable(listenAddr)
 	if err != nil {

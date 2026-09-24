@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,12 +162,17 @@ func (g *Gateway) Listen() error {
 		return fmt.Errorf("%w: gateway not configured", ErrInvalid)
 	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.ln != nil {
+		g.mu.Unlock()
 		return nil
 	}
 	if g.addr == "" {
+		g.mu.Unlock()
 		return fmt.Errorf("%w: gateway listen address is required", ErrInvalid)
+	}
+	if err := validateGatewayListenAddr(g.addr); err != nil {
+		g.mu.Unlock()
+		return err
 	}
 	ln, err := net.Listen("tcp", g.addr)
 	if err != nil && g.listenFallback && isDefaultGatewayAddress(g.addr) {
@@ -179,6 +185,7 @@ func (g *Gateway) Listen() error {
 		}
 	}
 	if err != nil {
+		g.mu.Unlock()
 		return fmt.Errorf("%w: gateway listen %s: %v", ErrInvalid, g.addr, err)
 	}
 	// A restarted Gateway gets a fresh registry while handlers from this
@@ -190,9 +197,16 @@ func (g *Gateway) Listen() error {
 	g.ln = ln
 	g.server = server
 	g.ws = registry
+	statePath := g.statePath
 	go func() {
 		_ = server.Serve(ln)
 	}()
+	g.mu.Unlock()
+	// Persist the actual address immediately. This is required when the
+	// default port falls back so takeover repair never projects a stale port.
+	if statePath != "" {
+		_ = g.persistState()
+	}
 	return nil
 }
 
@@ -337,7 +351,8 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 		writeRouteError(w, http.StatusServiceUnavailable, fmt.Errorf("%w: gateway has no selected Provider", ErrUpstreamInvalid))
 		return
 	}
-	if !strings.HasPrefix(req.URL.Path, "/v1/") && req.URL.Path != "/v1" {
+	protocol, endpointOK := gatewayProtocolForPath(req.URL.Path)
+	if !endpointOK {
 		writeRouteError(w, http.StatusNotFound, ErrRoutePathMismatch)
 		return
 	}
@@ -347,7 +362,7 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 	// The upstream must reach 101 before this side completes its handshake;
 	// any upstream failure is an honest HTTP error.
 	if isWebSocketUpgrade(req) {
-		if !strings.HasPrefix(req.URL.Path, "/v1/") {
+		if protocol != GatewayProtocolResponses {
 			writeRouteError(w, http.StatusNotImplemented, ErrRouteWebSocket)
 			return
 		}
@@ -376,7 +391,7 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 		proxyWebSocketToUpstream(req.Context(), w, req, resolve, registry)
 		return
 	}
-	if req.Method != http.MethodPost && req.Method != http.MethodGet {
+	if req.Method != http.MethodPost {
 		writeRouteError(w, http.StatusMethodNotAllowed, ErrRouteMethodMismatch)
 		return
 	}
@@ -406,7 +421,6 @@ func (g *Gateway) serveHTTP(w http.ResponseWriter, req *http.Request, registry *
 			writeRouteError(w, http.StatusBadRequest, ErrRequestBodyMalformed)
 			return
 		}
-		protocol := gatewayProtocolForPath(req.URL.Path)
 		upstream, err = g.resolve(protocol, modelID)
 		if err != nil {
 			writeGatewayResolutionError(w, err)
@@ -483,11 +497,31 @@ func isDefaultGatewayAddress(addr string) bool {
 	return strings.TrimSpace(addr) == DefaultGatewayListenAddr
 }
 
-func gatewayProtocolForPath(path string) string {
-	if strings.HasSuffix(path, "/messages") {
-		return GatewayProtocolAnthropic
+func validateGatewayListenAddr(addr string) error {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return fmt.Errorf("%w: gateway listen address %q: %v", ErrInvalid, addr, err)
 	}
-	return GatewayProtocolResponses
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%w: gateway must bind loopback address", ErrInvalid)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 0 || port > 65535 {
+		return fmt.Errorf("%w: gateway listen port %q is invalid", ErrInvalid, portText)
+	}
+	return nil
+}
+
+func gatewayProtocolForPath(path string) (string, bool) {
+	switch path {
+	case "/v1/responses":
+		return GatewayProtocolResponses, true
+	case "/v1/messages":
+		return GatewayProtocolAnthropic, true
+	default:
+		return "", false
+	}
 }
 
 func gatewayModelID(body []byte) (string, error) {
