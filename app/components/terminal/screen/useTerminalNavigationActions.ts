@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { Alert } from "react-native";
+import { confirmDestructive } from "../../ui/confirmDestructive";
 import { useRouter } from "expo-router";
 import type { Worker, ConnectionState } from "../../../store/workers";
 import { dismissTerminalToSessions } from "../../../services/terminalExitNavigation";
@@ -51,24 +52,17 @@ export function useTerminalNavigationActions({
       return;
     }
 
-    Alert.alert(
-      "Terminate?",
-      "This will terminate " +
+    confirmDestructive({
+      title: "Terminate session?",
+      message:
+        "This will terminate " +
         (displayName || workerId) +
         " on " +
         (workerServerName || serverId) +
         ".",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Terminate",
-          style: "destructive",
-          onPress: () => {
-            void performTerminateWorker();
-          },
-        },
-      ],
-    );
+      confirmLabel: "Terminate",
+      onConfirm: performTerminateWorker,
+    });
   }, [
     workerId,
     workerServerName,

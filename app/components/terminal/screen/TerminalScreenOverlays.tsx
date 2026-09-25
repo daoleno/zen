@@ -174,6 +174,7 @@ export function TerminalScreenOverlays({
         visible={menuVisible}
         left={menuPosition.left}
         top={menuPosition.top}
+        title={resourceSheetTitle}
         creatingSession={creatingSession}
         newTerminalLabel={creatingSession ? "Starting Terminal…" : "New Terminal"}
         newTerminalDisabled={newTerminalDisabled}

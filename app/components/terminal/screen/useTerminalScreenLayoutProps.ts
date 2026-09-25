@@ -206,6 +206,7 @@ export function useTerminalScreenLayoutProps({
     gitDiffSummary: gitDiff.summary,
     isStructuredChatWorker,
     delegated: agent?.delegated,
+    status: agent?.status,
     onOpenSessionDetails: openSessionDetails,
     openGitDiff,
     onToggleInterfaceRenderMode: handleToggleInterfaceRenderMode,

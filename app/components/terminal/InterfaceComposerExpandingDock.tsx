@@ -11,6 +11,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { shadow } from "../../constants/tokens";
+import { withAlpha } from "./colorWithAlpha";
 import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { ComposerIconButton } from "./ComposerIconButton";
 import { ComposerModelChip } from "./ComposerModelChip";
@@ -157,10 +158,11 @@ export function InterfaceComposerExpandingDock({
         {
           backgroundColor: chrome.composerInput,
           borderColor: chrome.border,
-          ...shadow("card", chrome.shadowColor),
+          ...shadow("raised", chrome.shadowColor),
         },
       ]}
     >
+      <View pointerEvents="none" style={[styles.litEdge, { backgroundColor: withAlpha("#FFFFFF", 0.1) }]} />
       <Reanimated.View style={[styles.inputRegion, inputRegionStyle]}>
         <InterfaceComposerInput
           inputRef={inputRef}
@@ -225,6 +227,14 @@ const styles = StyleSheet.create({
   capsule: {
     flexDirection: "column",
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  // Glass-style lit top edge so the dock reads as a floating material.
+  litEdge: {
+    position: "absolute",
+    top: 0,
+    left: 18,
+    right: 18,
+    height: StyleSheet.hairlineWidth,
   },
   inputRegion: {
     paddingTop: COMPOSER_ACTION_BAND_VERTICAL_PADDING,

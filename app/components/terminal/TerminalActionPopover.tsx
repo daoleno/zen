@@ -1,26 +1,19 @@
 import React from "react";
-import {
-  Modal,
-  StyleSheet,
-  TouchableOpacity,
-  View,
-} from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import {
-  TERMINAL_ACTION_MENU_WIDTH,
-  TerminalActionMenu,
-  type TerminalActionMenuItem,
-} from "./TerminalActionMenu";
+import { ActionMenu, type ActionMenuItem } from "../ui/ActionMenu";
 
-export const TERMINAL_ACTION_POPOVER_WIDTH = TERMINAL_ACTION_MENU_WIDTH;
+/** Anchor width the chrome layout reserves for the menu button. */
+export const TERMINAL_ACTION_POPOVER_WIDTH = 184;
 
 interface TerminalActionPopoverProps {
   visible: boolean;
+  /** Anchor geometry is kept for the chrome layout; the menu is a sheet. */
   left: number;
   top: number;
+  title?: string;
   creatingSession: boolean;
   newTerminalLabel: string;
   newTerminalDisabled: boolean;
@@ -39,18 +32,19 @@ interface TerminalActionPopoverProps {
   onTerminate(): void;
 }
 
+/**
+ * Session actions, presented through the shared ActionMenu sheet so every
+ * overflow in the app has one shape. Terminate stays last and destructive.
+ */
 export function TerminalActionPopover({
   visible,
-  left,
-  top,
+  title,
   creatingSession,
   newTerminalLabel,
   newTerminalDisabled,
   showLinkedWork,
   showToggleRenderMode = false,
   toggleRenderModeLabel = "Open terminal",
-  chrome,
-  theme,
   onClose,
   onNewTerminal,
   onRename,
@@ -60,7 +54,7 @@ export function TerminalActionPopover({
   onToggleRenderMode,
   onTerminate,
 }: TerminalActionPopoverProps) {
-  const actions: TerminalActionMenuItem[] = [];
+  const actions: ActionMenuItem[] = [];
 
   if (showToggleRenderMode && onToggleRenderMode) {
     actions.push({
@@ -126,37 +120,11 @@ export function TerminalActionPopover({
   });
 
   return (
-    <Modal
+    <ActionMenu
       visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={onClose}
-    >
-      <View style={styles.popoverRoot}>
-        <TouchableOpacity
-          style={styles.popoverBackdrop}
-          activeOpacity={1}
-          onPress={onClose}
-        />
-
-        <TerminalActionMenu
-          left={left}
-          top={top}
-          actions={actions}
-          chrome={chrome}
-          theme={theme}
-        />
-      </View>
-    </Modal>
+      title={title}
+      items={actions}
+      onClose={onClose}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  popoverRoot: {
-    flex: 1,
-  },
-  popoverBackdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: "transparent",
-  },
-});

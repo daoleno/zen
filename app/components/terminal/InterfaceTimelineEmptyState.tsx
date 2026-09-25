@@ -1,113 +1,125 @@
 import React from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { TypeScale } from "../../constants/tokens";
+import { ContinuousCorners, TypeScale } from "../../constants/tokens";
+import { withAlpha } from "./colorWithAlpha";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
+
+type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
 interface InterfaceTimelineEmptyStateProps {
   chrome: TerminalThemeChrome;
   title: string;
   body?: string;
   busy?: boolean;
+  /** Error states tint the glyph with the chrome's danger ink. */
+  tone?: "default" | "error";
+  icon?: IoniconName;
   actionLabel?: string;
+  actionIcon?: IoniconName;
   onAction?: () => void;
 }
 
+/**
+ * Chat-canvas counterpart of the app EmptyState: same halo, title, detail
+ * and capsule action, drawn from the terminal-theme chrome so it follows the
+ * Session's canvas instead of the app theme.
+ */
 export function InterfaceTimelineEmptyState({
   chrome,
   title,
   body,
   busy = false,
+  tone = "default",
+  icon = "chatbubble-ellipses-outline",
   actionLabel,
+  actionIcon = "terminal-outline",
   onAction,
 }: InterfaceTimelineEmptyStateProps) {
+  const ink = tone === "error" ? chrome.danger : chrome.accent;
   return (
-    <View style={styles.emptyState}>
-      {busy ? <BusyGlyph chrome={chrome} /> : (
-        <View accessible={false} style={styles.busyGlyph}>
-          <Ionicons name="chatbubble-outline" size={28} color={chrome.textMuted} />
-        </View>
-      )}
-      <Text style={[styles.emptyTitle, { color: chrome.text }]}>{title}</Text>
+    <View style={styles.emptyState} accessibilityLiveRegion="polite">
+      <View
+        accessible={false}
+        style={[styles.halo, { backgroundColor: withAlpha(ink, 0.12) }]}
+      >
+        {busy ? (
+          <ComposerLoadingDots color={ink} size={11} />
+        ) : (
+          <Ionicons name={icon} size={26} color={ink} />
+        )}
+      </View>
+      <Text style={[styles.emptyTitle, { color: chrome.text }]} accessibilityRole="header">
+        {title}
+      </Text>
       {body ? (
         <Text style={[styles.emptyBody, { color: chrome.textMuted }]}>
           {body}
         </Text>
       ) : null}
       {actionLabel && onAction ? (
-        <TouchableOpacity
+        <Pressable
           accessibilityLabel={actionLabel}
           accessibilityRole="button"
-          style={[
+          onPress={() => {
+            void Haptics.selectionAsync();
+            onAction();
+          }}
+          style={({ pressed }) => [
             styles.emptyAction,
             {
-              backgroundColor: chrome.composerInput,
-              borderColor: chrome.border,
+              backgroundColor: withAlpha(chrome.accent, 0.14),
+              opacity: pressed ? 0.75 : 1,
             },
           ]}
-          onPress={onAction}
-          activeOpacity={0.82}
         >
-          <Ionicons
-            name="terminal-outline"
-            size={15}
-            color={chrome.textMuted}
-          />
-          <Text style={[styles.emptyActionText, { color: chrome.textMuted }]}>
+          <Ionicons name={actionIcon} size={16} color={chrome.accent} />
+          <Text style={[styles.emptyActionText, { color: chrome.accent }]}>
             {actionLabel}
           </Text>
-        </TouchableOpacity>
+        </Pressable>
       ) : null}
-    </View>
-  );
-}
-
-function BusyGlyph({ chrome }: { chrome: TerminalThemeChrome }) {
-  return (
-    <View accessible={false} pointerEvents="none" style={styles.busyGlyph}>
-      <ComposerLoadingDots color={chrome.textMuted} size={11} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   emptyState: {
-    minHeight: 220,
+    minHeight: 240,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 28,
+    paddingHorizontal: 32,
   },
-  busyGlyph: {
-    marginBottom: 10,
-    flexDirection: "row",
+  halo: {
+    width: 64,
+    height: 64,
+    borderRadius: 22,
+    ...ContinuousCorners,
     alignItems: "center",
     justifyContent: "center",
+    marginBottom: 16,
   },
   emptyTitle: {
-    ...TypeScale.heading,
-    fontSize: 22,
-    lineHeight: 28,
-    letterSpacing: 0,
-    marginTop: 2,
+    ...TypeScale.title,
     textAlign: "center",
   },
   emptyBody: {
     ...TypeScale.compact,
     marginTop: 6,
     textAlign: "center",
-    maxWidth: 260,
+    maxWidth: 300,
   },
   emptyAction: {
-    marginTop: 14,
+    marginTop: 18,
     minHeight: 44,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 14,
+    borderRadius: 22,
+    paddingHorizontal: 18,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 7,
+    gap: 8,
   },
   emptyActionText: {
     ...TypeScale.label,

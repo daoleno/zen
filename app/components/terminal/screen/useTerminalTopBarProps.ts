@@ -6,6 +6,7 @@ import type {
 import type { AgentKind } from "../../../services/workerPresentation";
 import type { TerminalFlavor } from "../../../services/terminalFlavor";
 import type { StoredInterfaceRenderMode } from "../../../services/storage";
+import type { WorkerStatus } from "../../../constants/tokens";
 import type { TerminalTopBarProps } from "../TerminalTopBar";
 import type { TerminalGitDiffSummary } from "../useTerminalGitDiff";
 import type { useTerminalChromeLayout } from "./useTerminalChromeLayout";
@@ -31,6 +32,7 @@ interface UseTerminalTopBarPropsInput {
   gitDiffSummary: TerminalGitDiffSummary | null;
   isStructuredChatWorker: boolean;
   delegated?: boolean;
+  status?: WorkerStatus;
   onOpenSessionDetails(): void;
   openGitDiff(): void;
   onToggleInterfaceRenderMode(): void;
@@ -50,6 +52,7 @@ export function useTerminalTopBarProps({
   gitDiffSummary,
   isStructuredChatWorker,
   delegated,
+  status,
   onOpenSessionDetails,
   openGitDiff,
   onToggleInterfaceRenderMode,
@@ -73,6 +76,7 @@ export function useTerminalTopBarProps({
       }),
       isStructuredChatWorker,
       delegated,
+      status,
       onBack: navigationActions.goToInbox,
       onOpenSessionDetails,
       onOpenGitDiff: openGitDiff,
@@ -92,6 +96,7 @@ export function useTerminalTopBarProps({
       gitDiffSummary,
       isStructuredChatWorker,
       delegated,
+      status,
       onOpenSessionDetails,
       openGitDiff,
       onToggleInterfaceRenderMode,
