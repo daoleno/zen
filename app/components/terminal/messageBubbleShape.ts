@@ -2,7 +2,7 @@ import type { ViewStyle } from "react-native";
 import type { ChatLayout } from "../../theme/types";
 import type { MessageGroupPosition } from "./InterfaceTimelineGrouping";
 
-const LARGE = 18;
+const LARGE = 20;
 const SMALL = 6;
 const CHATGPT_RADIUS = 20;
 
@@ -78,13 +78,15 @@ export function messageRowSpacing(
   // Assistant stays document-flow: tighter within a turn, airier between turns.
   if (role === "assistant") {
     return {
-      marginTop: compactTop ? 1 : 0,
-      marginBottom: compactBottom ? 4 : 14,
+      marginTop: compactTop ? 2 : 0,
+      marginBottom: compactBottom ? 6 : 14,
     };
   }
 
+  // A user bubble opens a turn: extra air above it separates the previous
+  // answer (or tool run), a slightly larger gap below lets the reply breathe.
   return {
-    marginTop: compactTop ? 2 : 0,
-    marginBottom: compactBottom ? 3 : 11,
+    marginTop: compactTop ? 2 : 10,
+    marginBottom: compactBottom ? 3 : 14,
   };
 }

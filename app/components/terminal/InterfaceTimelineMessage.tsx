@@ -5,7 +5,11 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Typography, useAppTheme } from "../../constants/tokens";
+import {
+  ContinuousCorners,
+  TypeScale,
+  useAppTheme,
+} from "../../constants/tokens";
 import type { MessagePresentation } from "./InterfaceTimelineGrouping";
 import { MessageBubbleFooter } from "./MessageBubbleFooter";
 import {
@@ -204,17 +208,19 @@ const styles = StyleSheet.create({
   userBubble: {
     position: "relative",
     maxWidth: "86%",
-    paddingHorizontal: 13,
-    paddingTop: 9,
-    paddingBottom: 8,
     overflow: "visible",
+    paddingHorizontal: 14,
+    paddingTop: 9,
+    paddingBottom: 9,
+    ...ContinuousCorners,
   },
   userBubbleChatGpt: {
     position: "relative",
     maxWidth: "88%",
+    overflow: "visible",
     paddingHorizontal: 14,
     paddingVertical: 10,
-    overflow: "visible",
+    ...ContinuousCorners,
   },
   pendingSendMark: {
     position: "absolute",
@@ -231,10 +237,8 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   assistantSender: {
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 12,
-    lineHeight: 15,
-    marginBottom: 3,
+    ...TypeScale.micro,
+    marginBottom: 4,
   },
   assistantContent: {
     alignSelf: "stretch",

@@ -2,6 +2,8 @@ import React from "react";
 import { StyleSheet, TouchableOpacity, View, Text } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { ContinuousCorners, TypeScale, shadow } from "../../constants/tokens";
+import { composerLitEdge } from "./composerMaterial";
 
 interface InterfaceTimelineJumpButtonProps {
   bottom: number;
@@ -10,6 +12,11 @@ interface InterfaceTimelineJumpButtonProps {
   onPress(): void;
 }
 
+/**
+ * Floating jump-to-latest control in the same glass material as the
+ * Composer capsule: a 44 pt circle, widening into a capsule when it carries
+ * the time since the newest message.
+ */
 export function InterfaceTimelineJumpButton({
   bottom,
   chrome,
@@ -24,19 +31,33 @@ export function InterfaceTimelineJumpButton({
       accessibilityRole="button"
       style={[
         styles.jumpButton,
+        label ? styles.jumpButtonWithLabel : null,
         {
-          backgroundColor: chrome.surfaceMuted,
-          borderColor: chrome.borderStrong,
+          backgroundColor: chrome.composerInput,
+          borderColor: chrome.border,
           bottom,
+          ...shadow("raised", chrome.shadowColor),
         },
       ]}
       onPress={onPress}
-      activeOpacity={0.82}
+      activeOpacity={0.72}
     >
+      {label ? (
+        // Only the capsule has a straight top run for the lit edge; on the
+        // bare circle any hairline would overhang the curve.
+        <View
+          pointerEvents="none"
+          style={[styles.litEdge, { backgroundColor: composerLitEdge(chrome) }]}
+        />
+      ) : null}
       <View style={styles.content}>
-        <Ionicons name="arrow-down" size={18} color={chrome.accent} />
+        <Ionicons name="arrow-down" size={18} color={chrome.text} />
         {label ? (
-          <Text style={[styles.label, { color: chrome.textSubtle }]}>
+          <Text
+            numberOfLines={1}
+            maxFontSizeMultiplier={1.6}
+            style={[styles.label, { color: chrome.textMuted }]}
+          >
             {label}
           </Text>
         ) : null}
@@ -49,21 +70,33 @@ const styles = StyleSheet.create({
   jumpButton: {
     position: "absolute",
     alignItems: "center",
-    borderRadius: 22,
-    borderWidth: StyleSheet.hairlineWidth,
-    minHeight: 44,
-    paddingHorizontal: 12,
     justifyContent: "center",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    ...ContinuousCorners,
+    borderWidth: StyleSheet.hairlineWidth,
     right: 16,
     zIndex: 4,
+  },
+  jumpButtonWithLabel: {
+    width: "auto",
+    paddingLeft: 12,
+    paddingRight: 14,
+  },
+  litEdge: {
+    position: "absolute",
+    top: 0,
+    left: 22,
+    right: 22,
+    height: StyleSheet.hairlineWidth,
   },
   content: {
     alignItems: "center",
     flexDirection: "row",
   },
   label: {
-    fontSize: 12,
-    lineHeight: 16,
+    ...TypeScale.caption,
     marginLeft: 6,
   },
 });

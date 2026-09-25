@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { ContinuousCorners, TypeScale } from "../../constants/tokens";
-import { withAlpha } from "./colorWithAlpha";
+import { chromeTint } from "./composerMaterial";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
@@ -39,16 +39,23 @@ export function InterfaceTimelineEmptyState({
   onAction,
 }: InterfaceTimelineEmptyStateProps) {
   const ink = tone === "error" ? chrome.danger : chrome.accent;
+  const inkSoft = tone === "error" ? chrome.dangerSoft : chrome.accentSoft;
   return (
     <View style={styles.emptyState} accessibilityLiveRegion="polite">
       <View
         accessible={false}
-        style={[styles.halo, { backgroundColor: withAlpha(ink, 0.12) }]}
+        style={[
+          styles.halo,
+          {
+            backgroundColor: chromeTint(ink, 0.1, inkSoft),
+            borderColor: chromeTint(ink, 0.18, "transparent"),
+          },
+        ]}
       >
         {busy ? (
-          <ComposerLoadingDots color={ink} size={11} />
+          <ComposerLoadingDots color={ink} size={10} />
         ) : (
-          <Ionicons name={icon} size={26} color={ink} />
+          <Ionicons name={icon} size={24} color={ink} />
         )}
       </View>
       <Text style={[styles.emptyTitle, { color: chrome.text }]} accessibilityRole="header">
@@ -70,7 +77,7 @@ export function InterfaceTimelineEmptyState({
           style={({ pressed }) => [
             styles.emptyAction,
             {
-              backgroundColor: withAlpha(chrome.accent, 0.14),
+              backgroundColor: chromeTint(chrome.accent, 0.14, chrome.accentSoft),
               opacity: pressed ? 0.75 : 1,
             },
           ]}
@@ -86,33 +93,39 @@ export function InterfaceTimelineEmptyState({
 }
 
 const styles = StyleSheet.create({
+  // Calm, centered stack: a soft halo, a heading-weight title and one line
+  // of guidance. Heading (not title) weight keeps an empty chat quiet.
   emptyState: {
+    flexGrow: 1,
     minHeight: 240,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 32,
+    paddingHorizontal: 36,
+    paddingVertical: 24,
   },
   halo: {
-    width: 64,
-    height: 64,
-    borderRadius: 22,
-    ...ContinuousCorners,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
+    marginBottom: 14,
   },
   emptyTitle: {
-    ...TypeScale.title,
+    ...TypeScale.heading,
     textAlign: "center",
+    maxWidth: 300,
   },
   emptyBody: {
     ...TypeScale.compact,
     marginTop: 6,
     textAlign: "center",
-    maxWidth: 300,
+    maxWidth: 280,
   },
   emptyAction: {
-    marginTop: 18,
+    marginTop: 20,
+    ...ContinuousCorners,
     minHeight: 44,
     borderRadius: 22,
     paddingHorizontal: 18,

@@ -1,9 +1,10 @@
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
+import { ContinuousCorners, TypeScale, Typography } from "../../constants/tokens";
 import { InterfaceComposerAttachmentIcon } from "./InterfaceComposerAttachmentIcon";
 import { InterfaceComposerAttachmentRemoveButton } from "./InterfaceComposerAttachmentRemoveButton";
+import { chromeTint } from "./composerMaterial";
 
 import { isImageAttachment, type ZenImageSource } from "../../services/imageSource";
 import { ZenImage } from "./ZenImage";
@@ -17,26 +18,32 @@ interface InterfaceComposerAttachmentChipProps {
   gallery?: ZenImageSource[];
 }
 
+/** Shared tile geometry for every Composer attachment (file, image, upload). */
+export const COMPOSER_ATTACHMENT_TILE_RADIUS = 14;
+export const COMPOSER_ATTACHMENT_TILE_HEIGHT = 56;
+
 export function InterfaceComposerAttachmentChip({
   attachment,
   chrome,
   onRemove,
   gallery,
 }: InterfaceComposerAttachmentChipProps) {
-  const thumbnailUri = attachment.uploadStatus === "failed" ? null : attachmentThumbnailUri(attachment);
+  const failed = attachment.uploadStatus === "failed";
+  const thumbnailUri = failed ? null : attachmentThumbnailUri(attachment);
 
   if (thumbnailUri) {
     return (
       <View
         style={[
           styles.thumbChip,
-          { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
+          { backgroundColor: chrome.composerInput, borderColor: chrome.border },
         ]}
       >
         <ZenImage source={{ kind: "phone", uri: thumbnailUri, name: attachment.name, mimeType: attachment.mimeType }} chrome={chrome} gallery={gallery} compact />
         <InterfaceComposerAttachmentRemoveButton
           attachmentName={attachment.name}
           chrome={chrome}
+          placement="overlay"
           onPress={() => onRemove(attachment.id)}
           style={styles.thumbRemove}
         />
@@ -48,18 +55,33 @@ export function InterfaceComposerAttachmentChip({
     <View
       style={[
         styles.chip,
-        { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
+        {
+          backgroundColor: chrome.composerInput,
+          borderColor: failed
+            ? chromeTint(chrome.danger, 0.45, chrome.danger)
+            : chrome.border,
+        },
       ]}
     >
-      <InterfaceComposerAttachmentIcon
-        fileName={attachment.name}
-        chrome={chrome}
-      />
+      <View
+        style={[
+          styles.iconTile,
+          {
+            backgroundColor: failed ? chrome.dangerSoft : chrome.accentSoft,
+          },
+        ]}
+      >
+        <InterfaceComposerAttachmentIcon
+          fileName={attachment.name}
+          chrome={chrome}
+          color={failed ? chrome.danger : chrome.accent}
+        />
+      </View>
       <View style={styles.textGroup}>
         <Text style={[styles.name, { color: chrome.text }]} numberOfLines={1}>
           {attachment.name}
         </Text>
-        {attachment.uploadStatus === "failed" ? <Text style={[styles.path, { color: chrome.danger }]} numberOfLines={1}>Upload failed</Text>
+        {failed ? <Text style={[styles.path, styles.failed, { color: chrome.danger }]} numberOfLines={1}>Upload failed</Text>
           : attachment.path ? <Text style={[styles.path, { color: chrome.textSubtle }]} numberOfLines={1}>{basename(attachment.path)}</Text> : null}
       </View>
       <InterfaceComposerAttachmentRemoveButton
@@ -85,20 +107,29 @@ function basename(value: string) {
 
 const styles = StyleSheet.create({
   chip: {
-    maxWidth: 220,
-    minHeight: 44,
-    borderRadius: 8,
+    maxWidth: 232,
+    minHeight: COMPOSER_ATTACHMENT_TILE_HEIGHT,
+    borderRadius: COMPOSER_ATTACHMENT_TILE_RADIUS,
+    ...ContinuousCorners,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 9,
-    paddingRight: 5,
+    paddingLeft: 8,
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    gap: 10,
+  },
+  iconTile: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    ...ContinuousCorners,
+    alignItems: "center",
+    justifyContent: "center",
   },
   thumbChip: {
     width: 96,
     height: 80,
-    borderRadius: 12,
+    borderRadius: COMPOSER_ATTACHMENT_TILE_RADIUS,
+    ...ContinuousCorners,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },
@@ -108,18 +139,19 @@ const styles = StyleSheet.create({
     right: 0,
   },
   textGroup: {
-    flex: 1,
+    flexShrink: 1,
     minWidth: 0,
   },
   name: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
+    ...TypeScale.label,
   },
   path: {
     marginTop: 1,
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,
+  },
+  failed: {
+    fontFamily: Typography.uiFontMedium,
   },
 });

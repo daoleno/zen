@@ -36,7 +36,7 @@ export function InterfaceTimelineActivityDetails({
   item,
   chrome,
   theme,
-  assetPreviewUri,
+  assetPreviewUri: _assetPreviewUri,
   assetPreviewFailed,
   formatPatchPath,
   truncateBody,

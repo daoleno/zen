@@ -5,21 +5,25 @@ import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 interface InterfaceComposerAttachmentIconProps {
   fileName: string;
   chrome: TerminalThemeChrome;
+  color?: string;
+  size?: number;
 }
 
 export function InterfaceComposerAttachmentIcon({
   fileName,
   chrome,
+  color,
+  size = 17,
 }: InterfaceComposerAttachmentIconProps) {
   return (
     <Ionicons
       name={
         looksLikeImagePath(fileName)
           ? "image-outline"
-          : "document-attach-outline"
+          : "document-text-outline"
       }
-      size={14}
-      color={chrome.textMuted}
+      size={size}
+      color={color ?? chrome.textMuted}
     />
   );
 }

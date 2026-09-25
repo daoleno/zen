@@ -100,7 +100,7 @@ function renderDiffStatLine(
     return " ";
   }
 
-  const stat = /^(.*?)(\s+\|\s+)(\d+)?(\s*)([+\-]+)?(\s*)$/.exec(line);
+  const stat = /^(.*?)(\s+\|\s+)(\d+)?(\s*)([+-]+)?(\s*)$/.exec(line);
   if (!stat) {
     return <Text style={{ color: chrome.textMuted }}>{line}</Text>;
   }

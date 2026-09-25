@@ -2,7 +2,7 @@ import React from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { TouchableOpacity } from "react-native-gesture-handler";
-import { Typography } from "../../constants/tokens";
+import { ContinuousCorners, Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { CodexQuickCommandRow } from "./CodexQuickCommandRow";
@@ -56,7 +56,9 @@ export function InterfaceComposerActionMenu({
     <View
       style={[
         styles.menu,
-        { backgroundColor: chrome.surface, borderColor: chrome.border },
+        // Same material as the Composer capsule so menu and dock read as
+        // one floating layer.
+        { backgroundColor: chrome.composerInput, borderColor: chrome.border },
       ]}
     >
       {showComposerActions ? (
@@ -72,12 +74,21 @@ export function InterfaceComposerActionMenu({
           disabled={!canAttach}
           activeOpacity={0.78}
         >
-          <View style={[styles.icon, { backgroundColor: chrome.surfaceMuted }]}>
+          <View
+            style={[
+              styles.icon,
+              {
+                backgroundColor: canAttach
+                  ? chrome.accentSoft
+                  : chrome.disabledSurface,
+              },
+            ]}
+          >
             <Ionicons
               name={
                 uploading ? "cloud-upload-outline" : "document-attach-outline"
               }
-              size={16}
+              size={17}
               color={canAttach ? chrome.accent : chrome.textSubtle}
             />
           </View>
@@ -196,22 +207,24 @@ function groupCommands(commands: CodexSlashCommand[]): CommandGroup[] {
 
 const styles = StyleSheet.create({
   menu: {
-    borderRadius: 14,
+    borderRadius: 22,
+    ...ContinuousCorners,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },
   actionRow: {
-    minHeight: 52,
+    minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
-    paddingHorizontal: 10,
+    gap: 12,
+    paddingHorizontal: 12,
     paddingVertical: 8,
   },
   icon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    ...ContinuousCorners,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -220,8 +233,8 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   title: {
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 19,
     fontFamily: Typography.uiFontMedium,
   },
   description: {

@@ -28,8 +28,13 @@ export const COMPOSER_COMPACT_CAPSULE_HEIGHT =
 export const COMPOSER_EXPANDED_CAPSULE_BASE_HEIGHT =
   COMPOSER_COMPACT_CAPSULE_HEIGHT + COMPOSER_ACTION_BAND_HEIGHT;
 
-export const COMPOSER_RADIUS_COMPACT = 24;
-export const COMPOSER_RADIUS_EXPANDED = 18;
+/**
+ * Compact is a true capsule (half the 56 pt row) and concentric with the
+ * 34 pt control discs, which sit 11 pt in from the capsule edge
+ * (28 - 17 = 11). Expanded relaxes to a rounded card; it is not concentric.
+ */
+export const COMPOSER_RADIUS_COMPACT = COMPOSER_COMPACT_CAPSULE_HEIGHT / 2;
+export const COMPOSER_RADIUS_EXPANDED = 24;
 
 export const COMPOSER_MODEL_CONTROL_LEFT_INSET =
   COMPOSER_ACTION_BUTTON_SIZE + COMPOSER_ACTION_BAND_VERTICAL_PADDING + 8;
@@ -88,7 +93,7 @@ export function composerExpansionRadius(progress: number): number {
 }
 
 /** Bottom anchor of the action buttons inside the capsule. */
-export function composerActionButtonBottomInset(progress: number): number {
+export function composerActionButtonBottomInset(_progress: number): number {
   "worklet";
   return COMPOSER_ACTION_BAND_VERTICAL_PADDING;
 }

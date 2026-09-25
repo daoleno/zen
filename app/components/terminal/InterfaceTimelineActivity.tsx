@@ -29,7 +29,7 @@ export function ZenActivityEvent({
   item,
   chrome,
   theme,
-  loadAssetPreview,
+  loadAssetPreview: _loadAssetPreview,
   formatPatchPath,
   truncateBody,
 }: ZenActivityEventProps) {
@@ -81,8 +81,12 @@ export function ZenActivityEvent({
 }
 
 const styles = StyleSheet.create({
+  // Tool rows are margin annotations: a compact, even rhythm between rows
+  // and a little extra air where they meet prose (message spacing owns the
+  // rest).
   wrap: {
-    marginBottom: 2,
+    paddingVertical: 1,
+    marginBottom: 3,
     paddingLeft: 1,
   },
 });

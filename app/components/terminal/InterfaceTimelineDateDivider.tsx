@@ -1,7 +1,7 @@
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
+import { ContinuousCorners, TypeScale } from "../../constants/tokens";
 import { mixHex, relativeLuminance } from "../../theme/colorUtils";
 
 export type ZenDateDividerItem = {
@@ -29,27 +29,41 @@ export function InterfaceTimelineDateDivider({
 
   return (
     <View style={styles.row}>
-      <View style={[styles.pill, { backgroundColor: pill }]}>
-        <Text style={[styles.label, { color: labelColor }]}>{label}</Text>
+      <View
+        style={[
+          styles.pill,
+          { backgroundColor: pill, borderColor: chrome.border },
+        ]}
+      >
+        <Text
+          numberOfLines={1}
+          maxFontSizeMultiplier={1.6}
+          style={[styles.label, { color: labelColor }]}
+        >
+          {label}
+        </Text>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Glass pill: canvas-mixed fill, hairline stroke, generous air above and
+  // below so a day boundary reads as a pause in the conversation.
   row: {
     alignItems: "center",
-    marginVertical: 10,
+    marginTop: 14,
+    marginBottom: 12,
   },
   pill: {
     borderRadius: 999,
-    paddingHorizontal: 11,
+    ...ContinuousCorners,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
     paddingVertical: 4,
   },
   label: {
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 11,
-    lineHeight: 14,
+    ...TypeScale.micro,
     letterSpacing: 0.2,
   },
 });

@@ -10,8 +10,8 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { shadow } from "../../constants/tokens";
-import { withAlpha } from "./colorWithAlpha";
+import { ContinuousCorners, shadow } from "../../constants/tokens";
+import { composerLitEdge } from "./composerMaterial";
 import type { ComposerModelControlPresentation } from "../../services/providers/sessionModelHelpers";
 import { ComposerIconButton } from "./ComposerIconButton";
 import { ComposerModelChip } from "./ComposerModelChip";
@@ -22,6 +22,7 @@ import {
   COMPOSER_MODEL_CONTROL_HEIGHT,
   COMPOSER_MODEL_CONTROL_LEFT_INSET,
   COMPOSER_MODEL_CONTROL_RIGHT_INSET,
+  COMPOSER_RADIUS_COMPACT,
   COMPOSER_SPRING_CONFIG,
   composerActionBandHeight,
   composerExpansionRadius,
@@ -156,13 +157,19 @@ export function InterfaceComposerExpandingDock({
         styles.capsule,
         capsuleStyle,
         {
+          // Opaque fill: Android elevation smears under a translucent one.
+          // The glass read comes from the hairline, the lit edge and a soft,
+          // diffuse shadow instead.
           backgroundColor: chrome.composerInput,
           borderColor: chrome.border,
-          ...shadow("raised", chrome.shadowColor),
+          ...shadow("card", chrome.shadowColor),
         },
       ]}
     >
-      <View pointerEvents="none" style={[styles.litEdge, { backgroundColor: withAlpha("#FFFFFF", 0.1) }]} />
+      <View
+        pointerEvents="none"
+        style={[styles.litEdge, { backgroundColor: composerLitEdge(chrome) }]}
+      />
       <Reanimated.View style={[styles.inputRegion, inputRegionStyle]}>
         <InterfaceComposerInput
           inputRef={inputRef}
@@ -204,13 +211,16 @@ export function InterfaceComposerExpandingDock({
             }
             icon={actionMenuExpanded ? "close" : actionMenuIcon}
             chrome={chrome}
+            variant="tinted"
+            active={actionMenuExpanded}
             loading={uploading}
             disabled={!actionMenuButtonEnabled}
+            iconSize={actionMenuExpanded ? 18 : 21}
             iconColor={
               actionMenuExpanded
                 ? chrome.accent
                 : actionMenuButtonEnabled
-                  ? chrome.textMuted
+                  ? chrome.text
                   : chrome.textSubtle
             }
             onPress={onActionMenuPress}
@@ -227,13 +237,15 @@ const styles = StyleSheet.create({
   capsule: {
     flexDirection: "column",
     borderWidth: StyleSheet.hairlineWidth,
+    ...ContinuousCorners,
   },
-  // Glass-style lit top edge so the dock reads as a floating material.
+  // Glass-style lit top edge so the dock reads as a floating material. Inset
+  // by the compact radius so it never runs into the rounded corners.
   litEdge: {
     position: "absolute",
     top: 0,
-    left: 18,
-    right: 18,
+    left: COMPOSER_RADIUS_COMPACT,
+    right: COMPOSER_RADIUS_COMPACT,
     height: StyleSheet.hairlineWidth,
   },
   inputRegion: {

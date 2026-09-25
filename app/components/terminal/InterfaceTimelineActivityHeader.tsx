@@ -6,6 +6,8 @@ import {
   type GestureResponderEvent,
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { ContinuousCorners } from "../../constants/tokens";
+import { chromeTint } from "./composerMaterial";
 import {
   ACTIVITY_HEADER_DETAIL_FONT,
   ACTIVITY_HEADER_DETAIL_GAP,
@@ -168,7 +170,18 @@ export function InterfaceTimelineActivityHeader({
           handleAccessibilityActivate();
         }
       }}
-      style={[styles.row, pressed ? styles.rowPressed : null]}
+      style={[
+        styles.row,
+        pressed
+          ? {
+              backgroundColor: chromeTint(
+                chrome.text,
+                0.06,
+                chrome.surfaceActive,
+              ),
+            }
+          : null,
+      ]}
       onStartShouldSetResponder={handleStartShouldSetResponder}
       onMoveShouldSetResponder={() => false}
       onResponderGrant={handleResponderGrant}
@@ -187,7 +200,10 @@ export function InterfaceTimelineActivityHeader({
       />
       <View style={styles.copy} pointerEvents="none">
         <Text
-          style={[styles.title, { color: chrome.textMuted }]}
+          style={[
+            styles.title,
+            { color: tone === "failed" ? toneColor : chrome.textMuted },
+          ]}
           numberOfLines={1}
           ellipsizeMode="tail"
         >
@@ -216,18 +232,20 @@ export function InterfaceTimelineActivityHeader({
 }
 
 const styles = StyleSheet.create({
+  // The press tint bleeds 6 pt past the prose column so the tone mark stays
+  // optically aligned with the message text while the highlight reads as a
+  // rounded, native list-row press.
   row: {
     alignSelf: "stretch",
     minHeight: ACTIVITY_HEADER_ROW_MIN_HEIGHT,
-    width: "100%",
+    marginHorizontal: -6,
+    paddingHorizontal: 6,
+    borderRadius: 9,
+    ...ContinuousCorners,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
     paddingVertical: ACTIVITY_HEADER_ROW_PADDING_VERTICAL,
-    opacity: 1,
-  },
-  rowPressed: {
-    opacity: 0.76,
   },
   copy: {
     flex: 1,

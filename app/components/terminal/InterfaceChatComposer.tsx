@@ -5,6 +5,8 @@ import {
   View,
   type TextInput as TextInputInstance,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { ContinuousCorners, TypeScale } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -154,13 +156,23 @@ export function InterfaceChatComposer({
       ) : null}
 
       {operationalError ? (
-        <Text
+        <View
+          accessible
           accessibilityLiveRegion="polite"
           accessibilityRole="alert"
-          style={[styles.operationalError, { color: chrome.danger }]}
+          accessibilityLabel={operationalError}
+          style={[styles.operationalError, { backgroundColor: chrome.dangerSoft }]}
         >
-          {operationalError}
-        </Text>
+          <Ionicons
+            name="alert-circle"
+            size={15}
+            color={chrome.danger}
+            style={styles.operationalErrorIcon}
+          />
+          <Text style={[styles.operationalErrorText, { color: chrome.danger }]}>
+            {operationalError}
+          </Text>
+        </View>
       ) : null}
 
       <InterfaceComposerPanel
@@ -203,10 +215,24 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     zIndex: 6,
   },
+  // Composer-scoped failure: a soft danger notice resting above the capsule.
   operationalError: {
-    marginHorizontal: 8,
-    marginBottom: 4,
-    fontSize: 12,
-    lineHeight: 16,
+    marginHorizontal: 4,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
+    ...ContinuousCorners,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  operationalErrorIcon: {
+    marginTop: 1,
+  },
+  operationalErrorText: {
+    ...TypeScale.caption,
+    flex: 1,
+    minWidth: 0,
   },
 });
