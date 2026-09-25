@@ -1,128 +1,193 @@
 <p align="center">
-  <img src="app/assets/branding/zen-logo-mark-transparent.png" width="112" alt="Zen logo">
+  <img src="app/assets/branding/zen-logo-mark-transparent.png" width="96" alt="Zen logo">
 </p>
 
 <h1 align="center">Zen</h1>
 
-<h3 align="center">Your coding agents, wherever you are.</h3>
-
 <p align="center">
-  Zen keeps coding agents running on your own computer and gives you Chat, live Terminal,
-  Sessions, and persistent Brain on your phone. The daemon owns execution and stored credentials;
-  paired devices receive the conversation and files you open, and AI providers receive requests.
+  <strong>One Brain, many coding agents, on your own computer. Steer them from your phone.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/daoleno/zen/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/daoleno/zen?sort=semver"></a>
-  <a href="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml"><img alt="Release build" src="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml/badge.svg"></a>
-  <a href="https://testflight.apple.com/join/rTKCDzMt"><img alt="TestFlight Preview" src="https://img.shields.io/badge/TestFlight-Preview-0D96F6.svg"></a>
+  <a href="https://github.com/daoleno/zen/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/daoleno/zen?sort=semver&include_prereleases"></a>
+  <a href="https://github.com/daoleno/zen/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/daoleno/zen/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/zen-overview.webp" width="920" alt="Zen mobile app showing an active structured coding-agent chat, session list, persistent Brain workspace, and usage stats">
+  <img src="docs/assets/zen-overview.webp" width="880" alt="Zen mobile app: a structured agent chat, the session list, the Brain workspace and usage stats">
 </p>
 
-## What you can do
+Zen is a self-hosted control plane for coding agents. A Go daemon runs on your
+Linux or macOS machine next to your repositories, `tmux` and agent CLIs. An
+Android and iOS app connects to that daemon.
 
-- **Continue in Chat** — follow structured agent messages, tool calls, plans, and progress.
-- **Take over in Terminal** — open the live tmux session when you need the raw interface.
-- **Manage Sessions** — see what is running, finished, or waiting for input across projects.
-- **Keep work moving in Brain** — preserve useful context, organize ongoing work, and pick it up later.
+- **Brain** holds the context and owns the plan: it decomposes a goal, delegates
+  scoped concerns, reviews the results and decides when Work is done.
+- **Workers** are visible `tmux` Sessions running an agent CLI (Codex, Claude
+  Code, Cursor Agent, Grok, Pi or OpenCode). Open any of them as structured Chat
+  or as the live Terminal, and take over at any time.
+- **Work** is durable. Work, Attempt, Wake, Review and append-only Event records
+  live in the daemon and survive restarts. A process exiting or going quiet never
+  marks Work done; only Brain or you can accept it.
 
-<table>
-  <tr>
-    <td width="50%"><img src="docs/assets/zen-chat.webp" alt="Structured Zen Chat with a fictional agent task, tool progress, and a completed result"></td>
-    <td width="50%"><img src="docs/assets/zen-sessions.webp" alt="Zen Sessions overview containing only fictional projects and agent activity"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Structured Chat</strong><br>Stay with the agent without losing its working context.</td>
-    <td align="center"><strong>Sessions</strong><br>See active, completed, and attention-needed work at a glance.</td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/assets/zen-brain.webp" alt="Zen Brain orchestrating fictional work with a persistent workspace"></td>
-    <td width="50%"><img src="docs/assets/zen-stats.webp" alt="Zen Stats showing fictional usage and activity data"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Brain</strong><br>Stay oriented across chats while Brain plans and advances ongoing work.</td>
-    <td align="center"><strong>Stats</strong><br>Understand agent activity and usage from your own daemon.</td>
-  </tr>
-</table>
-
-## Brain keeps work moving
-
-Brain keeps objectives, decisions, open threads, and next steps together across chats, devices, and restarts.
-
-A **Zen Worker** is the execution unit managed by Zen. Brain owns objectives,
-scheduling, review, and acceptance; Workers execute scoped work. Workers appear
-as execution sessions in the mobile app and are managed with `zen worker` on
-the command line. A Codex subagent belongs to Codex internally and is not a
-Zen Worker or a separate Brain scheduling owner.
+Zen is in **beta**. See [Status](#status) for what is stable, what is preview,
+and what is not shipped.
 
 ## Quick start
 
-Install the daemon on Linux (`amd64`/`arm64`), WSL, or an Apple Silicon Mac:
+Requirements: Linux (`amd64`/`arm64`), WSL or an Apple Silicon Mac, with `tmux`
+and at least one authenticated agent CLI on `PATH`.
 
 ```sh
+# 1. Install the daemon (checksum-verified, no sudo, no telemetry)
 curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
-```
 
-For other install options, see [Install the daemon](docs/install-daemon.md).
-
-Then, on the computer that has `tmux` and an authenticated coding-agent CLI:
-
-```bash
+# 2. Check the host, then start on a trusted private network
 zen doctor
 zen --lan
+
+# 3. In another terminal, run the exact `zen pair ...` command that zen printed
 ```
 
-Use the normal self-managed path: `zen --lan` on trusted Wi-Fi/Tailnet and run
-the exact pairing command it prints, or run `zen pair
-https://your-origin.example` for a Cloudflare Tunnel or reverse-proxy origin.
+4. Install the app: the Android arm64 APK from
+   [Releases](https://github.com/daoleno/zen/releases) (see [Android](docs/android.md)),
+   or build iOS from source (see [iOS](docs/ios.md)).
+5. Scan the pairing code, then open **Brain** or **Sessions**.
 
-Zen Link is optional source capability for operators who explicitly configure
-`link.json`; only then does bare `zen pair` create a Link pairing code. This
-repository does not configure, start, deploy, or claim a live Link service.
-
-Get the mobile app from the [Android guide](docs/android.md) or [public TestFlight](https://testflight.apple.com/join/rTKCDzMt), then open it and scan or import the pairing code.
-
-## First actions
-
-After pairing, open **Brain** for a persistent conversation, or **Sessions** to
-open an existing agent or launch a terminal. Chat and Terminal are two views of
-the same session. Git Diff reviews that session's repository without changing it.
-
-**Settings > Servers** selects the single current server used throughout the
-app. **Providers > Models and accounts** configures Codex/Claude model access;
-the Brain executor control selects the CLI that runs work. They are different
-settings. **Channels > Telegram** opens bot setup for the current server.
-
-Stats refreshes reference prices automatically after discovery and observed
-usage. Missing catalog prices remain unknown, not free. Reference estimates and
-reported charges are identified separately; see [Usage and pricing](docs/usage-and-pricing.md).
-
-If pairing fails, check the endpoint with `zen doctor`, then use Retry or generate
-a new one-time pairing code. An offline server does not silently switch to another
-computer. See [Troubleshooting](docs/troubleshooting.md) and
-[Telegram setup](docs/telegram-brain-connection.md#setup-and-recovery).
-
-For Link, LAN, Tailscale, Cloudflare Tunnel, and reverse proxy options, see
-[Connect and pair](docs/connect-and-pair.md). Relay operators start with
-[Zen Link Relay operations](docs/zen-link-relay.md).
+To reach the daemon from outside your LAN, use Tailscale
+(`zen -addr "$(tailscale ip -4):9876"`), or a Cloudflare Tunnel or reverse
+proxy with `zen pair https://your-origin`. See [Connect and pair](docs/connect-and-pair.md).
 
 ## How it works
 
-The Zen daemon runs beside your repositories, authenticated agent CLIs, and
-tmux sessions on your Linux computer or Apple Silicon Mac. Android and iOS
-normally connect through your self-managed full origin. An explicitly
-configured Zen Link can instead use an opaque relay with daemon-terminated
-pinned TLS. Zen handles one-time enrollment and signed device requests; relay
-infrastructure does not receive application plaintext.
+```text
+ Android / iOS app ──signed requests / WSS──▶ zen daemon (your machine)
+                                              │
+                        ┌─────────────────────┼──────────────────────┐
+                        ▼                     ▼                      ▼
+                   Brain host           Zen Workers            lifecycle store
+               (an agent CLI with     (tmux Sessions:        (Work, Attempt, Wake,
+                private workspace)     codex, claude, …)      Review, Events)
+```
 
-Read [Security and privacy](docs/security-and-privacy.md) for the trust model and [Architecture](docs/architecture.md) for protocol details.
+- **Daemon** (`daemon/`, Go). Owns state, pairing identity, tmux sessions,
+  executor processes and stored provider credentials. It is the only
+  application endpoint. The phone receives the conversation and files you open.
+- **App** (`app/`, Expo / React Native). Android and iOS share one product.
+  Exactly one server is current at a time; switching servers never mixes data.
+- **Brain.** A long-lived agent Session with a private workspace under
+  `~/.zen/brain/` (memory, profile, current focus, worklogs). It delegates with
+  the same `zen worker` CLI you can use yourself.
+- **Workers and executors.** An executor is an agent CLI definition. New Workers
+  run on the default delegated executor (`codex` unless changed) unless you ask
+  for another; `zen worker spawn -executor` sets it explicitly. A running Worker
+  keeps its executor.
+- **Trust.** The daemon has an Ed25519 identity. Devices enroll once with a
+  short-lived pairing token, then every request is signed. There is no shared
+  secret for normal traffic. Paired phones receive what you open; model
+  providers receive what agents send them.
 
-## Learn more
+Details: [Architecture](docs/architecture.md), [Brain lifecycle](docs/brain-lifecycle.md),
+[Work lifecycle](docs/work-lifecycle.md), [Security and privacy](docs/security-and-privacy.md).
 
-Start with the [documentation guide](docs/README.md). Contributions are welcome—see [CONTRIBUTING.md](CONTRIBUTING.md).
+## Everyday commands
 
-Zen is licensed under the [Apache License 2.0](LICENSE). Attribution and brand guidance are in [NOTICE](NOTICE) and [TRADEMARKS.md](TRADEMARKS.md).
+```sh
+zen doctor                         # diagnose tmux, state, port and executors
+zen pair [origin]                  # new one-time pairing code
+zen devices list                   # paired phones
+zen devices revoke -id <device-id>
+zen update                         # verify and install the latest release
+
+zen worker list --json             # visible Workers
+zen worker spawn -name "Review docs" -executor claude -cwd ~/repo -prompt "Inspect docs"
+zen worker capture -id <id> --json # transcript
+zen worker receipt -id <id> --work-id <work>  # was an input accepted?
+zen worker send -id <id> --work-id <work> -text "follow-up"
+zen worker close -id <id>
+
+zen brain executors --json         # Brain host and delegated executors
+zen brain use <executor>           # switch the agent that runs Brain
+zen brain set-delegated <executor> # change the default for new Workers, live
+zen brain work list --json         # durable Work
+zen brain work update -id <work> -status done
+```
+
+## Configure executors
+
+No configuration is required: built-in defaults cover `codex`, `claude`,
+`agent` (`cursor-agent`), `grok`, `pi` and `opencode`. One installed,
+authenticated CLI is enough. To customise:
+
+```sh
+cp executors.example.toml ~/.zen/executors.toml   # then restart zen
+```
+
+> [!WARNING]
+> Several defaults bypass approval prompts so agents can work unattended:
+> `cursor-agent --force --sandbox disabled`, `grok --permission-mode bypassPermissions`,
+> and Brain-delegated Codex adds `--dangerously-bypass-approvals-and-sandbox`.
+> On machines with secrets or production access, use the safe profile in
+> [`executors.example.toml`](executors.example.toml). See
+> [Executors](docs/executors.md#permission-bypass-risks).
+
+Model endpoints and API keys for Codex and Claude are set in the app under
+**Settings > Providers**. They are stored on the daemon, never shown back, and are
+separate from the Brain executor choice.
+
+## Status
+
+| Area | Status |
+| --- | --- |
+| Daemon on Linux `amd64`/`arm64`, WSL, Apple Silicon macOS | Beta, released |
+| Android app (arm64 APK on Releases) | Beta, released |
+| iOS app | Source build. A [TestFlight preview](https://testflight.apple.com/join/rTKCDzMt) is awaiting Apple review |
+| Brain, Workers, durable Work lifecycle | Beta |
+| Calendar scheduled actions, Telegram channel | Beta ([Calendar](docs/calendar.md), [Telegram](docs/telegram-brain-connection.md)) |
+| Zen Link relay | Optional source only. No hosted relay is operated. See [Zen Link Relay](docs/zen-link-relay.md) |
+| Remote Desktop | Implemented but hidden in the app. See [Remote Desktop](docs/remote-desktop.md) |
+| Web client | Out of scope |
+
+Known release issues: [docs/release-blockers.md](docs/release-blockers.md).
+
+## Development
+
+```sh
+bun install                              # workspace deps (Bun 1.3)
+
+# Daemon
+bun run daemon:build                     # builds bin/zen
+cd daemon && go test ./...
+cd daemon && go run ./cmd/zen-dev        # hot-reloading dev daemon
+
+# App
+bun run app:start                        # Expo dev server
+bun run app:android                      # needs Java 17
+bun run app:ios
+cd app && bun test && bunx tsc --noEmit
+
+# Landing page (static, in site/)
+bun run site:dev                         # prints the local preview URL
+```
+
+Layout: `daemon/` Go daemon (`cmd/zen`, `server`, `auth`, `brain`, `work`,
+`lifecycle`, `terminal`, `watcher`); `app/` Expo app (routes in `app/app/`,
+components, services, store); `docs/` product and operator docs; `site/`
+landing page; `scripts/` build and release tooling.
+
+The native terminal uses libghostty; see [Android](docs/android.md#architecture--abi-contract)
+and [iOS](docs/ios.md#native-terminal--xcframework-contract) for build contracts.
+All documentation starts at [docs/README.md](docs/README.md).
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Keep
+changes small, run the relevant checks, and never commit pairing links, `~/.zen`
+state, tunnel URLs or `.env.local`. Report vulnerabilities as described in
+[SECURITY.md](SECURITY.md).
+
+## License
+
+Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). The Zen name
+and logos are covered by [TRADEMARKS.md](TRADEMARKS.md).
