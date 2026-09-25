@@ -19,8 +19,6 @@ import {
 import { appVersion } from "../../constants/appVersion";
 import { useWorkerServerSummary } from "../../store/workers";
 import { useCurrentServer } from "../../store/currentServer";
-import { GlassSurface } from "../ui/GlassSurface";
-import { StatusPill, type StatusTone } from "../ui/StatusPill";
 import { ZenLogoMark } from "../ui/ZenLogoMark";
 import {
   NavChevronIcon,
@@ -54,16 +52,20 @@ function DrawerRowIconView({
   icon: DrawerRowIcon;
 }) {
   if (icon === "stats") {
-    return <NavStatsIcon color={color} size={19} />;
+    return <NavStatsIcon color={color} size={20} />;
   }
   if (icon === "skills") {
-    return <NavSkillsIcon color={color} size={19} />;
+    return <NavSkillsIcon color={color} size={20} />;
   }
-  return <Ionicons name="settings-outline" color={color} size={19} />;
+  return <Ionicons name="settings-outline" color={color} size={20} />;
 }
 
+/**
+ * One navigation destination. Every row pushes a screen, so there is no
+ * selected state: the glyph is quiet ink and the label carries the meaning.
+ */
 function DrawerRow({ drawerVisible, icon, label, onPress }: DrawerRowProps) {
-  const { colors, theme } = useAppTheme();
+  const { colors } = useAppTheme();
   return (
     <Pressable
       onPress={onPress}
@@ -78,13 +80,8 @@ function DrawerRow({ drawerVisible, icon, label, onPress }: DrawerRowProps) {
         },
       ]}
     >
-      <View
-        style={[
-          styles.drawerRowIcon,
-          { backgroundColor: theme.materials.tint },
-        ]}
-      >
-        <DrawerRowIconView color={colors.accentStrong} icon={icon} />
+      <View style={styles.drawerRowIcon}>
+        <DrawerRowIconView color={colors.textSecondary} icon={icon} />
       </View>
       <Text
         numberOfLines={1}
@@ -98,7 +95,7 @@ function DrawerRow({ drawerVisible, icon, label, onPress }: DrawerRowProps) {
       >
         {label}
       </Text>
-      <NavChevronIcon color={colors.textTertiary} size={17} />
+      <NavChevronIcon color={colors.textTertiary} size={16} />
     </Pressable>
   );
 }
@@ -121,20 +118,20 @@ export function PrimaryDrawerPanel({
     ? serverConnectionIssues[currentServer.id] || null
     : null;
   const connectionSummary = currentServer?.name || "No current server";
-  const connectionDetail =
-    currentIssue?.title ??
-    (currentConnection === "connected"
-      ? "Connected"
-      : currentConnection === "connecting"
-        ? "Connecting"
-        : "Offline");
-  const connectionTone: StatusTone = currentIssue
-    ? "danger"
-    : currentConnection === "connected"
-      ? "success"
-      : currentConnection === "connecting"
-        ? "warning"
-        : "neutral";
+  const connectionDetail = !currentServer
+    ? "Pair a server in Settings"
+    : currentIssue?.title ??
+      (currentConnection === "connected"
+        ? "Connected"
+        : currentConnection === "connecting"
+          ? "Connecting"
+          : "Offline");
+  // Healthy is the quiet default; only a state the user can act on is colored.
+  const connectionInk = currentIssue
+    ? colors.dangerText
+    : currentServer && currentConnection === "offline"
+      ? colors.warning
+      : colors.textTertiary;
 
   const openRoute = useCallback(
     (pathname: "/skills" | "/stats" | "/settings" | "/remote-desktop") => {
@@ -146,86 +143,77 @@ export function PrimaryDrawerPanel({
 
   return (
     <SafeAreaView style={styles.drawerContent} edges={["top", "bottom"]}>
+      <View style={styles.drawerIdentity}>
+        <ZenLogoMark size={30} accessible={false} />
+        <Text
+          style={[
+            styles.drawerTitle,
+            {
+              color: colors.textPrimary,
+              fontFamily: Typography.uiFontMedium,
+            },
+          ]}
+          accessibilityRole="header"
+        >
+          Zen
+        </Text>
+        <Pressable
+          ref={closeButtonRef}
+          onPress={onClose}
+          onPressIn={onClosePressIn}
+          accessibilityRole="button"
+          accessibilityLabel="Close navigation drawer"
+          tabIndex={drawerVisible ? 0 : -1}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.closeButton,
+            {
+              backgroundColor: pressed
+                ? colors.surfacePressed
+                : "transparent",
+            },
+          ]}
+        >
+          <NavCloseIcon color={colors.textSecondary} size={18} />
+        </Pressable>
+      </View>
+
       <ScrollView
         style={styles.drawerScroll}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.drawerIdentity}>
-          <ZenLogoMark size={34} accessible={false} />
-          <Text
-            style={[
-              styles.drawerTitle,
-              {
-                color: colors.textPrimary,
-                fontFamily: Typography.uiFontMedium,
-              },
-            ]}
-            accessibilityRole="header"
-          >
-            Zen
-          </Text>
-          <Pressable
-            ref={closeButtonRef}
-            onPress={onClose}
-            onPressIn={onClosePressIn}
-            accessibilityRole="button"
-            accessibilityLabel="Close navigation drawer"
-            tabIndex={drawerVisible ? 0 : -1}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.closeButton,
-              {
-                backgroundColor: pressed
-                  ? colors.surfacePressed
-                  : colors.surfaceSubtle,
-              },
-            ]}
-          >
-            <NavCloseIcon color={colors.textSecondary} size={18} />
-          </Pressable>
-        </View>
-
-        <Pressable
-          onPress={() => openRoute("/settings")}
-          accessibilityRole="button"
-          accessibilityLabel={`${connectionSummary}, ${connectionDetail}`}
-          accessibilityHint="Opens server settings"
-          tabIndex={drawerVisible ? 0 : -1}
-          style={({ pressed }) => (pressed ? styles.pressedCard : null)}
+        {/* Where you are. Read-only: switching servers lives in Settings. */}
+        <View
+          accessible
+          accessibilityLabel={`Current server, ${connectionSummary}, ${connectionDetail}`}
+          style={styles.serverHeader}
         >
-          <GlassSurface
-            material="thin"
-            radius={Radii.card}
-            elevation="card"
-            style={styles.connectionCard}
-          >
-            <View style={[styles.serverGlyph, { backgroundColor: theme.materials.tint }]}>
-              <Ionicons name="desktop-outline" size={20} color={colors.accentStrong} />
-            </View>
-            <View style={styles.connectionCopy}>
-              <Text
-                numberOfLines={1}
-                style={[styles.connectionTitle, { color: colors.textPrimary }]}
-              >
-                {connectionSummary}
-              </Text>
-              <StatusPill
-                label={connectionDetail}
-                tone={connectionTone}
-                live={currentConnection === "connecting"}
-              />
-            </View>
-            <NavChevronIcon color={colors.textTertiary} size={17} />
-          </GlassSurface>
-        </Pressable>
+          <View style={[styles.serverGlyph, { backgroundColor: theme.materials.tint }]}>
+            <Ionicons name="desktop-outline" size={17} color={colors.accentStrong} />
+          </View>
+          <View style={styles.serverCopy}>
+            <Text
+              numberOfLines={1}
+              style={[styles.serverTitle, { color: colors.textPrimary }]}
+            >
+              {connectionSummary}
+            </Text>
+            <Text
+              numberOfLines={1}
+              style={[styles.serverDetail, { color: connectionInk }]}
+            >
+              {connectionDetail}
+            </Text>
+          </View>
+        </View>
 
         <View
           style={[
             styles.drawerGroup,
             {
               backgroundColor: colors.bgElevated,
-              borderColor: theme.materials.stroke,
+              borderColor: theme.isLight ? "transparent" : theme.materials.stroke,
             },
           ]}
         >
@@ -242,22 +230,17 @@ export function PrimaryDrawerPanel({
             label="Stats"
             onPress={() => openRoute("/stats")}
           />
+          <View style={[styles.groupSeparator, { backgroundColor: theme.materials.separator }]} />
+          <DrawerRow
+            drawerVisible={drawerVisible}
+            icon="settings"
+            label="Settings"
+            onPress={() => openRoute("/settings")}
+          />
         </View>
       </ScrollView>
 
-      <View
-        style={[
-          styles.drawerFooter,
-          { borderTopColor: colors.borderSubtle },
-        ]}
-      >
-        <DrawerRow
-          drawerVisible={drawerVisible}
-          icon="settings"
-          label="Settings"
-          onPress={() => openRoute("/settings")}
-        />
-
+      <View style={styles.drawerFooter}>
         <Text
           style={[
             styles.drawerVersion,
@@ -274,20 +257,20 @@ export function PrimaryDrawerPanel({
   );
 }
 
-const DRAWER_ICON_TILE = 32;
+const DRAWER_ICON_SLOT = 28;
 
 const styles = StyleSheet.create({
   drawerContent: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   drawerIdentity: {
     minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingHorizontal: 4,
+    paddingLeft: 8,
   },
   drawerScroll: {
     flex: 1,
@@ -295,14 +278,12 @@ const styles = StyleSheet.create({
   },
   drawerFooter: {
     flexShrink: 0,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    marginTop: 12,
     paddingTop: 8,
   },
   drawerTitle: {
     flex: 1,
-    fontSize: 22,
-    lineHeight: 30,
+    fontSize: 20,
+    lineHeight: 28,
   },
   closeButton: {
     width: 44,
@@ -311,39 +292,39 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  pressedCard: {
-    opacity: 0.8,
-    transform: [{ scale: 0.99 }],
-  },
-  connectionCard: {
-    marginTop: 14,
-    minHeight: 76,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+  serverHeader: {
+    marginTop: 12,
+    minHeight: 56,
+    paddingHorizontal: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
   },
   serverGlyph: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 11,
     ...ContinuousCorners,
     alignItems: "center",
     justifyContent: "center",
   },
-  connectionCopy: {
+  serverCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 6,
+    gap: 1,
   },
-  connectionTitle: {
-    fontSize: 16,
-    lineHeight: 22,
+  serverTitle: {
+    fontSize: 15,
+    lineHeight: 21,
     fontFamily: Typography.uiFontMedium,
   },
+  serverDetail: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontFamily: Typography.uiFont,
+  },
   drawerGroup: {
-    marginTop: 22,
+    marginTop: 16,
     borderRadius: Radii.card,
     ...ContinuousCorners,
     borderWidth: StyleSheet.hairlineWidth,
@@ -351,20 +332,17 @@ const styles = StyleSheet.create({
   },
   groupSeparator: {
     height: StyleSheet.hairlineWidth,
-    marginLeft: 14 + DRAWER_ICON_TILE + 12,
+    marginLeft: 16 + DRAWER_ICON_SLOT + 12,
   },
   drawerRow: {
-    minHeight: 58,
-    paddingHorizontal: 14,
+    minHeight: 52,
+    paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
   },
   drawerRowIcon: {
-    width: DRAWER_ICON_TILE,
-    height: DRAWER_ICON_TILE,
-    borderRadius: 9,
-    ...ContinuousCorners,
+    width: DRAWER_ICON_SLOT,
     alignItems: "center",
     justifyContent: "center",
   },

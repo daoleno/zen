@@ -18,6 +18,9 @@ const scroll = nodes.find((node): node is ts.JsxElement =>
 const footer = nodes.find((node): node is ts.JsxElement =>
   ts.isJsxElement(node) && node.openingElement.attributes.getText(file).includes("styles.drawerFooter"),
 )!;
+const group = nodes.find((node): node is ts.JsxElement =>
+  ts.isJsxElement(node) && node.openingElement.attributes.getText(file).includes("styles.drawerGroup"),
+)!;
 
 function rows(node: ts.Node) {
   return descendants(node).filter((child): child is ts.JsxSelfClosingElement =>
@@ -32,19 +35,25 @@ function label(node: ts.JsxSelfClosingElement) {
   return prop?.initializer && ts.isStringLiteral(prop.initializer) ? prop.initializer.text : null;
 }
 
-describe("primary drawer Settings footer", () => {
-  test("hides Remote Desktop while keeping Skills, Stats, and the Settings footer", () => {
+describe("primary drawer navigation", () => {
+  test("lists each destination exactly once in one group, with only the version in the footer", () => {
     expect(scroll).toBeDefined();
     expect(footer).toBeDefined();
-    expect(rows(scroll).map(label)).toEqual(["Skills", "Stats"]);
-    expect(rows(footer).map(label)).toEqual(["Settings"]);
+    expect(rows(group).map(label)).toEqual(["Skills", "Stats", "Settings"]);
+    expect(rows(footer)).toHaveLength(0);
     expect(rows(file).map(label)).toEqual(["Skills", "Stats", "Settings"]);
     expect(scroll.end).toBeLessThan(footer.pos);
     expect(footer.getText(file)).toContain("Zen v{appVersion}");
   });
 
+  test("server status is a read-only header without a second Settings entry or always-on dot", () => {
+    expect(source).toContain('accessibilityLabel={`Current server, ${connectionSummary}, ${connectionDetail}`}');
+    expect(source).not.toContain("StatusPill");
+    expect(source.match(/openRoute\("\/settings"\)/g)).toHaveLength(1);
+  });
+
   test("preserves Settings navigation and closed-drawer keyboard semantics", () => {
-    const settings = rows(footer)[0].getText(file);
+    const settings = rows(group)[2].getText(file);
     expect(settings).toContain('onPress={() => openRoute("/settings")}');
     expect(settings).toContain("drawerVisible={drawerVisible}");
     expect(source).toContain("onNavigateAway();\n      router.push(pathname);");
@@ -64,8 +73,7 @@ describe("primary drawer Settings footer", () => {
     expect(style("drawerScroll")).toContain("minHeight: 0");
     expect(style("drawerFooter")).toContain("flexShrink: 0");
     expect(style("drawerFooter")).not.toContain("absolute");
-    expect(style("drawerRow")).toContain("minHeight: 58");
+    expect(style("drawerRow")).toContain("minHeight: 52");
     expect(source).toContain('edges={["top", "bottom"]}');
-    expect(footer.openingElement.getText(file)).toContain("colors.borderSubtle");
   });
 });

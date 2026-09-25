@@ -86,20 +86,23 @@ function PrimaryAppBar({
   const connectionIssue = currentServer
     ? serverConnectionIssues[currentServer.id] ?? null
     : null;
-  // The menu glyph carries the one always-visible server signal: green when
-  // live, amber while connecting, red on an issue, none without a server.
+  // The menu glyph stays clean while the current server is healthy. A dot
+  // appears only when the user can act on it: red for a connection issue,
+  // amber while the server is offline. Connecting is transient and silent.
   const connectionBadge = !currentServer
     ? null
     : connectionIssue
       ? colors.statusFailed
-      : connection === "connected"
-        ? colors.statusRunning
-        : connection === "connecting"
-          ? colors.statusBlocked
-          : colors.statusUnknown;
-  const connectionLabel = !currentServer
-    ? "no server"
-    : connectionIssue?.title ?? connection;
+      : connection === "offline"
+        ? colors.statusBlocked
+        : null;
+  const menuLabel = !currentServer
+    ? "Open navigation drawer, no server"
+    : connectionIssue
+      ? `Open navigation drawer, ${connectionIssue.title}`
+      : connection === "offline"
+        ? "Open navigation drawer, server offline"
+        : "Open navigation drawer";
   const selectionBar = usePrimarySelectionBarContent();
   if (selectionBar != null) {
     return (
@@ -137,7 +140,7 @@ function PrimaryAppBar({
         onPress={onOpenDrawer}
         onPressIn={onOpenPressIn}
         accessibilityRole="button"
-        accessibilityLabel={`Open navigation drawer, ${connectionLabel}`}
+        accessibilityLabel={menuLabel}
         tabIndex={drawerVisible ? -1 : 0}
         badgeColor={connectionBadge}
       >

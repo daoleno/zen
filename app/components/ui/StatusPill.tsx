@@ -3,6 +3,7 @@ import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import Animated, {
   cancelAnimation,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withRepeat,
   withTiming,
@@ -29,16 +30,17 @@ export function StatusPill({ label, tone = "neutral", live = false, style }: Sta
     accent: { fill: theme.materials.tint, ink: colors.accentStrong },
     neutral: { fill: colors.surfaceSubtle, ink: colors.textSecondary },
   }[tone];
+  const reducedMotion = useReducedMotion();
   const pulse = useSharedValue(1);
   useEffect(() => {
-    if (!live) {
+    if (!live || reducedMotion) {
       cancelAnimation(pulse);
       pulse.value = 1;
       return;
     }
     pulse.value = withRepeat(withTiming(0.35, { duration: 900 }), -1, true);
     return () => cancelAnimation(pulse);
-  }, [live, pulse]);
+  }, [live, pulse, reducedMotion]);
   const dotStyle = useAnimatedStyle(() => ({ opacity: pulse.value }));
 
   return (
