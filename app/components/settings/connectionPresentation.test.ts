@@ -38,7 +38,7 @@ describe("Settings connection information architecture", () => {
     expect(settingsSource).not.toContain("Add Connection");
   });
   test("channel and provider summaries do not repeat current server identity", () => {
-    const overview = sourceBlock('accessibilityRole="header">Channels', '              Appearance');
+    const overview = sourceBlock('<SettingsSectionHeader>Channels', '<SettingsSectionHeader>Appearance');
     expect(overview).not.toContain("servers.find");
     expect(overview).toContain('serverId={currentServerId}');
     expect(overview).toContain('serverConnections[currentServerId] === "connected"');
@@ -53,8 +53,8 @@ describe("Settings connection information architecture", () => {
     expect(telegram).toContain('preset="card"');
     expect(telegram).toContain('scale={0.99}');
     expect(telegram).toContain('@{visibleStatus.bot_username}');
-    const group = sourceBlock('serverList: {', 'serverCard: {');
-    for (const style of ['overflow: "hidden"', 'borderRadius: Radii.sm', 'backgroundColor: colors.bgSurface', 'borderWidth: StyleSheet.hairlineWidth', 'borderColor: colors.border']) {
+    const group = sourceBlock('serverList: {', 'telegramHeaderButton: {');
+    for (const style of ['overflow: "hidden"', 'borderRadius: Radii.card', 'backgroundColor: colors.bgSurface', 'borderWidth: StyleSheet.hairlineWidth', 'borderColor: colors.border']) {
       expect(group).toContain(style);
     }
   });

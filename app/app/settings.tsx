@@ -9,7 +9,6 @@ import {
   Alert,
   AppState,
   KeyboardAvoidingView,
-  LayoutAnimation,
   Linking,
   Platform,
   ScrollView,
@@ -35,9 +34,9 @@ import {
   useCameraPermissions,
 } from "expo-camera";
 import {
+  ContinuousCorners,
   Radii,
   TypeScale,
-  Typography,
   UiTextMetrics,
   useAppColors,
   useAppTheme,
@@ -79,6 +78,17 @@ import {
 import * as Storage from "../services/storage";
 import { connectionIssueAccent } from "../services/connectionIssue";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
+import {
+  ActionMenu,
+  AppText,
+  Button,
+  InlineNotice,
+  ListRow,
+  ListSection,
+  confirmDestructive,
+} from "../components/ui";
+import type { ActionMenuItem } from "../components/ui/ActionMenu";
+import { ZenLogoMark } from "../components/ui/ZenLogoMark";
 import { RisingSheet } from "../components/ui/RisingSheet";
 import { TelegramConnectionPanel } from "../components/settings/TelegramConnectionPanel";
 import { cancelCalendarNotifications } from "../services/calendarNotifications";
@@ -131,7 +141,7 @@ export default function SettingsScreen() {
   const [draftName, setDraftName] = useState("");
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [draftImportValue, setDraftImportValue] = useState("");
-  const [expandedServer, setExpandedServer] = useState<string | null>(null);
+  const [serverMenuId, setServerMenuId] = useState<string | null>(null);
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<
     string | null
   >(null);
@@ -340,7 +350,6 @@ export default function SettingsScreen() {
       const savedServer = await importConnection(rawValue, {
         onImported: async (importedServer) => {
           await refreshServers(importedServer.id);
-          setExpandedServer(importedServer.id);
         },
       });
 
@@ -380,33 +389,20 @@ export default function SettingsScreen() {
   };
 
   const handleDeleteServer = (server: Storage.StoredServer) => {
-    Alert.alert("Remove server", `Delete ${server.name}?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          wsClient.disconnectServer(server.id);
-          dispatch({ type: "REMOVE_SERVER", serverId: server.id });
-          await Storage.removeServer(server.id);
-          await cancelCalendarNotifications(server.id);
-          await refreshServers();
-        },
+    confirmDestructive({
+      title: `Remove ${server.name}?`,
+      message: "Its Sessions stay on the computer. Pair again to reconnect.",
+      confirmLabel: "Remove",
+      onConfirm: async () => {
+        wsClient.disconnectServer(server.id);
+        dispatch({ type: "REMOVE_SERVER", serverId: server.id });
+        await Storage.removeServer(server.id);
+        await cancelCalendarNotifications(server.id);
+        await refreshServers();
       },
-    ]);
+    });
   };
 
-  const toggleServerExpand = (serverId: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    LayoutAnimation.configureNext(
-      LayoutAnimation.create(
-        200,
-        LayoutAnimation.Types.easeInEaseOut,
-        LayoutAnimation.Properties.opacity,
-      ),
-    );
-    setExpandedServer((prev) => (prev === serverId ? null : serverId));
-  };
 
   const handleImportDraft = async () => {
     let rawValue = draftImportValue.trim();
@@ -471,6 +467,66 @@ export default function SettingsScreen() {
 
   if (!loaded) return null;
 
+  const currentIssue = currentServerId
+    ? serverConnectionIssues[currentServerId] ?? null
+    : null;
+  const menuServer = servers.find((server) => server.id === serverMenuId) ?? null;
+  const serverMenuItems = (server: Storage.StoredServer): ActionMenuItem[] => {
+    const current = server.id === currentServerId;
+    const connectionState = serverConnections[server.id] || "offline";
+    const connectionIssue = serverConnectionIssues[server.id] || null;
+    const agentCount = agentCounts[server.id] || 0;
+    const hydrated = Boolean(hydratedServers[server.id]);
+    const actionLabel = !current
+      ? "Use"
+      : connectionState === "connected"
+        ? "Disconnect"
+        : connectionState === "connecting" || connectionIssue
+          ? "Retry"
+          : "Connect";
+    const primaryDetail =
+      connectionIssue?.hint ??
+      connectionIssue?.detail ??
+      (current && connectionState === "connected"
+        ? hydrated
+          ? `${agentCount} ${agentCount === 1 ? "active agent" : "active agents"}`
+          : "Loading agents"
+        : undefined);
+    return [
+      {
+        key: "connection",
+        label: actionLabel,
+        accessibilityLabel: `${actionLabel} ${server.name}`,
+        detail: primaryDetail,
+        icon: !current
+          ? "swap-horizontal-outline"
+          : connectionState === "connected"
+            ? "power-outline"
+            : "refresh-outline",
+        onPress: () => {
+          void (connectionState === "connected" && current
+            ? disconnectServer(server.id)
+            : connectServer(server));
+        },
+      },
+      {
+        key: "edit",
+        label: "Edit",
+        accessibilityLabel: `Edit ${server.name}`,
+        icon: "create-outline",
+        onPress: () => openEditServer(server),
+      },
+      {
+        key: "remove",
+        label: "Remove",
+        accessibilityLabel: `Remove ${server.name}`,
+        icon: "trash-outline",
+        destructive: true,
+        onPress: () => handleDeleteServer(server),
+      },
+    ];
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       <ScrollView
@@ -482,238 +538,93 @@ export default function SettingsScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.contentInner}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Servers
-            </Text>
-          </View>
-
-          <View style={styles.serverList}>
-            {servers.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>No paired servers</Text>
-              </View>
-            ) : (
-              servers.map((server) => {
-                const current = server.id === currentServerId;
-                const connectionState =
-                  serverConnections[server.id] || "offline";
-                const latencySample = serverLatencyById[server.id];
-                const connectionIssue =
-                  serverConnectionIssues[server.id] || null;
-                const expanded = expandedServer === server.id;
-                const agentCount = agentCounts[server.id] || 0;
-                const hydrated = Boolean(hydratedServers[server.id]);
-                const waitingForWorkers =
-                  connectionState === "connected" &&
-                  (!hydrated || agentCount === 0);
-                const actionLabel = !current
-                  ? "Use"
-                  : connectionState === "connected"
-                    ? "Disconnect"
-                    : connectionState === "connecting" || connectionIssue
-                      ? "Retry"
-                      : "Connect";
-
-                return (
-                  <View key={server.id} style={styles.serverCard}>
-                    <AnimatedPressable
-                      style={styles.serverHeaderButton}
-                      preset="card"
-                      scale={0.99}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${server.name}, ${connectionLabel(connectionState)}${
-                        connectionState === "connected" && latencySample
-                          ? `, ${formatLatency(latencySample.latencyMs)} latency`
-                          : ""
-                      }, ${server.url}`}
-                      accessibilityHint={
-                        expanded
-                          ? "Hide server details"
-                          : "Show server details and actions"
-                      }
-                      accessibilityState={{ expanded }}
-                      onPress={() => toggleServerExpand(server.id)}
-                    >
-                      <View style={styles.serverRow}>
-                        <View
-                          style={[
-                            styles.statusDot,
-                            {
-                              backgroundColor: connectionColor(
-                                connectionState,
-                                colors,
-                              ),
-                            },
-                          ]}
-                        />
-                        <View style={styles.serverInfo}>
-                          <Text style={styles.serverName} numberOfLines={1}>
-                            {server.name}
-                          </Text>
-                          <Text style={styles.serverUrl} numberOfLines={1}>
-                            {server.transportKind === "link"
-                              ? "Zen Link"
-                              : server.url}
-                          </Text>
-                          <View style={styles.serverStatus}>
-                            <Text
-                              style={[
-                                styles.connectionLabel,
-                                connectionState === "connected" &&
-                                  styles.connectionLabelActive,
-                              ]}
-                            >
-                              {connectionLabel(connectionState)}
-                            </Text>
-                            {connectionState === "connected" &&
-                            latencySample ? (
-                              <>
-                                <Text style={styles.metadataSeparator}>/</Text>
-                                <Text
-                                  style={[
-                                    styles.latencyLabel,
-                                    {
-                                      color: latencyColor(
-                                        latencySample.latencyMs,
-                                        colors,
-                                      ),
-                                    },
-                                  ]}
-                                >
-                                  {formatLatency(latencySample.latencyMs)}
-                                </Text>
-                              </>
-                            ) : null}
-                          </View>
-                        </View>
-                        <Ionicons
-                          name={expanded ? "chevron-up" : "chevron-down"}
-                          size={18}
-                          color={colors.textTertiary}
-                        />
-                      </View>
-                    </AnimatedPressable>
-
-                    {expanded && (
-                      <View style={styles.serverExpandedContent}>
-                        {connectionIssue ? (
-                          <ServerNoticeCard
-                            icon="alert-circle-outline"
-                            accent={connectionIssueAccent(
-                              connectionIssue,
-                              colors,
-                            )}
-                            title={connectionIssue.title}
-                            detail={connectionIssue.detail}
-                            hint={connectionIssue.hint}
-                          />
-                        ) : null}
-
-                        {waitingForWorkers ? (
-                          <ServerNoticeCard
-                            icon="information-circle-outline"
-                            accent={colors.accent}
-                            title={
-                              hydrated
-                                ? "No active agents"
-                                : "Loading agents"
-                            }
-                          />
-                        ) : null}
-
-                        <View style={styles.serverActions}>
-                          <AnimatedPressable
-                            style={styles.actionBtn}
-                            preset="press"
-                            scale={0.95}
-                            accessibilityRole="button"
-                            accessibilityLabel={`${actionLabel} ${server.name}`}
-                            onPress={() => {
-                              void (connectionState === "connected" && current
-                                ? disconnectServer(server.id)
-                                : connectServer(server));
-                              void Haptics.impactAsync(
-                                Haptics.ImpactFeedbackStyle.Light,
-                              );
-                            }}
-                          >
-                            <Text style={styles.actionBtnText}>
-                              {actionLabel}
-                            </Text>
-                          </AnimatedPressable>
-                          <AnimatedPressable
-                            style={styles.actionBtn}
-                            preset="press"
-                            scale={0.95}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Edit ${server.name}`}
-                            onPress={() => {
-                              openEditServer(server);
-                              void Haptics.impactAsync(
-                                Haptics.ImpactFeedbackStyle.Light,
-                              );
-                            }}
-                          >
-                            <Text style={styles.actionBtnText}>Edit</Text>
-                          </AnimatedPressable>
-                          <AnimatedPressable
-                            style={[styles.actionBtn, styles.actionBtnDanger]}
-                            preset="press"
-                            scale={0.95}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Remove ${server.name}`}
-                            onPress={() => {
-                              handleDeleteServer(server);
-                              void Haptics.impactAsync(
-                                Haptics.ImpactFeedbackStyle.Medium,
-                              );
-                            }}
-                          >
-                            <Text
-                              style={[
-                                styles.actionBtnText,
-                                styles.actionBtnDangerText,
-                              ]}
-                            >
-                              Remove
-                            </Text>
-                          </AnimatedPressable>
-                        </View>
-                      </View>
-                    )}
-                  </View>
-                );
-              })
-            )}
-            <AnimatedPressable
-              style={styles.addConnectionRow}
-              preset="press"
-              scale={0.99}
-              accessibilityRole="button"
+          <SettingsSectionHeader>Servers</SettingsSectionHeader>
+          <ListSection
+            footer={servers.length === 0 ? "Pair this phone with a computer running zen." : null}
+          >
+            {servers.map((server) => {
+              const current = server.id === currentServerId;
+              const connectionState = serverConnections[server.id] || "offline";
+              const latencySample = serverLatencyById[server.id];
+              const connectionIssue = serverConnectionIssues[server.id] || null;
+              const endpoint =
+                server.transportKind === "link" ? "Zen Link" : server.url;
+              const status = [
+                connectionIssue?.title ?? connectionLabel(connectionState),
+                connectionState === "connected" && latencySample
+                  ? formatLatency(latencySample.latencyMs)
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <ListRow
+                  key={server.id}
+                  title={server.name}
+                  subtitle={`${status} · ${endpoint}`}
+                  leading={
+                    <View style={[styles.serverGlyph, { backgroundColor: theme.materials.tint }]}>
+                      <Ionicons
+                        name="desktop-outline"
+                        size={17}
+                        color={colors.accentStrong}
+                      />
+                      <View
+                        style={[
+                          styles.serverGlyphDot,
+                          {
+                            borderColor: colors.bgSurface,
+                            backgroundColor: connectionIssue
+                              ? connectionIssueAccent(connectionIssue, colors)
+                              : connectionColor(connectionState, colors),
+                          },
+                        ]}
+                      />
+                    </View>
+                  }
+                  trailing={
+                    current ? (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={20}
+                        color={colors.accentStrong}
+                        accessibilityElementsHidden
+                        importantForAccessibility="no-hide-descendants"
+                      />
+                    ) : null
+                  }
+                  accessory="chevron"
+                  accessibilityLabel={`${server.name}${current ? ", in use" : ""}, ${connectionLabel(connectionState)}${
+                    connectionState === "connected" && latencySample
+                      ? `, ${formatLatency(latencySample.latencyMs)} latency`
+                      : ""
+                  }, ${server.transportKind === "link" ? "Zen Link" : server.url}`}
+                  accessibilityHint="Shows actions for this server"
+                  onPress={() => setServerMenuId(server.id)}
+                />
+              );
+            })}
+            <ListRow
+              title="Pair a server"
+              icon="add"
               accessibilityLabel="Pair a server"
+              accessory="chevron"
               onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 openCreateServer();
               }}
-            >
-              <View style={styles.addConnectionIcon}>
-                <Ionicons name="add" size={20} color={colors.textOnAccent} />
-              </View>
-              <View style={styles.addConnectionCopy}>
-                <Text style={styles.addConnectionTitle}>Pair a server</Text>
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={colors.textTertiary}
-              />
-            </AnimatedPressable>
-          </View>
+            />
+          </ListSection>
+          {currentIssue ? (
+            <InlineNotice
+              tone="danger"
+              title={currentIssue.title}
+              detail={currentIssue.hint ?? currentIssue.detail}
+              style={styles.sectionNotice}
+            />
+          ) : null}
 
-          <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">Channels</Text>
-          </View>
+          <SettingsSectionHeader>Channels</SettingsSectionHeader>
           {currentServerId ? (
             <TelegramConnectionRow
               key={currentServerId || "no-current-server"}
@@ -722,107 +633,57 @@ export default function SettingsScreen() {
             />
           ) : <Text style={styles.emptyText}>No current server</Text>}
 
-          <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Providers
-            </Text>
-          </View>
-          <View style={styles.aboutGroup}>
-            <AnimatedPressable
-              style={styles.aboutRow}
-              preset="press"
-              scale={0.99}
-              accessibilityRole="button"
+          <SettingsSectionHeader>Providers</SettingsSectionHeader>
+          <ListSection>
+            <ListRow
+              title="Models and accounts"
+              subtitle={!currentServerId ? "No current server" : null}
+              icon="key-outline"
+              accessory="chevron"
               accessibilityLabel="Providers"
               accessibilityHint="Manage Provider connections and API keys"
-              onPress={() => {
-                void Haptics.selectionAsync();
-                router.push("/model-profiles");
-              }}
-            >
-              <View style={styles.aboutCopy}>
-                <Text style={styles.aboutTitle}>Models and accounts</Text>
-                {!currentServerId ? <Text style={styles.aboutDescription}>No current server</Text> : null}
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={colors.textTertiary}
-              />
-            </AnimatedPressable>
+              onPress={() => router.push("/model-profiles")}
+            />
+          </ListSection>
+
+          <SettingsSectionHeader>Appearance</SettingsSectionHeader>
+          <View accessibilityRole="radiogroup" accessibilityLabel="Appearance theme">
+            <ListSection>
+              {THEME_CHOICES.map((choice) => {
+                const selected = preference === choice.value;
+                return (
+                  <ListRow
+                    key={choice.value}
+                    title={choice.label}
+                    icon={choice.icon}
+                    accessory="check"
+                    accessibilityRole="radio"
+                    accessibilityLabel={`${choice.label} appearance`}
+                    selected={selected}
+                    onPress={() => void setPreference(choice.value)}
+                  />
+                );
+              })}
+            </ListSection>
           </View>
 
-          <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              Appearance
-            </Text>
-          </View>
-          <View
-            style={styles.appearanceGroup}
-            accessibilityRole="radiogroup"
-            accessibilityLabel="Appearance theme"
-          >
-            {THEME_CHOICES.map((choice, index) => {
-              const selected = preference === choice.value;
-              return (
-                <AnimatedPressable
-                  key={choice.value}
-                  style={[
-                    styles.appearanceRow,
-                    index < THEME_CHOICES.length - 1 && styles.groupRowBorder,
-                    selected && styles.appearanceRowSelected,
-                  ]}
-                  preset="press"
-                  scale={0.99}
-                  accessibilityRole="radio"
-                  accessibilityLabel={`${choice.label} appearance`}
-                  accessibilityState={{ checked: selected }}
-                  aria-checked={selected}
-                  onPress={() => {
-                    void Haptics.selectionAsync();
-                    void setPreference(choice.value);
-                  }}
-                >
-                  <Ionicons
-                    name={choice.icon}
-                    size={20}
-                    color={
-                      selected ? colors.accentStrong : colors.textSecondary
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.appearanceLabel,
-                      selected && styles.appearanceLabelSelected,
-                    ]}
-                  >
-                    {choice.label}
-                  </Text>
-                  <Ionicons
-                    name={selected ? "radio-button-on" : "radio-button-off"}
-                    size={20}
-                    color={selected ? colors.accentStrong : colors.textTertiary}
-                  />
-                </AnimatedPressable>
-              );
-            })}
-          </View>
-
-          <View style={styles.sectionHeaderStandalone}>
-            <Text style={styles.sectionLabel} accessibilityRole="header">
-              About
-            </Text>
-          </View>
-          <View style={styles.aboutGroup}>
-            <View style={styles.aboutRow}>
-              <View style={styles.aboutCopy}>
-                <Text style={styles.aboutTitle}>Zen</Text>
-              </View>
-              <Text style={styles.version}>Version {appVersion}</Text>
-            </View>
-          </View>
+          <SettingsSectionHeader>About</SettingsSectionHeader>
+          <ListSection>
+            <ListRow
+              title="Zen"
+              value={`Version ${appVersion}`}
+              leading={<ZenLogoMark size={30} accessible={false} />}
+            />
+          </ListSection>
         </View>
       </ScrollView>
+
+      <ActionMenu
+        visible={menuServer !== null}
+        title={menuServer?.name}
+        onClose={() => setServerMenuId(null)}
+        items={menuServer ? serverMenuItems(menuServer) : []}
+      />
 
       {/* Unified Pair/Edit presentation: one RisingSheet Modal, editor|scanner modes */}
       <RisingSheet
@@ -1064,32 +925,15 @@ export default function SettingsScreen() {
                 </View>
 
                 <View style={styles.modalActions}>
-                  <AnimatedPressable
-                    style={styles.modalBtn}
-                    preset="press"
-                    scale={0.94}
-                    accessibilityRole="button"
-                    accessibilityLabel="Cancel"
-                    onPress={closeEditor}
-                  >
-                    <Text style={styles.modalBtnText}>Cancel</Text>
-                  </AnimatedPressable>
-                  <AnimatedPressable
-                    style={[styles.modalBtn, styles.modalBtnPrimary]}
-                    preset="press"
-                    scale={0.94}
-                    accessibilityRole="button"
+                  <Button label="Cancel" variant="plain" style={styles.modalAction} onPress={closeEditor} />
+                  <Button
+                    label="Save"
+                    variant="filled"
+                    style={styles.modalAction}
                     onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       void handleSaveServer();
                     }}
-                  >
-                    <Text
-                      style={[styles.modalBtnText, styles.modalBtnPrimaryText]}
-                    >
-                      Save
-                    </Text>
-                  </AnimatedPressable>
+                  />
                 </View>
               </>
             ) : (
@@ -1114,52 +958,25 @@ export default function SettingsScreen() {
                   textAlignVertical="top"
                 />
                 <View style={styles.modalActions}>
-                  <AnimatedPressable
-                    style={styles.modalBtn}
-                    preset="press"
-                    scale={0.94}
-                    accessibilityRole="button"
-                    accessibilityLabel="Cancel"
-                    onPress={closeEditor}
-                  >
-                    <Text style={styles.modalBtnText}>Cancel</Text>
-                  </AnimatedPressable>
-                  <AnimatedPressable
-                    style={[styles.modalBtn, styles.modalBtnPrimary]}
-                    preset="press"
-                    scale={0.94}
-                    accessibilityRole="button"
+                  <Button label="Cancel" variant="plain" style={styles.modalAction} onPress={closeEditor} />
+                  <Button
+                    label="Import"
+                    variant="filled"
+                    style={styles.modalAction}
                     onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       void handleImportDraft();
                     }}
-                  >
-                    <Text
-                      style={[styles.modalBtnText, styles.modalBtnPrimaryText]}
-                    >
-                      Import
-                    </Text>
-                  </AnimatedPressable>
+                  />
                 </View>
 
-                <AnimatedPressable
-                  style={styles.scanQrBtn}
-                  preset="press"
-                  scale={0.98}
-                  accessibilityRole="button"
-                  accessibilityLabel="Scan QR code"
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    openScanner();
-                  }}
-                >
-                  <Ionicons
-                    name="qr-code-outline"
-                    size={18}
-                    color={colors.accent}
-                  />
-                  <Text style={styles.scanQrBtnText}>Scan QR Code</Text>
-                </AnimatedPressable>
+                <Button
+                  label="Scan QR Code"
+                  icon="qr-code-outline"
+                  variant="tinted"
+                  block
+                  style={styles.scanQrAction}
+                  onPress={openScanner}
+                />
               </>
             )}
           </ScrollView>
@@ -1168,6 +985,27 @@ export default function SettingsScreen() {
     </SafeAreaView>
   );
 }
+
+function SettingsSectionHeader({ children }: { children: string }) {
+  return (
+    <AppText
+      variant="label"
+      tone="tertiary"
+      accessibilityRole="header"
+      style={settingsHeaderStyles.header}
+    >
+      {children}
+    </AppText>
+  );
+}
+
+const settingsHeaderStyles = StyleSheet.create({
+  header: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 6,
+  },
+});
 
 function TelegramConnectionRow({
   serverId,
@@ -1540,34 +1378,6 @@ function ConnectionAction({
   );
 }
 
-function ServerNoticeCard({
-  icon,
-  accent,
-  title,
-  detail,
-  hint,
-}: {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
-  accent: string;
-  title: string;
-  detail?: string;
-  hint?: string;
-}) {
-  const { theme } = useAppTheme();
-  const styles = useMemo(() => createStyles(theme), [theme]);
-
-  return (
-    <View style={[styles.noticeCard, { borderColor: accent }]}>
-      <View style={styles.noticeHeader}>
-        <Ionicons name={icon} size={15} color={accent} />
-        <Text style={styles.noticeTitle}>{title}</Text>
-      </View>
-      {detail ? <Text style={styles.noticeDetail}>{detail}</Text> : null}
-      {hint ? <Text style={styles.noticeHint}>{hint}</Text> : null}
-    </View>
-  );
-}
-
 function connectionLabel(state: ConnectionState): string {
   switch (state) {
     case "connected":
@@ -1642,19 +1452,6 @@ function formatLatency(latencyMs: number): string {
   return `${latencyMs} ms`;
 }
 
-function latencyColor(
-  latencyMs: number,
-  colors: AppColors,
-): string {
-  if (latencyMs <= 120) {
-    return colors.statusRunning;
-  }
-  if (latencyMs <= 350) {
-    return colors.warning;
-  }
-  return colors.dangerText;
-}
-
 function createStyles(theme: ResolvedZenTheme) {
   const colors = theme.colors;
 
@@ -1676,36 +1473,38 @@ function createStyles(theme: ResolvedZenTheme) {
       maxWidth: 760,
       alignSelf: "center",
     },
+    serverGlyph: {
+      width: 30,
+      height: 30,
+      borderRadius: 9,
+      ...ContinuousCorners,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    serverGlyphDot: {
+      position: "absolute",
+      right: -3,
+      bottom: -3,
+      width: 11,
+      height: 11,
+      borderRadius: 6,
+      borderWidth: 2,
+    },
+    sectionNotice: {
+      marginTop: -14,
+      marginBottom: 26,
+    },
 
-    sectionHeader: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "baseline",
-      justifyContent: "space-between",
-      gap: 8,
-      marginBottom: 10,
-    },
-    sectionHeaderStandalone: {
-      marginTop: 28,
-      marginBottom: 10,
-    },
-    sectionLabel: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textSecondary,
-    },
 
+    // Matches ListSection's grouped card so Channels sits in the same rhythm.
     serverList: {
       overflow: "hidden",
-      borderRadius: Radii.sm,
+      borderRadius: Radii.card,
+      ...ContinuousCorners,
+      marginBottom: 26,
       backgroundColor: colors.bgSurface,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
-    },
-    serverCard: {
-      backgroundColor: colors.bgSurface,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
     },
     telegramHeaderButton: {
       minHeight: 72,
@@ -1788,67 +1587,6 @@ function createStyles(theme: ResolvedZenTheme) {
       ...UiTextMetrics,
       ...TypeScale.label,
     },
-    serverHeaderButton: {
-      minHeight: 72,
-      paddingHorizontal: 14,
-      paddingVertical: 12,
-      backgroundColor: colors.bgSurface,
-    },
-    serverExpandedContent: {
-      paddingHorizontal: 14,
-      paddingBottom: 14,
-      backgroundColor: colors.surfaceSubtle,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: colors.borderSubtle,
-    },
-    serverRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-    },
-    statusDot: {
-      width: 8,
-      height: 8,
-      borderRadius: 4,
-      flexShrink: 0,
-    },
-    serverInfo: {
-      flex: 1,
-      minWidth: 0,
-    },
-    serverStatus: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "center",
-      gap: 5,
-      marginTop: 2,
-    },
-    serverName: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      color: colors.textPrimary,
-    },
-    serverUrl: {
-      ...UiTextMetrics,
-      ...TypeScale.mono,
-      color: colors.textSecondary,
-    },
-    connectionLabel: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
-    },
-    connectionLabelActive: {
-      color: colors.statusRunning,
-    },
-    metadataSeparator: {
-      ...TypeScale.caption,
-      color: colors.textTertiary,
-    },
-    latencyLabel: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-    },
     noticeCard: {
       marginTop: 12,
       padding: 12,
@@ -1879,141 +1617,10 @@ function createStyles(theme: ResolvedZenTheme) {
       marginTop: 7,
       color: colors.textTertiary,
     },
-    serverActions: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      gap: 8,
-      marginTop: 12,
-      paddingTop: 12,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: colors.borderSubtle,
-    },
-    actionBtn: {
-      minHeight: 44,
-      minWidth: 88,
-      flexGrow: 1,
-      paddingHorizontal: 14,
-      borderRadius: Radii.xs,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfacePressed,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    actionBtnText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textPrimary,
-    },
-    actionBtnDanger: {
-      backgroundColor: colors.dangerSoft,
-      borderColor: colors.dangerText,
-    },
-    actionBtnDangerText: {
-      color: colors.dangerText,
-    },
-    emptyCard: {
-      paddingHorizontal: 16,
-      paddingVertical: 22,
-    },
     emptyText: {
       ...UiTextMetrics,
       ...TypeScale.compact,
       color: colors.textPrimary,
-    },
-    addConnectionRow: {
-      minHeight: 60,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      backgroundColor: colors.bgSurface,
-    },
-    addConnectionIcon: {
-      width: 32,
-      height: 32,
-      borderRadius: 16,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.accent,
-    },
-    addConnectionCopy: {
-      flex: 1,
-      minWidth: 0,
-    },
-    addConnectionTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.compact,
-      color: colors.textPrimary,
-    },
-    appearanceGroup: {
-      overflow: "hidden",
-      borderRadius: Radii.sm,
-      backgroundColor: colors.bgSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    appearanceRow: {
-      minHeight: 52,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      backgroundColor: colors.bgSurface,
-    },
-    appearanceRowSelected: {
-      backgroundColor: colors.surfaceActive,
-    },
-    groupRowBorder: {
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-    },
-    appearanceLabel: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      flex: 1,
-      color: colors.textPrimary,
-    },
-    appearanceLabelSelected: {
-      color: colors.accentStrong,
-      fontFamily: Typography.uiFontMedium,
-      fontWeight: "500",
-    },
-    aboutGroup: {
-      borderRadius: Radii.sm,
-      backgroundColor: colors.bgSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    aboutRow: {
-      minHeight: 64,
-      flexDirection: "row",
-      flexWrap: "wrap",
-      alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 10,
-    },
-    aboutCopy: {
-      flex: 1,
-      minWidth: 180,
-    },
-    aboutTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      color: colors.textPrimary,
-    },
-    aboutDescription: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
-    },
-    version: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
     },
 
     // Modal / editor
@@ -2106,47 +1713,11 @@ function createStyles(theme: ResolvedZenTheme) {
       gap: 10,
       marginTop: 22,
     },
-    modalBtn: {
-      minWidth: 96,
-      minHeight: 44,
-      flexGrow: 1,
-      borderRadius: Radii.sm,
-      alignItems: "center",
-      justifyContent: "center",
-      paddingHorizontal: 16,
-      backgroundColor: colors.surfacePressed,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
+    modalAction: {
+      flex: 1,
     },
-    modalBtnPrimary: {
-      backgroundColor: colors.accent,
-      borderColor: colors.accent,
-    },
-    modalBtnText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textPrimary,
-    },
-    modalBtnPrimaryText: {
-      color: colors.textOnAccent,
-    },
-    scanQrBtn: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 8,
-      minHeight: 44,
-      marginTop: 14,
-      paddingHorizontal: 14,
-      borderRadius: Radii.sm,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      backgroundColor: colors.surfaceSubtle,
-    },
-    scanQrBtnText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.accentStrong,
+    scanQrAction: {
+      marginTop: 12,
     },
 
     scannerScreen: {

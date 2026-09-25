@@ -34,9 +34,15 @@ describe("Settings copy density", () => {
       "Telegram cloud messages are not deleted.",
       'accessibilityRole="radiogroup"',
       'accessibilityRole="radio"',
-      "accessibilityState={{ checked: selected }}",
+      "selected={selected}",
     ]) {
       expect(source).toContain(necessaryCopy);
     }
+    // Appearance rows are ListRows; the row owns the checked radio state.
+    const listRow = readFileSync(
+      join(import.meta.dir, "../components/ui/ListSection.tsx"),
+      "utf8",
+    );
+    expect(listRow).toContain('...(role === "radio" ? { checked: Boolean(selected) } : {})');
   });
 });
