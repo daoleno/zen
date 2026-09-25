@@ -1,5 +1,5 @@
 import React from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import type { StyleProp, TextStyle } from "react-native";
 import { Typography } from "../../constants/tokens";
 import {
@@ -7,12 +7,12 @@ import {
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { GitDiffContentSnapshot } from "../../services/gitDiff";
+import { InlineNotice } from "../ui/InlineNotice";
 import { GitDiffStateCard } from "./GitDiffStateCard";
 import {
   highlightCodeLine,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
-import { withAlpha } from "./colorWithAlpha";
 
 interface CodeSnapshotPanelProps {
   path: string;
@@ -29,6 +29,7 @@ export function GitDiffCodeSnapshotPanel({
   theme,
   bottomInset = 0,
 }: CodeSnapshotPanelProps) {
+  const { fontScale } = useWindowDimensions();
   if (!snapshot?.exists || !snapshot.content) {
     return (
       <View style={[styles.contentPad, { paddingBottom: bottomInset + 14 }]}>
@@ -62,9 +63,10 @@ export function GitDiffCodeSnapshotPanel({
   }
 
   const lines = snapshot.content.split("\n");
+  const gutterWidth = (String(lines.length).length * 7.4 + 20) * fontScale;
   return (
     <ScrollView
-      style={styles.codeScroll}
+      style={[styles.codeScroll, { backgroundColor: chrome.surface }]}
       contentContainerStyle={[
         styles.codeScrollContent,
         { paddingBottom: bottomInset + 20 },
@@ -73,39 +75,32 @@ export function GitDiffCodeSnapshotPanel({
       nestedScrollEnabled={false}
     >
       {snapshot.truncated ? (
-        <View
-          style={[
-            styles.truncationBanner,
-            {
-              backgroundColor: withAlpha(theme.yellow, 0.1),
-              borderColor: withAlpha(theme.yellow, 0.2),
-            },
-          ]}
-        >
-          <Text style={[styles.truncationText, { color: theme.yellow }]}>
-            Showing the first {formatByteCount(snapshot.content.length)} of{" "}
-            {formatByteCount(snapshot.byte_count)}.
-          </Text>
-        </View>
+        <InlineNotice
+          tone="warning"
+          icon="cut-outline"
+          title="Showing part of this file"
+          detail={`First ${formatByteCount(snapshot.content.length)} of ${formatByteCount(snapshot.byte_count)}.`}
+          style={styles.truncationNotice}
+        />
       ) : null}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator
         nestedScrollEnabled={false}
       >
-        <View
-          style={[
-            styles.codeFrame,
-            {
-              backgroundColor: chrome.surfaceMuted,
-              borderColor: chrome.border,
-            },
-          ]}
-        >
+        <View style={styles.codeFrame}>
           {lines.map((line, index) => (
             <View key={index} style={styles.codeRow}>
               <Text
-                style={[styles.codeLineNumber, { color: chrome.textSubtle }]}
+                style={[
+                  styles.codeLineNumber,
+                  {
+                    width: gutterWidth,
+                    color: chrome.textSubtle,
+                    backgroundColor: chrome.surfaceMuted,
+                    borderRightColor: chrome.border,
+                  },
+                ]}
               >
                 {index + 1}
               </Text>
@@ -215,45 +210,36 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   codeScrollContent: {
-    paddingHorizontal: 8,
-    paddingTop: 8,
+    paddingTop: 0,
     paddingBottom: 20,
   },
-  truncationBanner: {
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    marginBottom: 10,
-  },
-  truncationText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
+  truncationNotice: {
+    marginHorizontal: 12,
+    marginVertical: 10,
   },
   codeFrame: {
     minWidth: "100%",
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
   },
   codeRow: {
-    minHeight: 18,
     flexDirection: "row",
-    alignItems: "center",
-    paddingRight: 12,
+    alignItems: "stretch",
+    paddingRight: 16,
   },
   codeLineNumber: {
-    width: 36,
     textAlign: "right",
     paddingRight: 8,
-    fontSize: 10,
-    lineHeight: 15,
+    paddingVertical: 1,
+    marginRight: 10,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    fontSize: 11,
+    lineHeight: 18,
     fontFamily: Typography.terminalFont,
+    fontVariant: ["tabular-nums"],
   },
   codeLine: {
-    fontSize: 10,
-    lineHeight: 15,
+    paddingVertical: 1,
+    fontSize: 12,
+    lineHeight: 18,
     fontFamily: Typography.terminalFont,
   },
 });

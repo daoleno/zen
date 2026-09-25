@@ -1,178 +1,137 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { Typography } from "../../constants/tokens";
-import { buildTerminalChrome } from "../../constants/terminalThemes";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import type {
+  TerminalThemeChrome,
+  TerminalThemePalette,
+} from "../../constants/terminalThemes";
+import { ContinuousCorners, TypeScale, UiTextMetrics } from "../../constants/tokens";
 import type {
   GitDiffFileInfo,
+  GitDiffScope,
   GitDiffStatusSnapshot,
 } from "../../services/gitDiff";
 import type { GitDiffViewMode } from "./gitDiffNavigation";
-import { describeGitDiffFile } from "./gitDiffPresentation";
+import {
+  describeGitDiffFile,
+  gitDiffToneColor,
+  type GitDiffFilePresentation,
+} from "./gitDiffPresentation";
 import { DiffIconButton } from "./GitDiffReviewControls";
+import { withAlpha } from "./colorWithAlpha";
 
 export type GitDiffSheetView = "overview" | "reader" | "files" | "file";
 
 interface GitDiffSheetTopChromeProps {
-  chrome: ReturnType<typeof buildTerminalChrome>;
+  chrome: TerminalThemeChrome;
+  theme: TerminalThemePalette;
   snapshot: GitDiffStatusSnapshot | null;
   loading: boolean;
   view: GitDiffSheetView;
   file: GitDiffFileInfo | null;
+  scope: GitDiffScope;
   repoTitle: string;
+  /** `+12 −3 · 4 files` for the overview's selected comparison. */
+  summary: string | null;
+  browserPath: string;
   browserFilePath: string | null;
   workingFileOrigin: GitDiffViewMode;
-  fileFilterOpen: boolean;
-  diffSearchOpen: boolean;
-  diffOptionsOpen: boolean;
+  /** No overflow when the current state has no secondary actions. */
+  hasActions: boolean;
   onClose(): void;
   onBack(): void;
-  onRefresh(): void;
-  onBrowseFiles(): void;
-  onToggleFileFilter(): void;
-  onToggleDiffSearch(): void;
-  onToggleDiffOptions(): void;
+  onOpenActions(): void;
 }
 
+/**
+ * The sheet's single navigation bar: one leading control (Close at the top
+ * level, Back everywhere else), a centered title with concise status, and one
+ * overflow button that owns every secondary action.
+ */
 export function GitDiffSheetTopChrome({
   chrome,
+  theme,
   snapshot,
   loading,
   view,
   file,
+  scope,
   repoTitle,
+  summary,
+  browserPath,
   browserFilePath,
   workingFileOrigin,
-  fileFilterOpen,
-  diffSearchOpen,
-  diffOptionsOpen,
+  hasActions,
   onClose,
   onBack,
-  onRefresh,
-  onBrowseFiles,
-  onToggleFileFilter,
-  onToggleDiffSearch,
-  onToggleDiffOptions,
+  onOpenActions,
 }: GitDiffSheetTopChromeProps) {
-  const filePresentation = file ? describeGitDiffFile(file, "all") : null;
-  const browserName =
-    browserFilePath?.slice(browserFilePath.lastIndexOf("/") + 1) ??
-    browserFilePath;
+  const filePresentation =
+    view === "reader" && file ? describeGitDiffFile(file, scope) : null;
   const backLabel =
     view === "reader"
       ? "Changed files"
       : view === "files"
-        ? "Changes"
+        ? browserPath
+          ? "Parent folder"
+          : "Changes"
         : view === "file"
           ? workingFileOrigin === "changes"
-            ? "Changed files"
+            ? file
+              ? "Back to diff"
+              : "Changed files"
             : "Files"
           : "Close Git diff";
 
-  const title =
-    view === "reader" && filePresentation
-      ? filePresentation.name
-      : view === "file"
-        ? browserName || repoTitle
-        : view === "files"
-          ? "Files"
-          : "Changes";
-  const subtitle =
-    view === "reader" && filePresentation
-      ? [filePresentation.statusLabel, filePresentation.directory || null]
-          .filter(Boolean)
-          .join("  ·  ")
-      : view === "file"
-        ? browserFilePath || repoTitle
-        : buildSubtitle(snapshot, repoTitle);
+  let title: string;
+  let subtitle: string;
+  let headTruncate = false;
+  if (filePresentation) {
+    title = filePresentation.name;
+    subtitle = fileSubtitle(filePresentation, repoTitle);
+    headTruncate = true;
+  } else if (view === "file" && browserFilePath) {
+    const index = browserFilePath.lastIndexOf("/");
+    title = browserFilePath.slice(index + 1) || repoTitle;
+    subtitle = index > 0 ? `${repoTitle}/${browserFilePath.slice(0, index)}` : repoTitle;
+    headTruncate = true;
+  } else if (view === "files") {
+    title = browserPath ? browserPath.slice(browserPath.lastIndexOf("/") + 1) : "Files";
+    subtitle = browserPath ? `${repoTitle}/${browserPath}` : repoTitle;
+    headTruncate = true;
+  } else {
+    title = snapshot?.available ? repoTitle : "Changes";
+    subtitle = overviewSubtitle(snapshot, summary);
+  }
 
   return (
-    <View style={[styles.header, { borderBottomColor: chrome.border }]}>
-      <DiffIconButton
-        icon={view === "overview" ? "close" : "arrow-back"}
-        label={backLabel}
-        chrome={chrome}
-        onPress={view === "overview" ? onClose : onBack}
-      />
-
-      <View style={styles.headerCopy}>
-        <View style={styles.titleRow}>
-          <Ionicons
-            name={
-              view === "overview" || view === "reader"
-                ? "git-branch-outline"
-                : "folder-open-outline"
-            }
-            size={14}
-            color={chrome.textSubtle}
-          />
-          <Text
-            style={[styles.title, { color: chrome.text }]}
-            numberOfLines={1}
-          >
-            {title}
-          </Text>
-          {view === "reader" && file ? (
-            <StatusPill file={file} chrome={chrome} />
-          ) : null}
-        </View>
-        <Text
-          style={[styles.subtitle, { color: chrome.textMuted }]}
-          numberOfLines={1}
-          ellipsizeMode={view === "file" ? "head" : "tail"}
-        >
-          {subtitle}
-        </Text>
-      </View>
-
-      {view === "overview" ? (
-        <>
-          <DiffIconButton
-            icon="filter-outline"
-            label="Filter changed paths"
-            chrome={chrome}
-            selected={fileFilterOpen}
-            onPress={onToggleFileFilter}
-          />
-          <DiffIconButton
-            icon="folder-open-outline"
-            label="Browse repository files"
-            chrome={chrome}
-            onPress={onBrowseFiles}
-          />
-        </>
-      ) : null}
-
-      {view === "reader" ? (
-        <>
-          <DiffIconButton
-            icon="search"
-            label="Find in diff"
-            chrome={chrome}
-            selected={diffSearchOpen}
-            onPress={onToggleDiffSearch}
-          />
-          <DiffIconButton
-            icon="options-outline"
-            label="Diff options"
-            chrome={chrome}
-            selected={diffOptionsOpen}
-            onPress={onToggleDiffOptions}
-          />
-        </>
-      ) : null}
-
-      {view === "overview" || view === "reader" || view === "files" ? (
+    <GitDiffHeaderBar
+      chrome={chrome}
+      leading={
         <DiffIconButton
-          icon="refresh"
-          label="Refresh Git diff"
+          icon={view === "overview" ? "close" : "chevron-back"}
+          label={backLabel}
           chrome={chrome}
-          disabled={loading}
-          busy={loading}
-          onPress={onRefresh}
+          filled
+          onPress={view === "overview" ? onClose : onBack}
         />
-      ) : null}
-    </View>
+      }
+      glyph={filePresentation ? <StatusTile presentation={filePresentation} theme={theme} chrome={chrome} /> : null}
+      title={title}
+      subtitle={subtitle}
+      headTruncate={headTruncate}
+      loading={loading}
+      trailing={
+        hasActions ? (
+          <DiffIconButton
+            icon="ellipsis-horizontal"
+            label="More actions"
+            chrome={chrome}
+            filled
+            onPress={onOpenActions}
+          />
+        ) : null
+      }
+    />
   );
 }
 
@@ -182,116 +141,163 @@ export function GitDiffSheetTopChrome({
  */
 export function GitDiffDetailHeader({
   chrome,
+  theme,
   file,
+  scope,
+  repoTitle,
   loading,
-  diffSearchOpen,
-  diffOptionsOpen,
   onClear,
-  onRefresh,
-  onToggleSearch,
-  onToggleOptions,
+  onOpenActions,
 }: {
-  chrome: ReturnType<typeof buildTerminalChrome>;
+  chrome: TerminalThemeChrome;
+  theme: TerminalThemePalette;
   file: GitDiffFileInfo;
+  scope: GitDiffScope;
+  repoTitle: string;
   loading: boolean;
-  diffSearchOpen: boolean;
-  diffOptionsOpen: boolean;
   onClear(): void;
-  onRefresh(): void;
-  onToggleSearch(): void;
-  onToggleOptions(): void;
+  onOpenActions(): void;
 }) {
-  const presentation = describeGitDiffFile(file, "all");
+  const presentation = describeGitDiffFile(file, scope);
   return (
-    <View style={[styles.header, { borderBottomColor: chrome.border }]}>
-      <DiffIconButton
-        icon="arrow-back"
-        label="Clear selection"
-        chrome={chrome}
-        onPress={onClear}
-      />
+    <GitDiffHeaderBar
+      chrome={chrome}
+      leading={
+        <DiffIconButton
+          icon="close"
+          label="Clear selection"
+          chrome={chrome}
+          filled
+          onPress={onClear}
+        />
+      }
+      glyph={<StatusTile presentation={presentation} theme={theme} chrome={chrome} />}
+      title={presentation.name}
+      subtitle={fileSubtitle(presentation, repoTitle)}
+      headTruncate
+      loading={loading}
+      trailing={
+        <DiffIconButton
+          icon="ellipsis-horizontal"
+          label="More actions"
+          chrome={chrome}
+          filled
+          onPress={onOpenActions}
+        />
+      }
+    />
+  );
+}
+
+function GitDiffHeaderBar({
+  chrome,
+  leading,
+  glyph,
+  title,
+  subtitle,
+  headTruncate,
+  loading,
+  trailing,
+}: {
+  chrome: TerminalThemeChrome;
+  leading: React.ReactNode;
+  glyph: React.ReactNode;
+  title: string;
+  subtitle: string;
+  headTruncate: boolean;
+  loading: boolean;
+  trailing: React.ReactNode;
+}) {
+  return (
+    <View style={[styles.header, { backgroundColor: chrome.appBackground, borderBottomColor: chrome.border }]}>
+      <View style={styles.lane}>{leading}</View>
       <View style={styles.headerCopy}>
         <View style={styles.titleRow}>
-          <Ionicons
-            name="git-branch-outline"
-            size={14}
-            color={chrome.textSubtle}
-          />
+          {glyph}
           <Text
+            accessibilityRole="header"
             style={[styles.title, { color: chrome.text }]}
             numberOfLines={1}
+            ellipsizeMode="middle"
           >
-            {presentation.name}
+            {title}
           </Text>
-          <StatusPill file={file} chrome={chrome} />
         </View>
-        <Text
-          style={[styles.subtitle, { color: chrome.textMuted }]}
-          numberOfLines={1}
-          ellipsizeMode="head"
-        >
-          {[presentation.statusLabel, presentation.directory || null]
-            .filter(Boolean)
-            .join("  ·  ")}
-        </Text>
+        <View style={styles.subtitleRow}>
+          {loading ? (
+            <ActivityIndicator
+              size="small"
+              color={chrome.textSubtle}
+              accessibilityLabel="Refreshing"
+              style={styles.spinner}
+            />
+          ) : null}
+          <Text
+            style={[styles.subtitle, { color: chrome.textMuted }]}
+            numberOfLines={1}
+            ellipsizeMode={headTruncate ? "head" : "tail"}
+          >
+            {subtitle}
+          </Text>
+        </View>
       </View>
-      <DiffIconButton
-        icon="search"
-        label="Find in diff"
-        chrome={chrome}
-        selected={diffSearchOpen}
-        onPress={onToggleSearch}
-      />
-      <DiffIconButton
-        icon="options-outline"
-        label="Diff options"
-        chrome={chrome}
-        selected={diffOptionsOpen}
-        onPress={onToggleOptions}
-      />
-      <DiffIconButton
-        icon="refresh"
-        label="Refresh Git diff"
-        chrome={chrome}
-        disabled={loading}
-        busy={loading}
-        onPress={onRefresh}
-      />
+      <View style={styles.lane}>{trailing}</View>
     </View>
   );
 }
 
-function StatusPill({
-  file,
+export function StatusTile({
+  presentation,
+  theme,
   chrome,
+  size = 22,
 }: {
-  file: GitDiffFileInfo;
-  chrome: ReturnType<typeof buildTerminalChrome>;
+  presentation: GitDiffFilePresentation;
+  theme: TerminalThemePalette;
+  chrome: TerminalThemeChrome;
+  size?: number;
 }) {
-  const label = file.status.charAt(0).toUpperCase() + file.status.slice(1);
+  const ink = gitDiffToneColor(presentation.tone, theme, chrome.textMuted);
   return (
-    <View style={[styles.statusPill, { backgroundColor: chrome.surfaceMuted }]}>
+    <View
+      accessible={false}
+      importantForAccessibility="no-hide-descendants"
+      style={[
+        styles.tile,
+        {
+          width: size,
+          height: size,
+          borderRadius: Math.round(size * 0.3),
+          backgroundColor: withAlpha(ink, 0.14),
+        },
+      ]}
+    >
       <Text
-        style={[styles.statusPillText, { color: chrome.textMuted }]}
-        numberOfLines={1}
+        allowFontScaling={false}
+        style={[styles.tileGlyph, { color: ink, fontSize: Math.round(size * 0.52) }]}
       >
-        {label}
+        {presentation.glyph}
       </Text>
     </View>
   );
 }
 
-function buildSubtitle(
+function fileSubtitle(presentation: GitDiffFilePresentation, repoTitle: string): string {
+  const directory = presentation.directory.replace(/\/$/, "") || repoTitle;
+  const change = presentation.binary
+    ? "Binary"
+    : `+${presentation.additions} −${presentation.deletions}`;
+  return [presentation.statusLabel, change, directory].join(" · ");
+}
+
+function overviewSubtitle(
   snapshot: GitDiffStatusSnapshot | null,
-  repoTitle: string,
+  summary: string | null,
 ): string {
-  if (!snapshot?.available) {
-    return "Diff and files";
-  }
-  if (snapshot.branch) {
-    return `${repoTitle} · ${snapshot.branch}`;
-  }
-  return repoTitle || "Repository";
+  if (!snapshot?.available) return "Diff and files";
+  return [snapshot.branch || null, snapshot.clean ? "Clean" : summary]
+    .filter(Boolean)
+    .join(" · ") || "Repository";
 }
 
 const styles = StyleSheet.create({
@@ -300,42 +306,59 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 4,
     paddingVertical: 4,
-    gap: 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    minHeight: 52,
+    minHeight: 56,
+  },
+  lane: {
+    minWidth: 48,
+    alignItems: "center",
+    justifyContent: "center",
   },
   headerCopy: {
     flex: 1,
     minWidth: 0,
-    paddingHorizontal: 2,
+    alignItems: "center",
+    paddingHorizontal: 4,
   },
   titleRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 7,
+    maxWidth: "100%",
   },
   title: {
+    ...TypeScale.heading,
+    ...UiTextMetrics,
     flexShrink: 1,
     minWidth: 0,
-    fontSize: 15,
-    lineHeight: 20,
-    fontFamily: Typography.uiFontMedium,
+  },
+  subtitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    maxWidth: "100%",
+  },
+  spinner: {
+    transform: [{ scale: 0.7 }],
+    width: 16,
+    height: 16,
   },
   subtitle: {
-    marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
+    ...TypeScale.caption,
+    ...UiTextMetrics,
+    flexShrink: 1,
+    minWidth: 0,
+    fontVariant: ["tabular-nums"],
   },
-  statusPill: {
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+  tile: {
+    ...ContinuousCorners,
+    alignItems: "center",
+    justifyContent: "center",
     flexShrink: 0,
   },
-  statusPillText: {
-    fontSize: 10,
-    lineHeight: 12,
-    fontFamily: Typography.uiFontMedium,
+  tileGlyph: {
+    fontFamily: TypeScale.monoStrong.fontFamily,
+    includeFontPadding: false,
+    textAlign: "center",
   },
 });

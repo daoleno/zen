@@ -22,6 +22,8 @@ export interface GitDiffFilePresentation {
   statusLabel: string;
   scopeLabel: string;
   icon: string;
+  /** One-letter status mark shown in the row's tinted tile (M, A, D, R...). */
+  glyph: string;
   tone: GitDiffStatusTone;
   additions: number;
   deletions: number;
@@ -47,6 +49,17 @@ const TONE_ICONS: Record<GitDiffStatusTone, string> = {
   conflict: "warning-outline",
   untracked: "cloud-upload-outline",
   binary: "cube-outline",
+};
+
+const STATUS_GLYPHS: Record<string, string> = {
+  added: "A",
+  deleted: "D",
+  renamed: "R",
+  copied: "C",
+  conflict: "!",
+  untracked: "U",
+  modified: "M",
+  changed: "M",
 };
 
 export function splitGitDiffPath(path: string): {
@@ -82,9 +95,64 @@ export function describeGitDiffFile(
     statusLabel,
     scopeLabel: describeGitDiffScope(file),
     icon: TONE_ICONS[tone],
+    glyph: STATUS_GLYPHS[file.status] ?? "M",
     tone,
     additions,
     deletions,
     binary: Boolean(file.binary),
   };
+}
+
+/** Scope words worth showing on a row; the default working change stays quiet. */
+export function gitDiffRowScopeNote(
+  file: GitDiffFileInfo,
+  scope: GitDiffScope,
+): string | null {
+  if (scope !== "all" || file.untracked) return null;
+  if (file.staged && file.unstaged) return "Staged + unstaged";
+  if (file.staged) return "Staged";
+  return null;
+}
+
+/** `+12 −3 · 4 files` style summary for a set of changed files. */
+export function summarizeGitDiffFiles(
+  files: readonly GitDiffFileInfo[],
+  scope: GitDiffScope,
+): { additions: number; deletions: number; label: string } {
+  let additions = 0;
+  let deletions = 0;
+  for (const file of files) {
+    if (file.binary) continue;
+    const [added, deleted] = gitDiffCounts(file, scope);
+    additions += added;
+    deletions += deleted;
+  }
+  const count = `${files.length} ${files.length === 1 ? "file" : "files"}`;
+  return {
+    additions,
+    deletions,
+    label: files.length ? `+${additions} \u2212${deletions} \u00b7 ${count}` : "No changes",
+  };
+}
+
+/** Semantic ink for a status tone: terminal palette for change colors. */
+export function gitDiffToneColor(
+  tone: GitDiffStatusTone,
+  palette: { green: string; red: string; blue: string; yellow: string },
+  muted: string,
+): string {
+  switch (tone) {
+    case "added":
+      return palette.green;
+    case "deleted":
+    case "conflict":
+      return palette.red;
+    case "renamed":
+      return palette.blue;
+    case "modified":
+      return palette.yellow;
+    case "untracked":
+    case "binary":
+      return muted;
+  }
 }

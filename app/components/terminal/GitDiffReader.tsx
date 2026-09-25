@@ -1,10 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View, VirtualizedList, useWindowDimensions, type ViewToken, type CellRendererProps } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, VirtualizedList, useWindowDimensions, type ViewToken, type CellRendererProps } from "react-native";
 import type { TerminalThemeChrome, TerminalThemePalette } from "../../constants/terminalThemes";
 import type { GitDiffPage, GitDiffPageRequest, GitDiffScope } from "../../services/gitDiff";
+import { ContinuousCorners, Radii, TouchTarget, TypeScale } from "../../constants/tokens";
+import { EmptyState } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
 import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 import { DiffIconButton } from "./GitDiffReviewControls";
-import { GitDiffRow } from "./GitDiffRow";
+import { GitDiffRow, gitDiffGutterWidth } from "./GitDiffRow";
 import { GitDiffStream, diffStreamRow, restoreDiffStream, diffBookmark, type DiffCellFrame, type GitDiffStreamState, type IndexedDiffRow } from "./gitDiffStream";
 
 export interface GitDiffPosition {
@@ -16,13 +19,15 @@ export interface GitDiffPosition {
   layout?: string;
 }
 
-export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, onPosition, wrap, fontSize, refreshKey, showSearch, showHeaders, bottomInset }: {
+export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, onPosition, wrap, fontSize, refreshKey, showSearch, showHeaders, bottomInset, onCloseSearch }: {
   path: string; scope: GitDiffScope;
   loadPage(request: GitDiffPageRequest): Promise<GitDiffPage>;
   chrome: TerminalThemeChrome; theme: TerminalThemePalette;
   position: GitDiffPosition; onPosition(position: GitDiffPosition): void;
   wrap: boolean; fontSize: number; refreshKey: number; showSearch: boolean; showHeaders: boolean;
   bottomInset: number;
+  /** The find bar's own dismiss; its toggle lives in the header menu. */
+  onCloseSearch?(): void;
 }) {
   const restored = position.refreshKey === refreshKey ? position : { offset: 0 };
   const stream = useMemo(() => new GitDiffStream(loadPage, path, scope, restoreDiffStream(restored.snapshot, restored.row)), [loadPage, path, scope, refreshKey]);
@@ -149,33 +154,45 @@ export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, 
       onAccessibilityAction={event => { void stream.seek(event.nativeEvent.actionName === "increment" ? "next" : "previous", visibleRow.current, "hunk"); }}
     />
   );
+  const seekDisabled = !state.query || state.matches === 0 || Boolean(state.loading) || state.stale;
   return (
-    <View style={styles.root}>
-      {showSearch ? <View style={[styles.search, { borderColor: chrome.border }]}>
-        <MobileSingleLineInput
-          accessibilityLabel="Search this diff" placeholder="Find in diff" value={draft}
-          onChangeText={setDraft} onSubmitEditing={() => void stream.search(draft)}
-          returnKeyType="search" autoCapitalize="none" autoCorrect={false}
-          containerStyle={styles.input} inputStyle={{ color: chrome.text }} placeholderTextColor={chrome.textSubtle}
-        />
-        <DiffIconButton icon="search" label="Find in diff" chrome={chrome} onPress={() => void stream.search(draft)} />
-        <DiffIconButton icon="chevron-up" label="Previous matching line" chrome={chrome} disabled={!state.query || state.matches === 0 || Boolean(state.loading) || state.stale} onPress={() => void stream.seek("previous", visibleRow.current)} />
-        <DiffIconButton icon="chevron-down" label="Next matching line" chrome={chrome} disabled={!state.query || state.matches === 0 || Boolean(state.loading) || state.stale} onPress={() => void stream.seek("next", visibleRow.current)} />
+    <View style={[styles.root, { backgroundColor: chrome.surface }]}>
+      {showSearch ? <View style={[styles.search, { borderColor: chrome.border, backgroundColor: chrome.appBackground }]}>
+        <View style={[styles.field, { backgroundColor: chrome.surfaceMuted }]}>
+          <MobileSingleLineInput
+            accessibilityLabel="Search this diff" placeholder="Find in diff" value={draft}
+            onChangeText={setDraft} onSubmitEditing={() => void stream.search(draft)}
+            returnKeyType="search" autoCapitalize="none" autoCorrect={false} autoFocus
+            containerStyle={styles.input} inputStyle={{ color: chrome.text }} placeholderTextColor={chrome.textSubtle}
+          />
+          {state.loading === "search" ? <ActivityIndicator size="small" color={chrome.textSubtle} accessibilityLabel="Searching diff" /> : state.query ? (
+            <Text accessibilityLiveRegion="polite" style={[styles.matchCount, { color: chrome.textMuted }]}>
+              {state.matches} {state.matches === 1 ? "match" : "matches"}
+            </Text>
+          ) : null}
+        </View>
+        <DiffIconButton icon="chevron-up" label="Previous matching line" chrome={chrome} disabled={seekDisabled} onPress={() => void stream.seek("previous", visibleRow.current)} />
+        <DiffIconButton icon="chevron-down" label="Next matching line" chrome={chrome} disabled={seekDisabled} onPress={() => void stream.seek("next", visibleRow.current)} />
+        {onCloseSearch ? <Pressable accessibilityRole="button" accessibilityLabel="Done finding" onPress={onCloseSearch} style={({ pressed }) => [styles.done, { opacity: pressed ? 0.55 : 1 }]}>
+          <Text style={[styles.doneText, { color: chrome.link }]}>Done</Text>
+        </Pressable> : null}
       </View> : null}
-      {state.query ? <Text style={[styles.meta, { color: chrome.textMuted }]}>{state.matches} {state.matches === 1 ? "match" : "matches"}</Text> : null}
-      {state.loading === "search" ? <ActivityIndicator size="small" color={chrome.accent} accessibilityLabel="Searching diff" /> : null}
-      {state.error || state.stale ? <View style={[styles.notice, { borderColor: chrome.border }]}>
-        <Text style={[styles.noticeText, { color: state.stale ? theme.yellow : theme.red }]}>{state.stale ? "Diff changed" : state.error}</Text>
-        <DiffIconButton icon="refresh" label={state.stale ? "Refresh changed diff" : "Retry diff"} chrome={chrome} onPress={() => void (state.stale ? stream.refresh() : stream.retry())} />
-      </View> : null}
+      {state.error || state.stale ? <InlineNotice
+        tone={state.stale ? "warning" : "danger"}
+        icon={state.stale ? "refresh-circle-outline" : undefined}
+        title={state.stale ? "This diff changed" : "Couldn't load this diff"}
+        detail={state.stale ? "Refresh to read the latest version." : state.error}
+        action={{ label: state.stale ? "Refresh" : "Retry", onPress: () => void (state.stale ? stream.refresh() : stream.retry()) }}
+        style={styles.notice}
+      /> : null}
       {hasRows ? wrap ? rows : <ScrollView
         horizontal style={styles.root} contentContainerStyle={styles.horizontal}
         contentOffset={{ x: initialHorizontalOffset, y: 0 }}
         onScroll={event => { horizontalOffset.current = event.nativeEvent.contentOffset.x; }} scrollEventThrottle={100}
       >
-        <View style={{ width: Math.max(width, state.maxCharacters * fontSize * fontScale + 120 * fontScale) }}>{rows}</View>
+        <View style={{ width: Math.max(width, state.maxCharacters * fontSize * fontScale + gitDiffGutterWidth(fontSize, fontScale) + 32 * fontScale) }}>{rows}</View>
       </ScrollView> : <View style={styles.state}>
-        {state.loading || (state.total === null && !state.error && !state.stale) ? <ActivityIndicator color={chrome.accent} accessibilityLabel="Loading diff" /> : !state.error && !state.stale ? <Text style={{ color: chrome.textMuted }}>No changes in this comparison</Text> : null}
+        {state.loading || (state.total === null && !state.error && !state.stale) ? <EmptyState size="inline" busy title="Loading diff" /> : !state.error && !state.stale ? <EmptyState size="inline" title="No changes in this comparison" /> : null}
       </View>}
     </View>
   );
@@ -184,11 +201,13 @@ export function GitDiffReader({ path, scope, loadPage, chrome, theme, position, 
 const styles = StyleSheet.create({
   root: { flex: 1 },
   horizontal: { height: "100%" },
-  search: { flexDirection: "row", alignItems: "center", borderBottomWidth: StyleSheet.hairlineWidth },
+  search: { flexDirection: "row", alignItems: "center", gap: 2, paddingLeft: 12, paddingRight: 4, paddingVertical: 4, borderBottomWidth: StyleSheet.hairlineWidth },
+  field: { flex: 1, minWidth: 0, minHeight: 38, flexDirection: "row", alignItems: "center", gap: 6, paddingRight: 10, borderRadius: Radii.sm, ...ContinuousCorners },
   input: { flex: 1, minWidth: 0 },
+  matchCount: { ...TypeScale.caption, fontVariant: ["tabular-nums"] },
+  done: { minHeight: TouchTarget, minWidth: TouchTarget, paddingHorizontal: 8, alignItems: "center", justifyContent: "center" },
+  doneText: { ...TypeScale.label },
   pending: { height: 36, alignItems: "center", justifyContent: "center" },
   state: { flex: 1, padding: 20, alignItems: "center", justifyContent: "center" },
-  meta: { fontSize: 12, paddingHorizontal: 12, paddingVertical: 4 },
-  notice: { flexDirection: "row", alignItems: "center", paddingLeft: 12, borderBottomWidth: StyleSheet.hairlineWidth },
-  noticeText: { flex: 1, fontSize: 13 },
+  notice: { marginHorizontal: 12, marginVertical: 8 },
 });

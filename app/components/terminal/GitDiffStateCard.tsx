@@ -1,7 +1,7 @@
 import React from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Typography } from "../../constants/tokens";
+import { TypeScale, UiTextMetrics } from "../../constants/tokens";
 import { withAlpha } from "./colorWithAlpha";
 
 interface GitDiffStateCardProps {
@@ -14,6 +14,11 @@ interface GitDiffStateCardProps {
   busy?: boolean;
 }
 
+/**
+ * Quiet in-panel state for content that has no code to show (binary file,
+ * unreadable snapshot, empty folder). Sheet-level loading, error and empty
+ * states use the shared EmptyState instead.
+ */
 export function GitDiffStateCard({
   icon,
   title,
@@ -24,20 +29,14 @@ export function GitDiffStateCard({
   busy = false,
 }: GitDiffStateCardProps) {
   return (
-    <View
-      style={[
-        styles.stateCard,
-        {
-          borderColor: withAlpha(accent, 0.24),
-          backgroundColor: withAlpha(accent, 0.08),
-        },
-      ]}
-    >
-      {busy ? (
-        <ActivityIndicator size="small" color={accent} />
-      ) : (
-        <Ionicons name={icon} size={18} color={accent} />
-      )}
+    <View style={styles.stateCard} accessible accessibilityLiveRegion="polite">
+      <View style={[styles.glyph, { backgroundColor: withAlpha(accent, 0.12) }]}>
+        {busy ? (
+          <ActivityIndicator size="small" color={accent} />
+        ) : (
+          <Ionicons name={icon} size={20} color={accent} />
+        )}
+      </View>
       <Text style={[styles.stateTitle, { color: chromeText }]}>{title}</Text>
       {detail ? <Text style={[styles.stateDetail, { color: chromeMuted }]}>{detail}</Text> : null}
     </View>
@@ -46,21 +45,28 @@ export function GitDiffStateCard({
 
 const styles = StyleSheet.create({
   stateCard: {
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    alignItems: "flex-start",
+    alignItems: "center",
+    paddingHorizontal: 24,
+    paddingVertical: 32,
     gap: 6,
   },
+  glyph: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
+  },
   stateTitle: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
+    ...TypeScale.label,
+    ...UiTextMetrics,
+    textAlign: "center",
   },
   stateDetail: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
+    ...TypeScale.caption,
+    ...UiTextMetrics,
+    textAlign: "center",
+    maxWidth: 320,
   },
 });

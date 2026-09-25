@@ -85,7 +85,7 @@ describe("continuous Git diff", () => {
   });
   test("stale responses cannot enter another file, scope or search", async () => {
     let resolve!: (value: GitDiffPage) => void;
-    const stream = new GitDiffStream(r => new Promise(done => { resolve = done; }), "file", "all");
+    const stream = new GitDiffStream(() => new Promise(done => { resolve = done; }), "file", "all");
     const pending = stream.loadNext(); stream.dispose();
     resolve(page({ path: "file", scope: "all", row: 0 })); await pending;
     expect(values(stream)).toEqual([]);
@@ -124,7 +124,9 @@ describe("continuous Git diff", () => {
     expect(reader).toContain("onEndReached"); expect(reader).toContain("onStartReached");
     expect(reader).toContain("maintainVisibleContentPosition");
     for (const copy of ["Previous file", "Next file", "Staged + working tree", "HEAD → index"]) expect(chrome).not.toContain(copy);
-    expect(chrome).toContain('"Changed files"'); expect(chrome).toContain('label="Diff options"');
+    // One leading Back/Close and one overflow; secondary actions live in the shared ActionMenu.
+    expect(chrome).toContain('"Changed files"'); expect(chrome).toContain('label="More actions"');
+    for (const copy of ['label="Diff options"', 'label="Find in diff"', 'label="Refresh Git diff"', 'label="Browse repository files"']) expect(chrome).not.toContain(copy);
     expect(chrome).not.toContain("modeBar");
     expect(chrome).not.toContain("compact");
   });

@@ -1,22 +1,30 @@
 import React from "react";
 import {
-  ActivityIndicator,
   FlatList,
+  Pressable,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Typography } from "../../constants/tokens";
+import * as Haptics from "expo-haptics";
 import {
-  buildTerminalChrome,
-  type TerminalThemePalette,
+  ContinuousCorners,
+  Radii,
+  TouchTarget,
+  TypeScale,
+  UiTextMetrics,
+} from "../../constants/tokens";
+import type {
+  TerminalThemeChrome,
+  TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type {
   GitRepoBrowserEntry,
   GitRepoFileContentPayload,
 } from "../../services/gitDiff";
+import { EmptyState } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
 import { GitDiffRepoFileView } from "./GitDiffRepoFileView";
 import { GitDiffStateCard } from "./GitDiffStateCard";
 import { withAlpha } from "./colorWithAlpha";
@@ -33,15 +41,19 @@ interface GitDiffRepoBrowserProps {
   repoFileError: string | null;
   changedPathSet: Set<string>;
   theme: TerminalThemePalette;
-  chrome: ReturnType<typeof buildTerminalChrome>;
+  chrome: TerminalThemeChrome;
   bottomInset: number;
   onOpenRepoPath(path: string): void;
   onOpenRepoFile(path: string): void;
-  onBackRepoPath(): void;
+  onLongPressEntry?(entry: GitRepoBrowserEntry): void;
 }
 
+/**
+ * Working-tree browser as one inset grouped list. The sheet header is the
+ * only Back: it climbs one folder at a time, so this view draws no folder-up
+ * control of its own.
+ */
 export function GitDiffRepoBrowser({
-  repoTitle,
   repoBrowserPath,
   repoBrowserEntries,
   repoBrowserLoading,
@@ -56,12 +68,15 @@ export function GitDiffRepoBrowser({
   bottomInset,
   onOpenRepoPath,
   onOpenRepoFile,
-  onBackRepoPath,
+  onLongPressEntry,
 }: GitDiffRepoBrowserProps) {
+  const count = repoBrowserEntries.length;
   const renderRepoEntry = React.useCallback(
-    ({ item }: { item: GitRepoBrowserEntry }) => (
+    ({ item, index }: { item: GitRepoBrowserEntry; index: number }) => (
       <RepoEntryRow
         entry={item}
+        first={index === 0}
+        last={index === count - 1}
         changed={changedPathSet.has(item.path)}
         theme={theme}
         chrome={chrome}
@@ -72,9 +87,10 @@ export function GitDiffRepoBrowser({
           }
           onOpenRepoFile(item.path);
         }}
+        onLongPress={onLongPressEntry ? () => onLongPressEntry(item) : undefined}
       />
     ),
-    [changedPathSet, chrome, onOpenRepoFile, onOpenRepoPath, theme],
+    [changedPathSet, chrome, count, onLongPressEntry, onOpenRepoFile, onOpenRepoPath, theme],
   );
 
   if (repoFilePath) {
@@ -88,6 +104,7 @@ export function GitDiffRepoBrowser({
         theme={theme}
         chrome={chrome}
         bottomInset={bottomInset}
+        onRetry={() => onOpenRepoFile(repoFilePath)}
       />
     );
   }
@@ -102,25 +119,32 @@ export function GitDiffRepoBrowser({
       contentContainerStyle={[
         styles.browserContent,
         { paddingBottom: bottomInset + 20 },
-        repoBrowserEntries.length === 0 ? styles.fullListEmpty : null,
+        count === 0 ? styles.fullListEmpty : null,
       ]}
       ListHeaderComponent={
-        <RepoBrowserHeader
-          repoTitle={repoTitle}
-          path={repoBrowserPath}
-          loading={repoBrowserLoading}
-          error={repoBrowserError}
-          theme={theme}
-          chrome={chrome}
-          onBack={onBackRepoPath}
-          canGoBack={repoBrowserPath !== ""}
-        />
+        <View style={styles.header}>
+          {repoBrowserError ? (
+            <InlineNotice
+              tone="danger"
+              title="Couldn't load folder"
+              detail={repoBrowserError}
+              action={{
+                label: "Retry",
+                onPress: () => onOpenRepoPath(repoBrowserPath),
+                disabled: repoBrowserLoading,
+              }}
+              style={styles.notice}
+            />
+          ) : null}
+        </View>
       }
       ListEmptyComponent={
-        repoBrowserLoading ? null : (
+        repoBrowserLoading ? (
+          <EmptyState size="inline" busy title="Loading folder" />
+        ) : repoBrowserError ? null : (
           <GitDiffStateCard
             icon="folder-open-outline"
-            title="No files here"
+            title="Empty folder"
             accent={chrome.textSubtle}
             chromeText={chrome.text}
             chromeMuted={chrome.textMuted}
@@ -134,144 +158,79 @@ export function GitDiffRepoBrowser({
   );
 }
 
-function RepoBrowserHeader({
-  repoTitle,
-  path,
-  loading,
-  error,
-  theme,
-  chrome,
-  onBack,
-  canGoBack,
-}: {
-  repoTitle: string;
-  path: string;
-  loading: boolean;
-  error: string | null;
-  theme: TerminalThemePalette;
-  chrome: ReturnType<typeof buildTerminalChrome>;
-  onBack(): void;
-  canGoBack: boolean;
-}) {
-  return (
-    <View style={styles.browserHeaderWrap}>
-      <View
-        style={[
-          styles.browserPathBar,
-          {
-            backgroundColor: chrome.surfaceMuted,
-            borderColor: chrome.border,
-          },
-        ]}
-      >
-        <TouchableOpacity
-          style={[
-            styles.browserBackButton,
-            {
-              backgroundColor: canGoBack ? chrome.surface : "transparent",
-              borderColor: canGoBack ? chrome.border : "transparent",
-              opacity: canGoBack ? 1 : 0.35,
-            },
-          ]}
-          onPress={onBack}
-          disabled={!canGoBack}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="arrow-up" size={16} color={chrome.textMuted} />
-        </TouchableOpacity>
-        <View style={styles.browserPathCopy}>
-          <Text
-            style={[styles.browserRepoTitle, { color: chrome.text }]}
-            numberOfLines={1}
-          >
-            {repoTitle}
-          </Text>
-          <Text
-            style={[styles.browserPathText, { color: chrome.textMuted }]}
-            numberOfLines={2}
-          >
-            {path ? `/${path}` : "/"}
-          </Text>
-        </View>
-        {loading ? (
-          <ActivityIndicator size="small" color={theme.cursor} />
-        ) : null}
-      </View>
-
-      {error ? (
-        <GitDiffStateCard
-          icon="warning-outline"
-          title="Could not load folder"
-          detail={error}
-          accent={theme.red}
-          chromeText={chrome.text}
-          chromeMuted={chrome.textMuted}
-        />
-      ) : null}
-    </View>
-  );
-}
-
 function RepoEntryRow({
   entry,
+  first,
+  last,
   changed,
   theme,
   chrome,
   onPress,
+  onLongPress,
 }: {
   entry: GitRepoBrowserEntry;
+  first: boolean;
+  last: boolean;
   changed: boolean;
   theme: TerminalThemePalette;
-  chrome: ReturnType<typeof buildTerminalChrome>;
+  chrome: TerminalThemeChrome;
   onPress(): void;
+  onLongPress?(): void;
 }) {
   const isDirectory = entry.kind === "directory";
+  const tint = isDirectory ? chrome.accent : chrome.textMuted;
 
   return (
-    <TouchableOpacity
-      style={[
-        styles.repoEntryRow,
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${entry.name}, ${isDirectory ? "folder" : "file"}${changed ? ", changed" : ""}`}
+      accessibilityHint={isDirectory ? "Opens folder" : "Opens file"}
+      onPress={() => {
+        void Haptics.selectionAsync();
+        onPress();
+      }}
+      onLongPress={onLongPress}
+      style={({ pressed }) => [
+        styles.row,
         {
-          backgroundColor: chrome.surfaceMuted,
-          borderColor: chrome.border,
+          backgroundColor: pressed ? chrome.surfaceActive : chrome.surface,
+          borderTopLeftRadius: first ? Radii.card : 0,
+          borderTopRightRadius: first ? Radii.card : 0,
+          borderBottomLeftRadius: last ? Radii.card : 0,
+          borderBottomRightRadius: last ? Radii.card : 0,
         },
       ]}
-      onPress={onPress}
-      activeOpacity={0.82}
     >
-      <Ionicons
-        name={isDirectory ? "folder-outline" : "document-text-outline"}
-        size={16}
-        color={isDirectory ? theme.yellow : chrome.textSubtle}
-      />
-      <View style={styles.repoEntryCopy}>
+      <View style={[styles.tile, { backgroundColor: withAlpha(tint, 0.12) }]}>
+        <Ionicons
+          name={isDirectory ? "folder" : "document-text-outline"}
+          size={16}
+          color={tint}
+        />
+      </View>
+      <View style={[styles.rowBody, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: chrome.border }]}>
         <Text
-          style={[styles.repoEntryName, { color: chrome.text }]}
-          numberOfLines={2}
+          style={[styles.name, { color: chrome.text }]}
+          numberOfLines={1}
+          ellipsizeMode="middle"
         >
           {entry.name}
         </Text>
+        {changed ? (
+          <View
+            style={[styles.changedDot, { backgroundColor: theme.yellow }]}
+            accessible={false}
+          />
+        ) : null}
+        {isDirectory ? (
+          <Ionicons name="chevron-forward" size={16} color={chrome.textSubtle} />
+        ) : null}
       </View>
-      {changed ? (
-        <View
-          style={[
-            styles.changedPill,
-            { backgroundColor: withAlpha(theme.cursor, 0.12) },
-          ]}
-        >
-          <Text style={[styles.changedPillText, { color: theme.cursor }]}>
-            Changed
-          </Text>
-        </View>
-      ) : null}
-      <Ionicons
-        name={isDirectory ? "chevron-forward" : "open-outline"}
-        size={15}
-        color={chrome.textSubtle}
-      />
-    </TouchableOpacity>
+    </Pressable>
   );
 }
+
+const TILE = 28;
 
 const styles = StyleSheet.create({
   fullList: {
@@ -281,76 +240,51 @@ const styles = StyleSheet.create({
     flexGrow: 1,
   },
   browserContent: {
-    paddingHorizontal: 8,
+    paddingHorizontal: 16,
     paddingTop: 8,
-    paddingBottom: 20,
-    gap: 3,
   },
-  browserHeaderWrap: {
+  header: {
     gap: 8,
-    marginBottom: 2,
+    paddingBottom: 8,
   },
-  browserPathBar: {
-    minHeight: 44,
-    borderRadius: 11,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
+  notice: {
+    marginTop: 4,
+  },
+  row: {
+    ...ContinuousCorners,
+    minHeight: Math.max(TouchTarget, 48),
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    paddingLeft: 14,
+    gap: 12,
+    overflow: "hidden",
   },
-  browserBackButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
+  tile: {
+    width: TILE,
+    height: TILE,
+    borderRadius: 8,
+    ...ContinuousCorners,
     alignItems: "center",
     justifyContent: "center",
   },
-  browserPathCopy: {
+  rowBody: {
     flex: 1,
     minWidth: 0,
-  },
-  browserRepoTitle: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
-  },
-  browserPathText: {
-    marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.terminalFont,
-  },
-  repoEntryRow: {
-    minHeight: 34,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    alignSelf: "stretch",
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 9,
+    alignItems: "center",
+    gap: 10,
+    paddingRight: 14,
   },
-  repoEntryCopy: {
+  name: {
+    ...TypeScale.compact,
+    ...UiTextMetrics,
     flex: 1,
     minWidth: 0,
   },
-  repoEntryName: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
-  changedPill: {
-    borderRadius: 999,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    marginTop: 2,
-  },
-  changedPillText: {
-    fontSize: 10,
-    lineHeight: 12,
-    fontFamily: Typography.uiFontMedium,
+  changedDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
 });

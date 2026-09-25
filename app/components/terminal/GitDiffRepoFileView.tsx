@@ -5,8 +5,9 @@ import {
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { GitRepoFileContentPayload } from "../../services/gitDiff";
+import { EmptyState } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
 import { GitDiffCodeSnapshotPanel } from "./GitDiffCodeView";
-import { GitDiffStateCard } from "./GitDiffStateCard";
 
 interface GitDiffRepoFileViewProps {
   path: string;
@@ -16,6 +17,7 @@ interface GitDiffRepoFileViewProps {
   theme: TerminalThemePalette;
   chrome: ReturnType<typeof buildTerminalChrome>;
   bottomInset: number;
+  onRetry?(): void;
 }
 
 /**
@@ -30,29 +32,21 @@ export function GitDiffRepoFileView({
   theme,
   chrome,
   bottomInset,
+  onRetry,
 }: GitDiffRepoFileViewProps) {
   return (
     <View style={styles.repoFileRoot}>
       {loading ? (
         <View style={[styles.contentPad, { paddingBottom: bottomInset + 14 }]}>
-          <GitDiffStateCard
-            icon="sync-outline"
-            title="Loading file"
-            accent={theme.cursor}
-            chromeText={chrome.text}
-            chromeMuted={chrome.textMuted}
-            busy
-          />
+          <EmptyState size="inline" busy title="Loading file" />
         </View>
       ) : error ? (
         <View style={[styles.contentPad, { paddingBottom: bottomInset + 14 }]}>
-          <GitDiffStateCard
-            icon="warning-outline"
-            title="Could not load file"
+          <InlineNotice
+            tone="danger"
+            title="Couldn't load file"
             detail={error}
-            accent={theme.red}
-            chromeText={chrome.text}
-            chromeMuted={chrome.textMuted}
+            action={onRetry ? { label: "Retry", onPress: onRetry } : undefined}
           />
         </View>
       ) : (
@@ -71,8 +65,8 @@ export function GitDiffRepoFileView({
 const styles = StyleSheet.create({
   contentPad: {
     flex: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
   },
   repoFileRoot: {
     flex: 1,
