@@ -4,6 +4,8 @@ export { BottomSheetFrame } from "./BottomSheetFrame";
 export { Button } from "./Button";
 export { EmptyState } from "./EmptyState";
 export { GlassSurface } from "./GlassSurface";
+export { InlineNotice } from "./InlineNotice";
+export { confirmDestructive } from "./confirmDestructive";
 export { IconButton } from "./IconButton";
 export { ListRow, ListSection } from "./ListSection";
 export { StatusPill } from "./StatusPill";

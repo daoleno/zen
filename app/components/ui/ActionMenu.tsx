@@ -13,6 +13,9 @@ export interface ActionMenuItem {
   label: string;
   icon: IoniconName;
   detail?: string;
+  accessibilityLabel?: string;
+  /** Small trailing adornment such as provider marks or a value. */
+  trailing?: React.ReactNode;
   destructive?: boolean;
   disabled?: boolean;
   onPress(): void;
@@ -47,7 +50,7 @@ export function ActionMenu({ visible, title, items, onClose }: ActionMenuProps) 
               key={item.key}
               disabled={item.disabled}
               accessibilityRole="button"
-              accessibilityLabel={item.label}
+              accessibilityLabel={item.accessibilityLabel ?? item.label}
               accessibilityHint={item.detail}
               accessibilityState={{ disabled: Boolean(item.disabled) }}
               android_ripple={{ color: colors.surfacePressed }}
@@ -80,6 +83,7 @@ export function ActionMenu({ visible, title, items, onClose }: ActionMenuProps) 
                   </AppText>
                 ) : null}
               </View>
+              {item.trailing ? <View style={styles.trailing}>{item.trailing}</View> : null}
             </Pressable>
           );
         })}
@@ -109,5 +113,10 @@ const styles = StyleSheet.create({
   copy: {
     flex: 1,
     minWidth: 0,
+  },
+  trailing: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
 });

@@ -10,10 +10,17 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Typography, useAppColors } from "../../constants/tokens";
+import {
+  ContinuousCorners,
+  Radii,
+  Typography,
+  useAppTheme,
+} from "../../constants/tokens";
 import { appVersion } from "../../constants/appVersion";
 import { useWorkerServerSummary } from "../../store/workers";
 import { useCurrentServer } from "../../store/currentServer";
+import { GlassSurface } from "../ui/GlassSurface";
+import { StatusPill, type StatusTone } from "../ui/StatusPill";
 import { ZenLogoMark } from "../ui/ZenLogoMark";
 import {
   NavChevronIcon,
@@ -56,13 +63,14 @@ function DrawerRowIconView({
 }
 
 function DrawerRow({ drawerVisible, icon, label, onPress }: DrawerRowProps) {
-  const colors = useAppColors();
+  const { colors, theme } = useAppTheme();
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
       tabIndex={drawerVisible ? 0 : -1}
+      android_ripple={{ color: colors.surfacePressed }}
       style={({ pressed }) => [
         styles.drawerRow,
         {
@@ -73,10 +81,10 @@ function DrawerRow({ drawerVisible, icon, label, onPress }: DrawerRowProps) {
       <View
         style={[
           styles.drawerRowIcon,
-          { backgroundColor: colors.surfaceSubtle },
+          { backgroundColor: theme.materials.tint },
         ]}
       >
-        <DrawerRowIconView color={colors.textSecondary} icon={icon} />
+        <DrawerRowIconView color={colors.accentStrong} icon={icon} />
       </View>
       <Text
         numberOfLines={1}
@@ -103,7 +111,7 @@ export function PrimaryDrawerPanel({
   onNavigateAway,
 }: PrimaryDrawerPanelProps) {
   const router = useRouter();
-  const colors = useAppColors();
+  const { colors, theme } = useAppTheme();
   const { serverConnections, serverConnectionIssues } = useWorkerServerSummary();
   const { currentServer } = useCurrentServer();
   const currentConnection = currentServer
@@ -120,6 +128,13 @@ export function PrimaryDrawerPanel({
       : currentConnection === "connecting"
         ? "Connecting"
         : "Offline");
+  const connectionTone: StatusTone = currentIssue
+    ? "danger"
+    : currentConnection === "connected"
+      ? "success"
+      : currentConnection === "connecting"
+        ? "warning"
+        : "neutral";
 
   const openRoute = useCallback(
     (pathname: "/skills" | "/stats" | "/settings" | "/remote-desktop") => {
@@ -137,20 +152,19 @@ export function PrimaryDrawerPanel({
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.drawerIdentity}>
-          <ZenLogoMark size={42} accessible={false} />
-          <View style={styles.drawerIdentityCopy}>
-            <Text
-              style={[
-                styles.drawerTitle,
-                {
-                  color: colors.textPrimary,
-                  fontFamily: Typography.uiFontMedium,
-                },
-              ]}
-            >
-              Zen
-            </Text>
-          </View>
+          <ZenLogoMark size={34} accessible={false} />
+          <Text
+            style={[
+              styles.drawerTitle,
+              {
+                color: colors.textPrimary,
+                fontFamily: Typography.uiFontMedium,
+              },
+            ]}
+            accessibilityRole="header"
+          >
+            Zen
+          </Text>
           <Pressable
             ref={closeButtonRef}
             onPress={onClose}
@@ -168,59 +182,67 @@ export function PrimaryDrawerPanel({
               },
             ]}
           >
-            <NavCloseIcon color={colors.textPrimary} size={20} />
+            <NavCloseIcon color={colors.textSecondary} size={18} />
           </Pressable>
         </View>
 
+        <Pressable
+          onPress={() => openRoute("/settings")}
+          accessibilityRole="button"
+          accessibilityLabel={`${connectionSummary}, ${connectionDetail}`}
+          accessibilityHint="Opens server settings"
+          tabIndex={drawerVisible ? 0 : -1}
+          style={({ pressed }) => (pressed ? styles.pressedCard : null)}
+        >
+          <GlassSurface
+            material="thin"
+            radius={Radii.card}
+            elevation="card"
+            style={styles.connectionCard}
+          >
+            <View style={[styles.serverGlyph, { backgroundColor: theme.materials.tint }]}>
+              <Ionicons name="desktop-outline" size={20} color={colors.accentStrong} />
+            </View>
+            <View style={styles.connectionCopy}>
+              <Text
+                numberOfLines={1}
+                style={[styles.connectionTitle, { color: colors.textPrimary }]}
+              >
+                {connectionSummary}
+              </Text>
+              <StatusPill
+                label={connectionDetail}
+                tone={connectionTone}
+                live={currentConnection === "connecting"}
+              />
+            </View>
+            <NavChevronIcon color={colors.textTertiary} size={17} />
+          </GlassSurface>
+        </Pressable>
+
         <View
           style={[
-            styles.connectionCard,
+            styles.drawerGroup,
             {
-              backgroundColor: colors.surfaceSubtle,
-              borderColor: colors.borderSubtle,
+              backgroundColor: colors.bgElevated,
+              borderColor: theme.materials.stroke,
             },
           ]}
         >
-          <View
-            style={[
-              styles.connectionDot,
-              {
-                backgroundColor:
-                  currentConnection === "connected"
-                    ? colors.statusRunning
-                    : colors.statusUnknown,
-              },
-            ]}
+          <DrawerRow
+            drawerVisible={drawerVisible}
+            icon="skills"
+            label="Skills"
+            onPress={() => openRoute("/skills")}
           />
-          <View style={styles.connectionCopy}>
-            <Text style={[styles.connectionTitle, { color: colors.textPrimary }]}>
-              {connectionSummary}
-            </Text>
-            <Text
-              numberOfLines={2}
-              style={[styles.connectionDetail, { color: colors.textTertiary }]}
-            >
-              {connectionDetail}
-            </Text>
-          </View>
+          <View style={[styles.groupSeparator, { backgroundColor: theme.materials.separator }]} />
+          <DrawerRow
+            drawerVisible={drawerVisible}
+            icon="stats"
+            label="Stats"
+            onPress={() => openRoute("/stats")}
+          />
         </View>
-
-        <View
-          style={[styles.drawerDivider, { backgroundColor: colors.borderSubtle }]}
-        />
-
-        <DrawerRow
-          drawerVisible={drawerVisible}
-          icon="skills"
-          label="Skills"
-          onPress={() => openRoute("/skills")}
-        />
-        <DrawerRow
-          drawerVisible={drawerVisible}
-          icon="stats"
-          label="Stats"
-          onPress={() => openRoute("/stats")}
-        />
       </ScrollView>
 
       <View
@@ -252,17 +274,20 @@ export function PrimaryDrawerPanel({
   );
 }
 
+const DRAWER_ICON_TILE = 32;
+
 const styles = StyleSheet.create({
   drawerContent: {
     flex: 1,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   drawerIdentity: {
-    minHeight: 64,
+    minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
+    paddingHorizontal: 4,
   },
   drawerScroll: {
     flex: 1,
@@ -274,74 +299,79 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 8,
   },
-  drawerIdentityCopy: {
-    flex: 1,
-  },
   drawerTitle: {
-    fontSize: 17,
-    lineHeight: 22,
+    flex: 1,
+    fontSize: 22,
+    lineHeight: 30,
   },
   closeButton: {
     width: 44,
     height: 44,
-    borderRadius: 12,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
-  connectionCard: {
-    marginTop: 16,
-    minHeight: 68,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
-    paddingHorizontal: 13,
-    paddingVertical: 12,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
+  pressedCard: {
+    opacity: 0.8,
+    transform: [{ scale: 0.99 }],
   },
-  connectionDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginTop: 5,
+  connectionCard: {
+    marginTop: 14,
+    minHeight: 76,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  serverGlyph: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    ...ContinuousCorners,
+    alignItems: "center",
+    justifyContent: "center",
   },
   connectionCopy: {
     flex: 1,
+    minWidth: 0,
+    gap: 6,
   },
   connectionTitle: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 16,
+    lineHeight: 22,
     fontFamily: Typography.uiFontMedium,
   },
-  connectionDetail: {
-    marginTop: 3,
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.uiFont,
+  drawerGroup: {
+    marginTop: 22,
+    borderRadius: Radii.card,
+    ...ContinuousCorners,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
   },
-  drawerDivider: {
+  groupSeparator: {
     height: StyleSheet.hairlineWidth,
-    marginVertical: 18,
+    marginLeft: 14 + DRAWER_ICON_TILE + 12,
   },
   drawerRow: {
     minHeight: 58,
-    borderRadius: 12,
-    paddingHorizontal: 10,
+    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
-    gap: 11,
+    gap: 12,
   },
   drawerRowIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
+    width: DRAWER_ICON_TILE,
+    height: DRAWER_ICON_TILE,
+    borderRadius: 9,
+    ...ContinuousCorners,
     alignItems: "center",
     justifyContent: "center",
   },
   drawerRowLabel: {
     flex: 1,
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 15,
+    lineHeight: 22,
   },
   drawerVersion: {
     paddingVertical: 8,

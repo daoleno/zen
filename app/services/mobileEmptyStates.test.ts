@@ -19,11 +19,14 @@ describe("empty-state actions", () => {
     expect(source).toContain('action="Clear filters"');
   });
   test("primary actions have accessible names, disabled state, and a minimum touch target", () => {
-    const source = readFileSync(join(import.meta.dir, "../components/ui/CompactEmptyState.tsx"), "utf8");
-    expect(source).toContain('accessibilityRole="button"');
-    expect(source).toContain("accessibilityLabel={action.label}");
-    expect(source).toContain("disabled: Boolean(action.disabled)");
-    expect(source).toContain("minHeight: 48");
+    // EmptyState renders its actions through the shared capsule Button.
+    const empty = readFileSync(join(import.meta.dir, "../components/ui/EmptyState.tsx"), "utf8");
+    const button = readFileSync(join(import.meta.dir, "../components/ui/Button.tsx"), "utf8");
+    expect(empty).toContain('<Button variant="filled" {...actionProps(action)} />');
+    expect(button).toContain('accessibilityRole="button"');
+    expect(button).toContain("accessibilityLabel={props.accessibilityLabel ?? label}");
+    expect(button).toContain("disabled: inactive");
+    expect(button).toContain("md: 48");
   });
   test("model cost states distinguish catalog discovery from missing context", () => {
     expect(unpricedReasonLabel("missing_model")).toBe("Price not in catalog");

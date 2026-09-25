@@ -25,6 +25,12 @@ export interface GlassSurfaceProps extends ViewProps {
   tinted?: boolean;
   /** iOS Liquid Glass reacts to touch. */
   interactive?: boolean;
+  /**
+   * Fallback fill and hairline for surfaces that sit on a non-app canvas
+   * (terminal-theme chat chrome) so the material follows that canvas.
+   */
+  fill?: string;
+  stroke?: string;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -41,6 +47,8 @@ export function GlassSurface({
   elevation = "none",
   tinted = false,
   interactive = false,
+  fill: fillOverride,
+  stroke: strokeOverride,
   style,
   children,
   ...viewProps
@@ -71,7 +79,7 @@ export function GlassSurface({
     ? material === "thin"
       ? colors.bgElevated
       : colors.modalSurface
-    : materials[material];
+    : fillOverride ?? materials[material];
 
   return (
     <View
@@ -79,7 +87,7 @@ export function GlassSurface({
       style={[
         shape,
         styles.frame,
-        { backgroundColor: fill, borderColor: materials.stroke },
+        { backgroundColor: fill, borderColor: strokeOverride ?? materials.stroke },
         lift,
         style,
       ]}
