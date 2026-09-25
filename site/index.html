@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zen — one Brain, many coding agents</title>
+  <meta name="description" content="Zen is an open-source control plane for coding agents. A Brain plans and reviews, visible Workers run Codex, Claude Code, OpenCode and more on your own machine, and you steer it all from Android or iOS.">
+  <meta name="theme-color" content="#0e1110">
+  <link rel="icon" href="assets/zen-mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <a class="brand" href="#top" aria-label="Zen home">
+      <img src="assets/zen-mark.svg" alt="" width="28" height="28">
+      <span>Zen</span>
+    </a>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="#brain">Brain</a></li>
+        <li><a href="#switch">Agents</a></li>
+        <li><a href="#state">Work state</a></li>
+        <li><a href="#remote">Remote</a></li>
+        <li><a href="#start">Get started</a></li>
+      </ul>
+    </nav>
+    <a class="gh" href="https://github.com/daoleno/zen">
+      <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      <span>GitHub</span>
+    </a>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Open source · self-hosted · Android &amp; iOS</p>
+        <h1 id="hero-title">Run a crew of coding agents.<br><em>Steer it from anywhere.</em></h1>
+        <p class="lede">Zen puts a <strong>Brain</strong> in charge of your coding agents. It holds the context, splits the goal, hands scoped work to visible <strong>Workers</strong> — Codex, Claude Code, OpenCode and more — and accepts a result only after reviewing its evidence. Agents run on your own computer. You direct them from your phone.</p>
+        <p class="who">For people who ship alone and run more agents than they can watch.</p>
+        <div class="ctas">
+          <a class="btn primary" href="https://github.com/daoleno/zen">Star on GitHub</a>
+          <a class="btn" href="#start">Install in two commands</a>
+        </div>
+      </div>
+
+      <figure class="orchestra" id="orchestra" aria-labelledby="orch-cap" data-phase="plan">
+        <div class="orch-stage">
+          <svg class="wires" aria-hidden="true"></svg>
+          <div class="node brain-node" data-anchor="brain">
+            <div class="brain-ring" aria-hidden="true"><span></span></div>
+            <div>
+              <p class="node-kicker">Brain</p>
+              <p class="node-title">Ship release 0.4</p>
+              <p class="node-status" data-brain-status>Planning three scoped concerns</p>
+            </div>
+          </div>
+          <ol class="workers">
+            <li class="worker" data-worker="0">
+              <div class="w-head"><span class="w-name">auth-refactor</span><span class="chip" data-exec>codex</span></div>
+              <div class="bar"><span></span></div>
+              <p class="w-foot"><span data-state>queued</span><span class="evidence" data-evidence>diff +128 −41</span></p>
+            </li>
+            <li class="worker" data-worker="1">
+              <div class="w-head"><span class="w-name">ios-regression</span><span class="chip" data-exec>claude</span></div>
+              <div class="bar"><span></span></div>
+              <p class="w-foot"><span data-state>queued</span><span class="evidence" data-evidence>42 checks pass</span></p>
+            </li>
+            <li class="worker" data-worker="2">
+              <div class="w-head"><span class="w-name">docs-sync</span><span class="chip" data-exec>opencode</span></div>
+              <div class="bar"><span></span></div>
+              <p class="w-foot"><span data-state>queued</span><span class="evidence" data-evidence>links verified</span></p>
+            </li>
+          </ol>
+        </div>
+        <figcaption id="orch-cap">
+          <ol class="phases">
+            <li data-step="plan"><b>Plan</b> Brain breaks the goal into scoped Work.</li>
+            <li data-step="delegate"><b>Delegate</b> Each concern goes to a visible Worker on your chosen agent.</li>
+            <li data-step="execute"><b>Execute</b> Workers check in while they run.</li>
+            <li data-step="evidence"><b>Evidence</b> Results return with diffs, checks and receipts.</li>
+            <li data-step="accept"><b>Accept</b> Brain reviews, sends follow-ups, then accepts.</li>
+          </ol>
+          <button class="pause" type="button" aria-pressed="false" data-pause>Pause animation</button>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="diff" aria-labelledby="diff-title">
+      <h2 id="diff-title" class="visually-hidden">Why Zen is different</h2>
+      <ol class="claims">
+        <li>
+          <span class="num">01</span>
+          <h3>A Brain, not another chat tab.</h3>
+          <p>Brain owns the objective, the plan, scheduling, review and acceptance. Workers execute scoped concerns and never own the plan.</p>
+        </li>
+        <li>
+          <span class="num">02</span>
+          <h3>Work outlives the process.</h3>
+          <p>Work, Attempts and append-only Events live in the daemon. A restart rebuilds the timers. Silence or a clean exit never marks work done.</p>
+        </li>
+        <li>
+          <span class="num">03</span>
+          <h3>Any agent, your hardware.</h3>
+          <p>Six agent CLIs run through tmux beside your repositories; one is enough. Repositories, credentials and state stay on your host. The phone sees what you open; providers see what agents send.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="band" id="brain" aria-labelledby="brain-title">
+      <div class="band-copy">
+        <p class="eyebrow">Brain</p>
+        <h2 id="brain-title">The Brain holds the thread.</h2>
+        <p>You state the goal and the boundaries once. Brain carries them across chats, devices and restarts, and moves to the next runnable concern without waiting for you to type <q>continue</q>.</p>
+        <dl class="duties">
+          <div><dt>Context</dt><dd>A private workspace for memory, profile, current focus and worklogs.</dd></div>
+          <div><dt>Planning</dt><dd>Decomposes and orders the goal, then picks or reuses a Session for each concern.</dd></div>
+          <div><dt>Lifecycle</dt><dd>Owns every Work item from creation to done or cancelled.</dd></div>
+          <div><dt>Review</dt><dd>Reads Worker results, transcripts and diffs before deciding what happens next.</dd></div>
+          <div><dt>Acceptance</dt><dd>Only Brain or you can close Work. Worker reports are inputs, not verdicts.</dd></div>
+        </dl>
+      </div>
+      <div class="phones" aria-label="Zen app screenshots">
+        <figure class="phone">
+          <img src="assets/brain.webp" width="350" height="600" alt="Brain screen: the user asks to prepare the next release, Brain shows an updated plan with one step delegated to a mobile QA agent." loading="lazy">
+          <figcaption>Brain keeps the plan and delegated results together.</figcaption>
+        </figure>
+        <figure class="phone offset">
+          <img src="assets/sessions.webp" width="350" height="600" alt="Sessions screen: running, blocked and done agent sessions on the connected computer, one tagged Brain." loading="lazy">
+          <figcaption>Every Worker is a real Session you can open.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band" id="workers" aria-labelledby="workers-title">
+      <div class="band-copy wide">
+        <p class="eyebrow">Workers</p>
+        <h2 id="workers-title">Delegation you can watch.</h2>
+        <p>A Zen Worker is a named tmux Session running an agent CLI. It shows up in Sessions like anything else you started, so you can read it, interrupt it or finish it yourself. Brain drives Workers through the same CLI you can use:</p>
+      </div>
+      <div class="term" role="group" aria-label="zen worker commands">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>zsh — ~/repo</span></div>
+<pre><code><span class="c"># spawn a visible Worker on a chosen agent</span>
+<span class="p">$</span> zen worker spawn -name "iOS regression" -executor claude \
+    -cwd ~/repo -prompt "Run the regression suite and report failures"
+
+<span class="c"># the Worker reports progress against its exact turn</span>
+<span class="p">$</span> zen worker progress --status running --phase verifying \
+    --attention none --summary "38 of 42 checks green"
+
+<span class="c"># read what it did, and whether your input really landed</span>
+<span class="p">$</span> zen worker capture -id zen-worker-ios-regression:@1 --json
+<span class="p">$</span> zen worker receipt -id zen-worker-ios-regression:@1 --work-id w_19
+
+<span class="c"># continue the same Session, or accept the Work</span>
+<span class="p">$</span> zen worker send -id zen-worker-ios-regression:@1 --work-id w_19 -text "Fix the two flaky cases"
+<span class="p">$</span> zen brain work update -id w_19 -status done</code></pre>
+      </div>
+    </section>
+
+    <section class="band switch" id="switch" aria-labelledby="switch-title">
+      <div class="band-copy wide">
+        <p class="eyebrow">Agent clients</p>
+        <h2 id="switch-title">Switch agents, keep the workflow.</h2>
+        <p>Zen is agent-neutral. New Workers run on your default delegated executor, or on the one you ask Brain for. Change the default live, without a restart. A running Worker keeps the agent it started with.</p>
+      </div>
+
+      <figure class="board" id="board" aria-labelledby="board-cap">
+        <div class="board-stage">
+          <svg class="wires" aria-hidden="true"></svg>
+          <ul class="tasks" aria-label="Incoming concerns">
+            <li data-task="0"><span>Refactor session auth</span><small>default</small></li>
+            <li data-task="1"><span>Draft onboarding copy</span><small>“use claude”</small></li>
+            <li data-task="2"><span>Bisect flaky test</span><small>default</small></li>
+            <li data-task="3"><span>Port parser to Go</span><small>“use grok”</small></li>
+          </ul>
+          <div class="router" data-anchor="router">
+            <div class="brain-ring small" aria-hidden="true"><span></span></div>
+            <p>Brain</p>
+            <small data-route-note>default: codex</small>
+          </div>
+          <ul class="execs" aria-label="Supported agent CLIs">
+            <li data-exec="codex"><code>codex</code><small>Codex</small><b class="def" data-default>default</b></li>
+            <li data-exec="claude"><code>claude</code><small>Claude Code</small></li>
+            <li data-exec="agent"><code>cursor-agent</code><small>Cursor</small></li>
+            <li data-exec="grok"><code>grok</code><small>Grok CLI</small></li>
+            <li data-exec="pi"><code>pi</code><small>Pi</small></li>
+            <li data-exec="opencode"><code>opencode</code><small>OpenCode</small></li>
+          </ul>
+        </div>
+        <figcaption id="board-cap">Workers spawn on the default delegated executor unless you request another. <code>zen brain set-delegated</code> changes the default for Workers spawned afterward; existing Workers keep theirs.</figcaption>
+      </figure>
+
+      <div class="cmds">
+        <div><code>zen brain use claude</code><span>Switch the agent that runs Brain itself.</span></div>
+        <div><code>zen brain set-delegated grok</code><span>Change the default for new Workers, live.</span></div>
+        <div><code>~/.zen/executors.toml</code><span>Add custom executors or safer command profiles.</span></div>
+      </div>
+    </section>
+
+    <section class="band state" id="state" aria-labelledby="state-title">
+      <div class="band-copy">
+        <p class="eyebrow">Work state</p>
+        <h2 id="state-title">State that survives the night.</h2>
+        <p>Long tasks break: a laptop sleeps, a provider drops, the daemon updates. Zen keeps one durable record per Work, in one transactional store. Process state, panes and transcripts are evidence. They are never the source of truth.</p>
+        <ul class="facts">
+          <li><b>One active Attempt</b> per Work, bound to an exact <code>(session, turn, fence)</code>. Stale turns are rejected.</li>
+          <li><b>Check-ins renew a lease.</b> A Worker that goes quiet past its grace period becomes a loss decision for Brain, never a fake success.</li>
+          <li><b>Wakes are durable.</b> After a restart, the daemon rebuilds its timers and delivers what is due.</li>
+        </ul>
+      </div>
+      <figure class="ledger" aria-labelledby="ledger-cap">
+        <p class="ledger-head"><span>Work w_19</span><span>ios-regression</span></p>
+        <ol>
+          <li><time>21:04</time><span class="k">created</span><span class="m">Objective and completion policy recorded</span></li>
+          <li><time>21:04</time><span class="k amber">attempt</span><span class="m">Worker spawned on <code>claude</code> · fence 1</span></li>
+          <li><time>21:31</time><span class="k">progress</span><span class="m">verifying · 38 of 42 checks green</span></li>
+          <li class="restart"><span>daemon restarted · timers rebuilt from durable state</span></li>
+          <li><time>22:10</time><span class="k sage">result</span><span class="m">2 flaky failures, logs attached</span></li>
+          <li><time>22:12</time><span class="k amber">attempt</span><span class="m">Brain sends follow-up · fence 2</span></li>
+          <li><time>22:40</time><span class="k sage">result</span><span class="m">42 of 42 green, diff +19 −6</span></li>
+          <li><time>22:41</time><span class="k done">accepted</span><span class="m">Brain reviewed evidence and closed Work</span></li>
+        </ol>
+        <figcaption id="ledger-cap">An example append-only Event trail for one Work item.</figcaption>
+      </figure>
+    </section>
+
+    <section class="band" id="remote" aria-labelledby="remote-title">
+      <div class="phones single">
+        <figure class="phone">
+          <img src="assets/chat.webp" width="350" height="600" alt="Chat screen for a running agent session: plan progress, focused checks passed, and a reminder that Terminal is available for the live process." loading="lazy">
+          <figcaption>Chat and Terminal are two views of one Session.</figcaption>
+        </figure>
+      </div>
+      <div class="band-copy">
+        <p class="eyebrow">Remote control</p>
+        <h2 id="remote-title">Leave the desk. Keep the session.</h2>
+        <p>Follow an agent in structured Chat: messages, tool calls, plans. When you need the raw process, switch to the live Terminal of the same tmux session and take over. Review the repository in Git Diff. Hand it back when you are done.</p>
+        <ul class="facts">
+          <li><b>Your network, your origin.</b> Pair over trusted LAN, Tailscale, Cloudflare Tunnel or a reverse proxy.</li>
+          <li><b>Signed devices.</b> The daemon holds an Ed25519 identity. Phones enroll once, then every request is signed. Revoke with <code>zen devices revoke</code>.</li>
+          <li><b>One current server.</b> Every screen in the app follows a single server. Switching servers never mixes their data.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="band audit" aria-labelledby="audit-title">
+      <div class="band-copy wide">
+        <p class="eyebrow">Audit</p>
+        <h2 id="audit-title">Every result arrives with its receipts.</h2>
+      </div>
+      <ul class="receipts">
+        <li><code>progress</code><p>Phase, attention and structured evidence from each Worker, bound to its turn.</p></li>
+        <li><code>capture</code><p>The Worker's transcript, readable by Brain and by you.</p></li>
+        <li><code>receipt</code><p>Exact proof of whether an input was accepted. Nothing is resubmitted to check.</p></li>
+        <li><code>git diff</code><p>Review a Session's repository on your phone, read-only.</p></li>
+        <li><code>events</code><p>An append-only trail per Work, from creation to acceptance.</p></li>
+        <li><code>stats</code><p>Usage per model from your own daemon. An unknown price is shown as unknown, not as free.</p></li>
+      </ul>
+    </section>
+
+    <section class="band start" id="start" aria-labelledby="start-title">
+      <div class="band-copy wide">
+        <p class="eyebrow">Get started</p>
+        <h2 id="start-title">Running in a few minutes.</h2>
+        <p>You need Linux (amd64 or arm64), WSL, or an Apple Silicon Mac, with <code>tmux</code> and at least one authenticated agent CLI.</p>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Install the daemon</h3>
+          <div class="copyline">
+            <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh</code>
+            <button type="button" class="copy" data-copy="install-cmd">Copy</button>
+          </div>
+          <p>Verifies the release checksum. Never uses sudo, installs agent CLIs, or sends telemetry.</p>
+        </li>
+        <li>
+          <h3>Check the host and start</h3>
+          <div class="copyline"><code id="run-cmd">zen doctor &amp;&amp; zen --lan</code><button type="button" class="copy" data-copy="run-cmd">Copy</button></div>
+          <p>Then run the exact <code>zen pair</code> command it prints, or <code>zen pair https://your-origin</code> for a tunnel.</p>
+        </li>
+        <li>
+          <h3>Pair your phone</h3>
+          <p>Android: the arm64 APK from <a href="https://github.com/daoleno/zen/releases">GitHub Releases</a>. iOS: <a href="https://github.com/daoleno/zen/blob/main/docs/ios.md">build from source</a>; a <a href="https://testflight.apple.com/join/rTKCDzMt">TestFlight preview</a> is awaiting Apple review. Scan the pairing code, then open Brain.</p>
+        </li>
+      </ol>
+      <aside class="note" aria-label="Before you delegate">
+        <p><b>Beta, and trusted by design.</b> Brain-delegated Workers may run agents with approval prompts bypassed so they can work unattended. Use a safe executor profile on machines with secrets. Read <a href="https://github.com/daoleno/zen/blob/main/docs/executors.md#permission-bypass-risks">executor risks</a> and <a href="https://github.com/daoleno/zen/blob/main/docs/security-and-privacy.md">security and privacy</a>.</p>
+      </aside>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="foot-brand">
+      <img src="assets/zen-mark.svg" alt="" width="36" height="36">
+      <p>Zen is open source under the <a href="https://github.com/daoleno/zen/blob/main/LICENSE">Apache License 2.0</a>. Go daemon, Expo React Native app.</p>
+    </div>
+    <nav aria-label="Project">
+      <ul>
+        <li><a href="https://github.com/daoleno/zen">Source</a></li>
+        <li><a href="https://github.com/daoleno/zen/tree/main/docs">Docs</a></li>
+        <li><a href="https://github.com/daoleno/zen/blob/main/docs/architecture.md">Architecture</a></li>
+        <li><a href="https://github.com/daoleno/zen/blob/main/CONTRIBUTING.md">Contributing</a></li>
+        <li><a href="https://github.com/daoleno/zen/blob/main/SECURITY.md">Security</a></li>
+        <li><a href="https://github.com/daoleno/zen/releases">Releases</a></li>
+      </ul>
+    </nav>
+  </footer>
+
+  <script src="main.js" defer></script>
+</body>
+</html>
