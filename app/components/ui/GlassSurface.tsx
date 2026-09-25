@@ -10,6 +10,7 @@ import {
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
 import { ContinuousCorners, shadow, useAppTheme } from "../../constants/tokens";
 import type { MaterialPalette } from "../../theme";
+import { relativeLuminance } from "../../theme/colorUtils";
 import { useReduceTransparency } from "./useReduceTransparency";
 
 export type GlassMaterial = keyof Pick<
@@ -65,7 +66,7 @@ export function GlassSurface({
       <GlassView
         {...viewProps}
         glassEffectStyle={material === "thin" ? "clear" : "regular"}
-        colorScheme={theme.colorScheme}
+        colorScheme={fillOverride ? schemeForFill(fillOverride, theme.colorScheme) : theme.colorScheme}
         tintColor={tinted ? colors.accent : undefined}
         isInteractive={interactive}
         style={[shape, lift, style]}
@@ -112,6 +113,15 @@ export function GlassSurface({
       {children}
     </View>
   );
+}
+
+/**
+ * A caller-supplied fill (terminal-theme chat chrome) decides whether system
+ * glass renders light or dark, so it matches that canvas, not the app theme.
+ */
+function schemeForFill(fill: string, fallback: "light" | "dark"): "light" | "dark" {
+  if (!/^#[0-9a-f]{6}$/i.test(fill)) return fallback;
+  return relativeLuminance(fill) > 0.4 ? "light" : "dark";
 }
 
 const styles = StyleSheet.create({

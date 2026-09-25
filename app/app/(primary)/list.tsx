@@ -1106,7 +1106,10 @@ export default function InboxScreen() {
             alwaysBounceVertical
             showsVerticalScrollIndicator={false}
           >
-            {hasConfiguredServers ? overviewHeader : null}
+            {/* Only a filtered-empty list keeps the overview, so its filters
+                can be reset; offline or first-run states speak once below. */}
+            {sortedWorkers.length > 0 ? overviewHeader : null}
+            <View style={styles.emptyFill}>
             <EmptyState title={empty.title} icon={empty.icon} busy={empty.busy}
               detail={primaryIssue?.detail}
               action={empty.action ? {
@@ -1119,6 +1122,7 @@ export default function InboxScreen() {
                 label: "Server settings", icon: "settings-outline", onPress: () => openServerSettings(false),
               } : undefined}
             />
+            </View>
           </Animated.ScrollView>
         ) : (
           <AnimatedSectionList
@@ -1337,8 +1341,12 @@ function createStyles(theme: ResolvedZenTheme) {
       maxWidth: 760,
       alignSelf: "center",
       flexGrow: 1,
+      paddingBottom: 44,
+    },
+    emptyFill: {
+      flex: 1,
+      minHeight: 320,
       justifyContent: "center",
-      paddingVertical: 44,
     },
 
   });

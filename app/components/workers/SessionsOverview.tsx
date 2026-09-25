@@ -84,6 +84,8 @@ function SessionsOverviewComponent({
     issue?.title ??
     (connected ? "Connected" : connection === "connecting" ? "Connecting" : "Offline");
   const workRows = [...work.attention, ...work.active];
+  // Offline speaks once: the notice (with Retry) replaces the status pill.
+  const showOfflineNotice = Boolean(serverName) && !connected && connection !== "connecting";
   const summary = sessionSummary(counts);
 
   return (
@@ -93,7 +95,9 @@ function SessionsOverviewComponent({
           Sessions
         </AppText>
         <View style={styles.statusLine}>
-          <StatusPill label={statusLabel} tone={statusTone} live={connection === "connecting"} />
+          {showOfflineNotice ? null : (
+            <StatusPill label={statusLabel} tone={statusTone} live={connection === "connecting"} />
+          )}
           {serverName ? (
             <AppText variant="caption" tone="tertiary" numberOfLines={1} style={styles.serverName}>
               {serverName}
@@ -107,7 +111,7 @@ function SessionsOverviewComponent({
         ) : null}
       </View>
 
-      {serverName && !connected && connection !== "connecting" ? (
+      {showOfflineNotice ? (
         <InlineNotice
           tone={issue ? "danger" : "warning"}
           title={issue?.title ?? "Server offline"}
@@ -242,7 +246,7 @@ function QuickAction({
       <View style={[styles.actionGlyph, { backgroundColor: prominent && !disabled ? "rgba(255,255,255,0.18)" : tint }]}>
         <Ionicons name={icon} size={19} color={ink} />
       </View>
-      <AppText variant="label" numberOfLines={1} style={{ color: prominent && !disabled ? colors.textOnAccent : colors.textPrimary }}>
+      <AppText variant="label" numberOfLines={2} style={{ color: prominent && !disabled ? colors.textOnAccent : colors.textPrimary }}>
         {label}
       </AppText>
       {badge ? (

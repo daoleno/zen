@@ -1,5 +1,5 @@
-import React from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import React, { useEffect, useRef } from "react";
+import { Platform, Pressable, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { ContinuousCorners, Radii, TouchTarget, useAppTheme } from "../../constants/tokens";
@@ -28,9 +28,21 @@ interface ActionMenuProps {
   onClose(): void;
 }
 
+// iOS drops an Alert or modal presented while the sheet's own Modal is still
+// being dismissed, so the chosen action runs only after the sheet is gone.
+const IOS_DISMISS_SETTLE_MS = 80;
+
 /** Contextual action list presented as a bottom sheet. Closes before acting. */
 export function ActionMenu({ visible, title, items, onClose }: ActionMenuProps) {
   const { colors, theme } = useAppTheme();
+  const pendingActionRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (visible || !pendingActionRef.current) return;
+    const action = pendingActionRef.current;
+    pendingActionRef.current = null;
+    const timer = setTimeout(action, Platform.OS === "ios" ? IOS_DISMISS_SETTLE_MS : 0);
+    return () => clearTimeout(timer);
+  }, [visible]);
   return (
     <BottomSheetFrame visible={visible} onClose={onClose} maxHeight="70%">
       {title ? (
@@ -56,8 +68,8 @@ export function ActionMenu({ visible, title, items, onClose }: ActionMenuProps) 
               android_ripple={{ color: colors.surfacePressed }}
               onPress={() => {
                 void Haptics.selectionAsync();
+                pendingActionRef.current = item.onPress;
                 onClose();
-                item.onPress();
               }}
               style={({ pressed }) => [
                 styles.item,
