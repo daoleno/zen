@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Alert,
   Linking,
+  ScrollView,
   type ListRenderItem,
   SectionList,
   StyleSheet,
@@ -12,12 +13,6 @@ import {
 import { useFocusEffect, useIsFocused, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Animated, {
-  runOnJS,
-  useAnimatedScrollHandler,
-  useSharedValue,
-} from "react-native-reanimated";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -41,22 +36,9 @@ import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAct
 import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
 import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
 import { WorkSignalObservatory } from "../../components/work/WorkSignalObservatory";
-import { WorkSignalPullPreview } from "../../components/work/WorkSignalPullPreview";
-import {
-  createWorkObservatoryAccessibilityProps,
-  resolveWorkObservatoryPullIntent,
-  shouldRevealWorkObservatory,
-  WORK_OBSERVATORY_PULL,
-} from "../../components/work/workSignalObservatoryInteraction";
 import { ActionMenu, EmptyState, confirmDestructive } from "../../components/ui";
-import {
-  SessionsOverview,
-  type SessionFilter,
-} from "../../components/workers/SessionsOverview";
-import {
-  buildWorkActivityListModel,
-  type WorkActivityRow,
-} from "../../components/work/workActivityListModel";
+import { SessionsOverview } from "../../components/workers/SessionsOverview";
+import { buildWorkActivityListModel } from "../../components/work/workActivityListModel";
 import { useBrain } from "../../store/brain";
 import { sessionEmptyState } from "../../services/sessionEmptyState";
 import { WorkerListRowContainer } from "../../components/workers/WorkerListRowContainer";
@@ -111,9 +93,6 @@ import {
   type DiscoveredSessionService,
 } from "../../services/sessionServicesPresentation";
 
-const AnimatedSectionList = Animated.createAnimatedComponent(
-  SectionList<Worker, WorkerDirectorySection>,
-);
 const workerKeyExtractor = (agent: Worker) => agent.key;
 
 export default function InboxScreen() {
@@ -164,7 +143,6 @@ export default function InboxScreen() {
     [sessionServices, currentServerId],
   );
   const [workObservatoryVisible, setWorkObservatoryVisible] = useState(false);
-  const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<SessionSelection>(
     EMPTY_SESSION_SELECTION,
@@ -173,11 +151,6 @@ export default function InboxScreen() {
   const terminationBatchRef = useRef<SessionTerminationBatch | null>(null);
   const submittedKeysRef = useRef<string[]>([]);
   const submittedServerIdRef = useRef<string | null>(null);
-  const workObservatoryPullDistance = useSharedValue(0);
-  const sessionListScrollOffsetY = useSharedValue(0);
-  const workObservatoryTouchStartX = useSharedValue(0);
-  const workObservatoryTouchStartY = useSharedValue(0);
-  const workObservatoryGestureActivated = useSharedValue(0);
   const agentsHydrated = Boolean(currentServerId && state.hydratedServers[currentServerId]);
 
   useEffect(() => {
@@ -188,7 +161,6 @@ export default function InboxScreen() {
     setServicesLoading(false);
     setCreateSheetVisible(false);
     setWorkObservatoryVisible(false);
-    setSessionFilter("all");
     setSelectionMode(false);
     setSelectedKeys(EMPTY_SESSION_SELECTION);
   }, [currentServerId]);
@@ -228,30 +200,6 @@ export default function InboxScreen() {
     () => listSections.flatMap((section) => section.data),
     [listSections],
   );
-  const sessionCounts = useMemo(() => {
-    let running = 0;
-    let attention = 0;
-    for (const agent of displayWorkers) {
-      if (agent.status === "running") running += 1;
-      if (agent.status === "blocked" || agent.status === "failed") attention += 1;
-    }
-    return { all: displayWorkers.length, running, attention };
-  }, [displayWorkers]);
-  const visibleSections = useMemo(() => {
-    if (sessionFilter === "all") return listSections;
-    const keep = (agent: Worker) =>
-      sessionFilter === "running"
-        ? agent.status === "running"
-        : agent.status === "blocked" || agent.status === "failed";
-    return listSections
-      .map((section) => ({ ...section, data: section.data.filter(keep) }))
-      .filter((section) => section.data.length > 0);
-  }, [listSections, sessionFilter]);
-  const visibleSessionCount = useMemo(
-    () => visibleSections.reduce((total, section) => total + section.data.length, 0),
-    [visibleSections],
-  );
-
   const showServerNames = false;
   const hasConfiguredServers = currentServer !== null;
   const connectionState = currentServerId ? state.serverConnections[currentServerId] : undefined;
@@ -265,7 +213,7 @@ export default function InboxScreen() {
       sortedWorkers.length === 0 &&
       hasConfiguredServers &&
       waitingForInitialWorkerSnapshot);
-  const useSectionHeaders = visibleSections.length > 1;
+  const useSectionHeaders = listSections.length > 1;
   const primaryIssue = currentServerId ? state.serverConnectionIssues[currentServerId] ?? null : null;
 
   const openWorker = useCallback(
@@ -677,113 +625,6 @@ export default function InboxScreen() {
     setWorkObservatoryVisible(false);
   }, []);
 
-  const workObservatoryAccessibilityProps = useMemo(
-    () => createWorkObservatoryAccessibilityProps(openWorkObservatory),
-    [openWorkObservatory],
-  );
-
-  const handleContentScroll = useAnimatedScrollHandler({
-    onScroll: (event) => {
-      const nextOffset = Math.max(0, event.contentOffset.y);
-      sessionListScrollOffsetY.value = nextOffset;
-      if (nextOffset > 0 && workObservatoryPullDistance.value > 0) {
-        workObservatoryPullDistance.value = 0;
-      }
-    },
-  });
-
-  const workObservatoryPullGesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .enabled(!workObservatoryVisible && !selectionMode)
-        .manualActivation(true)
-        .maxPointers(1)
-        .enableTrackpadTwoFingerGesture(false)
-        .shouldCancelWhenOutside(false)
-        .onTouchesDown((event, stateManager) => {
-          workObservatoryPullDistance.value = 0;
-          workObservatoryGestureActivated.value = 0;
-          const touch = event.allTouches[0];
-          if (!touch) {
-            stateManager.fail();
-            return;
-          }
-          const intent = resolveWorkObservatoryPullIntent({
-            touchCount: event.numberOfTouches,
-            startX: touch.absoluteX,
-            dx: 0,
-            dy: 0,
-            scrollOffsetY: sessionListScrollOffsetY.value,
-          });
-          if (intent === "fail") {
-            stateManager.fail();
-            return;
-          }
-          workObservatoryTouchStartX.value = touch.absoluteX;
-          workObservatoryTouchStartY.value = touch.absoluteY;
-        })
-        .onTouchesMove((event, stateManager) => {
-          if (workObservatoryGestureActivated.value === 1) {
-            return;
-          }
-          const touch = event.allTouches[0];
-          if (!touch) {
-            workObservatoryPullDistance.value = 0;
-            stateManager.fail();
-            return;
-          }
-          const intent = resolveWorkObservatoryPullIntent({
-            touchCount: event.numberOfTouches,
-            startX: workObservatoryTouchStartX.value,
-            dx: touch.absoluteX - workObservatoryTouchStartX.value,
-            dy: touch.absoluteY - workObservatoryTouchStartY.value,
-            scrollOffsetY: sessionListScrollOffsetY.value,
-          });
-          if (intent === "fail") {
-            workObservatoryPullDistance.value = 0;
-            stateManager.fail();
-            return;
-          }
-          if (intent === "activate") {
-            stateManager.activate();
-          }
-        })
-        .onStart((event) => {
-          workObservatoryGestureActivated.value = 1;
-          workObservatoryPullDistance.value = Math.max(0, event.translationY);
-        })
-        .onUpdate((event) => {
-          if (sessionListScrollOffsetY.value > 0) {
-            workObservatoryPullDistance.value = 0;
-            return;
-          }
-          workObservatoryPullDistance.value = Math.max(0, event.translationY);
-        })
-        .onEnd(() => {
-          const shouldOpen = shouldRevealWorkObservatory(
-            workObservatoryPullDistance.value,
-          );
-          workObservatoryPullDistance.value = 0;
-          if (shouldOpen) {
-            runOnJS(openWorkObservatory)();
-          }
-        })
-        .onFinalize(() => {
-          workObservatoryPullDistance.value = 0;
-          workObservatoryGestureActivated.value = 0;
-        }),
-    [
-      openWorkObservatory,
-      selectionMode,
-      sessionListScrollOffsetY,
-      workObservatoryGestureActivated,
-      workObservatoryPullDistance,
-      workObservatoryTouchStartX,
-      workObservatoryTouchStartY,
-      workObservatoryVisible,
-    ],
-  );
-
   const openServiceTerminal = (service: DiscoveredSessionService) => {
     if (!isCurrentServer(service.serverId)) return;
     // Persistent services outlive their creating Session: there is no live
@@ -826,8 +667,8 @@ export default function InboxScreen() {
     });
   };
 
-  // Work in progress comes from the current server's Brain, exactly like the
-  // pull-down Work observatory, so both surfaces agree on what needs you.
+  // The attention notice counts the current server's Brain Work exactly like
+  // the Work activity sheet, so both surfaces agree on what needs you.
   const currentBrain = currentServerId ? brainState.byServer[currentServerId] : undefined;
   const workOwners = useMemo(
     () =>
@@ -848,24 +689,7 @@ export default function InboxScreen() {
       }),
     [currentBrain?.current_work, currentBrain?.work_backlog?.historical_results, workOwners],
   );
-  const activateWorkRow = useCallback(
-    (row: WorkActivityRow) => {
-      if (row.action === "open_session" && row.owner) {
-        const agent = displayWorkers.find((worker) => worker.id === row.owner?.sessionId);
-        if (agent) openWorker(agent);
-        return;
-      }
-      if (row.action === "open_brain") openBrain();
-    },
-    [displayWorkers, openBrain, openWorker],
-  );
-
-  const filterActive = sessionFilter !== "all";
-  const empty = sessionEmptyState(
-    hasConfiguredServers,
-    connectionState,
-    filterActive && sortedWorkers.length > 0,
-  );
+  const empty = sessionEmptyState(hasConfiguredServers, connectionState);
   const retryCurrentServer = async () => {
     if (!currentServer || !isCurrentServer(currentServer.id)) return;
     try {
@@ -954,10 +778,9 @@ export default function InboxScreen() {
   const listPageAction = useMemo(
     () => ({
       accessibilityLabel: "Session options",
-      ...workObservatoryAccessibilityProps,
       onPress: openHeaderMenu,
     }),
-    [openHeaderMenu, workObservatoryAccessibilityProps],
+    [openHeaderMenu],
   );
   usePrimaryPageAction(listPageAction);
 
@@ -1054,18 +877,9 @@ export default function InboxScreen() {
       serverName={currentServer?.name ?? null}
       connection={connectionState ?? "offline"}
       issue={primaryIssue}
-      counts={sessionCounts}
-      filter={sessionFilter}
-      onChangeFilter={setSessionFilter}
-      work={workModel}
-      onActivateWork={activateWorkRow}
+      attentionCount={workModel.attention.length}
       onOpenWorkActivity={openWorkObservatory}
-      canCreate={anyConnected}
-      creating={Boolean(creatingServerId)}
-      onCreate={openCreateTerminal}
-      onOpenServices={openSessionServices}
       onRetry={() => void retryCurrentServer()}
-      showFilters={sortedWorkers.length > 0}
     />
   );
   const listContentContainerStyle = useMemo(
@@ -1076,46 +890,33 @@ export default function InboxScreen() {
     [insets.bottom, styles],
   );
   return (
-    <GestureDetector gesture={workObservatoryPullGesture}>
       <SafeAreaView
         style={[styles.container, { marginTop: topChromeInset }]}
         edges={[]}
       >
-        <WorkSignalPullPreview
-          pullDistance={workObservatoryPullDistance}
-          threshold={WORK_OBSERVATORY_PULL.threshold}
-        />
-
         {shouldShowInitialLoading ? (
-          <Animated.ScrollView
+          <ScrollView
             style={styles.flex}
             contentContainerStyle={styles.loadingContainer}
-            onScroll={handleContentScroll}
-            scrollEventThrottle={16}
             alwaysBounceVertical
             showsVerticalScrollIndicator={false}
           >
             <EmptyState title="Loading sessions" busy size="inline" />
-          </Animated.ScrollView>
-        ) : visibleSessionCount === 0 ? (
-          <Animated.ScrollView
+          </ScrollView>
+        ) : sortedWorkers.length === 0 ? (
+          <ScrollView
             style={styles.flex}
             contentContainerStyle={styles.emptyScrollContent}
-            onScroll={handleContentScroll}
-            scrollEventThrottle={16}
             alwaysBounceVertical
             showsVerticalScrollIndicator={false}
           >
-            {/* Only a filtered-empty list keeps the overview, so its filters
-                can be reset; offline or first-run states speak once below. */}
-            {sortedWorkers.length > 0 ? overviewHeader : null}
             <View style={styles.emptyFill}>
             <EmptyState title={empty.title} icon={empty.icon} busy={empty.busy}
               detail={primaryIssue?.detail}
               action={empty.action ? {
                 label: creatingServerId ? "Starting..." : empty.label,
-                icon: empty.action === "retry" ? "refresh-outline" : empty.action === "terminal" ? "add" : empty.action === "clear" ? "close-circle-outline" : "qr-code-outline",
-                onPress: empty.action === "retry" ? () => void retryCurrentServer() : empty.action === "terminal" ? openCreateTerminal : empty.action === "clear" ? () => setSessionFilter("all") : () => openServerSettings(true),
+                icon: empty.action === "retry" ? "refresh-outline" : empty.action === "terminal" ? "add" : "qr-code-outline",
+                onPress: empty.action === "retry" ? () => void retryCurrentServer() : empty.action === "terminal" ? openCreateTerminal : () => openServerSettings(true),
                 disabled: Boolean(creatingServerId),
               } : undefined}
               secondary={hasConfiguredServers && !anyConnected ? {
@@ -1123,10 +924,10 @@ export default function InboxScreen() {
               } : undefined}
             />
             </View>
-          </Animated.ScrollView>
+          </ScrollView>
         ) : (
-          <AnimatedSectionList
-            sections={visibleSections}
+          <SectionList
+            sections={listSections}
             ListHeaderComponent={overviewHeader}
             key="list"
             keyExtractor={workerKeyExtractor}
@@ -1134,8 +935,6 @@ export default function InboxScreen() {
             renderSectionHeader={renderListSectionHeader}
             stickySectionHeadersEnabled={false}
             contentContainerStyle={listContentContainerStyle}
-            onScroll={handleContentScroll}
-            scrollEventThrottle={16}
             alwaysBounceVertical
             removeClippedSubviews={false}
             windowSize={15}
@@ -1194,7 +993,7 @@ export default function InboxScreen() {
             scale={0.92}
             onPress={openCreateTerminal}
             disabled={!!creatingServerId || !anyConnected}
-            accessibilityLabel="New terminal"
+            accessibilityLabel="New session"
             accessibilityRole="button"
             accessibilityState={{
               disabled: !!creatingServerId || !anyConnected,
@@ -1235,23 +1034,26 @@ export default function InboxScreen() {
               onPress: openCreateTerminal,
             },
             {
-              key: "services",
-              label: "Session services",
-              icon: "globe-outline",
-              disabled: !anyConnected,
-              onPress: openSessionServices,
-            },
-            {
               key: "work",
               label: "Work activity",
               icon: "pulse-outline",
+              detail: workModel.attention.length > 0
+                ? `${workModel.attention.length} need you`
+                : undefined,
               onPress: openWorkObservatory,
+            },
+            {
+              key: "services",
+              label: "Services",
+              icon: "globe-outline",
+              detail: "Listening ports and public tunnels",
+              disabled: !anyConnected,
+              onPress: openSessionServices,
             },
           ]}
         />
 
       </SafeAreaView>
-    </GestureDetector>
   );
 }
 

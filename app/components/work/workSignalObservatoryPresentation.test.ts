@@ -11,9 +11,8 @@ const sessionListSource = readFileSync(
   "utf8",
 );
 
-describe("Work pull surface presentation", () => {
-  test("keeps the established pull entry and renders a flat activity list", () => {
-    expect(sessionListSource).toContain("<WorkSignalPullPreview");
+describe("Work activity surface presentation", () => {
+  test("stays reachable from Sessions and renders a flat activity list", () => {
     expect(sessionListSource).toContain("<WorkSignalObservatory");
     expect(surfaceSource).toContain("buildWorkActivityListModel");
     expect(surfaceSource).toContain("<WorkSection");
