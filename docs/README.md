@@ -26,6 +26,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 - [Verification of control-plane changes](verification.md)
 - [Services](services.md) explains the mobile Services sheet and the retained-service handoff for persistent Agent services.
 - [Mobile copy boundaries](mobile-copy.md)
+- [Mobile interface structure](mobile-interface.md) describes the shell, Brain, Sessions overview, Session chrome, and shared menu, confirm, and status patterns.
 
 ## Development and maintenance
 
