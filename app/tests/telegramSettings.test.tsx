@@ -14,7 +14,7 @@ if (!process.env.ZEN_TELEGRAM_PANEL_CHILD) {
   mock.module("react-native", () => ({ ActivityIndicator: host("busy"), ScrollView: host("scroll"), Text: host("text"), TextInput: host("input"), View: host("view"), StyleSheet: { create: (x: unknown) => x, hairlineWidth: 1 } }));
   mock.module("@expo/vector-icons", () => ({ Ionicons: host("icon") }));
   mock.module("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }) }));
-  mock.module("../constants/tokens", () => ({ useAppColors: () => ({}), UiTextMetrics: {}, TypeScale: { body: {}, compact: {}, caption: {} } }));
+  mock.module("../constants/tokens", () => ({ useAppColors: () => ({}), UiTextMetrics: {}, TypeScale: { body: {}, compact: {}, caption: {}, heading: {} } }));
   mock.module("../components/ui/AnimatedPressable", () => ({ AnimatedPressable: host("button") }));
   const { TelegramConnectionPanel } = await import("../components/settings/TelegramConnectionPanel");
   type Props = React.ComponentProps<typeof TelegramConnectionPanel>;

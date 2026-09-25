@@ -24,6 +24,10 @@ import {
   useAppColors,
 } from "../../constants/tokens";
 import type { ProviderError } from "../../services/providers";
+import { ActionMenu } from "../ui/ActionMenu";
+import { ListRow, ListSection } from "../ui/ListSection";
+import { SegmentedControl } from "../ui/SegmentedControl";
+import { StatusPill } from "../ui/StatusPill";
 import type {
   ProviderClient,
   ProviderConnection,
@@ -306,42 +310,43 @@ function GatewayStatusRow({
 }: {
   status: NonNullable<ProvidersSnapshot["gateway"]>;
 }) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const [copied, setCopied] = useState(false);
   const endpoint = status.endpoint ?? status.address ?? "Unavailable";
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
   return (
-    <View style={styles.gatewayStatus}>
-      <View style={styles.gatewayStatusCopy}>
-        <View style={styles.gatewayStatusTitleRow}>
-          <Ionicons
-            name="radio-outline"
-            size={16}
-            color={status.running ? colors.success : colors.textTertiary}
+    <ListSection
+      title="Gateway"
+      footer={`${status.protocols.join(" / ") || "No protocols"} · ${status.model_count} exposed models`}
+    >
+      <ListRow
+        title="Zen Provider Gateway"
+        subtitle={copied ? "Endpoint copied" : endpoint}
+        icon="radio-outline"
+        trailing={
+          <StatusPill
+            label={status.running ? "Running" : "Unavailable"}
+            tone={status.running ? "success" : "neutral"}
           />
-          <Text style={styles.gatewayStatusTitle}>Zen Provider Gateway</Text>
-          <Text style={styles.gatewayStatusState}>
-            {status.running ? "Running" : "Unavailable"}
-          </Text>
-        </View>
-        <Text style={styles.gatewayStatusMeta}>{endpoint}</Text>
-        <Text style={styles.gatewayStatusMeta}>
-          {status.protocols.join(" / ") || "No protocols"} ·{" "}
-          {status.model_count} exposed models
-        </Text>
-      </View>
-      {status.endpoint ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Copy gateway endpoint"
-          onPress={() => void Clipboard.setStringAsync(status.endpoint ?? "")}
-          style={styles.gatewayCopy}
-        >
-          <Ionicons name="copy-outline" size={18} color={colors.accentStrong} />
-        </Pressable>
-      ) : null}
-    </View>
+        }
+        accessibilityLabel={status.endpoint ? "Copy gateway endpoint" : "Zen Provider Gateway"}
+        onPress={
+          status.endpoint
+            ? () => {
+                void Clipboard.setStringAsync(status.endpoint ?? "");
+                setCopied(true);
+              }
+            : undefined
+        }
+      />
+    </ListSection>
   );
 }
+
+const SEARCH_THRESHOLD = 6;
 
 function ProviderConnectionList({
   catalog,
@@ -374,138 +379,117 @@ function ProviderConnectionList({
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
-  const connections = catalog.connections.filter((connection) => {
-    if (!connection.clients.includes(selectedClient)) return false;
+  const clientConnections = catalog.connections.filter((connection) =>
+    connection.clients.includes(selectedClient),
+  );
+  const connections = clientConnections.filter((connection) => {
     if (!normalizedQuery) return true;
     return `${connection.name} ${connectionSubtitle(connection, catalog)}`
       .toLowerCase()
       .includes(normalizedQuery);
   });
   const selectedConnectionSelection = catalog.defaults[selectedClient];
-  const selectedConnection = selectedConnectionSelection?.connection_id
-    ? catalog.connections.find(
-        (connection) => connection.id === selectedConnectionSelection.connection_id,
-      )
-    : undefined;
+  const directSelected = selectedConnectionSelection?.connection_id === "";
+  // Search earns its place only once the list is long enough to scan.
+  const showSearch = clientConnections.length >= SEARCH_THRESHOLD || normalizedQuery.length > 0;
   return (
     <View style={styles.providerList}>
-      <View style={styles.agentSelector} accessibilityRole="tablist">
-        {CLIENTS.map((client) => {
-          const selected = selectedClient === client;
-          return (
-            <Pressable
-              key={client}
-              style={[styles.agentTab, selected && styles.agentTabSelected]}
-              accessibilityRole="tab"
-              accessibilityState={{ selected }}
-              onPress={() => onSelectClient(client)}
-            >
-              {client === "codex" ? (
-                <Codex.Color size={18} />
-              ) : (
-                <Claude.Color size={18} />
-              )}
-              <Text
-                style={[
-                  styles.agentTabText,
-                  selected && styles.agentTabTextSelected,
-                ]}
-              >
-                {providerClientLabel(client)}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      <View style={styles.agentSummary}>
-        <View style={styles.providerListCopy}>
-          <Text style={styles.sectionTitle}>
-            {providerClientLabel(selectedClient)}
-          </Text>
-          <Text style={styles.sectionMeta} numberOfLines={1}>
-            {selectedConnection
-              ? selectedConnection.name
-              : "Official login · native account"}
-          </Text>
-        </View>
-        <AnimatedPressable
-          style={styles.iconActionAccent}
-          preset="press"
-          accessibilityRole="button"
-          accessibilityLabel={`Add ${providerClientLabel(selectedClient)} Provider`}
-          disabled={disabled}
-          onPress={() =>
-            onOpenEditor({ kind: "create", client: selectedClient })
-          }
-        >
-          <Ionicons name="add" size={20} color={colors.accentStrong} />
-        </AnimatedPressable>
-      </View>
-      <MobileSingleLineInput
-        value={query}
-        onChangeText={setQuery}
-        editable={!disabled}
-        placeholder={`Search ${providerClientLabel(selectedClient)} Providers`}
-        placeholderTextColor={colors.textSecondary}
-        accessibilityLabel="Search Providers"
-        autoCapitalize="none"
-        autoCorrect={false}
-        containerStyle={styles.providerSearch}
-      />
-      <View style={styles.directRow} accessibilityRole="radiogroup">
-        <View style={styles.directCopy}>
-          <Text style={styles.rowTitle}>Official login</Text>
-          <Text style={styles.rowSubtitle}>
-            Direct · uses the native account
-          </Text>
-        </View>
-        <Pressable
-          style={styles.radioButton}
-          accessibilityRole="radio"
-          accessibilityLabel={`${providerClientLabel(selectedClient)} official login`}
-          accessibilityState={{
-            checked: selectedConnectionSelection?.connection_id === "",
-            disabled,
-          }}
-          disabled={disabled || selectedConnectionSelection?.connection_id === ""}
-          onPress={() => onUseDirect(selectedClient)}
-        >
-          <Ionicons
-            name={
-              selectedConnectionSelection?.connection_id === ""
-                ? "checkmark-circle"
-                : "ellipse-outline"
-            }
-            size={22}
-            color={
-              selectedConnectionSelection?.connection_id === ""
-                ? colors.accentStrong
-                : colors.textTertiary
-            }
-          />
-        </Pressable>
-      </View>
-      {connections.map((connection) => (
-        <ProviderConnectionRow
-          key={connection.id}
-          connection={connection}
-          catalog={catalog}
-          client={selectedClient}
-          disabled={disabled}
-          switchState={switchStates[connection.id]}
-          onSelectConnection={onSelectConnection}
-          onOpenEditor={() => onOpenEditor({ kind: "edit", connection })}
-          onDelete={() => onDelete(connection)}
-          onDiscover={() => onDiscover(connection)}
-          onTestConnection={() => onTestConnection(connection)}
+      <View style={styles.agentSelector}>
+        <SegmentedControl
+          accessibilityLabel="Agent"
+          value={selectedClient}
+          onChange={onSelectClient}
+          options={CLIENTS.map((client) => ({
+            value: client,
+            label: providerClientLabel(client),
+            leading: client === "codex" ? (
+              <Codex.Color size={18} />
+            ) : (
+              <Claude.Color size={18} />
+            ),
+          }))}
         />
-      ))}
-      {connections.length === 0 ? (
-        <Text style={styles.emptyText}>
-          {normalizedQuery
-            ? "No Providers match this search."
-            : "No saved Providers for this Agent yet."}
-        </Text>
+      </View>
+      {showSearch ? (
+        <MobileSingleLineInput
+          value={query}
+          onChangeText={setQuery}
+          editable={!disabled}
+          placeholder={`Search ${providerClientLabel(selectedClient)} Providers`}
+          placeholderTextColor={colors.textSecondary}
+          accessibilityLabel="Search Providers"
+          autoCapitalize="none"
+          autoCorrect={false}
+          containerStyle={styles.providerSearch}
+        />
+      ) : null}
+      <ListSection
+        title={`${providerClientLabel(selectedClient)} uses`}
+        accessory={
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Add ${providerClientLabel(selectedClient)} Provider`}
+            accessibilityState={{ disabled }}
+            disabled={disabled}
+            hitSlop={10}
+            onPress={() => onOpenEditor({ kind: "create", client: selectedClient })}
+            style={({ pressed }) => [styles.addButton, { opacity: disabled ? 0.4 : pressed ? 0.6 : 1 }]}
+          >
+            <Ionicons name="add" size={16} color={colors.accentStrong} />
+            <Text style={styles.addButtonText}>Add</Text>
+          </Pressable>
+        }
+        footer={
+          connections.length === 0
+            ? normalizedQuery
+              ? "No Providers match this search."
+              : "Add a Provider to route this Agent through your own API key."
+            : null
+        }
+      >
+        <View accessibilityRole="radiogroup">
+          <Pressable
+            style={({ pressed }) => [styles.selectRow, styles.directRow, pressed && { backgroundColor: colors.surfacePressed }]}
+            accessibilityRole="radio"
+            accessibilityLabel={`${providerClientLabel(selectedClient)} official login`}
+            accessibilityState={{ checked: directSelected, disabled }}
+            disabled={disabled || directSelected}
+            onPress={() => onUseDirect(selectedClient)}
+          >
+            <SelectionMark selected={directSelected} />
+            <View style={styles.providerRowCopy}>
+              <Text style={styles.rowTitle}>Official login</Text>
+              <Text style={styles.rowSubtitle}>Direct · uses the native account</Text>
+            </View>
+          </Pressable>
+        </View>
+        {connections.map((connection) => (
+          <ProviderConnectionRow
+            key={connection.id}
+            connection={connection}
+            catalog={catalog}
+            client={selectedClient}
+            disabled={disabled}
+            switchState={switchStates[connection.id]}
+            onSelectConnection={onSelectConnection}
+            onOpenEditor={() => onOpenEditor({ kind: "edit", connection })}
+            onDelete={() => onDelete(connection)}
+            onDiscover={() => onDiscover(connection)}
+            onTestConnection={() => onTestConnection(connection)}
+          />
+        ))}
+      </ListSection>
+    </View>
+  );
+}
+
+function SelectionMark({ selected }: { selected: boolean }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  return (
+    <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
+      {selected ? (
+        <Ionicons name="checkmark" size={14} color={colors.textOnAccent} />
       ) : null}
     </View>
   );
@@ -539,7 +523,7 @@ function ProviderConnectionRow({
   const [testState, setTestState] = useState<ConnectionTestState>({
     kind: "idle",
   });
-  const [expanded, setExpanded] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
   const models = catalog.models[connection.id] ?? [];
   const exposedCount = models.filter(
     (model) => model.available && model.known !== false,
@@ -566,168 +550,101 @@ function ProviderConnectionRow({
       });
     }
   };
+  const status =
+    testState.kind === "testing"
+      ? { text: "Testing connection…", color: colors.textTertiary }
+      : testState.kind === "success"
+        ? {
+            text: `Connected · ${testState.latencyMs} ms${
+              testState.modelCount > 0 ? ` · ${testState.modelCount} models found` : ""
+            }`,
+            color: colors.success,
+          }
+        : testState.kind === "error"
+          ? { text: testState.message, color: colors.dangerText }
+          : switchState?.kind === "error"
+            ? { text: switchState.message ?? "Could not switch Provider.", color: colors.dangerText }
+            : null;
   return (
-    <View style={styles.providerRow}>
-      <AnimatedPressable
-        style={styles.providerSelect}
-        preset="press"
-        disabled={disabled}
-        accessibilityRole="radio"
-        accessibilityState={{ checked: selected, disabled: disabled || !ready }}
-        accessibilityLabel={`${connection.name}, ${connectionSubtitle(connection, catalog)}${ready ? "" : ", API key required"}`}
-        onPress={ready ? onSelectConnectionForClient : onOpenEditor}
-      >
-        <View
-          style={[styles.radioOuter, selected && styles.radioOuterSelected]}
-        >
-          {selected ? (
-            <Ionicons name="checkmark" size={14} color={colors.textOnAccent} />
-          ) : null}
-        </View>
-        <View style={styles.providerRowCopy}>
-          <Text style={styles.rowTitle} numberOfLines={1}>
-            {connection.name}
-          </Text>
-          <Text style={styles.rowSubtitle} numberOfLines={1}>
-            {connectionSubtitle(connection, catalog)} · {exposedCount} models ·{" "}
-            {catalogAgeLabel(connection)}
-          </Text>
-        </View>
-        {switchState?.kind === "pending" ? (
-          <ActivityIndicator size="small" color={colors.accent} />
-        ) : null}
-      </AnimatedPressable>
-      {!ready ? <Text style={styles.keyRequired}>Key required</Text> : null}
-      {switchState?.kind === "error" ? (
-        <Text style={styles.inlineError}>{switchState.message}</Text>
-      ) : null}
-      <View style={styles.providerActions}>
-        <ActionButton
-          label="Models"
-          onPress={onDiscover}
-          disabled={disabled || !ready}
-        />
-        <ActionButton
-          label="Edit"
-          onPress={onOpenEditor}
+    <View>
+      <View style={styles.selectRow}>
+        <AnimatedPressable
+          style={styles.providerSelect}
+          preset="press"
           disabled={disabled}
-          primary
-        />
-        <Pressable
-          style={styles.moreAction}
-          accessibilityRole="button"
-          accessibilityLabel={`${expanded ? "Hide" : "Show"} ${connection.name} actions`}
-          onPress={() => setExpanded((value) => !value)}
+          accessibilityRole="radio"
+          accessibilityState={{ checked: selected, disabled: disabled || !ready }}
+          accessibilityLabel={`${connection.name}, ${connectionSubtitle(connection, catalog)}${ready ? "" : ", API key required"}`}
+          onPress={ready ? onSelectConnectionForClient : onOpenEditor}
         >
-          <Ionicons
-            name={expanded ? "chevron-up" : "ellipsis-horizontal"}
-            size={19}
-            color={colors.textTertiary}
-          />
+          <SelectionMark selected={selected} />
+          <View style={styles.providerRowCopy}>
+            <Text style={styles.rowTitle} numberOfLines={1}>
+              {connection.name}
+            </Text>
+            <Text style={styles.rowSubtitle} numberOfLines={1}>
+              {connectionSubtitle(connection, catalog)} · {exposedCount} models ·{" "}
+              {catalogAgeLabel(connection)}
+            </Text>
+            {status ? (
+              <Text style={[styles.rowSubtitle, { color: status.color }]} numberOfLines={2}>
+                {status.text}
+              </Text>
+            ) : null}
+          </View>
+          {switchState?.kind === "pending" ? (
+            <ActivityIndicator size="small" color={colors.accent} />
+          ) : !ready ? (
+            <StatusPill label="Key required" tone="warning" />
+          ) : null}
+        </AnimatedPressable>
+        <Pressable
+          style={({ pressed }) => [styles.moreAction, pressed && { opacity: 0.5 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`${connection.name} actions`}
+          onPress={() => setMenuVisible(true)}
+        >
+          <Ionicons name="ellipsis-horizontal" size={18} color={colors.textSecondary} />
         </Pressable>
       </View>
-      {expanded ? (
-        <View style={styles.secondaryActions}>
-          <IconAction
-            label="Test connection"
-            icon={testing ? "hourglass-outline" : "pulse-outline"}
-            onPress={() => void handleTest()}
-            disabled={disabled || testing}
-          />
-          <IconAction
-            label="Edit"
-            icon="create-outline"
-            onPress={onOpenEditor}
-            disabled={disabled}
-          />
-          <IconAction
-            label="Delete"
-            icon="trash-outline"
-            onPress={onDelete}
-            disabled={disabled}
-            danger
-          />
-        </View>
-      ) : null}
-      {testState.kind === "success" ? (
-        <Text style={[styles.testResultText, { color: colors.success }]}>
-          Connected · {testState.latencyMs} ms
-          {testState.modelCount > 0
-            ? ` · ${testState.modelCount} models found`
-            : ""}
-        </Text>
-      ) : null}
-      {testState.kind === "error" ? (
-        <Text style={[styles.testResultText, { color: colors.dangerText }]}>
-          {testState.message}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-function ActionButton({
-  label,
-  onPress,
-  disabled,
-  primary,
-}: {
-  label: string;
-  onPress(): void;
-  disabled: boolean;
-  primary?: boolean;
-}) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  return (
-    <AnimatedPressable
-      style={[styles.actionButton, primary && styles.actionButtonPrimary]}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      onPress={onPress}
-    >
-      <Text
-        style={[
-          styles.actionButtonText,
-          primary && styles.actionButtonPrimaryText,
+      <ActionMenu
+        visible={menuVisible}
+        title={connection.name}
+        onClose={() => setMenuVisible(false)}
+        items={[
+          {
+            key: "models",
+            label: "Models",
+            icon: "layers-outline",
+            detail: `${exposedCount} exposed`,
+            disabled: disabled || !ready,
+            onPress: onDiscover,
+          },
+          {
+            key: "test",
+            label: "Test connection",
+            icon: "pulse-outline",
+            disabled: disabled || testing,
+            onPress: () => void handleTest(),
+          },
+          {
+            key: "edit",
+            label: "Edit",
+            icon: "create-outline",
+            disabled,
+            onPress: onOpenEditor,
+          },
+          {
+            key: "delete",
+            label: "Delete",
+            icon: "trash-outline",
+            destructive: true,
+            disabled,
+            onPress: onDelete,
+          },
         ]}
-      >
-        {label}
-      </Text>
-    </AnimatedPressable>
-  );
-}
-
-function IconAction({
-  label,
-  icon,
-  onPress,
-  disabled,
-  danger,
-}: {
-  label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  onPress(): void;
-  disabled: boolean;
-  danger?: boolean;
-}) {
-  const colors = useAppColors();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      hitSlop={5}
-    >
-      <Ionicons
-        name={icon}
-        size={19}
-        color={danger ? colors.dangerText : colors.textSecondary}
       />
-    </Pressable>
+    </View>
   );
 }
 
@@ -1238,6 +1155,27 @@ function ModelSyncSheet({
 
 function createStyles(colors: ReturnType<typeof useAppColors>) {
   return StyleSheet.create({
+    addButton: {
+      minHeight: 28,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 2,
+    },
+    addButtonText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
+      color: colors.accentStrong,
+    },
+    selectRow: {
+      minHeight: 60,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingLeft: 16,
+    },
+    directRow: {
+      paddingRight: 16,
+    },
     safe: { flex: 1, backgroundColor: colors.bgPrimary },
     content: {
       paddingHorizontal: 16,
@@ -1252,270 +1190,38 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.bgSurface,
     },
     notice: {},
-    gatewayStatus: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-      padding: 12,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.bgSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    gatewayStatusCopy: { flex: 1, minWidth: 0, gap: 2 },
-    gatewayStatusTitleRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-    },
-    gatewayStatusTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textPrimary,
-      fontWeight: "700",
-    },
-    gatewayStatusState: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textSecondary,
-    },
-    gatewayStatusMeta: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
-    },
-    gatewayCopy: { padding: 8 },
-    providerList: { gap: 10 },
-    agentSelector: {
-      flexDirection: "row",
-      gap: 8,
-      padding: 4,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.surfaceSubtle,
-    },
-    agentTab: {
-      flex: 1,
-      minHeight: 42,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 7,
-      borderRadius: Radii.xs,
-    },
-    agentTabSelected: { backgroundColor: colors.bgSurface },
-    agentTabText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textSecondary,
-    },
-    agentTabTextSelected: { color: colors.textPrimary, fontWeight: "700" },
-    agentSummary: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      paddingTop: 4,
-    },
-    providerListHeader: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 12,
-      paddingTop: 4,
-    },
-    providerListCopy: { flex: 1, minWidth: 0 },
-    sectionTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.title,
-      color: colors.textPrimary,
-    },
-    sectionMeta: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
-      marginTop: 2,
-    },
-    iconActionAccent: {
-      width: 38,
-      height: 38,
-      borderRadius: Radii.xs,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.accentSoft,
-    },
+    providerList: { gap: 16 },
+    agentSelector: {},
     providerSearch: { marginBottom: 2 },
-    directRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-      padding: 12,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.surfaceSubtle,
-    },
-    directCopy: { flex: 1, minWidth: 0 },
-    radioButton: { padding: 4 },
-    directActions: { gap: 6 },
-    clientPill: {
-      minHeight: 30,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 5,
-      paddingHorizontal: 8,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.bgSurface,
-    },
-    clientPillSelected: { backgroundColor: colors.accentSoft },
-    clientPillText: {
-      ...UiTextMetrics,
-      ...TypeScale.micro,
-      color: colors.textSecondary,
-    },
-    providerRow: {
-      gap: 8,
-      padding: 12,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.bgSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
     providerSelect: {
-      minHeight: 54,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-    },
-    providerRowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
-    providerRowCopy: { flex: 1, minWidth: 0, gap: 2 },
-    providerNameLine: { flexDirection: "row", alignItems: "center", gap: 7 },
-    defaultMarker: {
-      ...UiTextMetrics,
-      ...TypeScale.micro,
-      color: colors.accentStrong,
-      fontWeight: "700",
-    },
-    readyState: { ...UiTextMetrics, ...TypeScale.micro, fontWeight: "600" },
-    inlineError: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.dangerText,
-    },
-    providerActions: {
-      flexDirection: "row",
-      alignItems: "center",
-      flexWrap: "wrap",
-      gap: 12,
-      paddingTop: 3,
-    },
-    moreAction: {
-      minHeight: 40,
-      minWidth: 40,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    secondaryActions: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 18,
-      paddingTop: 4,
-    },
-    primaryAction: {
-      minHeight: 34,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 5,
-      paddingHorizontal: 9,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.accentSoft,
-    },
-    primaryActionSelected: { backgroundColor: colors.surfaceSubtle },
-    primaryActionText: {
-      ...UiTextMetrics,
-      ...TypeScale.micro,
-      color: colors.accentStrong,
-      fontWeight: "600",
-    },
-    emptyText: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      color: colors.textTertiary,
-      textAlign: "center",
-      paddingVertical: 22,
-    },
-    clientSection: { gap: 10 },
-    clientHeader: {
-      minHeight: 46,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 11,
-      paddingHorizontal: 2,
-    },
-    clientIcon: {
-      width: 36,
-      height: 36,
-      borderRadius: 18,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfaceSubtle,
-    },
-    clientTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.compact,
-      color: colors.textPrimary,
-      fontWeight: "700",
-    },
-    group: {
-      overflow: "hidden",
-      borderRadius: Radii.xs,
-      backgroundColor: colors.bgSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    groupRowBorder: {
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-    },
-    choiceRow: {
-      minHeight: 66,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 10,
-    },
-    connectionRow: {
-      minHeight: 66,
-      flexDirection: "row",
-      alignItems: "stretch",
-    },
-    connectionSelect: {
       flex: 1,
       minWidth: 0,
+      minHeight: 60,
+      paddingVertical: 10,
       flexDirection: "row",
       alignItems: "center",
       gap: 12,
-      paddingLeft: 14,
-      paddingVertical: 10,
     },
-    expandButton: { width: 52, alignItems: "center", justifyContent: "center" },
+    providerRowCopy: { flex: 1, minWidth: 0, gap: 2 },
+    moreAction: {
+      minHeight: 48,
+      minWidth: 48,
+      alignItems: "center",
+      justifyContent: "center",
+    },
     radioOuter: {
       width: 20,
       height: 20,
       borderRadius: 10,
       borderWidth: 1.5,
-      borderColor: colors.accent,
+      borderColor: colors.textTertiary,
       alignItems: "center",
       justifyContent: "center",
     },
     radioOuterSelected: {
-      backgroundColor: colors.accent,
       borderColor: colors.accent,
-    },
-    radioInner: {
-      width: 10,
-      height: 10,
-      borderRadius: 5,
       backgroundColor: colors.accent,
     },
-    rowCopy: { flex: 1, minWidth: 0 },
     rowTitle: {
       ...UiTextMetrics,
       ...TypeScale.body,
@@ -1526,56 +1232,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       ...TypeScale.caption,
       color: colors.textTertiary,
       marginTop: 2,
-    },
-    keyRequired: {
-      ...UiTextMetrics,
-      ...TypeScale.micro,
-      color: colors.warning,
-      paddingHorizontal: 4,
-    },
-    connectionActions: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      gap: 8,
-      paddingHorizontal: 14,
-      paddingTop: 10,
-      paddingBottom: 12,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: colors.borderSubtle,
-    },
-    actionButton: {
-      minHeight: 40,
-      minWidth: 110,
-      flexGrow: 1,
-      paddingHorizontal: 12,
-      borderRadius: Radii.xs,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfacePressed,
-    },
-    actionButtonPrimary: { backgroundColor: colors.accentSoft },
-    actionButtonDanger: { backgroundColor: colors.dangerSoft },
-    actionButtonText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textPrimary,
-    },
-    actionButtonPrimaryText: { color: colors.accentStrong },
-    actionButtonDangerText: { color: colors.dangerText },
-    addEndpoint: {
-      minHeight: 46,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 7,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.accentSoft,
-    },
-    addEndpointText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.accentStrong,
-      fontWeight: "600",
     },
     editorCard: {
       backgroundColor: colors.bgSurface,
@@ -1683,13 +1339,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       ...TypeScale.caption,
       color: colors.textTertiary,
       flexShrink: 1,
-    },
-    catalogWarning: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.warning,
-      paddingHorizontal: 2,
-      paddingBottom: 2,
     },
     pickerSavingRow: {
       flexDirection: "row",

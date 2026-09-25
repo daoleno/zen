@@ -247,7 +247,7 @@ describe("Agent-first Providers surface contract", () => {
     expect(presentationSource).toContain(
       "placeholder={`Search ${providerClientLabel(selectedClient)} Providers`}",
     );
-    expect(presentationSource).toContain('label="Models"');
+    expect(presentationSource).toContain('label: "Models"');
     expect(presentationSource).toContain("exposedCount");
     expect(presentationSource).toContain('switchState?.kind === "error"');
   });
@@ -309,7 +309,7 @@ describe("Agent-first Providers surface contract", () => {
   });
 
   test("exactly one unified Edit action; Replace/Add/Clear key flows are gone", () => {
-    expect(presentationSource).toContain('label="Edit"');
+    expect(presentationSource).toContain('label: "Edit"');
     expect(presentationSource).not.toMatch(/Replace key/);
     expect(presentationSource).not.toMatch(/Add API key/);
     expect(presentationSource).not.toMatch(/Edit key/);
@@ -334,8 +334,8 @@ describe("Agent-first Providers surface contract", () => {
   });
 
   test("connection actions sync models through discovery into a picker", () => {
-    expect(presentationSource).toContain('label="Models"');
-    expect(presentationSource).toContain("onPress={onDiscover}");
+    expect(presentationSource).toContain('label: "Models"');
+    expect(presentationSource).toContain("onPress: onDiscover");
     expect(presentationSource).toContain("Test connection");
     expect(screenSource).toContain("discoverProviderModels");
     expect(screenSource).toContain("clientForConnection(");
@@ -354,7 +354,6 @@ describe("Agent-first Providers surface contract", () => {
     expect(presentationSource).toContain("onSelectModel(");
     expect(presentationSource).toContain("picker.client,");
     expect(presentationSource).not.toContain("Choose model");
-    expect(presentationSource).toContain("defaultMarker");
     expect(presentationSource).not.toContain("pickerCurrentLabel");
     expect(presentationSource).toContain("modelChipSelected");
     expect(presentationSource).toContain("FlatList");
@@ -381,7 +380,7 @@ describe("Agent-first Providers surface contract", () => {
   });
 
   test("every saved Provider overflow menu tests the exact stored connection", () => {
-    expect(presentationSource).toContain('label="Test connection"');
+    expect(presentationSource).toContain('label: "Test connection"');
     expect(presentationSource).toContain("onTestConnectionById(");
     expect(presentationSource).toContain("onTestConnectionById");
     // The daemon resolves the persisted Base URL, protocol and active stored

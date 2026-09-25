@@ -32,17 +32,18 @@ describe("Settings copy density", () => {
       "Scan the one-time QR from zen pair, or paste its pairing link.",
       'accessibilityLabel="Server endpoint"',
       "Telegram cloud messages are not deleted.",
-      'accessibilityRole="radiogroup"',
-      'accessibilityRole="radio"',
-      "selected={selected}",
+      'accessibilityLabel="Appearance theme"',
+      "<SegmentedControl",
     ]) {
       expect(source).toContain(necessaryCopy);
     }
-    // Appearance rows are ListRows; the row owns the checked radio state.
-    const listRow = readFileSync(
-      join(import.meta.dir, "../components/ui/ListSection.tsx"),
+    // Appearance is one segmented control; each segment owns its radio state.
+    const segmented = readFileSync(
+      join(import.meta.dir, "../components/ui/SegmentedControl.tsx"),
       "utf8",
     );
-    expect(listRow).toContain('...(role === "radio" ? { checked: Boolean(selected) } : {})');
+    expect(segmented).toContain('accessibilityRole="radiogroup"');
+    expect(segmented).toContain('accessibilityRole="radio"');
+    expect(segmented).toContain("accessibilityState={{ checked: selected, selected }}");
   });
 });

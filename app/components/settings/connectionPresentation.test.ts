@@ -22,7 +22,7 @@ function sourceBlock(start: string, end: string): string {
 
 describe("Settings connection information architecture", () => {
   test("compact Telegram entry opens focused details with error recovery", () => {
-    const telegram = sourceBlock("function TelegramConnectionRow", "function ConnectionAction");
+    const telegram = sourceBlock("function TelegramConnectionRow", "function connectionLabel");
     expect(telegram).toContain('visible={expanded} onClose={closeDetails} layout="fullscreen"');
     expect(telegram).toContain('accessibilityLabel="Back to Settings"');
     expect(telegram).toContain("<TelegramConnectionPanel");
@@ -46,17 +46,14 @@ describe("Settings connection information architecture", () => {
     expect(settingsSource).toContain(': server.url}');
     expect(settingsSource).not.toMatch(/>\s*Messaging\s*</);
   });
-  test("standalone Telegram entry uses the rounded clipped Settings group", () => {
-    const telegram = sourceBlock("function TelegramConnectionRow", "function ConnectionAction");
-    expect(telegram).toContain('<View style={styles.serverList}>');
-    expect(telegram).not.toContain('<View style={styles.serverCard}>');
-    expect(telegram).toContain('preset="card"');
-    expect(telegram).toContain('scale={0.99}');
-    expect(telegram).toContain('@{visibleStatus.bot_username}');
-    const group = sourceBlock('serverList: {', 'telegramHeaderButton: {');
-    for (const style of ['overflow: "hidden"', 'borderRadius: Radii.card', 'backgroundColor: colors.bgSurface', 'borderWidth: StyleSheet.hairlineWidth', 'borderColor: colors.border']) {
-      expect(group).toContain(style);
-    }
+  test("standalone Telegram entry is one grouped list row with semantic status", () => {
+    const telegram = sourceBlock("function TelegramConnectionRow", "function connectionLabel");
+    expect(telegram).toContain("<ListSection");
+    expect(telegram).toContain("<ListRow");
+    expect(telegram).toContain('title="Telegram"');
+    expect(telegram).toContain("@${visibleStatus.bot_username}");
+    expect(telegram).toContain("<StatusPill label={stateLabel} tone={stateTone} />");
+    expect(telegram).toContain('accessory="chevron"');
   });
 
   test("Telegram setup remains enterable without a reachable current server", () => {
@@ -66,7 +63,7 @@ describe("Settings connection information architecture", () => {
 
     const telegram = sourceBlock(
       "function TelegramConnectionRow",
-      "function ConnectionAction",
+      "function connectionLabel",
     );
     expect(telegram).toContain("Server offline");
     expect(telegram).not.toContain("zen telegram setup");
@@ -94,7 +91,7 @@ describe("Settings connection information architecture", () => {
   test("Telegram never participates in current-server selection", () => {
     const telegram = sourceBlock(
       "function TelegramConnectionRow",
-      "function ConnectionAction",
+      "function connectionLabel",
     );
     expect(telegram).not.toContain("switchCurrentServer");
     expect(telegram).not.toContain("connectServer(");
@@ -116,7 +113,7 @@ describe("Settings connection information architecture", () => {
   test("Telegram setup uses compact secure input and keeps advanced actions on demand", () => {
     const telegram = sourceBlock(
       "function TelegramConnectionRow",
-      "function ConnectionAction",
+      "function connectionLabel",
     );
     expect(settingsSource).toContain(
       'const TELEGRAM_BOTFATHER_URL = "https://t.me/BotFather"',
@@ -134,7 +131,7 @@ describe("Settings connection information architecture", () => {
   test("token input is secure, explicitly pasted, and cleared on every exit", () => {
     const telegram = sourceBlock(
       "function TelegramConnectionRow",
-      "function ConnectionAction",
+      "function connectionLabel",
     );
     expect(panelSource).toContain("secureTextEntry");
     expect(telegram).toContain("await Clipboard.getStringAsync()");
@@ -154,7 +151,7 @@ describe("Settings connection information architecture", () => {
   test("owner binding stays automatic and contains no manual identity fields", () => {
     const telegram = sourceBlock(
       "function TelegramConnectionRow",
-      "function ConnectionAction",
+      "function connectionLabel",
     );
     expect(telegram).toContain("wsClient.beginTelegramBinding(serverId)");
     expect(telegram).toContain("Linking.openURL(challenge.url)");
@@ -177,10 +174,7 @@ describe("Settings connection information architecture", () => {
 
   test("connection controls expose roles, state, and disabled state accessibly", () => {
     expect(settingsSource).toContain('accessibilityLabel="Pair a server"');
-    expect(settingsSource).toContain("accessibilityState={{ expanded }}");
-    expect(settingsSource).toContain(
-      "accessibilityState={{ disabled, busy: disabled }}",
-    );
+    expect(settingsSource).toContain('accessibilityHint="Open Telegram details and actions"');
     expect(panelSource).toContain('accessibilityLabel="Telegram bot token"');
     expect(panelSource).toContain('accessibilityState={{ disabled: unavailable, busy }}');
   });

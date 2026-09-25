@@ -89,6 +89,8 @@ import {
 } from "../components/ui";
 import type { ActionMenuItem } from "../components/ui/ActionMenu";
 import { ZenLogoMark } from "../components/ui/ZenLogoMark";
+import { SegmentedControl } from "../components/ui/SegmentedControl";
+import { StatusPill, type StatusTone } from "../components/ui/StatusPill";
 import { RisingSheet } from "../components/ui/RisingSheet";
 import { TelegramConnectionPanel } from "../components/settings/TelegramConnectionPanel";
 import { cancelCalendarNotifications } from "../services/calendarNotifications";
@@ -101,7 +103,7 @@ const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 const SCANNER_COLORS = ZEN_DARK_APP_COLORS;
 const TELEGRAM_BOTFATHER_URL = "https://t.me/BotFather";
 const THEME_CHOICES = [
-  { label: "System", value: "system", icon: "phone-portrait-outline" },
+  { label: "Auto", value: "system", icon: "contrast-outline" },
   { label: "Light", value: "classic-light", icon: "sunny-outline" },
   { label: "Dark", value: "classic-dark", icon: "moon-outline" },
 ] as const;
@@ -569,28 +571,27 @@ export default function SettingsScreen() {
                         size={17}
                         color={colors.accentStrong}
                       />
-                      <View
-                        style={[
-                          styles.serverGlyphDot,
-                          {
-                            borderColor: colors.bgSurface,
-                            backgroundColor: connectionIssue
-                              ? connectionIssueAccent(connectionIssue, colors)
-                              : connectionColor(connectionState, colors),
-                          },
-                        ]}
-                      />
+                      {/* Healthy servers stay clean; only a state to act on gets a dot. */}
+                      {connectionIssue || connectionState !== "connected" ? (
+                        <View
+                          style={[
+                            styles.serverGlyphDot,
+                            {
+                              borderColor: colors.bgSurface,
+                              backgroundColor: connectionIssue
+                                ? connectionIssueAccent(connectionIssue, colors)
+                                : connectionColor(connectionState, colors),
+                            },
+                          ]}
+                        />
+                      ) : null}
                     </View>
                   }
                   trailing={
                     current ? (
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={20}
-                        color={colors.accentStrong}
-                        accessibilityElementsHidden
-                        importantForAccessibility="no-hide-descendants"
-                      />
+                      <AppText variant="micro" style={[styles.inUse, { color: colors.accentStrong, backgroundColor: theme.materials.tint }]}>
+                        In use
+                      </AppText>
                     ) : null
                   }
                   accessory="chevron"
@@ -631,7 +632,11 @@ export default function SettingsScreen() {
               serverId={currentServerId}
               connected={serverConnections[currentServerId] === "connected"}
             />
-          ) : <Text style={styles.emptyText}>No current server</Text>}
+          ) : (
+            <ListSection>
+              <ListRow title="Telegram" subtitle="No current server" icon="paper-plane-outline" disabled />
+            </ListSection>
+          )}
 
           <SettingsSectionHeader>Providers</SettingsSectionHeader>
           <ListSection>
@@ -647,25 +652,13 @@ export default function SettingsScreen() {
           </ListSection>
 
           <SettingsSectionHeader>Appearance</SettingsSectionHeader>
-          <View accessibilityRole="radiogroup" accessibilityLabel="Appearance theme">
-            <ListSection>
-              {THEME_CHOICES.map((choice) => {
-                const selected = preference === choice.value;
-                return (
-                  <ListRow
-                    key={choice.value}
-                    title={choice.label}
-                    icon={choice.icon}
-                    accessory="check"
-                    accessibilityRole="radio"
-                    accessibilityLabel={`${choice.label} appearance`}
-                    selected={selected}
-                    onPress={() => void setPreference(choice.value)}
-                  />
-                );
-              })}
-            </ListSection>
-          </View>
+          <SegmentedControl
+            accessibilityLabel="Appearance theme"
+            options={THEME_CHOICES}
+            value={preference === "classic-light" || preference === "classic-dark" ? preference : "system"}
+            onChange={(value) => void setPreference(value)}
+            style={styles.appearance}
+          />
 
           <SettingsSectionHeader>About</SettingsSectionHeader>
           <ListSection>
@@ -1230,9 +1223,9 @@ function TelegramConnectionRow({
       : setupMode === "local"
         ? "Server offline"
         : "Unavailable";
-  const stateColor = visibleStatus
-    ? telegramConnectionStateColor(visibleStatus.state, colors)
-    : colors.textTertiary;
+  const stateTone: StatusTone = visibleStatus
+    ? telegramConnectionStateTone(visibleStatus.state)
+    : "neutral";
   const closeDetails = () => {
     ownerEpoch.current++;
     setBusy(false);
@@ -1241,68 +1234,39 @@ function TelegramConnectionRow({
     setShowToken(false);
   };
   return (
-    <View style={styles.serverList}>
-      <AnimatedPressable
-        style={styles.telegramHeaderButton}
-        preset="card"
-        scale={0.99}
-        accessibilityRole="button"
+    <ListSection style={styles.channelSection}>
+      <ListRow
+        title="Telegram"
+        subtitle={visibleStatus?.bot_username ? `@${visibleStatus.bot_username}` : stateLabel}
+        leading={
+          <View style={[styles.serverGlyph, { backgroundColor: theme.materials.tint }]}>
+            <Ionicons name="paper-plane" size={16} color={colors.accentStrong} />
+          </View>
+        }
+        trailing={
+          visibleStatus?.bot_username || stateTone !== "neutral" ? (
+            <StatusPill label={stateLabel} tone={stateTone} />
+          ) : null
+        }
+        accessory="chevron"
         accessibilityLabel={`Telegram${
           visibleStatus?.bot_username ? `, @${visibleStatus.bot_username}` : ""
         }, ${stateLabel}`}
         accessibilityHint="Open Telegram details and actions"
-        accessibilityState={{ expanded }}
         onPress={() => {
-          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          setExpanded((value) => {
-            const next = !value;
-            if (!next) {
-              setToken("");
-              setShowToken(false);
-            }
-            return next;
-          });
+          setToken("");
+          setShowToken(false);
+          setExpanded(true);
         }}
-      >
-        <View style={styles.telegramHeader}>
-          <View style={styles.telegramIcon}>
-            <Ionicons name="paper-plane" size={18} color={colors.textOnAccent} />
-          </View>
-          <View style={styles.telegramHeadingCopy}>
-            <Text style={styles.telegramTitle}>Telegram</Text>
-            {visibleStatus?.bot_username ? (
-              <Text style={styles.telegramIdentity} numberOfLines={1}>
-                @{visibleStatus.bot_username}
-              </Text>
-            ) : null}
-            <View
-              style={styles.telegramState}
-              accessibilityLabel={`Telegram ${stateLabel}`}
-            >
-              <View
-                style={[styles.telegramStateDot, { backgroundColor: stateColor }]}
-              />
-              <Text style={[styles.telegramStateText, { color: stateColor }]}>
-                {stateLabel}
-              </Text>
-            </View>
-          </View>
-          <Ionicons
-            name="chevron-forward"
-            size={18}
-            color={colors.textTertiary}
-          />
-        </View>
-      </AnimatedPressable>
-
+      />
       <RisingSheet visible={expanded} onClose={closeDetails} layout="fullscreen" cardStyle={{ backgroundColor: colors.bgPrimary }}>
         <SafeAreaView style={{ flex: 1 }}>
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-            <View style={styles.telegramHeader}>
-              <AnimatedPressable onPress={closeDetails} accessibilityRole="button" accessibilityLabel="Back to Settings" style={{ width: 48, height: 48, alignItems: "center", justifyContent: "center" }}>
-                <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
+            <View style={styles.detailHeader}>
+              <AnimatedPressable onPress={closeDetails} accessibilityRole="button" accessibilityLabel="Back to Settings" style={styles.detailBack}>
+                <Ionicons name="chevron-back" size={24} color={colors.accentStrong} />
+                <Text style={[styles.detailBackText, { color: colors.accentStrong }]}>Settings</Text>
               </AnimatedPressable>
-              <Text style={styles.telegramTitle} accessibilityRole="header">Telegram</Text>
             </View>
             <TelegramConnectionPanel
               status={visibleStatus} connected={Boolean(activeServerId)} loading={loading} busy={busy}
@@ -1325,56 +1289,7 @@ function TelegramConnectionRow({
           </KeyboardAvoidingView>
         </SafeAreaView>
       </RisingSheet>
-    </View>
-  );
-}
-
-function ConnectionAction({
-  icon,
-  label,
-  accessibilityLabel = label,
-  primary = false,
-  danger = false,
-  disabled = false,
-  onPress,
-}: {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
-  label: string;
-  accessibilityLabel?: string;
-  primary?: boolean;
-  danger?: boolean;
-  disabled?: boolean;
-  onPress(): void;
-}) {
-  const { theme } = useAppTheme();
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(theme), [theme]);
-  const foreground = primary
-    ? colors.textOnAccent
-    : danger
-      ? colors.dangerText
-      : colors.textPrimary;
-  return (
-    <AnimatedPressable
-      style={[
-        styles.connectionAction,
-        primary && styles.connectionActionPrimary,
-        danger && styles.connectionActionDanger,
-        disabled && styles.connectionActionDisabled,
-      ]}
-      preset="press"
-      scale={0.95}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled, busy: disabled }}
-      disabled={disabled}
-      onPress={onPress}
-    >
-      <Ionicons name={icon} size={16} color={foreground} />
-      <Text style={[styles.connectionActionText, { color: foreground }]}>
-        {label}
-      </Text>
-    </AnimatedPressable>
+    </ListSection>
   );
 }
 
@@ -1404,31 +1319,19 @@ function telegramConnectionStateLabel(
   }
 }
 
-function telegramConnectionStateColor(
+function telegramConnectionStateTone(
   state: TelegramConnectionStatus["state"],
-  colors: AppColors,
-): string {
+): StatusTone {
   switch (state) {
     case "connected":
-      return colors.statusRunning;
+      return "success";
     case "setup_pending":
-      return colors.warning;
+      return "warning";
     case "degraded":
-      return colors.dangerText;
+      return "danger";
     case "disabled":
-      return colors.disabledText;
+      return "neutral";
   }
-}
-
-function formatConnectionTime(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "recently";
-  return parsed.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 function connectionColor(
@@ -1496,96 +1399,32 @@ function createStyles(theme: ResolvedZenTheme) {
     },
 
 
-    // Matches ListSection's grouped card so Channels sits in the same rhythm.
-    serverList: {
+    channelSection: {},
+    inUse: {
       overflow: "hidden",
-      borderRadius: Radii.card,
-      ...ContinuousCorners,
+      borderRadius: 999,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+    },
+    appearance: {
       marginBottom: 26,
-      backgroundColor: colors.bgSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
     },
-    telegramHeaderButton: {
-      minHeight: 72,
-      paddingHorizontal: 14,
-      paddingVertical: 12,
-      backgroundColor: colors.bgSurface,
-    },
-    telegramHeader: {
-      minHeight: 44,
+    detailHeader: {
+      minHeight: 52,
       flexDirection: "row",
       alignItems: "center",
-      gap: 10,
+      paddingHorizontal: 4,
     },
-    telegramIcon: {
-      width: 36,
-      height: 36,
-      borderRadius: Radii.xs,
+    detailBack: {
+      minHeight: 48,
+      paddingRight: 12,
+      flexDirection: "row",
       alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.accentStrong,
+      gap: 2,
     },
-    telegramHeadingCopy: {
-      flex: 1,
-      minWidth: 0,
-    },
-    telegramTitle: {
+    detailBackText: {
       ...UiTextMetrics,
       ...TypeScale.body,
-      color: colors.textPrimary,
-    },
-    telegramIdentity: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textSecondary,
-    },
-    telegramState: {
-      flexDirection: "row",
-      alignItems: "center",
-      alignSelf: "flex-start",
-      marginTop: 3,
-      gap: 5,
-    },
-    telegramStateDot: {
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-      flexShrink: 0,
-    },
-    telegramStateText: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      flexShrink: 1,
-    },
-    connectionAction: {
-      minHeight: 44,
-      minWidth: 104,
-      paddingHorizontal: 12,
-      flexGrow: 1,
-      flexBasis: 104,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 7,
-      borderRadius: Radii.xs,
-      backgroundColor: colors.surfacePressed,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    connectionActionPrimary: {
-      backgroundColor: colors.accentStrong,
-      borderColor: colors.accentStrong,
-    },
-    connectionActionDanger: {
-      borderColor: colors.dangerText,
-    },
-    connectionActionDisabled: {
-      opacity: 0.5,
-    },
-    connectionActionText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
     },
     noticeCard: {
       marginTop: 12,
