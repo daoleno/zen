@@ -2,23 +2,24 @@ import type { AppColors } from './palette';
 import type {
   ChatPalette,
   DataVisualizationPalette,
+  MaterialPalette,
   SurfacePalette,
 } from './types';
 
 const TRANSPARENT = 'transparent';
 
 export const ZEN_SAGE = {
-  50: '#F6F8F6',
-  100: '#E9EEE9',
-  200: '#D2DDD4',
-  300: '#B5C8B9',
-  400: '#89A28D',
-  500: '#6F8A74',
-  600: '#56705C',
-  700: '#435849',
-  800: '#34443A',
-  900: '#29362E',
-  950: '#151C18',
+  50: '#F4F8F4',
+  100: '#E4EDE5',
+  200: '#CADCCD',
+  300: '#A9C6AF',
+  400: '#82A68A',
+  500: '#628A6B',
+  600: '#4A7154',
+  700: '#3A5A43',
+  800: '#2D4535',
+  900: '#23362A',
+  950: '#121C16',
 } as const;
 
 export const ZEN_BRAND_COLORS = {
@@ -27,32 +28,33 @@ export const ZEN_BRAND_COLORS = {
   ivory: '#F2EEE5',
 } as const;
 
+// Grouped canvas with white content cards, the Apple layering model.
 export const ZEN_LIGHT_NEUTRALS = {
-  canvas: '#F7F8F6',
+  canvas: '#F2F3F0',
   surface: '#FFFFFF',
-  elevated: '#F0F2EF',
-  pressed: '#E4E8E3',
-  textPrimary: '#171A18',
-  textSecondary: '#4F5751',
-  textTertiary: '#68716A',
-  borderSubtle: '#E2E6E1',
-  border: '#CCD2CC',
-  borderStrong: '#89938B',
+  elevated: '#EBEDE9',
+  pressed: '#E1E4DF',
+  textPrimary: '#121513',
+  textSecondary: '#4B524D',
+  textTertiary: '#646C66',
+  borderSubtle: '#E3E6E1',
+  border: '#D2D7D1',
+  borderStrong: '#8A938C',
 } as const;
 
 export const ZEN_DARK_NEUTRALS = {
-  surface: '#17181C',
-  elevated: '#202226',
-  subtle: '#1B1D20',
-  active: '#1F2922',
-  pressed: '#282B2F',
-  textPrimary: '#F2F3EF',
-  textSecondary: '#BEC4BD',
-  textTertiary: '#929B93',
-  borderSubtle: '#282A2E',
-  border: '#35383B',
-  borderStrong: '#687169',
-  modalSurfaceAlt: '#24272A',
+  surface: '#18191E',
+  elevated: '#212329',
+  subtle: '#15161B',
+  active: '#1C2A22',
+  pressed: '#2A2C32',
+  textPrimary: '#F3F4F1',
+  textSecondary: '#BCC2BD',
+  textTertiary: '#8F9791',
+  borderSubtle: '#25272C',
+  border: '#33363C',
+  borderStrong: '#666E68',
+  modalSurfaceAlt: '#23252B',
 } as const;
 
 export const ZEN_LIGHT_STATUS = {
@@ -74,13 +76,13 @@ export const ZEN_DARK_STATUS = {
 } as const;
 
 export const ZEN_LIGHT_OVERLAYS = {
-  selection: 'rgba(86,112,92,0.18)',
-  modalBackdrop: 'rgba(15,15,20,0.42)',
+  selection: 'rgba(74,113,84,0.18)',
+  modalBackdrop: 'rgba(15,15,20,0.32)',
 } as const;
 
 export const ZEN_DARK_OVERLAYS = {
-  selection: 'rgba(137,162,141,0.28)',
-  modalBackdrop: 'rgba(0,0,0,0.72)',
+  selection: 'rgba(130,166,138,0.28)',
+  modalBackdrop: 'rgba(0,0,0,0.6)',
 } as const;
 
 export const ZEN_LIGHT_APP_COLORS: AppColors = {
@@ -233,6 +235,28 @@ export const ZEN_DARK_SURFACE_PALETTE: SurfacePalette = {
   subtle: ZEN_DARK_APP_COLORS.surfaceSubtle,
   border: ZEN_DARK_APP_COLORS.border,
   sectionLabel: ZEN_DARK_APP_COLORS.textTertiary,
+};
+
+export const ZEN_LIGHT_MATERIALS: MaterialPalette = {
+  chrome: 'rgba(242,243,240,0.88)',
+  regular: 'rgba(255,255,255,0.92)',
+  thick: 'rgba(255,255,255,0.97)',
+  thin: 'rgba(255,255,255,0.68)',
+  highlight: 'rgba(255,255,255,0.95)',
+  stroke: 'rgba(18,24,20,0.08)',
+  separator: 'rgba(18,24,20,0.10)',
+  tint: 'rgba(74,113,84,0.12)',
+};
+
+export const ZEN_DARK_MATERIALS: MaterialPalette = {
+  chrome: 'rgba(15,15,20,0.86)',
+  regular: 'rgba(30,31,37,0.92)',
+  thick: 'rgba(36,38,44,0.97)',
+  thin: 'rgba(44,46,53,0.64)',
+  highlight: 'rgba(255,255,255,0.10)',
+  stroke: 'rgba(255,255,255,0.08)',
+  separator: 'rgba(255,255,255,0.09)',
+  tint: 'rgba(130,166,138,0.18)',
 };
 
 export const ZEN_LIGHT_DATA_VISUALIZATION: DataVisualizationPalette = {

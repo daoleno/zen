@@ -1,6 +1,4 @@
-import { Platform } from 'react-native';
 import type { ResolvedZenTheme } from '../theme';
-import { shadow } from './tokens';
 import type { TerminalThemeChrome } from './terminalThemes';
 
 export type ThemedSurfaces = {
@@ -23,12 +21,4 @@ export function surfacesFromTheme(theme: Pick<ResolvedZenTheme, 'surfaces'>): Th
 
 export function isAmbientChatChrome(chrome: TerminalThemeChrome): boolean {
   return chrome.appBackground === 'transparent';
-}
-
-/** Translucent glass cards on SkyNatureBackdrop — Android elevation draws an opaque plate behind them. */
-export function glassCardShadow(shadowColor: string) {
-  if (Platform.OS === 'android') {
-    return {};
-  }
-  return shadow('card', shadowColor);
 }

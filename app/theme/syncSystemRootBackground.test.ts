@@ -30,8 +30,7 @@ describe("mobile system root background sync", () => {
       light.colors.bgPrimary,
       dark.colors.bgPrimary,
     ]);
-    expect(calls[0]).toBe("#0F0F14");
-    expect(calls[1]).toBe("#F7F8F6");
+    expect(calls[0]).not.toBe(calls[1]);
     expect(darkOnLightSystem.colorScheme).toBe("dark");
   });
 

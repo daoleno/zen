@@ -4,13 +4,16 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import type { TerminalThemeChrome } from '../../constants/terminalThemes';
 import {
-  Colors,
   Radii,
   TypeScale,
   Typography,
   UiTextMetrics,
   useAppColors,
+  type AppColors,
+  type WorkerStatus,
 } from '../../constants/tokens';
+import { GlassSurface } from '../ui/GlassSurface';
+import { workerStatusLabel } from '../../services/workerStatusPresentation';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
 import type { AgentKind } from '../../services/workerPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
@@ -48,6 +51,8 @@ interface TelegramChatHeaderProps {
   rightActions?: TelegramChatHeaderAction[];
   menuAnchorRef?: React.RefObject<View | null>;
   flat?: boolean;
+  /** Live Session state shown as a dot on the avatar. */
+  status?: WorkerStatus;
 }
 
 export function TelegramChatHeader({
@@ -64,6 +69,7 @@ export function TelegramChatHeader({
   rightActions = [],
   menuAnchorRef,
   flat = false,
+  status,
 }: TelegramChatHeaderProps) {
   const colors = useAppColors();
   const styles = useMemo(
@@ -72,12 +78,27 @@ export function TelegramChatHeader({
   );
   const avatarText = avatarLabel ?? title;
   const avatarKey = avatarSeed ?? title;
+  const statusColor = status ? headerStatusColor(status, colors) : null;
+  const glass = flat ? null : styles.glass;
+  // Capsules keep the chat canvas' own contrast logic; GlassSurface only
+  // supplies the material, hairline and lit edge.
+  const Capsule = flat ? View : GlassSurface;
+  const capsuleProps = flat
+    ? {}
+    : {
+        material: 'chrome' as const,
+        radius: CHAT_HEADER_HEIGHT / 2,
+        elevation: 'card' as const,
+        fill: glass?.backgroundColor,
+        stroke: glass?.borderColor,
+      };
 
   return (
     <View style={[styles.outer, flat ? styles.outerFlat : null]}>
       <View style={[styles.row, flat ? styles.rowFlat : null]}>
         {onBack ? (
-          <View
+          <Capsule
+            {...capsuleProps}
             style={[
               styles.chip,
               styles.circleChip,
@@ -98,20 +119,28 @@ export function TelegramChatHeader({
                 color={styles.iconColor.color}
               />
             </AnimatedPressable>
-          </View>
+          </Capsule>
         ) : null}
 
-        <AnimatedPressable
-          accessibilityRole="button"
-          accessibilityLabel={
-            onPressTitle ? `${title}, Session details and resource usage` : title
-          }
-          disabled={!onPressTitle}
+        <Capsule
+          {...capsuleProps}
           style={[
             styles.chip,
-            styles.identityPill,
+            styles.identityCapsule,
             flat ? styles.identityFlat : null,
           ]}
+        >
+        <AnimatedPressable
+          accessibilityRole="button"
+          accessibilityLabel={[
+            title,
+            status ? workerStatusLabel(status) : null,
+            onPressTitle ? 'Session details and resource usage' : null,
+          ]
+            .filter(Boolean)
+            .join(', ')}
+          disabled={!onPressTitle}
+          style={styles.identityPill}
           preset="press"
           scale={0.99}
           onPress={() => {
@@ -122,17 +151,33 @@ export function TelegramChatHeader({
             onPressTitle();
           }}
         >
-          {avatar ? (
-            avatar
-          ) : agentKind ? (
-            <AgentKindIcon
-              kind={agentKind}
-              flavor={terminalFlavor}
-              variant="avatar"
-            />
-          ) : (
-            <SessionAvatar label={avatarText} seed={avatarKey} size={30} />
-          )}
+          <View>
+            {avatar ? (
+              avatar
+            ) : agentKind ? (
+              <AgentKindIcon
+                kind={agentKind}
+                flavor={terminalFlavor}
+                variant="avatar"
+              />
+            ) : (
+              <SessionAvatar label={avatarText} seed={avatarKey} size={30} />
+            )}
+            {statusColor ? (
+              <View
+                pointerEvents="none"
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                style={[
+                  styles.statusBadge,
+                  {
+                    backgroundColor: statusColor,
+                    borderColor: styles.glass.backgroundColor,
+                  },
+                ]}
+              />
+            ) : null}
+          </View>
           <View style={styles.copy}>
             <Text style={styles.title} numberOfLines={1}>
               {title}
@@ -144,11 +189,16 @@ export function TelegramChatHeader({
             ) : null}
           </View>
         </AnimatedPressable>
+        </Capsule>
 
         {rightActions.length > 0 ? (
           <View
             ref={menuAnchorRef}
             collapsable={false}
+            style={styles.actionsAnchor}
+          >
+          <Capsule
+            {...capsuleProps}
             style={[
               styles.chip,
               styles.actionsChip,
@@ -187,6 +237,7 @@ export function TelegramChatHeader({
                 />
               </AnimatedPressable>
             ))}
+          </Capsule>
           </View>
         ) : null}
       </View>
@@ -194,8 +245,21 @@ export function TelegramChatHeader({
   );
 }
 
+function headerStatusColor(status: WorkerStatus, colors: AppColors): string | null {
+  switch (status) {
+    case 'running':
+      return colors.statusRunning;
+    case 'blocked':
+      return colors.statusBlocked;
+    case 'failed':
+      return colors.statusFailed;
+    default:
+      return null;
+  }
+}
+
 function resolveChipSurface(
-  colors: typeof Colors,
+  colors: AppColors,
   chrome?: TerminalThemeChrome,
 ): string {
   if (!chrome) {
@@ -216,7 +280,7 @@ function resolveChipSurface(
   return colors.bgSurface;
 }
 
-function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
+function createStyles(colors: AppColors, chrome?: TerminalThemeChrome) {
   const chipSurface = resolveChipSurface(colors, chrome);
   const titleColor = chrome?.text ?? colors.textPrimary;
   const subtitleColor = chrome?.textMuted ?? colors.textSecondary;
@@ -248,15 +312,31 @@ function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
     rowFlat: {
       height: 52,
     },
+    glass: {
+      backgroundColor: chipSurface,
+      borderColor,
+    },
     chip: {
       height: CHAT_HEADER_HEIGHT,
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: chipSurface,
-      borderRadius: Radii.pill,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor,
       overflow: 'hidden',
+    },
+    actionsAnchor: {
+      flexShrink: 0,
+    },
+    identityCapsule: {
+      flex: 1,
+      minWidth: 0,
+    },
+    statusBadge: {
+      position: 'absolute',
+      right: -1,
+      bottom: -1,
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+      borderWidth: 2,
     },
     circleChip: {
       width: CHAT_HEADER_HEIGHT,
@@ -271,8 +351,11 @@ function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
     identityPill: {
       flex: 1,
       minWidth: 0,
-      gap: 8,
-      paddingLeft: 6,
+      alignSelf: 'stretch',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingLeft: 4,
       paddingRight: 14,
       opacity: 1,
     },

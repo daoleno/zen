@@ -1,22 +1,12 @@
-import { Platform, useColorScheme, type TextStyle, type ViewStyle } from "react-native";
-import { classicDarkTheme } from "../theme/definitions/classicDark";
+import { Platform, type TextStyle, type ViewStyle } from "react-native";
 import type { AppColors } from "../theme/palette";
 import { useZenTheme } from "../theme/provider";
-import { resolveTheme } from "../theme/resolve";
+import type { MaterialPalette } from "../theme/types";
 
 export type { AppColors } from "../theme/palette";
-
-export const Colors: AppColors = classicDarkTheme.colors;
+export type { MaterialPalette } from "../theme/types";
 
 export type AppColorScheme = 'light' | 'dark';
-
-export function colorsForScheme(
-  scheme: ReturnType<typeof useColorScheme>,
-): AppColors {
-  return resolveTheme({
-    colorScheme: scheme === 'light' ? 'light' : 'dark',
-  }).colors;
-}
 
 export function useAppTheme(): {
   colors: AppColors;
@@ -35,6 +25,10 @@ export function useAppTheme(): {
 
 export function useAppColors(): AppColors {
   return useZenTheme().theme.colors;
+}
+
+export function useMaterials(): MaterialPalette {
+  return useZenTheme().theme.materials;
 }
 
 export const Spacing = {
@@ -59,8 +53,23 @@ export const Radii = {
   lg: 20,
   xl: 24,
   xxl: 28,
+  /** Grouped list sections and content cards. */
+  card: 22,
+  /** Bottom sheets and full-width floating panels. */
+  sheet: 32,
   pill: 999,
 } as const;
+
+/** Minimum interactive target on both platforms (Apple HIG 44pt, Material 48dp). */
+export const TouchTarget = Platform.OS === 'android' ? 48 : 44;
+
+/**
+ * Continuous (squircle) corners on iOS; Android ignores the key. Spread next
+ * to any borderRadius on cards, sheets and capsules.
+ */
+export const ContinuousCorners: Pick<ViewStyle, 'borderCurve'> = {
+  borderCurve: 'continuous',
+};
 
 /** Prevents Latin descenders (g, y, p) from clipping with Source Han Sans. */
 export const UiTextMetrics: Pick<
@@ -106,6 +115,13 @@ type TypeScaleStyle = Pick<
 
 /** Authoritative product type roles with explicit mixed Latin/CJK metrics. */
 export const TypeScale = {
+  largeTitle: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 28,
+    fontWeight: '500',
+    lineHeight: 36,
+    letterSpacing: 0,
+  },
   display: {
     fontFamily: Typography.uiFontMedium,
     fontSize: 30,
@@ -181,29 +197,21 @@ export const TypeScale = {
 export type TypeScaleRole = keyof typeof TypeScale;
 
 export type WorkerStatus = 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
-export type RunStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 
-export const statusColor = (status: WorkerStatus): string => {
+export function workerStatusColor(status: WorkerStatus, colors: AppColors): string {
   switch (status) {
-    case 'failed': return Colors.statusFailed;
-    case 'blocked': return Colors.statusBlocked;
-    case 'unknown': return Colors.statusUnknown;
-    case 'running': return Colors.statusRunning;
-    case 'done': return Colors.statusDone;
+    case 'failed':
+      return colors.statusFailed;
+    case 'blocked':
+      return colors.statusBlocked;
+    case 'running':
+      return colors.statusRunning;
+    case 'done':
+      return colors.statusDone;
+    default:
+      return colors.statusUnknown;
   }
-};
-
-export const runStatusColor = (status: RunStatus | string): string => {
-  switch (status) {
-    case 'queued': return Colors.statusUnknown;
-    case 'running': return Colors.statusRunning;
-    case 'blocked': return Colors.statusBlocked;
-    case 'failed': return Colors.statusFailed;
-    case 'done': return Colors.statusDone;
-    case 'cancelled': return Colors.textSecondary;
-    default: return Colors.textSecondary;
-  }
-};
+}
 
 type ShadowStyle = Pick<
   ViewStyle,
@@ -231,17 +239,20 @@ function makeShadow(
   }) as ShadowStyle;
 }
 
-/** Soft, tactile elevation — the gentle lift that makes playful UI feel friendly. */
+/**
+ * Diffuse ambient elevation. `card` lifts content off the grouped canvas,
+ * `raised` separates controls, `float` belongs to sheets, menus and FABs.
+ */
 export function shadow(
   level: 'card' | 'raised' | 'float',
   color = '#000000',
 ): ShadowStyle {
   switch (level) {
     case 'card':
-      return makeShadow(color, 0.06, 10, 4, 2);
+      return makeShadow(color, 0.05, 12, 3, 1);
     case 'raised':
-      return makeShadow(color, 0.10, 18, 8, 4);
+      return makeShadow(color, 0.09, 20, 8, 3);
     case 'float':
-      return makeShadow(color, 0.18, 28, 14, 8);
+      return makeShadow(color, 0.16, 32, 16, 10);
   }
 }

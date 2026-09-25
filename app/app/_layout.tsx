@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Platform, Pressable } from "react-native";
+import { AppState, Platform } from "react-native";
 import {
   Stack,
   useGlobalSearchParams,
@@ -7,7 +7,6 @@ import {
   useRouter,
   useSegments,
 } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import * as Linking from "expo-linking";
@@ -33,7 +32,9 @@ import {
   useCurrentServer,
 } from "../store/currentServer";
 import { syncCalendarNotifications } from "../services/calendarNotifications";
-import { useAppTheme } from "../constants/tokens";
+import { Typography, useAppTheme } from "../constants/tokens";
+import { IconButton } from "../components/ui/IconButton";
+import { ToastProvider } from "../components/ui/Toast";
 import { ThemeProvider } from "../theme";
 import { MermaidEngineHost } from "../components/markdown/MermaidEngineHost";
 import { OrientationPolicy } from "../components/OrientationPolicy";
@@ -658,8 +659,16 @@ const AppNavigator = memo(function AppNavigator({
       screenOptions={{
         headerStyle: { backgroundColor: colors.bgPrimary },
         headerTintColor: colors.textPrimary,
+        headerShadowVisible: false,
+        headerTitleAlign: "center",
+        headerTitleStyle: {
+          fontFamily: Typography.uiFontMedium,
+          fontSize: 17,
+          color: colors.textPrimary,
+        },
         contentStyle: { backgroundColor: colors.bgPrimary },
         animation: "slide_from_right",
+        fullScreenGestureEnabled: true,
       }}
     >
       <Stack.Screen name="(primary)" options={{ headerShown: false }} />
@@ -719,26 +728,22 @@ function SecondaryBackButton() {
   const navigation = useNavigation();
   const { colors } = useAppTheme();
   return (
-    <Pressable
-      accessibilityRole="button"
+    <IconButton
+      icon="chevron-back"
+      size={36}
+      iconSize={21}
+      color={colors.textPrimary}
       accessibilityLabel="Back"
-      hitSlop={8}
+      haptic={false}
       onPress={() => {
+        // Deep-link entries have no stack below them; land on Brain instead.
         if (navigation.canGoBack()) {
           router.back();
           return;
         }
         router.replace("/");
       }}
-      style={{
-        width: 44,
-        minHeight: 44,
-        alignItems: "flex-start",
-        justifyContent: "center",
-      }}
-    >
-      <Ionicons name="chevron-back" size={23} color={colors.textPrimary} />
-    </Pressable>
+    />
   );
 }
 
@@ -780,10 +785,12 @@ export default function RootLayout() {
                   <WorkProvider>
                     <CalendarProvider>
                       <SafeAreaProvider>
-                        <ThemedStatusBar />
-                        <MermaidEngineHost />
-                        <OrientationPolicy />
-                        <AppRuntime />
+                        <ToastProvider>
+                          <ThemedStatusBar />
+                          <MermaidEngineHost />
+                          <OrientationPolicy />
+                          <AppRuntime />
+                        </ToastProvider>
                       </SafeAreaProvider>
                     </CalendarProvider>
                   </WorkProvider>

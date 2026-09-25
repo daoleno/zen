@@ -4,7 +4,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Colors, useAppColors } from "../../constants/tokens";
+import { useAppColors, type AppColors } from "../../constants/tokens";
 import type { AgentKind } from "../../services/workerPresentation";
 import {
   CLAUDE_CODE_COMMAND,
@@ -102,7 +102,7 @@ export function NewTerminalLaunchPresetList({
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     presetGrid: {
       flexDirection: "row",

@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 import { StyleSheet, TextInput } from "react-native";
-import { Colors, Spacing, Typography, useAppColors } from "../../constants/tokens";
+import { Spacing, Typography, useAppColors, type AppColors } from "../../constants/tokens";
 
 type Props = {
   value: string;
@@ -29,7 +29,7 @@ export function WorkEditor({ value, onChange, onBlur }: Props) {
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     input: {
       flex: 1,

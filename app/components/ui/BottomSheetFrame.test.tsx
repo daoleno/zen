@@ -15,6 +15,7 @@ mock.module("react-native", () => ({
   Pressable: host("pressable"),
   StyleSheet: {
     create: (value: unknown) => value,
+    flatten: (value: unknown) => value,
     absoluteFill: {},
     hairlineWidth: 1,
   },
@@ -59,13 +60,16 @@ mock.module("react-native-gesture-handler", () => ({
   GestureDetector: ({ children }: any) => children,
 }));
 mock.module("../../constants/tokens", () => ({
+  Radii: { sheet: 32 },
   useAppColors: () => ({
-    modalSurface: "white",
-    borderSubtle: "gray",
     modalBackdrop: "black",
     borderStrong: "gray",
   }),
 }));
+mock.module("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
+mock.module("./GlassSurface", () => ({ GlassSurface: host("glass") }));
 mock.module("../../constants/motion", () => ({ Spring: { rise: {} } }));
 
 const { BottomSheetFrame } = await import("./BottomSheetFrame");

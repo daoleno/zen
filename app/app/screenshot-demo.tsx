@@ -76,7 +76,7 @@ import { StatsScreenshotDemo } from "./stats";
 import type { StatsView } from "../services/statsPayload";
 import CalendarScreen from "./calendar";
 import { OnboardingPresentation } from "../components/onboarding/OnboardingPresentation";
-import { CompactEmptyState } from "../components/ui/CompactEmptyState";
+import { EmptyState } from "../components/ui/EmptyState";
 import { sessionEmptyState } from "../services/sessionEmptyState";
 import { NewTerminalSheet } from "../components/terminal/NewTerminalSheet";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
@@ -159,7 +159,7 @@ function EmptyStatesDemo() {
   const state = sessionEmptyState(params.fixture !== "no-server", connection, params.fixture === "filtered" && !cleared);
   return <SafeAreaView style={{ flex: 1, backgroundColor: colors.bgPrimary }}>
     <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
-      <CompactEmptyState title={state.title} icon={state.icon} busy={state.busy}
+      <EmptyState title={state.title} icon={state.icon} busy={state.busy}
         action={state.action ? { label: state.label, icon: state.action === "retry" ? "refresh-outline" : "add", onPress: () => {
           if (state.action === "retry") setRetried(true);
           else if (state.action === "clear") setCleared(true);

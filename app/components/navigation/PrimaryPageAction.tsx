@@ -9,7 +9,6 @@ import React, {
   type ReactNode,
 } from "react";
 import {
-  Pressable,
   type PressableProps,
   StyleSheet,
   View,
@@ -17,6 +16,7 @@ import {
 import { useIsFocused } from "expo-router";
 import { useAppColors } from "../../constants/tokens";
 import { NavOverflowIcon } from "./PrimaryNavIcons";
+import { PrimaryChromeButton } from "./PrimaryChromeButton";
 import {
   clearPrimaryPageAction,
   registerPrimaryPageAction,
@@ -199,20 +199,15 @@ function DescriptorActionButton({
   const colors = useAppColors();
   const disabled = Boolean(descriptor.disabled);
   return (
-    <Pressable
+    <PrimaryChromeButton
       accessibilityRole="button"
       accessibilityLabel={descriptor.accessibilityLabel}
       accessibilityActions={descriptor.accessibilityActions}
       accessibilityState={{ disabled }}
       disabled={disabled}
-      hitSlop={6}
       onAccessibilityAction={descriptor.onAccessibilityAction}
       onPress={descriptor.onPress}
       tabIndex={drawerVisible ? -1 : 0}
-      style={({ pressed }) => [
-        styles.actionButton,
-        pressed && !disabled ? styles.pressedIcon : null,
-      ]}
     >
       {descriptor.icon ?? (
         <NavOverflowIcon
@@ -222,7 +217,7 @@ function DescriptorActionButton({
           size={20}
         />
       )}
-    </Pressable>
+    </PrimaryChromeButton>
   );
 }
 
@@ -254,16 +249,5 @@ const styles = StyleSheet.create({
     minHeight: PRIMARY_PAGE_ACTION_SLOT_SIZE,
     alignItems: "center",
     justifyContent: "center",
-  },
-  actionButton: {
-    width: PRIMARY_PAGE_ACTION_SLOT_SIZE,
-    minWidth: PRIMARY_PAGE_ACTION_HIT_SIZE,
-    minHeight: PRIMARY_PAGE_ACTION_SLOT_SIZE,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  pressedIcon: {
-    opacity: 0.55,
   },
 });

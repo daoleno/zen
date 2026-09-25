@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { ScrollView, StyleSheet, View } from "react-native";
 import {
   useIsFocused,
   useLocalSearchParams,
@@ -16,7 +15,6 @@ import {
 } from "../../components/brain/BrainExecutorSheet";
 import { BrainExecutorIcon } from "../../components/brain/BrainExecutorIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
-import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
 import { BrainWorkEventDetailSheet } from "../../components/brain/BrainWorkEventDetailSheet";
 import { SessionModelSheet } from "../../components/providers/SessionModelSheet";
@@ -28,19 +26,13 @@ import {
 } from "../../components/brain/brainPresentation";
 import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
 import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
-import { CompactEmptyState } from "../../components/ui/CompactEmptyState";
+import { ActionMenu, EmptyState, InlineNotice } from "../../components/ui";
 import { setServerAutoConnect } from "../../services/storage";
 import { ChatCanvas } from "../../components/terminal/ChatCanvas";
 import { CHAT_CHROME_HORIZONTAL_INSET } from "../../components/terminal/chatChromeMetrics";
 import { InterfaceChatSurface } from "../../components/terminal/InterfaceChatSurface";
-import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { buildChatChrome } from "../../theme";
-import {
-  Colors,
-  TypeScale,
-  useAppColors,
-  useAppTheme,
-} from "../../constants/tokens";
+import { useAppTheme } from "../../constants/tokens";
 import { wsClient } from "../../services/websocket";
 import { shouldShowBrainLoadingState } from "../../services/connectionLifecycle";
 import { isTargetedBrainThreadReadOnly } from "../../services/brainThreadRouting";
@@ -61,9 +53,8 @@ export default function BrainScreen() {
     brainMessageId?: string;
     serverId?: string;
   }>();
-  const colors = useAppColors();
   const { theme: zenTheme } = useAppTheme();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const styles = useMemo(() => createStyles(), []);
   const insets = useSafeAreaInsets();
   const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
   const { chrome, theme } = useMemo(
@@ -422,23 +413,20 @@ export default function BrainScreen() {
         } : undefined}
       />
       {brainActionError || targetedThreadReadOnly ? (
-        <View style={{ paddingTop: topChromeInset }}>
+        <View style={[styles.notices, { paddingTop: topChromeInset }]}>
           {brainActionError ? (
-            <View style={styles.bannerError}>
-              <Text style={styles.bannerErrorText}>{brainActionError}</Text>
-            </View>
+            <InlineNotice
+              tone="danger"
+              title={brainActionError}
+              action={{ label: "Dismiss", onPress: () => setBrainActionError(null) }}
+            />
           ) : null}
           {targetedThreadReadOnly ? (
-            <View style={styles.bannerReadOnly}>
-              <Ionicons
-                name="lock-closed-outline"
-                size={14}
-                color={colors.textSecondary}
-              />
-              <Text style={styles.bannerReadOnlyText}>
-                Historical Brain thread · read-only
-              </Text>
-            </View>
+            <InlineNotice
+              icon="lock-closed-outline"
+              title="Historical Brain thread"
+              detail="Read-only. Start a new chat from the Brain menu."
+            />
           ) : null}
         </View>
       ) : null}
@@ -496,8 +484,9 @@ export default function BrainScreen() {
             />
           ) : (
             <BrainInterfaceUnavailableState
-              chrome={chrome}
               provider={hostExecutor?.provider}
+              onOpenTerminal={canOpenTerminal ? openBrainTerminal : undefined}
+              onSwitchExecutor={canSwitchAdapter ? openAdapterSheet : undefined}
             />
           )}
         </ChatCanvas>
@@ -517,9 +506,10 @@ export default function BrainScreen() {
         onSelect={(adapter, target) => void switchExecutor(adapter, target)}
       />
 
-      <BrainOverflowMenu
+      <ActionMenu
         visible={menuVisible}
-        actions={menuActions}
+        title="Brain"
+        items={menuActions}
         onClose={closeMenu}
       />
 
@@ -549,28 +539,6 @@ export default function BrainScreen() {
   );
 }
 
-function BrainStateCard({
-  chrome,
-  glyph,
-  title,
-  detail,
-}: {
-  chrome: TerminalThemeChrome;
-  glyph: React.ReactNode;
-  title: string;
-  detail?: string;
-}) {
-  const styles = useMemo(() => createStateCardStyles(chrome), [chrome]);
-
-  return (
-    <View style={styles.card}>
-      <View style={styles.glyphWrap}>{glyph}</View>
-      <Text style={styles.title}>{title}</Text>
-      {detail ? <Text style={styles.detail}>{detail}</Text> : null}
-    </View>
-  );
-}
-
 function BrainLoadingState({
   hasServer,
   connected,
@@ -584,7 +552,7 @@ function BrainLoadingState({
 }) {
   return (
     <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
-      <CompactEmptyState
+      <EmptyState
         icon={hasServer ? "cloud-offline-outline" : "server-outline"}
         title={!hasServer ? "Connect your computer" : connected ? "Connecting to Brain" : "Brain is offline"}
         busy={connected}
@@ -596,57 +564,30 @@ function BrainLoadingState({
 }
 
 function BrainInterfaceUnavailableState({
-  chrome,
   provider,
+  onOpenTerminal,
+  onSwitchExecutor,
 }: {
-  chrome: TerminalThemeChrome;
   provider?: string;
+  onOpenTerminal?: () => void;
+  onSwitchExecutor?: () => void;
 }) {
   const label = brainProviderLabel(provider);
   return (
-    <BrainStateCard
-      chrome={chrome}
-      glyph={
-        <Ionicons name="layers-outline" size={22} color={chrome.textMuted} />
-      }
-      title="Chat UI not available"
-      detail={
-        label
-          ? `${label} is connected, but this executor does not expose structured chat events.`
-          : "Switch the Brain host executor to one with structured chat events."
-      }
-    />
+    <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
+      <EmptyState
+        icon="layers-outline"
+        title="Chat view unavailable"
+        detail={
+          label
+            ? `${label} is connected, but this executor does not expose structured chat events.`
+            : "Switch the Brain host executor to one with structured chat events."
+        }
+        action={onSwitchExecutor ? { label: "Switch executor", icon: "swap-horizontal-outline", onPress: onSwitchExecutor } : undefined}
+        secondary={onOpenTerminal ? { label: "Open terminal", icon: "terminal-outline", onPress: onOpenTerminal } : undefined}
+      />
+    </ScrollView>
   );
-}
-
-function createStateCardStyles(chrome: TerminalThemeChrome) {
-  return StyleSheet.create({
-    card: {
-      flex: 1,
-      alignItems: "center",
-      justifyContent: "center",
-      paddingHorizontal: 36,
-      gap: 10,
-    },
-    glyphWrap: {
-      width: 48,
-      height: 48,
-      alignItems: "center",
-      justifyContent: "center",
-      marginBottom: 4,
-    },
-    title: {
-      ...TypeScale.heading,
-      color: chrome.text,
-      textAlign: "center",
-    },
-    detail: {
-      ...TypeScale.compact,
-      color: chrome.textMuted,
-      textAlign: "center",
-      maxWidth: 280,
-    },
-  });
 }
 
 function activeExecutorMentionAtEnd(
@@ -673,7 +614,7 @@ function activeExecutorMentionAtEnd(
   return null;
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles() {
   return StyleSheet.create({
     screen: {
       flex: 1,
@@ -681,35 +622,11 @@ function createStyles(colors: typeof Colors) {
     surface: {
       flex: 1,
     },
-    bannerError: {
-      marginHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
-      marginBottom: 4,
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      borderRadius: 14,
-      backgroundColor: colors.dangerSoft,
-      zIndex: 2,
-    },
-    bannerErrorText: {
-      ...TypeScale.caption,
-      color: colors.dangerText,
-    },
-    bannerReadOnly: {
-      flexDirection: "row",
-      alignItems: "center",
+    notices: {
       gap: 6,
-      marginHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
-      marginBottom: 4,
-      paddingHorizontal: 12,
-      paddingVertical: 7,
-      borderRadius: 12,
-      backgroundColor: colors.bgElevated,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-    },
-    bannerReadOnlyText: {
-      ...TypeScale.caption,
-      color: colors.textSecondary,
+      paddingHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
+      paddingBottom: 6,
+      zIndex: 2,
     },
   });
 }

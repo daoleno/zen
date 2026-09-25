@@ -5,7 +5,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Colors, Typography, useAppColors } from "../../constants/tokens";
+import { Typography, useAppColors, type AppColors } from "../../constants/tokens";
 import { compactPathLabel } from "../../services/pathDisplay";
 import { AppText } from "../ui";
 
@@ -63,7 +63,7 @@ function formatCwdLabel(value: string): string {
   return compactPathLabel(trimmed);
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     row: {
       minHeight: 44,

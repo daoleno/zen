@@ -21,6 +21,8 @@ interface WorkerListRowContainerProps {
   /** Row excluded from termination (daemon offline): disabled inside selection. */
   selectionDisabled: boolean;
   showServerName: boolean;
+  /** Hairline under the row; off for the last row of a grouped card. */
+  separator?: boolean;
 }
 
 function WorkerListRowContainerComponent({
@@ -34,6 +36,7 @@ function WorkerListRowContainerComponent({
   selected,
   selectionDisabled,
   showServerName,
+  separator = true,
 }: WorkerListRowContainerProps) {
   const rowModel = useMemo(() => {
     const presented = presentWorker(agent, alias);
@@ -90,6 +93,7 @@ function WorkerListRowContainerComponent({
       selected={selected}
       selectionDisabled={selectionDisabled}
       onToggleSelection={handlePress}
+      separator={separator}
     />
   );
 }

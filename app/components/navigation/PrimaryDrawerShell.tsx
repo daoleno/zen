@@ -10,7 +10,6 @@ import React, {
 import {
   Keyboard,
   Platform,
-  Pressable,
   StyleSheet,
   View,
   useWindowDimensions,
@@ -22,7 +21,10 @@ import type { PanGesture } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppColors } from "../../constants/tokens";
 import type { PrimaryRouteName } from "../../services/interactionTrace";
+import { useCurrentServer } from "../../store/currentServer";
+import { useWorkerServerSummary } from "../../store/workers";
 import { NavMenuIcon } from "./PrimaryNavIcons";
+import { PrimaryChromeButton } from "./PrimaryChromeButton";
 import {
   PrimaryAppBarPageAction,
   PrimaryPageActionProvider,
@@ -76,6 +78,28 @@ function PrimaryAppBar({
   const colors = useAppColors();
   const geometry = resolvePrimaryAppBarGeometry(topInset);
   const showBrainCanvas = activePrimaryRoute === "brain";
+  const { currentServer } = useCurrentServer();
+  const { serverConnections, serverConnectionIssues } = useWorkerServerSummary();
+  const connection = currentServer
+    ? serverConnections[currentServer.id] || "offline"
+    : "offline";
+  const connectionIssue = currentServer
+    ? serverConnectionIssues[currentServer.id] ?? null
+    : null;
+  // The menu glyph carries the one always-visible server signal: green when
+  // live, amber while connecting, red on an issue, none without a server.
+  const connectionBadge = !currentServer
+    ? null
+    : connectionIssue
+      ? colors.statusFailed
+      : connection === "connected"
+        ? colors.statusRunning
+        : connection === "connecting"
+          ? colors.statusBlocked
+          : colors.statusUnknown;
+  const connectionLabel = !currentServer
+    ? "no server"
+    : connectionIssue?.title ?? connection;
   const selectionBar = usePrimarySelectionBarContent();
   if (selectionBar != null) {
     return (
@@ -104,27 +128,21 @@ function PrimaryAppBar({
           paddingTop: geometry.safeAreaTop,
           minHeight: geometry.contentInset,
           backgroundColor: showBrainCanvas ? "transparent" : colors.bgPrimary,
-          borderBottomColor: showBrainCanvas
-            ? "transparent"
-            : colors.borderSubtle,
+          borderBottomColor: "transparent",
         },
       ]}
     >
-      <Pressable
+      <PrimaryChromeButton
         ref={menuButtonRef}
         onPress={onOpenDrawer}
         onPressIn={onOpenPressIn}
         accessibilityRole="button"
-        accessibilityLabel="Open navigation drawer"
+        accessibilityLabel={`Open navigation drawer, ${connectionLabel}`}
         tabIndex={drawerVisible ? -1 : 0}
-        hitSlop={6}
-        style={({ pressed }) => [
-          styles.menuButton,
-          pressed ? styles.pressedIcon : null,
-        ]}
+        badgeColor={connectionBadge}
       >
-        <NavMenuIcon color={colors.textPrimary} size={22} />
-      </Pressable>
+        <NavMenuIcon color={colors.textPrimary} size={20} />
+      </PrimaryChromeButton>
       <PrimaryTopSwitch
         activeRoute={activePrimaryRoute}
         onSelectRoute={onSelectPrimaryRoute}
@@ -349,6 +367,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-end",
     justifyContent: "space-between",
+    paddingHorizontal: 4,
     borderBottomWidth: StyleSheet.hairlineWidth,
     zIndex: 2,
   },
@@ -358,17 +377,6 @@ const styles = StyleSheet.create({
     right: 0,
     left: 0,
     zIndex: 5,
-  },
-  menuButton: {
-    width: 52,
-    minWidth: 44,
-    minHeight: 52,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  pressedIcon: {
-    opacity: 0.55,
   },
   selectionBarSlot: {
     flex: 1,

@@ -4,7 +4,7 @@ import {
   normalizePublicKeyHex,
   verifyDaemonAssertion,
 } from "./auth";
-import { Colors, type AppColors } from "../constants/tokens";
+import type { AppColors } from "../constants/tokens";
 import type { StoredServer } from "./storage";
 import { resolveCanonicalServerURL } from "./pinnedTransport";
 
@@ -195,7 +195,7 @@ export async function diagnoseConnectionIssue(input: {
 
 export function connectionIssueAccent(
   issue: ConnectionIssue | null | undefined,
-  colors: AppColors = Colors,
+  colors: AppColors,
 ): string {
   if (!issue) return colors.disabledText;
 

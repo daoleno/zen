@@ -1,6 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useMemo } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
-import { Colors, useAppColors } from '../../constants/tokens';
+import { useAppColors, type AppColors } from '../../constants/tokens';
 import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
 import { AppText } from '../ui';
 import { getTerminalCapabilityPresentation } from '../../services/terminalCapabilities';
@@ -38,7 +38,7 @@ export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, Term
   );
 });
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
   container: {
     flex: 1,

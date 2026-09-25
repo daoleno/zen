@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
+import { confirmDestructive } from "../components/ui/confirmDestructive";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   ProvidersPresentation,
@@ -576,22 +577,20 @@ export default function ProvidersScreen() {
       onOpenEditor={setEditor}
       onCloseEditor={closeEditor}
       onDelete={(connection) => {
-        Alert.alert("Delete Provider?", connection.name, [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Delete",
-            style: "destructive",
-            onPress: () => {
-              void runMutation(() =>
-                wsClient.deleteProviderConnection(
-                  currentServerId!,
-                  connection.id,
-                  revision,
-                ),
-              );
-            },
+        confirmDestructive({
+          title: "Delete Provider?",
+          message: connection.name,
+          confirmLabel: "Delete",
+          onConfirm: () => {
+            void runMutation(() =>
+              wsClient.deleteProviderConnection(
+                currentServerId!,
+                connection.id,
+                revision,
+              ),
+            );
           },
-        ]);
+        });
       }}
 
       onUseDirect={(client: ProviderClient) => {

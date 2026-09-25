@@ -3,6 +3,7 @@ import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentKind } from "../../services/workerPresentation";
 import type { TerminalFlavor } from "../../services/terminalFlavor";
 import type { StoredInterfaceRenderMode } from "../../services/storage";
+import type { WorkerStatus } from "../../constants/tokens";
 import { TelegramChatHeader } from "./TelegramChatHeader";
 
 export interface TerminalTopBarGitDiffPresentation {
@@ -28,6 +29,7 @@ export interface TerminalTopBarProps {
   gitDiffPresentation: TerminalTopBarGitDiffPresentation;
   isStructuredChatWorker: boolean;
   delegated?: boolean;
+  status?: WorkerStatus;
   onBack(): void;
   onOpenSessionDetails(): void;
   onOpenGitDiff(): void;
@@ -45,6 +47,7 @@ export function TerminalTopBar({
   gitDiffDisabled,
   gitDiffPresentation,
   delegated,
+  status,
   onBack,
   onOpenSessionDetails,
   onOpenGitDiff,
@@ -85,6 +88,7 @@ export function TerminalTopBar({
       terminalFlavor={terminalFlavor}
       avatarLabel={title}
       avatarSeed={title}
+      status={status}
       onBack={onBack}
       onPressTitle={onOpenSessionDetails}
       rightActions={rightActions}

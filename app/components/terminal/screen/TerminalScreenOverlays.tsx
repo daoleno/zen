@@ -174,6 +174,7 @@ export function TerminalScreenOverlays({
         visible={menuVisible}
         left={menuPosition.left}
         top={menuPosition.top}
+        title={resourceSheetTitle}
         creatingSession={creatingSession}
         newTerminalLabel={creatingSession ? "Starting Terminal…" : "New Terminal"}
         newTerminalDisabled={newTerminalDisabled}
@@ -195,7 +196,7 @@ export function TerminalScreenOverlays({
       <NewTerminalSheet
         key={selectedServerId ?? "no-server"}
         visible={newTerminalVisible}
-        title="Session"
+        title="New session"
         initialCwd={newTerminalInitialCwd}
         serverId={selectedServerId}
         submitting={creatingSession}

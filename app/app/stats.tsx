@@ -23,11 +23,11 @@ import Animated, {
 } from 'react-native-reanimated';
 import { TabView } from 'react-native-tab-view';
 import {
-  Colors,
   Radii,
   TypeScale,
   UiTextMetrics,
   useAppTheme,
+  type AppColors,
 } from '../constants/tokens';
 import { useWorkers } from '../store/workers';
 import { useCurrentServer } from '../store/currentServer';
@@ -1217,7 +1217,7 @@ function DItem({
   label: string;
   value: string;
   accent?: boolean;
-  colors: typeof Colors;
+  colors: AppColors;
   styles: ReturnType<typeof createStyles>;
 }) {
   return (
@@ -1267,7 +1267,7 @@ function ExpandToggle({
   expanded: boolean;
   total: number;
   onPress: () => void;
-  colors: typeof Colors;
+  colors: AppColors;
 }) {
   return (
     <AnimatedPressable
@@ -1292,7 +1292,7 @@ function ExpandToggle({
 
 // ── Styles ─────────────────────────────────────────────────
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bgPrimary },
     pager: { flex: 1 },

@@ -350,9 +350,6 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       minWidth: "100%",
     },
     sheetCard: {
-      width: "100%",
-      maxWidth: 1040,
-      alignSelf: "center",
       paddingHorizontal: 8,
     },
     sheetContent: {

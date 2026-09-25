@@ -59,6 +59,8 @@ export function InterfaceTimelineEmptyContent({
         chrome={chrome}
         title="Could not load this chat"
         body={error}
+        tone="error"
+        icon="alert-circle-outline"
       />
     );
   }
@@ -83,6 +85,7 @@ export function InterfaceTimelineEmptyContent({
         chrome={chrome}
         title="Chat view is not available here"
         body={unavailableReason}
+        icon="layers-outline"
         actionLabel={showUnavailableAction ? "Open Terminal" : undefined}
         onAction={showUnavailableAction ? onUnavailableAction : undefined}
       />

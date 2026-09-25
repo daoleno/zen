@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo } from "react";
 import { Linking, StyleSheet, Text, View } from "react-native";
-import { Colors, Spacing, Typography, useAppColors, useAppTheme } from "../../constants/tokens";
+import { Spacing, Typography, useAppColors, useAppTheme, type AppColors } from "../../constants/tokens";
 import { buildChatChrome } from "../../theme";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { MermaidDiagram } from "../markdown/MermaidDiagram";
@@ -274,7 +274,7 @@ function renderInline(
   });
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(colors: AppColors) {
   return StyleSheet.create({
     root: {
       paddingHorizontal: 18,

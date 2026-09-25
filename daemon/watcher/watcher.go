@@ -1617,7 +1617,16 @@ func (w *Watcher) collectMissingPollEvidence(missing []missingPollWorker, probe 
 		// when an exact target probe still proves Zen's durable marker; the next
 		// poll will observe the window normally. Removing it here makes the
 		// readiness handoff report a false foreign-target ownership failure.
-		if owned, ownershipErr := w.targetIsDurablyOwned(item.id); ownershipErr == nil && owned {
+		owned, ownershipErr := w.targetIsDurablyOwned(item.id)
+		if ownershipErr != nil {
+			// A successful inventory can race a daemon reload or a temporary
+			// control-socket outage. The marker probe is then Unknown, not proof
+			// that the live Worker disappeared. Retain the canonical owner and
+			// let the next authoritative inventory retry the observation.
+			if errors.Is(ownershipErr, ErrOwnershipProbeUnavailable) {
+				continue
+			}
+		} else if owned {
 			continue
 		}
 		if item.turn.TurnID != "" && !TurnImmutable(item.turn.Status) {

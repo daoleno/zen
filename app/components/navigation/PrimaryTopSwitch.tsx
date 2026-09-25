@@ -8,7 +8,8 @@ import {
   View,
   type PressableProps,
 } from "react-native";
-import { Typography, useAppColors } from "../../constants/tokens";
+import { Typography, shadow, useAppColors } from "../../constants/tokens";
+import { GlassSurface } from "../ui/GlassSurface";
 import {
   beginInteraction,
   type PrimaryRouteName,
@@ -22,8 +23,11 @@ import {
   reconcilePrimarySwitchPending,
 } from "./primarySwitchSelection";
 
-const SWITCH_OPTION_WIDTH = 88;
-const SWITCH_INDICATOR_INSET = 24;
+const SWITCH_OPTION_WIDTH = 92;
+const SWITCH_TRACK_PADDING = 3;
+const SWITCH_TRACK_HEIGHT = 38;
+// Extends the 32pt segment to a 48pt vertical touch target.
+const SWITCH_HIT_SLOP = { top: 8, bottom: 8 } as const;
 const PAGER_POSITION_INPUT_RANGE = [0, 1] as const;
 
 interface PendingSwitchTrace {
@@ -66,6 +70,7 @@ function PrimarySwitchOption({
       accessibilityLabel={label}
       accessibilityState={{ selected: isSelected }}
       aria-selected={isSelected}
+      hitSlop={SWITCH_HIT_SLOP}
       style={styles.switchButton}
     >
       <Text
@@ -269,70 +274,82 @@ export function PrimaryTopSwitch({
 
   return (
     <View accessibilityRole="tablist" style={styles.switchRoot}>
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          styles.switchIndicator,
-          {
-            backgroundColor: colors.accent,
-            transform: [{ translateX: indicatorTranslateX }],
-          },
-        ]}
-      />
-      <PrimarySwitchOption
-        href="/"
-        isSelected={brainSelected}
-        label="Brain"
-        activeOpacity={brainActiveOpacity}
-        inactiveColor={colors.textTertiary}
-        primaryColor={colors.textPrimary}
-        onPressIn={() => beginSwitch("brain")}
-        onPress={(event) => {
-          event.preventDefault?.();
-          selectRoute("brain");
-        }}
-        onLongPress={() => {
-          selectRoute("brain");
-        }}
-      />
-      <PrimarySwitchOption
-        href="/list"
-        isSelected={listSelected}
-        label="Sessions"
-        activeOpacity={listActiveOpacity}
-        inactiveColor={colors.textTertiary}
-        primaryColor={colors.textPrimary}
-        onPressIn={() => beginSwitch("list")}
-        onPress={(event) => {
-          event.preventDefault?.();
-          selectRoute("list");
-        }}
-        onLongPress={() => {
-          selectRoute("list");
-        }}
-      />
+      <GlassSurface
+        material="chrome"
+        radius={SWITCH_TRACK_HEIGHT / 2}
+        elevation="card"
+        style={styles.switchTrack}
+      >
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.switchThumb,
+            {
+              backgroundColor: colors.bgElevated,
+              ...shadow("card", colors.shadowColor),
+              transform: [{ translateX: indicatorTranslateX }],
+            },
+          ]}
+        />
+        <PrimarySwitchOption
+          href="/"
+          isSelected={brainSelected}
+          label="Brain"
+          activeOpacity={brainActiveOpacity}
+          inactiveColor={colors.textTertiary}
+          primaryColor={colors.textPrimary}
+          onPressIn={() => beginSwitch("brain")}
+          onPress={(event) => {
+            event.preventDefault?.();
+            selectRoute("brain");
+          }}
+          onLongPress={() => {
+            selectRoute("brain");
+          }}
+        />
+        <PrimarySwitchOption
+          href="/list"
+          isSelected={listSelected}
+          label="Sessions"
+          activeOpacity={listActiveOpacity}
+          inactiveColor={colors.textTertiary}
+          primaryColor={colors.textPrimary}
+          onPressIn={() => beginSwitch("list")}
+          onPress={(event) => {
+            event.preventDefault?.();
+            selectRoute("list");
+          }}
+          onLongPress={() => {
+            selectRoute("list");
+          }}
+        />
+      </GlassSurface>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   switchRoot: {
-    width: SWITCH_OPTION_WIDTH * 2,
     height: 52,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  switchTrack: {
+    width: SWITCH_OPTION_WIDTH * 2 + SWITCH_TRACK_PADDING * 2,
+    height: SWITCH_TRACK_HEIGHT,
+    padding: SWITCH_TRACK_PADDING,
     flexDirection: "row",
     alignItems: "stretch",
-    justifyContent: "center",
   },
   switchButton: {
     width: SWITCH_OPTION_WIDTH,
-    minHeight: 52,
     paddingHorizontal: 12,
     alignItems: "center",
     justifyContent: "center",
   },
   switchLabel: {
     fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 20,
   },
   switchLabelBase: {
     textAlign: "center",
@@ -341,12 +358,12 @@ const styles = StyleSheet.create({
     position: "absolute",
     textAlign: "center",
   },
-  switchIndicator: {
+  switchThumb: {
     position: "absolute",
-    left: SWITCH_INDICATOR_INSET,
-    bottom: 5,
-    width: SWITCH_OPTION_WIDTH - SWITCH_INDICATOR_INSET * 2,
-    height: 2,
-    borderRadius: 1,
+    left: SWITCH_TRACK_PADDING,
+    top: SWITCH_TRACK_PADDING,
+    width: SWITCH_OPTION_WIDTH,
+    height: SWITCH_TRACK_HEIGHT - SWITCH_TRACK_PADDING * 2,
+    borderRadius: (SWITCH_TRACK_HEIGHT - SWITCH_TRACK_PADDING * 2) / 2,
   },
 });

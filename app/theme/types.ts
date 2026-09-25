@@ -41,6 +41,27 @@ export interface SurfacePalette {
   sectionLabel: string;
 }
 
+/**
+ * Layered materials for chrome that floats over content: bars, sheets,
+ * menus, floating controls. Fills are translucent so the canvas reads through;
+ * `highlight` is the lit top edge and `stroke` the outer hairline.
+ */
+export interface MaterialPalette {
+  /** Navigation bars and pinned chrome over scrolling content. */
+  chrome: string;
+  /** Sheets, menus and floating controls. */
+  regular: string;
+  /** Popovers and toasts that must stay legible over any content. */
+  thick: string;
+  /** Chips and capsules resting directly on the canvas. */
+  thin: string;
+  highlight: string;
+  stroke: string;
+  separator: string;
+  /** Accent-tinted fill for selected or tinted controls. */
+  tint: string;
+}
+
 export interface DataVisualizationPalette {
   activityRamp: readonly [string, string, string, string];
 }
@@ -52,6 +73,7 @@ export interface ZenThemeDefinition {
   colors: AppPalette;
   chat: ChatPalette;
   surfaces: SurfacePalette;
+  materials: MaterialPalette;
   dataVisualization: DataVisualizationPalette;
   avatarColors: readonly string[];
 }
