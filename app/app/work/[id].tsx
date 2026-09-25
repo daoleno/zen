@@ -10,7 +10,6 @@ import {
 } from "react-native";
 import { useIsFocused, useLocalSearchParams, useRouter } from "expo-router";
 import { useCurrentServer } from "../../store/currentServer";
-import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Radii, Spacing, Typography, useAppColors, shadow, type AppColors } from "../../constants/tokens";
@@ -20,11 +19,18 @@ import {
 } from "../../components/work/WorkEditor";
 import { MarkdownView } from "../../components/work/MarkdownView";
 import { wsClient } from "../../services/websocket";
-import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
-import { RisingSheet } from "../../components/ui/RisingSheet";
+import {
+  ActionMenu,
+  Button,
+  EmptyState,
+  IconButton,
+  InlineNotice,
+  StatusPill,
+  confirmDestructive,
+} from "../../components/ui";
+import type { StatusTone } from "../../components/ui/StatusPill";
 
 const AUTOSAVE_DELAY_MS = 600;
-type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
 function workItemKey(serverId: string, id: string) {
   return `${serverId}:${id}`;
@@ -163,29 +169,25 @@ function CurrentWorkDetail() {
     if (!item || !serverId) {
       return;
     }
-    Alert.alert("Delete work item", "Remove this Markdown work file?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: () => {
-          void (async () => {
-            if (!isCurrentServer(serverId)) return;
-            try {
-              await wsClient.deleteWorkItem(serverId, item.id);
-              if (!isCurrentServer(serverId)) return;
-              router.back();
-            } catch (error: any) {
-              if (!isCurrentServer(serverId)) return;
-              Alert.alert(
-                "Delete failed",
-                error?.message || "Could not delete work item.",
-              );
-            }
-          })();
-        },
+    confirmDestructive({
+      title: "Delete work item?",
+      message: "This removes the Markdown work file from the server.",
+      confirmLabel: "Delete",
+      onConfirm: async () => {
+        if (!isCurrentServer(serverId)) return;
+        try {
+          await wsClient.deleteWorkItem(serverId, item.id);
+          if (!isCurrentServer(serverId)) return;
+          router.back();
+        } catch (error: any) {
+          if (!isCurrentServer(serverId)) return;
+          Alert.alert(
+            "Delete failed",
+            error?.message || "Could not delete work item.",
+          );
+        }
       },
-    ]);
+    });
   };
 
   const toggleEditing = async () => {
@@ -199,14 +201,19 @@ function CurrentWorkDetail() {
   if (!item) {
     return (
       <SafeAreaView style={styles.emptyScreen} edges={["top"]}>
-        <Text style={styles.emptyTitle}>Work item not found</Text>
+        <EmptyState
+          icon="document-text-outline"
+          title="Work item not found"
+          detail="It may have been deleted or belongs to another server."
+          action={{ label: "Go back", icon: "chevron-back", onPress: () => router.back() }}
+        />
       </SafeAreaView>
     );
   }
 
   const done = !!item.frontmatter.done;
   const draftTitle = workItemTitle(item) || titleFromMarkdown(draftBody) || "Untitled work";
-  const status = workStatusInfo(item, colors);
+  const status = workStatusInfo(item);
   const updatedLabel = relativeTime(item.mtime || item.frontmatter.created);
   const previewBody = stripLeadingTitle(draftBody);
   const headerTitle = item.project;
@@ -221,17 +228,13 @@ function CurrentWorkDetail() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View style={styles.header}>
-          <AnimatedPressable
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.back();
-            }}
-            preset="press"
-            scale={0.88}
-            style={styles.iconButton}
-          >
-            <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
-          </AnimatedPressable>
+          <IconButton
+            icon="chevron-back"
+            iconSize={21}
+            size={40}
+            accessibilityLabel="Back"
+            onPress={() => router.back()}
+          />
 
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle} numberOfLines={1}>
@@ -239,38 +242,27 @@ function CurrentWorkDetail() {
             </Text>
           </View>
 
-          <AnimatedPressable
+          <IconButton
+            icon={editing ? "eye-outline" : "create-outline"}
+            size={40}
+            accessibilityLabel={editing ? "Preview" : "Edit"}
             onPress={() => void toggleEditing()}
-            preset="press"
-            scale={0.88}
-            style={styles.iconButton}
-          >
-            <Ionicons
-              name={editing ? "eye-outline" : "create-outline"}
-              size={19}
-              color={colors.textPrimary}
-            />
-          </AnimatedPressable>
+          />
 
-          <AnimatedPressable
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setMenuOpen(true);
-            }}
-            preset="press"
-            scale={0.88}
-            style={styles.iconButton}
-          >
-            <Ionicons name="ellipsis-horizontal" size={20} color={colors.textPrimary} />
-          </AnimatedPressable>
+          <IconButton
+            icon="ellipsis-horizontal"
+            size={40}
+            accessibilityLabel="Work actions"
+            onPress={() => setMenuOpen(true)}
+          />
         </View>
 
         <View style={styles.context}>
           <View style={styles.statusRow}>
             <StatusPill
-              icon={status.icon}
               label={status.label}
-              color={status.color}
+              tone={status.tone}
+              live={status.tone === "accent"}
             />
             <Text style={styles.contextPath} numberOfLines={1}>
               {contextLabel}
@@ -283,30 +275,23 @@ function CurrentWorkDetail() {
         </View>
 
         {remoteBanner ? (
-          <AnimatedPressable
-            accessibilityRole="button"
-            accessibilityLabel="Load remote changes"
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setDraftBody(item.body);
-              setBaseMtime(item.mtime);
-              setDirty(false);
-              setRemoteBanner(false);
-              dispatch({ type: "WORK_DRAFT_DISCARDED", serverId, id: itemId });
-            }}
-            preset="press"
-            scale={0.98}
+          <InlineNotice
+            tone="accent"
+            icon="cloud-download-outline"
+            title="Newer version on the server"
+            detail={dirty ? "Loading it discards your unsaved edits." : null}
             style={styles.banner}
-          >
-            <Ionicons
-              name="cloud-download-outline"
-              size={14}
-              color={colors.textPrimary}
-            />
-            <Text style={styles.bannerText}>
-              Load remote changes
-            </Text>
-          </AnimatedPressable>
+            action={{
+              label: "Load remote changes",
+              onPress: () => {
+                setDraftBody(item.body);
+                setBaseMtime(item.mtime);
+                setDirty(false);
+                setRemoteBanner(false);
+                dispatch({ type: "WORK_DRAFT_DISCARDED", serverId, id: itemId });
+              },
+            }}
+          />
         ) : null}
 
         <View style={styles.contentShell}>
@@ -339,62 +324,39 @@ function CurrentWorkDetail() {
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
           <SaveState saving={saving} dirty={dirty} />
           <View style={styles.footerActions}>
-            <AnimatedPressable
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                void handleToggleDone();
-              }}
-              disabled={saving}
-              preset="press"
-              scale={0.94}
-              style={[styles.secondaryButton, saving && styles.primaryButtonDisabled]}
-            >
-              <Ionicons
-                name={done ? "return-up-back-outline" : "checkmark"}
-                size={14}
-                color={colors.textPrimary}
-              />
-              <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
-            </AnimatedPressable>
+            <Button
+              label={done ? "Reopen" : "Mark done"}
+              icon={done ? "return-up-back-outline" : "checkmark"}
+              variant={done ? "plain" : "tinted"}
+              size="sm"
+              loading={saving}
+              onPress={() => void handleToggleDone()}
+            />
           </View>
         </View>
       </KeyboardAvoidingView>
 
-      <OverflowMenu
+      <ActionMenu
         visible={menuOpen}
+        title={draftTitle}
         onClose={() => setMenuOpen(false)}
-        done={done}
-        showDone
-        onToggleDone={() => {
-          setMenuOpen(false);
-          void handleToggleDone();
-        }}
-        onDelete={() => {
-          setMenuOpen(false);
-          handleDelete();
-        }}
+        items={[
+          {
+            key: "done",
+            label: done ? "Reopen" : "Mark done",
+            icon: done ? "refresh-outline" : "checkmark-circle-outline",
+            onPress: () => void handleToggleDone(),
+          },
+          {
+            key: "delete",
+            label: "Delete",
+            icon: "trash-outline",
+            destructive: true,
+            onPress: handleDelete,
+          },
+        ]}
       />
     </SafeAreaView>
-  );
-}
-
-function StatusPill({
-  icon,
-  label,
-  color,
-}: {
-  icon: IconName;
-  label: string;
-  color: string;
-}) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-
-  return (
-    <View style={styles.statusPill}>
-      <Ionicons name={icon} size={13} color={color} />
-      <Text style={[styles.statusPillText, { color }]}>{label}</Text>
-    </View>
   );
 }
 
@@ -466,26 +428,25 @@ function usefulInlineText(value?: string): string {
     .trim();
 }
 
-function workStatusInfo(item: WorkItem, colors: AppColors): {
-  icon: IconName;
+function workStatusInfo(item: WorkItem): {
   label: string;
-  color: string;
+  tone: StatusTone;
 } {
   switch (workItemStatus(item)) {
     case "failed":
-      return { icon: "close-circle", label: "Failed", color: colors.statusFailed };
+      return { label: "Failed", tone: "danger" };
     case "blocked":
-      return { icon: "alert-circle", label: "Blocked", color: colors.statusBlocked };
+      return { label: "Blocked", tone: "warning" };
     case "done":
-      return { icon: "checkmark-circle", label: "Done", color: colors.statusDone };
+      return { label: "Done", tone: "success" };
     case "removed":
-      return { icon: "archive", label: "Removed", color: colors.statusDone };
+      return { label: "Removed", tone: "neutral" };
     case "running":
-      return { icon: "play-circle", label: "Running", color: colors.statusRunning };
+      return { label: "Running", tone: "accent" };
     case "unknown":
-      return { icon: "help-circle", label: "Unknown", color: colors.statusUnknown };
+      return { label: "Unknown", tone: "neutral" };
     case "queued":
-      return { icon: "ellipse", label: "Queued", color: colors.accent };
+      return { label: "Queued", tone: "neutral" };
   }
 }
 
@@ -507,65 +468,6 @@ function SaveState({ saving, dirty }: { saving: boolean; dirty: boolean }) {
   );
 }
 
-function OverflowMenu({
-  visible,
-  onClose,
-  done,
-  showDone,
-  onToggleDone,
-  onDelete,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  done: boolean;
-  showDone: boolean;
-  onToggleDone: () => void;
-  onDelete: () => void;
-}) {
-  const colors = useAppColors();
-  const menuStyles = useMemo(() => createMenuStyles(colors), [colors]);
-
-  return (
-    <RisingSheet visible={visible} onClose={onClose} align="bottom" cardStyle={menuStyles.card}>
-      {showDone ? (
-        <>
-          <AnimatedPressable
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              onToggleDone();
-            }}
-            preset="press"
-            scale={0.98}
-            style={menuStyles.item}
-          >
-            <Ionicons
-              name={done ? "refresh-outline" : "checkmark-circle-outline"}
-              size={18}
-              color={colors.textPrimary}
-            />
-            <Text style={menuStyles.itemText}>{done ? "Reopen" : "Mark done"}</Text>
-          </AnimatedPressable>
-          <View style={menuStyles.divider} />
-        </>
-      ) : null}
-      <AnimatedPressable
-        onPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          onDelete();
-        }}
-        preset="press"
-        scale={0.98}
-        style={menuStyles.item}
-      >
-        <Ionicons name="trash-outline" size={18} color={colors.statusFailed} />
-        <Text style={[menuStyles.itemText, menuStyles.itemTextDestructive]}>
-          Delete
-        </Text>
-      </AnimatedPressable>
-    </RisingSheet>
-  );
-}
-
 function createStyles(colors: AppColors) {
   return StyleSheet.create({
   screen: {
@@ -581,24 +483,13 @@ function createStyles(colors: AppColors) {
     justifyContent: "center",
     backgroundColor: colors.bgPrimary,
   },
-  emptyTitle: {
-    color: colors.textPrimary,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 17,
-  },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 10,
-    paddingTop: 3,
-    paddingBottom: 5,
-  },
-  iconButton: {
-    width: 36,
-    height: 36,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: Radii.pill,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 8,
   },
   headerCenter: {
     flex: 1,
@@ -623,21 +514,6 @@ function createStyles(colors: AppColors) {
     alignItems: "center",
     gap: Spacing.sm,
   },
-  statusPill: {
-    height: 22,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 8,
-    borderRadius: Radii.pill,
-    backgroundColor: colors.surfaceSubtle,
-  },
-  statusPillText: {
-    fontFamily: Typography.terminalFont,
-    fontSize: 10,
-    lineHeight: 13,
-    textTransform: "uppercase",
-  },
   contextPath: {
     flex: 1,
     color: colors.textTertiary,
@@ -654,20 +530,8 @@ function createStyles(colors: AppColors) {
     letterSpacing: -0.3,
   },
   banner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.sm,
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radii.md,
-    backgroundColor: colors.warningSoft,
-  },
-  bannerText: {
-    color: colors.textPrimary,
-    fontFamily: Typography.uiFont,
-    fontSize: 13,
+    marginHorizontal: 16,
+    marginBottom: 8,
   },
   contentShell: {
     flex: 1,
@@ -732,78 +596,6 @@ function createStyles(colors: AppColors) {
     fontFamily: Typography.uiFont,
     fontSize: 12,
     opacity: 0.46,
-  },
-  secondaryButton: {
-    height: 34,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 12,
-    borderRadius: Radii.pill,
-    backgroundColor: colors.surfacePressed,
-  },
-  secondaryButtonText: {
-    color: colors.textPrimary,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  primaryButton: {
-    height: 34,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    borderRadius: Radii.pill,
-    backgroundColor: colors.accent,
-  },
-  primaryButtonPressed: {
-    opacity: 0.85,
-  },
-  primaryButtonDisabled: {
-    opacity: 0.5,
-  },
-  primaryButtonText: {
-    color: colors.textOnAccent,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 13,
-    lineHeight: 17,
-  },
-  });
-}
-
-function createMenuStyles(colors: AppColors) {
-  return StyleSheet.create({
-  card: {
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.xl,
-    borderRadius: Radii.lg,
-    backgroundColor: colors.modalSurface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    overflow: "hidden",
-    paddingVertical: 6,
-    ...shadow("float", colors.shadowColor),
-  },
-  item: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.borderSubtle,
-    marginHorizontal: Spacing.lg,
-  },
-  itemText: {
-    color: colors.textPrimary,
-    fontFamily: Typography.uiFont,
-    fontSize: 15,
-  },
-  itemTextDestructive: {
-    color: colors.statusFailed,
   },
   });
 }
