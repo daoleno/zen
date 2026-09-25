@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Linking,
   type ListRenderItem,
@@ -28,6 +27,7 @@ import { useCurrentServer } from "../../store/currentServer";
 import { selectCurrentServerItems } from "../../services/currentServerSelection";
 import { useWork, type WorkItem } from "../../store/work";
 import {
+  ContinuousCorners,
   Radii,
   TypeScale,
   UiTextMetrics,
@@ -48,8 +48,16 @@ import {
   shouldRevealWorkObservatory,
   WORK_OBSERVATORY_PULL,
 } from "../../components/work/workSignalObservatoryInteraction";
-import { RisingSheet } from "../../components/ui/RisingSheet";
-import { EmptyState } from "../../components/ui/EmptyState";
+import { ActionMenu, EmptyState, confirmDestructive } from "../../components/ui";
+import {
+  SessionsOverview,
+  type SessionFilter,
+} from "../../components/workers/SessionsOverview";
+import {
+  buildWorkActivityListModel,
+  type WorkActivityRow,
+} from "../../components/work/workActivityListModel";
+import { useBrain } from "../../store/brain";
 import { sessionEmptyState } from "../../services/sessionEmptyState";
 import { WorkerListRowContainer } from "../../components/workers/WorkerListRowContainer";
 import { WorkerSessionSelectionBar } from "../../components/workers/WorkerSessionSelectionBar";
@@ -63,7 +71,6 @@ import {
   StoredWorkerAliases,
   setServerAutoConnect,
 } from "../../services/storage";
-import { connectionIssueAccent } from "../../services/connectionIssue";
 import { wsClient } from "../../services/websocket";
 import {
   blockCreateAfterAmbiguity,
@@ -119,6 +126,7 @@ export default function InboxScreen() {
     [state.workers, currentServerId],
   );
   const { state: workState } = useWork();
+  const { state: brainState } = useBrain();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
@@ -156,6 +164,7 @@ export default function InboxScreen() {
     [sessionServices, currentServerId],
   );
   const [workObservatoryVisible, setWorkObservatoryVisible] = useState(false);
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<SessionSelection>(
     EMPTY_SESSION_SELECTION,
@@ -179,6 +188,7 @@ export default function InboxScreen() {
     setServicesLoading(false);
     setCreateSheetVisible(false);
     setWorkObservatoryVisible(false);
+    setSessionFilter("all");
     setSelectionMode(false);
     setSelectedKeys(EMPTY_SESSION_SELECTION);
   }, [currentServerId]);
@@ -218,13 +228,34 @@ export default function InboxScreen() {
     () => listSections.flatMap((section) => section.data),
     [listSections],
   );
+  const sessionCounts = useMemo(() => {
+    let running = 0;
+    let attention = 0;
+    for (const agent of displayWorkers) {
+      if (agent.status === "running") running += 1;
+      if (agent.status === "blocked" || agent.status === "failed") attention += 1;
+    }
+    return { all: displayWorkers.length, running, attention };
+  }, [displayWorkers]);
+  const visibleSections = useMemo(() => {
+    if (sessionFilter === "all") return listSections;
+    const keep = (agent: Worker) =>
+      sessionFilter === "running"
+        ? agent.status === "running"
+        : agent.status === "blocked" || agent.status === "failed";
+    return listSections
+      .map((section) => ({ ...section, data: section.data.filter(keep) }))
+      .filter((section) => section.data.length > 0);
+  }, [listSections, sessionFilter]);
+  const visibleSessionCount = useMemo(
+    () => visibleSections.reduce((total, section) => total + section.data.length, 0),
+    [visibleSections],
+  );
 
   const showServerNames = false;
   const hasConfiguredServers = currentServer !== null;
   const connectionState = currentServerId ? state.serverConnections[currentServerId] : undefined;
-  const hasConnection = connectionState !== undefined;
   const anyConnected = connectionState === "connected";
-  const anyConnecting = connectionState === "connecting";
   const waitingForInitialWorkerSnapshot =
     storageHydrated &&
     anyConnected && !agentsHydrated;
@@ -234,7 +265,7 @@ export default function InboxScreen() {
       sortedWorkers.length === 0 &&
       hasConfiguredServers &&
       waitingForInitialWorkerSnapshot);
-  const useSectionHeaders = listSections.length > 1;
+  const useSectionHeaders = visibleSections.length > 1;
   const primaryIssue = currentServerId ? state.serverConnectionIssues[currentServerId] ?? null : null;
 
   const openWorker = useCallback(
@@ -389,18 +420,12 @@ export default function InboxScreen() {
       return;
     }
     const count = selectedWorkers.length;
-    Alert.alert(
-      count === 1 ? "Terminate session?" : "Terminate sessions?",
-      sessionTerminationConfirmMessage(count),
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Terminate",
-          style: "destructive",
-          onPress: () => runTerminateSelection(),
-        },
-      ],
-    );
+    confirmDestructive({
+      title: count === 1 ? "Terminate session?" : "Terminate sessions?",
+      message: sessionTerminationConfirmMessage(count),
+      confirmLabel: "Terminate",
+      onConfirm: runTerminateSelection,
+    });
   }, [runTerminateSelection, selectedWorkers, terminationRunning]);
 
   const finishCreateTerminal = async (
@@ -801,14 +826,46 @@ export default function InboxScreen() {
     });
   };
 
-  const bannerAccent = primaryIssue
-    ? connectionIssueAccent(primaryIssue, colors)
-    : anyConnecting
-      ? colors.statusUnknown
-      : colors.disabledText;
-  const bannerText =
-    primaryIssue?.title || (anyConnecting ? "Connecting" : "Offline");
-  const empty = sessionEmptyState(hasConfiguredServers, connectionState);
+  // Work in progress comes from the current server's Brain, exactly like the
+  // pull-down Work observatory, so both surfaces agree on what needs you.
+  const currentBrain = currentServerId ? brainState.byServer[currentServerId] : undefined;
+  const workOwners = useMemo(
+    () =>
+      displayWorkers.map((agent) => ({
+        sessionId: agent.id,
+        title: presentWorker(agent, workerAliases[agent.key]).title,
+        status: agent.status,
+        delegated: agent.delegated === true,
+      })),
+    [displayWorkers, workerAliases],
+  );
+  const workModel = useMemo(
+    () =>
+      buildWorkActivityListModel({
+        work: currentBrain?.current_work ?? [],
+        owners: workOwners,
+        historicalResultCount: currentBrain?.work_backlog?.historical_results ?? 0,
+      }),
+    [currentBrain?.current_work, currentBrain?.work_backlog?.historical_results, workOwners],
+  );
+  const activateWorkRow = useCallback(
+    (row: WorkActivityRow) => {
+      if (row.action === "open_session" && row.owner) {
+        const agent = displayWorkers.find((worker) => worker.id === row.owner?.sessionId);
+        if (agent) openWorker(agent);
+        return;
+      }
+      if (row.action === "open_brain") openBrain();
+    },
+    [displayWorkers, openBrain, openWorker],
+  );
+
+  const filterActive = sessionFilter !== "all";
+  const empty = sessionEmptyState(
+    hasConfiguredServers,
+    connectionState,
+    filterActive && sortedWorkers.length > 0,
+  );
   const retryCurrentServer = async () => {
     if (!currentServer || !isCurrentServer(currentServer.id)) return;
     try {
@@ -820,7 +877,17 @@ export default function InboxScreen() {
   };
 
   const renderListWorker = useCallback<ListRenderItem<Worker>>(
-    ({ item }) => (
+    ({ item, index, section }: { item: Worker; index: number; section?: WorkerDirectorySection }) => {
+      const first = index === 0;
+      const last = !section || index === section.data.length - 1;
+      return (
+      <View
+        style={[
+          styles.groupedRow,
+          first && styles.groupedRowFirst,
+          last && styles.groupedRowLast,
+        ]}
+      >
       <WorkerListRowContainer
         agent={item}
         alias={workerAliases[item.key]}
@@ -834,9 +901,13 @@ export default function InboxScreen() {
         onOpenWorker={openWorker}
         onEnterSelection={enterSelectionMode}
         onToggleSelection={toggleSelection}
+        separator={!last}
       />
-    ),
+      </View>
+      );
+    },
     [
+      styles,
       workerAliases,
       workerWorkMap,
       enterSelectionMode,
@@ -978,6 +1049,25 @@ export default function InboxScreen() {
     ],
   );
   usePrimarySelectionBar(selectionBar);
+  const overviewHeader = (
+    <SessionsOverview
+      serverName={currentServer?.name ?? null}
+      connection={connectionState ?? "offline"}
+      issue={primaryIssue}
+      counts={sessionCounts}
+      filter={sessionFilter}
+      onChangeFilter={setSessionFilter}
+      work={workModel}
+      onActivateWork={activateWorkRow}
+      onOpenWorkActivity={openWorkObservatory}
+      canCreate={anyConnected}
+      creating={Boolean(creatingServerId)}
+      onCreate={openCreateTerminal}
+      onOpenServices={openSessionServices}
+      onRetry={() => void retryCurrentServer()}
+      showFilters={sortedWorkers.length > 0}
+    />
+  );
   const listContentContainerStyle = useMemo(
     () => [
       styles.promptContent,
@@ -996,17 +1086,6 @@ export default function InboxScreen() {
           threshold={WORK_OBSERVATORY_PULL.threshold}
         />
 
-        {hasConnection && !anyConnected && (
-          <View style={styles.bannerWrap}>
-            <View style={styles.banner}>
-              <View
-                style={[styles.bannerDot, { backgroundColor: bannerAccent }]}
-              />
-              <Text style={styles.bannerText}>{bannerText}</Text>
-            </View>
-          </View>
-        )}
-
         {shouldShowInitialLoading ? (
           <Animated.ScrollView
             style={styles.flex}
@@ -1016,9 +1095,9 @@ export default function InboxScreen() {
             alwaysBounceVertical
             showsVerticalScrollIndicator={false}
           >
-            <ActivityIndicator color={colors.accent} />
+            <EmptyState title="Loading sessions" busy size="inline" />
           </Animated.ScrollView>
-        ) : sortedWorkers.length === 0 ? (
+        ) : visibleSessionCount === 0 ? (
           <Animated.ScrollView
             style={styles.flex}
             contentContainerStyle={styles.emptyScrollContent}
@@ -1027,12 +1106,13 @@ export default function InboxScreen() {
             alwaysBounceVertical
             showsVerticalScrollIndicator={false}
           >
+            {hasConfiguredServers ? overviewHeader : null}
             <EmptyState title={empty.title} icon={empty.icon} busy={empty.busy}
               detail={primaryIssue?.detail}
               action={empty.action ? {
                 label: creatingServerId ? "Starting..." : empty.label,
-                icon: empty.action === "retry" ? "refresh-outline" : empty.action === "terminal" ? "add" : "qr-code-outline",
-                onPress: empty.action === "retry" ? () => void retryCurrentServer() : empty.action === "terminal" ? openCreateTerminal : () => openServerSettings(true),
+                icon: empty.action === "retry" ? "refresh-outline" : empty.action === "terminal" ? "add" : empty.action === "clear" ? "close-circle-outline" : "qr-code-outline",
+                onPress: empty.action === "retry" ? () => void retryCurrentServer() : empty.action === "terminal" ? openCreateTerminal : empty.action === "clear" ? () => setSessionFilter("all") : () => openServerSettings(true),
                 disabled: Boolean(creatingServerId),
               } : undefined}
               secondary={hasConfiguredServers && !anyConnected ? {
@@ -1042,7 +1122,8 @@ export default function InboxScreen() {
           </Animated.ScrollView>
         ) : (
           <AnimatedSectionList
-            sections={listSections}
+            sections={visibleSections}
+            ListHeaderComponent={overviewHeader}
             key="list"
             keyExtractor={workerKeyExtractor}
             renderItem={renderListWorker}
@@ -1137,39 +1218,33 @@ export default function InboxScreen() {
           />
         ) : null}
 
-        <RisingSheet
+        <ActionMenu
           visible={headerMenuVisible}
+          title="Sessions"
           onClose={() => setHeaderMenuVisible(false)}
-          cardStyle={styles.menuCard}
-          align="bottom"
-        >
-          <Text style={styles.menuTitle}>Sessions</Text>
-
-          <AnimatedPressable
-            style={styles.menuItem}
-            preset="press"
-            scale={0.98}
-            disabled={!anyConnected}
-            onPress={() => {
-              setHeaderMenuVisible(false);
-              openSessionServices();
-            }}
-          >
-            <Ionicons
-              name="globe-outline"
-              size={16}
-              color={anyConnected ? colors.textPrimary : colors.disabledText}
-            />
-            <Text
-              style={[
-                styles.menuItemText,
-                !anyConnected && { color: colors.disabledText },
-              ]}
-            >
-              Session services
-            </Text>
-          </AnimatedPressable>
-        </RisingSheet>
+          items={[
+            {
+              key: "new",
+              label: "New session",
+              icon: "add-circle-outline",
+              disabled: !anyConnected || Boolean(creatingServerId),
+              onPress: openCreateTerminal,
+            },
+            {
+              key: "services",
+              label: "Session services",
+              icon: "globe-outline",
+              disabled: !anyConnected,
+              onPress: openSessionServices,
+            },
+            {
+              key: "work",
+              label: "Work activity",
+              icon: "pulse-outline",
+              onPress: openWorkObservatory,
+            },
+          ]}
+        />
 
       </SafeAreaView>
     </GestureDetector>
@@ -1178,11 +1253,7 @@ export default function InboxScreen() {
 
 function createStyles(theme: ResolvedZenTheme) {
   const colors = theme.colors;
-  const {
-    surface: themedSurface,
-    border: themedBorder,
-    sectionLabel,
-  } = surfacesFromTheme(theme);
+  const { sectionLabel } = surfacesFromTheme(theme);
 
   return StyleSheet.create({
     container: {
@@ -1193,33 +1264,25 @@ function createStyles(theme: ResolvedZenTheme) {
       flex: 1,
     },
 
-    bannerWrap: {
-      width: "100%",
-      maxWidth: 760,
-      alignSelf: "center",
+    groupedRow: {
+      marginHorizontal: 16,
+      backgroundColor: colors.bgSurface,
+      borderLeftWidth: StyleSheet.hairlineWidth,
+      borderRightWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.isLight ? "transparent" : theme.materials.stroke,
+      overflow: "hidden",
     },
-    banner: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 7,
-      paddingVertical: 8,
-      marginHorizontal: 18,
-      marginTop: 6,
-      borderRadius: Radii.pill,
-      backgroundColor: themedSurface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: themedBorder,
+    groupedRowFirst: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopLeftRadius: Radii.card,
+      borderTopRightRadius: Radii.card,
+      ...ContinuousCorners,
     },
-    bannerDot: {
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-    },
-    bannerText: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textSecondary,
+    groupedRowLast: {
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomLeftRadius: Radii.card,
+      borderBottomRightRadius: Radii.card,
+      ...ContinuousCorners,
     },
 
     listFab: {
@@ -1245,9 +1308,9 @@ function createStyles(theme: ResolvedZenTheme) {
       paddingTop: 4,
     },
     sectionHeader: {
-      paddingTop: 18,
-      paddingBottom: 8,
-      paddingHorizontal: 16,
+      paddingTop: 20,
+      paddingBottom: 7,
+      paddingHorizontal: 32,
     },
     sectionTitle: {
       ...UiTextMetrics,
@@ -1277,41 +1340,6 @@ function createStyles(theme: ResolvedZenTheme) {
       justifyContent: "center",
       paddingVertical: 44,
     },
-
-    menuCard: {
-      borderRadius: 8,
-      backgroundColor: colors.modalSurfaceAlt,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      overflow: "hidden",
-      ...shadow("float", colors.shadowColor),
-    },
-    menuTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.label,
-      color: colors.textTertiary,
-      paddingHorizontal: 18,
-      paddingTop: 16,
-      paddingBottom: 10,
-    },
-    menuItem: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      paddingHorizontal: 18,
-      minHeight: 48,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: colors.borderSubtle,
-    },
-    menuItemText: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      color: colors.textPrimary,
-    },
-    menuItemTextDestructive: {
-      color: colors.dangerText,
-    },
-
 
   });
 }

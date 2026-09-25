@@ -37,6 +37,7 @@ interface WorkerSessionRowProps {
   /** Row cannot be terminated (e.g. daemon offline): disabled inside selection. */
   selectionDisabled?: boolean;
   onToggleSelection?: () => void;
+  separator?: boolean;
 }
 
 export function WorkerSessionRow({
@@ -55,6 +56,7 @@ export function WorkerSessionRow({
   selected = false,
   selectionDisabled = false,
   onToggleSelection,
+  separator = true,
 }: WorkerSessionRowProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -159,7 +161,7 @@ export function WorkerSessionRow({
           ) : null}
         </View>
       </View>
-      <View pointerEvents="none" style={styles.separator} />
+      {separator ? <View pointerEvents="none" style={styles.separator} /> : null}
     </AnimatedPressable>
   );
 }
@@ -211,7 +213,7 @@ function createStyles(colors: AppColors) {
       borderRadius: 12,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: colors.bgPrimary,
+      backgroundColor: colors.bgSurface,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
       zIndex: 2,
@@ -225,7 +227,7 @@ function createStyles(colors: AppColors) {
       borderRadius: 8,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: colors.bgPrimary,
+      backgroundColor: colors.bgSurface,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderStrong,
       zIndex: 2,
@@ -233,11 +235,11 @@ function createStyles(colors: AppColors) {
     row: {
       flexDirection: 'row',
       alignItems: 'center',
-      minHeight: 72,
-      gap: 10,
-      paddingVertical: 9,
-      paddingHorizontal: 16,
-      backgroundColor: colors.bgPrimary,
+      minHeight: 68,
+      gap: 12,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      backgroundColor: 'transparent',
     },
     rowActive: {
       backgroundColor: colors.accentSoft,
@@ -245,7 +247,7 @@ function createStyles(colors: AppColors) {
     separator: {
       position: 'absolute',
       left: 70,
-      right: 16,
+      right: 0,
       bottom: 0,
       height: StyleSheet.hairlineWidth,
       backgroundColor: colors.borderSubtle,
@@ -258,6 +260,7 @@ function createStyles(colors: AppColors) {
     title: {
       ...UiTextMetrics,
       ...TypeScale.body,
+      fontFamily: TypeScale.label.fontFamily,
       color: colors.textPrimary,
     },
     preview: {
