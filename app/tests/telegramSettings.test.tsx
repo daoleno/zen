@@ -21,7 +21,7 @@ if (!process.env.ZEN_TELEGRAM_PANEL_CHILD) {
   const base = (): Props => ({
     status: { state: "connected", enabled: true, binding_pending: false, bot_username: "fixture_bot", owner_hint: "@owner", topics_available: true, brain_topic_id: 42 },
     connected: true, loading: false, busy: false, error: null, token: "", editingToken: false,
-    onToken() {}, onPaste() {}, onConfigure() {}, onBind() {}, onOpen() {}, onBotFather() {}, onReconnect() {}, onDisconnect() {}, onEditToken() {}, onCancelToken() {}, onRevoke() {}, onRemove() {}, onRetry() {},
+    onToken() {}, onPaste() {}, onConfigure() {}, onBind() {}, onOpen() {}, onBotFather() {}, onReconnect() {}, onDisconnect() {}, onEditToken() {}, onCancelToken() {}, onRevoke() {}, onRemove() {}, onRetry() {}, onCopy: async () => true,
   });
   const mount = async (props: Props) => { let tree!: TestRenderer.ReactTestRenderer; await act(async () => { tree = TestRenderer.create(<TelegramConnectionPanel {...props} />); }); return tree; };
   const button = (tree: TestRenderer.ReactTestRenderer, label: string) => tree.root.findAllByType("button" as any).find(node => node.props.accessibilityLabel === label)!;

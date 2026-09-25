@@ -1171,6 +1171,17 @@ function TelegramConnectionRow({
     }
   };
 
+  const copyTelegramValue = async (value: string) => {
+    try {
+      await Clipboard.setStringAsync(value);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      return true;
+    } catch (error: any) {
+      Alert.alert("Clipboard unavailable", error?.message || "The value could not be copied.");
+      return false;
+    }
+  };
+
   const beginBinding = async () => {
     if (!serverId || !ownerActive.current) return;
     const epoch = ownerEpoch.current;
@@ -1279,6 +1290,7 @@ function TelegramConnectionRow({
               onEditToken={() => setShowToken(true)}
               onCancelToken={() => { setToken(""); setShowToken(false); }}
               onRetry={() => setReload(value => value + 1)}
+              onCopy={copyTelegramValue}
               onRevoke={() => { if (activeServerId) confirmMutation("Unlink Telegram account",
                 "Remove the verified Telegram owner and require a new binding?", "Unlink",
                 () => wsClient.revokeTelegramOwner(activeServerId)); }}

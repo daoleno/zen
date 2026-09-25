@@ -61,7 +61,7 @@ The Git sheet has one Back/Close control, a title with a one-line change summary
 Settings is one grouped list:
 
 - **Servers**: each server shows a dot only when it is not connected. The current server carries an **In use** tag. Tapping a server opens its actions: Use, Connect, Disconnect or Retry, then Edit, then Remove.
-- **Channels**: one **Telegram** row with the bot name and a status pill. It opens the Telegram page, which shows the identity, one primary next step (Verify token, Connect Telegram, Open Telegram, or Reconnect), grouped secondary actions, and diagnostics. Destructive actions (Unlink account, Remove bot) sit behind **Advanced**.
+- **Channels**: one **Telegram** row with the bot name and a status pill. It opens the Telegram page, which shows the identity, one primary next step (Verify token, Connect Telegram, Open Telegram, or Reconnect), grouped secondary actions, and diagnostics as one-line label/value rows (long IDs truncate in the middle and copy on tap). Destructive actions (Unlink account, Remove bot) sit behind **Advanced**.
 - **Providers**: opens Providers.
 - **Appearance**: one segmented control (Auto / Light / Dark). Theme lives only here.
 

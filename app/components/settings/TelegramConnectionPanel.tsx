@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -27,6 +27,8 @@ export interface TelegramConnectionPanelProps {
   onRevoke: () => void;
   onRemove: () => void;
   onRetry: () => void;
+  /** Copies a diagnostic value; resolves true once it is on the clipboard. */
+  onCopy: (value: string) => Promise<boolean>;
 }
 
 type Icon = keyof typeof Ionicons.glyphMap;
@@ -39,6 +41,9 @@ export function TelegramConnectionPanel(props: TelegramConnectionPanelProps) {
   const colors = useAppColors();
   const insets = useSafeAreaInsets();
   const [advanced, setAdvanced] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
   const { status, connected, loading, busy, error } = props;
   const configured = Boolean(status?.bot_username);
   const bound = Boolean(status?.owner_hint);
@@ -57,7 +62,9 @@ export function TelegramConnectionPanel(props: TelegramConnectionPanelProps) {
       <AnimatedPressable key={name} onPress={onPress} disabled={unavailable} accessibilityRole="button"
         accessibilityLabel={name} accessibilityState={{ disabled: unavailable, busy }}
         style={[primary ? styles.primary : styles.row, primary ? { backgroundColor: colors.accent } : null, { opacity: unavailable ? 0.45 : 1 }]}>
-        <Ionicons name={icon} size={primary ? 18 : 19} color={ink} />
+        <View style={primary ? styles.primaryIcon : styles.rowIcon}>
+          <Ionicons name={icon} size={primary ? 18 : 19} color={ink} />
+        </View>
         <Text numberOfLines={2} style={[primary ? styles.primaryText : styles.rowText, { color: primary ? ink : danger ? colors.dangerText : colors.textPrimary }]}>{name}</Text>
       </AnimatedPressable>
     );
@@ -68,17 +75,42 @@ export function TelegramConnectionPanel(props: TelegramConnectionPanelProps) {
     return (
       <View style={[styles.group, { backgroundColor: colors.bgSurface }]}>
         {rows.map((row, index) => (
-          <View key={index} style={index > 0 ? [styles.divided, { borderTopColor: colors.borderSubtle }] : null}>{row}</View>
+          <View key={index}>
+            {index > 0 ? <View pointerEvents="none" style={[styles.divider, { backgroundColor: colors.borderSubtle }]} /> : null}
+            {row}
+          </View>
         ))}
       </View>
     );
   };
+  // Label and value share one line: the label keeps its width, the value
+  // takes the rest and truncates instead of wrapping or widening the card.
   const detail = (name: string, value: string) => (
     <View key={name} style={styles.detail}>
-      <Text style={[styles.detailLabel, { color: colors.textPrimary }]}>{name}</Text>
-      <Text selectable numberOfLines={3} style={[styles.detailValue, { color: colors.textSecondary }]}>{value}</Text>
+      <Text numberOfLines={1} style={[styles.detailLabel, { color: colors.textPrimary }]}>{name}</Text>
+      <Text numberOfLines={1} style={[styles.detailValue, { color: colors.textSecondary }]}>{value}</Text>
     </View>
   );
+  // Opaque identifiers keep both ends readable and copy in full on tap.
+  const copyableDetail = (name: string, value: string) => {
+    const done = copied === name;
+    const copy = async () => {
+      if (!(await props.onCopy(value))) return;
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      setCopied(name);
+      copiedTimer.current = setTimeout(() => setCopied(null), 1600);
+    };
+    return (
+      <AnimatedPressable key={name} onPress={() => void copy()} accessibilityRole="button"
+        accessibilityLabel={`${name} ${value}`} accessibilityHint={`Copies the ${name.toLowerCase()} ID`} style={styles.detail}>
+        <Text numberOfLines={1} style={[styles.detailLabel, { color: colors.textPrimary }]}>{name}</Text>
+        <View style={styles.detailValueGroup}>
+          <Text numberOfLines={1} ellipsizeMode="middle" style={[styles.detailValue, { color: done ? colors.accentStrong : colors.textSecondary }]}>{done ? "Copied" : value}</Text>
+          <Ionicons name={done ? "checkmark" : "copy-outline"} size={16} color={done ? colors.accentStrong : colors.textTertiary} />
+        </View>
+      </AnimatedPressable>
+    );
+  };
   const sectionTitle = (name: string) => (
     <Text accessibilityRole="header" style={[styles.sectionTitle, { color: colors.textTertiary }]}>{name}</Text>
   );
@@ -146,7 +178,7 @@ export function TelegramConnectionPanel(props: TelegramConnectionPanelProps) {
         {group([
           detail("Chat mode", status?.topics_available ? "Native topics" : "Private chat"),
           status?.topic_mappings ? detail("Session topics", String(status.topic_mappings)) : null,
-          status?.brain_thread_id ? detail("Brain conversation", status.brain_thread_id) : null,
+          status?.brain_thread_id ? copyableDetail("Brain conversation", status.brain_thread_id) : null,
           status?.brain_topic_id ? detail("Brain topic", String(status.brain_topic_id)) : null,
           detail("Delivery checks", String((status?.ambiguous_delivery_count || 0) + (status?.topic_ambiguous_ops_count || 0))),
           status?.last_receive_at ? detail("Last received", new Date(status.last_receive_at).toLocaleString()) : null,
@@ -175,14 +207,19 @@ const styles = StyleSheet.create({
   caption: { ...UiTextMetrics, ...TypeScale.caption },
   stack: { gap: 18 },
   group: { borderRadius: 22, overflow: "hidden" },
-  divided: { borderTopWidth: StyleSheet.hairlineWidth, marginLeft: 16 },
+  // Inset hairline drawn over the row, so every row keeps the same 16pt
+  // content inset instead of shifting right under an indented border.
+  divider: { position: "absolute", top: 0, left: 16, right: 0, height: StyleSheet.hairlineWidth },
   row: { minHeight: 52, paddingHorizontal: 16, paddingVertical: 12, flexDirection: "row", alignItems: "center", gap: 12 },
-  rowText: { ...UiTextMetrics, ...TypeScale.body, flex: 1 },
+  rowIcon: { width: 22, height: 22, alignItems: "center", justifyContent: "center" },
+  rowText: { ...UiTextMetrics, ...TypeScale.body, flex: 1, minWidth: 0 },
   primary: { minHeight: 52, paddingHorizontal: 20, borderRadius: 999, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  primaryIcon: { width: 20, height: 20, alignItems: "center", justifyContent: "center" },
   primaryText: { ...UiTextMetrics, ...TypeScale.body, fontWeight: "600", flexShrink: 1, textAlign: "center" },
   detail: { minHeight: 52, flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, gap: 16 },
-  detailLabel: { ...UiTextMetrics, ...TypeScale.body, flexShrink: 0 },
-  detailValue: { ...UiTextMetrics, ...TypeScale.compact, flex: 1, textAlign: "right" },
+  detailLabel: { ...UiTextMetrics, ...TypeScale.body, flexShrink: 0, maxWidth: "60%" },
+  detailValue: { ...UiTextMetrics, ...TypeScale.compact, flex: 1, minWidth: 0, textAlign: "right", fontVariant: ["tabular-nums"] },
+  detailValueGroup: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 6 },
   sectionTitle: { ...UiTextMetrics, ...TypeScale.caption, paddingHorizontal: 16, paddingBottom: 6 },
   inputRow: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 22, paddingLeft: 16, paddingRight: 4 },
   input: { ...UiTextMetrics, ...TypeScale.body, minHeight: 52, flex: 1, minWidth: 0 },
