@@ -63,6 +63,8 @@ function catalogAgeLabel(connection: ProviderConnection): string {
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { MobileSingleLineInput } from "../ui/MobileSingleLineInput";
 import { RisingSheet } from "../ui/RisingSheet";
+import { EmptyState } from "../ui/EmptyState";
+import { InlineNotice } from "../ui/InlineNotice";
 import {
   providerEditorAfterSave,
   providerEditorCanSave,
@@ -193,58 +195,58 @@ export function ProvidersPresentation({
         }
       >
         {!currentServerAvailable || offline ? (
-          <View style={styles.stateBlock}>
-            <Text style={styles.stateTitle}>Offline</Text>
-            <Pressable onPress={onOpenSettings} accessibilityRole="button">
-              <Text style={styles.link}>Open Settings</Text>
-            </Pressable>
-          </View>
+          <EmptyState
+            size="inline"
+            icon="cloud-offline-outline"
+            title={currentServerAvailable ? "Server offline" : "No current server"}
+            detail="Providers are managed on the connected computer."
+            action={{ label: "Open Settings", icon: "settings-outline", onPress: onOpenSettings }}
+            style={styles.stateBlock}
+          />
         ) : null}
 
         {unavailable ? (
-          <View style={styles.stateBlock}>
-            <Text style={styles.stateTitle}>Unavailable</Text>
-            <Text style={styles.stateBody}>
-              Model connections are not available on this daemon.
-            </Text>
-          </View>
+          <EmptyState
+            size="inline"
+            icon="layers-outline"
+            title="Unavailable"
+            detail="Model connections are not available on this daemon."
+            style={styles.stateBlock}
+          />
         ) : null}
 
         {error && !unavailable && currentServerAvailable && !offline ? (
-          <View style={styles.stateBlock}>
-            <Text style={styles.stateTitle}>
-              {error.refreshable ? "Refresh required" : "Could not load"}
-            </Text>
-            <Text style={styles.stateBody}>{error.message}</Text>
-            {error.refreshable ? (
-              <Pressable onPress={onRefresh} accessibilityRole="button">
-                <Text style={styles.link}>Refresh</Text>
-              </Pressable>
-            ) : null}
-          </View>
+          <InlineNotice
+            tone="danger"
+            title={error.refreshable ? "Refresh required" : "Could not load"}
+            detail={error.message}
+            action={error.refreshable ? { label: "Refresh", onPress: onRefresh } : undefined}
+            style={styles.notice}
+          />
         ) : null}
 
         {durabilityWarning ? (
-          <View style={[styles.notice, { borderLeftColor: colors.warning }]}>
-            <Text style={styles.noticeText}>{durabilityWarning}</Text>
-          </View>
+          <InlineNotice
+            tone="warning"
+            icon="alert-circle"
+            title="Saved with a warning"
+            detail={durabilityWarning}
+            style={styles.notice}
+          />
         ) : null}
 
         {requiresRefreshBeforeMutation ? (
-          <View style={[styles.notice, { borderLeftColor: colors.accent }]}>
-            <Text style={styles.noticeText}>
-              Changes are paused until this list is refreshed.
-            </Text>
-            <Pressable onPress={onRefresh} accessibilityRole="button">
-              <Text style={styles.link}>Refresh</Text>
-            </Pressable>
-          </View>
+          <InlineNotice
+            tone="accent"
+            icon="refresh-circle"
+            title="Changes are paused until this list is refreshed."
+            action={{ label: "Refresh", onPress: onRefresh }}
+            style={styles.notice}
+          />
         ) : null}
 
         {loading && !catalog ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={colors.accent} />
-          </View>
+          <EmptyState size="inline" busy title="Loading Providers" style={styles.center} />
         ) : null}
 
         {catalog ? (
@@ -1245,39 +1247,11 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
     },
     center: { paddingVertical: 48, alignItems: "center" },
     stateBlock: {
-      padding: 14,
-      borderRadius: Radii.xs,
+      paddingVertical: 24,
+      borderRadius: Radii.card,
       backgroundColor: colors.bgSurface,
-      gap: 6,
     },
-    stateTitle: {
-      ...UiTextMetrics,
-      ...TypeScale.title,
-      color: colors.textPrimary,
-    },
-    stateBody: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      color: colors.textSecondary,
-    },
-    link: {
-      ...UiTextMetrics,
-      ...TypeScale.body,
-      color: colors.accent,
-      fontWeight: "600",
-    },
-    notice: {
-      padding: 12,
-      borderRadius: Radii.xs,
-      borderLeftWidth: 3,
-      backgroundColor: colors.bgSurface,
-      gap: 6,
-    },
-    noticeText: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textPrimary,
-    },
+    notice: {},
     gatewayStatus: {
       flexDirection: "row",
       alignItems: "center",
