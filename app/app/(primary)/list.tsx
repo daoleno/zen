@@ -1156,7 +1156,7 @@ export default function InboxScreen() {
         <NewTerminalSheet
           key={currentServerId ?? "no-server"}
           visible={createSheetVisible}
-          title="Session"
+          title="New session"
           initialCwd={
             currentServerId
               ? findSuggestedCwd(currentServerId)

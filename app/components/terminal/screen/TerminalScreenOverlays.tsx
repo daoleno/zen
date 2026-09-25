@@ -196,7 +196,7 @@ export function TerminalScreenOverlays({
       <NewTerminalSheet
         key={selectedServerId ?? "no-server"}
         visible={newTerminalVisible}
-        title="Session"
+        title="New session"
         initialCwd={newTerminalInitialCwd}
         serverId={selectedServerId}
         submitting={creatingSession}
