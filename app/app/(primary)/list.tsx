@@ -726,6 +726,15 @@ export default function InboxScreen() {
         onEnterSelection={enterSelectionMode}
         onToggleSelection={toggleSelection}
         separator={!last}
+        cornerStyle={
+          first && last
+            ? styles.groupedCornersAll
+            : first
+              ? styles.groupedCornersTop
+              : last
+                ? styles.groupedCornersBottom
+                : undefined
+        }
       />
       </View>
       );
@@ -1076,7 +1085,6 @@ function createStyles(theme: ResolvedZenTheme) {
       borderLeftWidth: StyleSheet.hairlineWidth,
       borderRightWidth: StyleSheet.hairlineWidth,
       borderColor: theme.isLight ? "transparent" : theme.materials.stroke,
-      overflow: "hidden",
     },
     groupedRowFirst: {
       borderTopWidth: StyleSheet.hairlineWidth,
@@ -1088,6 +1096,23 @@ function createStyles(theme: ResolvedZenTheme) {
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomLeftRadius: Radii.card,
       borderBottomRightRadius: Radii.card,
+      ...ContinuousCorners,
+    },
+    // The row carries its card's corner radii itself instead of being
+    // clipped by overflow:hidden on the rounded wrapper; that ancestor clip
+    // could leave a restyled row unpainted inside its full-height card.
+    groupedCornersTop: {
+      borderTopLeftRadius: Radii.card,
+      borderTopRightRadius: Radii.card,
+      ...ContinuousCorners,
+    },
+    groupedCornersBottom: {
+      borderBottomLeftRadius: Radii.card,
+      borderBottomRightRadius: Radii.card,
+      ...ContinuousCorners,
+    },
+    groupedCornersAll: {
+      borderRadius: Radii.card,
       ...ContinuousCorners,
     },
 

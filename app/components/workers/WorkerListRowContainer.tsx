@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useMemo } from 'react';
+import type { StyleProp, ViewStyle } from 'react-native';
 import type { Worker } from '../../store/workers';
 import { presentWorker } from '../../services/workerPresentation';
 import { formatWorkerSessionPreview } from '../../services/sessionPreview';
@@ -23,6 +24,8 @@ interface WorkerListRowContainerProps {
   showServerName: boolean;
   /** Hairline under the row; off for the last row of a grouped card. */
   separator?: boolean;
+  /** Grouped card corner radii for the row's own background. */
+  cornerStyle?: StyleProp<ViewStyle>;
 }
 
 function WorkerListRowContainerComponent({
@@ -37,6 +40,7 @@ function WorkerListRowContainerComponent({
   selectionDisabled,
   showServerName,
   separator = true,
+  cornerStyle,
 }: WorkerListRowContainerProps) {
   const rowModel = useMemo(() => {
     const presented = presentWorker(agent, alias);
@@ -94,6 +98,7 @@ function WorkerListRowContainerComponent({
       selectionDisabled={selectionDisabled}
       onToggleSelection={handlePress}
       separator={separator}
+      cornerStyle={cornerStyle}
     />
   );
 }

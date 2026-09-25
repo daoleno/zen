@@ -1,5 +1,12 @@
 import React, { useMemo } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   TypeScale,
@@ -38,6 +45,9 @@ interface WorkerSessionRowProps {
   selectionDisabled?: boolean;
   onToggleSelection?: () => void;
   separator?: boolean;
+  /** Corner radii of the grouped card position, so the row's own active
+   * background is rounded without an ancestor clip. */
+  cornerStyle?: StyleProp<ViewStyle>;
 }
 
 export function WorkerSessionRow({
@@ -57,6 +67,7 @@ export function WorkerSessionRow({
   selectionDisabled = false,
   onToggleSelection,
   separator = true,
+  cornerStyle,
 }: WorkerSessionRowProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -71,6 +82,7 @@ export function WorkerSessionRow({
     <AnimatedPressable
       style={[
         styles.row,
+        cornerStyle,
         (activelyRunning || (inSelectionMode && selected)) && styles.rowActive,
       ]}
       preset="card"
