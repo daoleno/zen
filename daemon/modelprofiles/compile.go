@@ -203,21 +203,47 @@ func compileClaude(baseCommand, clientModel string, profile Profile, loopbackRou
 		command = baseCommand
 	}
 	env = map[string]string{EnvAnthropicBaseURL: loopbackRouteURL}
+	// The CLI --settings payload is Zen's per-Session default: it carries the
+	// loopback route env (only when the Provider does not use the user's native
+	// credentials) plus the starting Claude Code permission mode. Zen defaults
+	// routed sessions to Auto. An explicit --permission-mode or
+	// --dangerously-skip-permissions flag on the base command still outranks a
+	// settings file, so explicit authorization choices are preserved, and the
+	// user's own ~/.claude/settings.json is never rewritten.
+	settingsEnv := map[string]string(nil)
 	if normalizeID(profile.AuthMode) != AuthModeNativePassthrough {
 		env[EnvAnthropicAuthToken] = LoopbackAuthPlaceholder
 		env[EnvAnthropicAPIKey] = LoopbackClaudeAPIKeyPlaceholder
-		// Claude user settings may supply their own env and override the process
-		// environment. CLI --settings wins for this Session without changing the
-		// user's config. All values here are loopback-only and non-secret.
-		settings, err := json.Marshal(struct {
-			Env map[string]string `json:"env"`
-		}{Env: env})
-		if err != nil {
-			return "", nil, fmt.Errorf("%w: encode Claude route settings: %v", ErrInvalid, err)
-		}
-		command = appendArgv(command, "--settings", string(settings))
+		settingsEnv = env
 	}
+	settings, err := json.Marshal(ClaudeLaunchSettings{
+		Env:         settingsEnv,
+		Permissions: ClaudeLaunchPermissions{DefaultMode: ClaudeDefaultPermissionMode},
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: encode Claude route settings: %v", ErrInvalid, err)
+	}
+	command = appendArgv(command, "--settings", string(settings))
 	return command, env, nil
+}
+
+// ClaudeDefaultPermissionMode is the starting Claude Code permission mode Zen
+// configures for a routed Session when the launch command does not already
+// choose one. "auto" is the documented value for permissions.defaultMode in a
+// settings file; an explicit --permission-mode/--dangerously-skip-permissions
+// flag still takes precedence.
+const ClaudeDefaultPermissionMode = "auto"
+
+// ClaudeLaunchSettings is the CLI --settings JSON Zen passes to Claude Code for
+// a routed Session. It is secret-free and scoped to that Session.
+type ClaudeLaunchSettings struct {
+	Env         map[string]string       `json:"env,omitempty"`
+	Permissions ClaudeLaunchPermissions `json:"permissions"`
+}
+
+// ClaudeLaunchPermissions mirrors the permissions block of Claude Code settings.
+type ClaudeLaunchPermissions struct {
+	DefaultMode string `json:"defaultMode"`
 }
 
 // RouteIDForSession returns the route id for a Session (empty when unbounded).

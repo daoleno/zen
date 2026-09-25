@@ -62,7 +62,8 @@ var claudeComposerRe = regexp.MustCompile(`(?m)^[\t \x{00A0}]*❯(?:[\t \x{00A0}
 // The footer wraps at narrow worker panes, so the two footer tokens may land
 // on adjacent lines. Keep the span bounded to the current footer and require
 // a mode token plus its keyboard affordance; arbitrary pane text cannot pass.
-var claudeModeFooterRe = regexp.MustCompile(`(?is)(bypass permissions|manual mode)[\s\S]{0,160}(shift\+tab|shortcuts|\?)`)
+// Auto mode is Zen's default Claude launch mode, so its footer must count too.
+var claudeModeFooterRe = regexp.MustCompile(`(?is)(bypass permissions|manual mode|auto mode)[\s\S]{0,160}(shift\+tab|shortcuts|\?)`)
 var claudeBlockedOverlayRe = regexp.MustCompile(`(?is)(select a model|choose a model|loading|starting claude|trust (?:this|the contents)|press enter to continue|sign[ -]?in|api key|permission required|connection refused|reconnect(?:ing|ed)?|retrying|esc to interrupt|(?:^|\n)\s*(?:working|thinking)\.{0,3})`)
 
 // Grok TUI ready: model/footer chrome plus the empty/ready composer prompt glyph.
@@ -3950,7 +3951,7 @@ func isClaudeInputReady(content string) bool {
 	// Require all three ready indicators to distinguish from startup/loading.
 	// Header: numeric Claude Code version marker
 	// Composer: empty input line with prompt glyph (spaces/tabs/NBSP only)
-	// Footer: mode indication (bypass permissions or manual mode)
+	// Footer: mode indication (auto mode, bypass permissions or manual mode)
 	if !claudeHeaderRe.MatchString(content) || !claudeComposerRe.MatchString(content) {
 		return false
 	}

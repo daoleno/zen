@@ -74,7 +74,7 @@ export function NewTerminalAdvancedForm({
         style={styles.input}
         value={command}
         onChangeText={onCommandChange}
-        placeholder="e.g. claude --dangerously-skip-permissions"
+        placeholder="e.g. claude --permission-mode auto"
         placeholderTextColor={colors.textSecondary}
         autoCapitalize="none"
         autoCorrect={false}

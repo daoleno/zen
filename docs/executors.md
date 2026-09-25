@@ -102,7 +102,12 @@ does not verify or invalidate the key. Zen routes managed Claude requests throug
 session-bound loopback and injects the saved upstream key there. The launch uses
 session-specific Claude settings to keep a pre-existing native settings file's
 endpoint or authentication environment from redirecting that managed session;
-native-login sessions retain their own authentication behavior.
+native-login sessions retain their own authentication behavior. The same
+session settings set `permissions.defaultMode` to `auto`, so a routed Claude
+launch starts in Claude Code's Auto permission mode; an explicit
+`--permission-mode` or `--dangerously-skip-permissions` on the launch command
+still takes precedence, and Zen never rewrites the user's own
+`~/.claude/settings.json`.
 This loopback handoff applies to every Claude launch started through Zen. The
 release installer places a small `claude` shim beside `zen`; from any new
 terminal it asks the daemon for a route-scoped launch plan and then `exec`s the

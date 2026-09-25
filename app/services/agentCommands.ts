@@ -1,6 +1,6 @@
 const QUOTE_TRIM_RE = /^['"]|['"]$/g;
 
-export const CLAUDE_CODE_COMMAND = "claude --dangerously-skip-permissions";
+export const CLAUDE_CODE_COMMAND = "claude --permission-mode auto";
 export const CODEX_COMMAND = "codex --dangerously-bypass-approvals-and-sandbox";
 export const CURSOR_AGENT_COMMAND = "cursor-agent --force --sandbox disabled";
 export const GROK_COMMAND =
