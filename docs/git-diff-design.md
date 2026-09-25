@@ -1,5 +1,16 @@
 # Git Diff Redesign
 
+> **Current behavior (supersedes §3, §4, §9–§12 where they differ).**
+> - **Header:** one leading control (Close at the top level, Back everywhere else) and a centered title with a one-line status (`branch · +a −d · N files`). Every secondary action is in one **More actions** menu (the shared `ActionMenu`):
+>   - Overview: filter, browse files, copy repo path, copy branch, refresh.
+>   - Diff: find, display options, open working file, copy path, copy diff, refresh.
+>   - Browser: copy path, refresh.
+> - **Browser navigation:** Back climbs one folder at a time before returning to the changes list. Android hardware back does the same.
+> - **File rows:** a letter tile in the status color (M, A, D, R, C, U, !), the file name, and the folder path cut from the front. A staged label appears only when it adds information. Long press opens: view diff, open working file, copy path, copy diff.
+> - **States:** use the shared `EmptyState`: loading, error with Retry, not a repository, working tree clean with Browse files, no filter matches, and no file selected. A failed refresh keeps content visible under an `InlineNotice` with Retry.
+> - **Copy diff:** rebuilds the exact patch from pages pinned to one version. It refuses if the diff changes mid-copy or exceeds 3,000 rows.
+
+
 Product and interaction specification for the Git Diff review surface opened from
 a Terminal. This document is the source of truth for information hierarchy,
 navigation, scrolling, safe-area and accessibility behavior. It accompanies
