@@ -16,15 +16,6 @@ import (
 	"github.com/daoleno/zen/daemon/codexctl"
 )
 
-// RouterRetryAttempts bounds the per-session router's retry of transient
-// upstream failures. Only transport errors and 5xx responses are retried; every
-// 4xx (including a Provider's own 400) is returned to the client unchanged so a
-// real request error is never masked or multiplied.
-const (
-	RouterRetryAttempts = 2
-	RouterRetryBackoff  = 100 * time.Millisecond
-)
-
 // Router is the Zen-owned same-protocol loopback routing runtime.
 type Router struct {
 	table   *RouteTable
@@ -439,7 +430,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		upReq.ContentLength = int64(len(rewritten))
 	}
 
-	resp, err := doRouterUpstream(r.client, upReq, rewritten, req.Context())
+	resp, err := r.client.Do(upReq)
 	if err != nil {
 		status, typed := classifyUpstreamDoError(err)
 		writeRouteError(w, status, typed)
@@ -465,42 +456,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := streamCopyFlush(w, resp.Body); err != nil {
 		return
 	}
-}
-
-// doRouterUpstream performs a bounded retry of transient upstream failures for
-// the per-session router, mirroring the machine Gateway. It retries transport
-// errors and 5xx responses; the final response (including its body) is returned
-// untouched so the client still sees the Provider's own status and error body.
-// The request body is replayed from the buffered bytes on every attempt.
-func doRouterUpstream(client *http.Client, upReq *http.Request, body []byte, ctx context.Context) (*http.Response, error) {
-	var resp *http.Response
-	var err error
-	for attempt := 0; attempt < RouterRetryAttempts; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(RouterRetryBackoff):
-			}
-			upReq.Body = io.NopCloser(bytes.NewReader(body))
-			upReq.ContentLength = int64(len(body))
-		}
-		resp, err = client.Do(upReq)
-		if err == nil && resp.StatusCode < 500 {
-			return resp, nil
-		}
-		// Preserve the final response body so the client receives the
-		// Provider's own status and error payload instead of an empty body.
-		if attempt == RouterRetryAttempts-1 {
-			break
-		}
-		if resp != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			resp = nil
-		}
-	}
-	return resp, err
 }
 
 // normalizeClaudeContextModel removes Claude Code's explicit one-million
