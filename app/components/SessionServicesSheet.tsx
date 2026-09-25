@@ -1,16 +1,20 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ScrollView, StyleSheet, View } from "react-native";
+import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
 import {
-  ActivityIndicator,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { Typography, useAppColors } from "../constants/tokens";
-import { ServiceTunnelControls } from "./ServiceTunnelControls";
+  ContinuousCorners,
+  Typography,
+  useAppTheme,
+} from "../constants/tokens";
+import { AppText } from "./ui/AppText";
 import { BottomSheetFrame } from "./ui/BottomSheetFrame";
+import { EmptyState } from "./ui/EmptyState";
+import { IconButton } from "./ui/IconButton";
+import { InlineNotice } from "./ui/InlineNotice";
+import { ListRow, ListSection } from "./ui/ListSection";
+import { StatusPill } from "./ui/StatusPill";
+import { useServiceTunnel } from "./services/useServiceTunnel";
 import {
   groupSessionServices,
   hasServiceTerminal,
@@ -22,7 +26,6 @@ import {
   serviceCommandDetail,
   serviceProcessLabel,
   type DiscoveredSessionService,
-  type SessionServiceGroup,
 } from "../services/sessionServicesPresentation";
 
 interface SessionServicesSheetProps {
@@ -37,6 +40,11 @@ interface SessionServicesSheetProps {
   onOpenURL(url: string): void;
 }
 
+/**
+ * Listening services on the current server. The list is one row per port,
+ * grouped by project; everything you can do with a port lives on its detail
+ * page inside the same sheet, so the list itself stays calm.
+ */
 export function SessionServicesSheet({
   visible,
   services,
@@ -48,608 +56,387 @@ export function SessionServicesSheet({
   onOpenTerminal,
   onOpenURL,
 }: SessionServicesSheetProps) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const { colors } = useAppTheme();
   const sections = useMemo(
     () => groupSessionServices(services, { showServerSections }),
     [services, showServerSections],
   );
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const selected = selectedKey
+    ? services.find((service) => serviceKey(service) === selectedKey) ?? null
+    : null;
+
+  useEffect(() => {
+    if (!visible) setSelectedKey(null);
+  }, [visible]);
+
+  const closeDetail = () => {
+    setSelectedKey(null);
+    // Tunnel state may have changed on the detail page.
+    onRefresh();
+  };
+
   const serviceCount = services.length;
+  const subtitle = loading && serviceCount === 0
+    ? "Looking for listening ports"
+    : serviceCount === 0
+      ? null
+      : `${serviceCount} ${serviceCount === 1 ? "port" : "ports"}`;
 
   return (
     <BottomSheetFrame
       visible={visible}
-      maxHeight="78%"
+      maxHeight="82%"
       rootStyle={styles.sheetRoot}
-      cardStyle={styles.sheetCard}
       contentStyle={styles.sheetContent}
       onClose={onClose}
     >
-      <View style={styles.header}>
-        <View style={styles.headerMain}>
-          <Text style={styles.title}>Services</Text>
-          {serviceCount > 0 ? (
-            <Text style={styles.count}>
-              {serviceCount} port{serviceCount === 1 ? "" : "s"}
-            </Text>
-          ) : null}
-        </View>
-        <TouchableOpacity
-          style={styles.iconButton}
-          onPress={onRefresh}
-          disabled={loading}
-          activeOpacity={0.82}
-        >
-          {loading ? (
-            <ActivityIndicator size="small" color={colors.accent} />
-          ) : (
-            <Ionicons name="refresh" size={17} color={colors.textSecondary} />
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.iconButton}
-          onPress={onClose}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="close" size={19} color={colors.textSecondary} />
-        </TouchableOpacity>
-      </View>
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      {loading && services.length === 0 ? (
-        <View style={styles.loading}>
-          <ActivityIndicator color={colors.accent} />
-        </View>
-      ) : services.length === 0 ? (
-        <View style={styles.empty}>
-          <Ionicons name="radio-outline" size={22} color={colors.textSecondary} />
-          <Text style={styles.emptyText}>No listening services found.</Text>
-        </View>
+      {selected ? (
+        <ServiceDetail
+          key={serviceKey(selected)}
+          service={selected}
+          onBack={closeDetail}
+          onOpenTerminal={onOpenTerminal}
+          onOpenURL={onOpenURL}
+        />
       ) : (
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.list}
-          showsVerticalScrollIndicator={false}
-        >
-          {sections.map((section) => (
-            <View key={section.key} style={styles.section}>
-              {section.title ? (
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle} numberOfLines={1}>
-                    {section.title}
-                  </Text>
-                  <Text style={styles.sectionMeta} numberOfLines={1}>
-                    {section.groups.length} project
-                    {section.groups.length === 1 ? "" : "s"}
-                  </Text>
-                </View>
+        <>
+          <View style={styles.header}>
+            <View style={styles.headerCopy}>
+              <AppText variant="title" accessibilityRole="header">
+                Services
+              </AppText>
+              {subtitle ? (
+                <AppText variant="caption" tone="tertiary">
+                  {subtitle}
+                </AppText>
               ) : null}
-
-              {section.groups.map((group) => (
-                <ServiceProjectCard
-                  key={group.key}
-                  group={group}
-                  colors={colors}
-                  styles={styles}
-                  onOpenTerminal={onOpenTerminal}
-                  onOpenURL={onOpenURL}
-                />
-              ))}
             </View>
-          ))}
-        </ScrollView>
+            <IconButton
+              icon="refresh"
+              accessibilityLabel="Refresh services"
+              disabled={loading}
+              onPress={onRefresh}
+            />
+            <IconButton
+              icon="close"
+              accessibilityLabel="Close services"
+              onPress={onClose}
+            />
+          </View>
+
+          {error ? (
+            <InlineNotice
+              tone="danger"
+              title="Services could not be loaded"
+              detail={error}
+              action={{ label: "Retry", onPress: onRefresh, disabled: loading }}
+              style={styles.notice}
+            />
+          ) : null}
+
+          {serviceCount === 0 ? (
+            error ? null : (
+              <EmptyState
+                size="inline"
+                busy={loading}
+                icon="radio-outline"
+                title={loading ? "Loading services" : "No listening services"}
+                detail={loading ? null : "Ports opened by Sessions and persistent services appear here."}
+                style={styles.empty}
+              />
+            )
+          ) : (
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.list}
+              showsVerticalScrollIndicator={false}
+            >
+              {sections.flatMap((section) =>
+                section.groups.map((group) => (
+                  <ListSection
+                    key={group.key}
+                    title={section.title ? `${section.title} · ${group.project}` : group.project}
+                    style={styles.section}
+                  >
+                    {group.services.map((service) => (
+                      <ServiceRow
+                        key={serviceKey(service)}
+                        service={service}
+                        onPress={() => setSelectedKey(serviceKey(service))}
+                      />
+                    ))}
+                  </ListSection>
+                )),
+              )}
+              {loading ? (
+                <AppText variant="caption" tone="tertiary" style={[styles.refreshing, { color: colors.textTertiary }]}>
+                  Refreshing
+                </AppText>
+              ) : null}
+            </ScrollView>
+          )}
+        </>
       )}
     </BottomSheetFrame>
   );
 }
 
-function ServiceProjectCard({
-  group,
-  colors,
-  styles,
-  onOpenTerminal,
-  onOpenURL,
-}: {
-  group: SessionServiceGroup;
-  colors: ReturnType<typeof useAppColors>;
-  styles: ReturnType<typeof createStyles>;
-  onOpenTerminal(service: DiscoveredSessionService): void;
-  onOpenURL(url: string): void;
-}) {
-  return (
-    <View style={styles.projectCard}>
-      <View style={styles.projectHeader}>
-        <View style={styles.projectHeaderIcon}>
-          <Ionicons name="folder-open-outline" size={15} color={colors.promptYellow} />
-        </View>
-        <View style={styles.projectHeaderCopy}>
-          <Text
-            style={styles.projectTitle}
-            numberOfLines={1}
-            ellipsizeMode="head"
-          >
-            {group.project}
-          </Text>
-          <Text style={styles.projectMeta} numberOfLines={1}>
-            {group.headerMeta}
-          </Text>
-        </View>
-      </View>
+function serviceKey(service: DiscoveredSessionService): string {
+  return `${service.serverId}:${service.id}`;
+}
 
-      {group.services.map((service, index) => (
-        <ServicePortRow
-          key={`${service.serverId}:${service.id}`}
-          service={service}
-          last={index >= group.services.length - 1}
-          colors={colors}
-          styles={styles}
-          onOpenTerminal={onOpenTerminal}
-          onOpenURL={onOpenURL}
-        />
-      ))}
+function PortTile({ port }: { port: number }) {
+  const { colors, theme } = useAppTheme();
+  return (
+    <View style={[styles.portTile, { backgroundColor: theme.materials.tint }]}>
+      <AppText
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        style={[styles.portText, { color: colors.accentStrong }]}
+      >
+        {port}
+      </AppText>
     </View>
   );
 }
 
-function ServicePortRow({
+function ServiceRow({
   service,
-  last,
-  colors,
-  styles,
+  onPress,
+}: {
+  service: DiscoveredSessionService;
+  onPress(): void;
+}) {
+  const persistent = !hasServiceTerminal(service) && service.source === "persistent";
+  const publicTunnel = service.tunnel?.status === "running";
+  const subtitle = persistent
+    ? serviceSourceLabel(service)
+    : serviceWorkerLabel(service);
+  return (
+    <ListRow
+      title={serviceProcessLabel(service)}
+      subtitle={subtitle}
+      leading={<PortTile port={service.port} />}
+      trailing={publicTunnel ? <StatusPill label="Public" tone="accent" /> : null}
+      accessory="chevron"
+      accessibilityLabel={`Port ${service.port}, ${serviceProcessLabel(service)}, ${subtitle}${publicTunnel ? ", public tunnel running" : ""}`}
+      accessibilityHint="Shows links and actions for this service"
+      onPress={onPress}
+    />
+  );
+}
+
+function ServiceDetail({
+  service,
+  onBack,
   onOpenTerminal,
   onOpenURL,
 }: {
   service: DiscoveredSessionService;
-  last: boolean;
-  colors: ReturnType<typeof useAppColors>;
-  styles: ReturnType<typeof createStyles>;
+  onBack(): void;
   onOpenTerminal(service: DiscoveredSessionService): void;
   onOpenURL(url: string): void;
 }) {
+  const tunnel = useServiceTunnel(service);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+  }, []);
   const urls = (service.urls ?? []).map(presentSessionServiceURL);
+  const dshWeb = isDSHWebService(service);
   const commandDetail = serviceCommandDetail(service);
   const persistent = !hasServiceTerminal(service) && service.source === "persistent";
-  const dshWeb = isDSHWebService(service);
   const statusDetail = (service.status_detail || "").trim();
 
+  const copyPublicURL = async (url: string) => {
+    await Clipboard.setStringAsync(url);
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 1600);
+  };
+
   return (
-    <View style={[styles.portRow, !last ? styles.portRowDivider : null]}>
-      <View style={styles.portPill}>
-        <Text style={styles.portNumber}>:{service.port}</Text>
-      </View>
-      <View style={styles.portMain}>
-        <View style={styles.portTopRow}>
-          <Text
-            style={styles.portProcess}
-            numberOfLines={1}
-            ellipsizeMode="head"
-          >
+    <>
+      <View style={styles.header}>
+        <IconButton
+          icon="chevron-back"
+          accessibilityLabel="Back to services"
+          onPress={onBack}
+        />
+        <View style={styles.headerCopy}>
+          <AppText variant="title" numberOfLines={1} accessibilityRole="header">
             {serviceProcessLabel(service)}
-          </Text>
-          {hasServiceTerminal(service) ? (
-            <TouchableOpacity
-              style={styles.terminalButton}
-              onPress={() => onOpenTerminal(service)}
-              activeOpacity={0.82}
-              accessibilityLabel={`Open terminal for port ${service.port}`}
-            >
-              <Ionicons
-                name="terminal-outline"
-                size={15}
-                color={colors.textSecondary}
-              />
-            </TouchableOpacity>
-          ) : null}
+          </AppText>
+          <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+            {`Port ${service.port} · ${persistent ? serviceSourceLabel(service) : serviceWorkerLabel(service)}`}
+          </AppText>
         </View>
+      </View>
 
-        {commandDetail ? (
-          <Text
-            style={styles.commandDetail}
-            numberOfLines={1}
-            ellipsizeMode="head"
-          >
-            {commandDetail}
-          </Text>
-        ) : null}
-
-        <View style={styles.workerRow}>
-          <Ionicons
-            name="person-circle-outline"
-            size={13}
-            color={colors.textSecondary}
-          />
-          <Text style={styles.portWorker} numberOfLines={1}>
-            {serviceWorkerLabel(service)}
-          </Text>
-        </View>
-
-        {persistent ? (
-          <View style={styles.workerRow}>
-            <Ionicons
-              name="bookmark-outline"
-              size={13}
-              color={colors.textSecondary}
-            />
-            <Text style={styles.portWorker} numberOfLines={1}>
-              {serviceSourceLabel(service)}
-            </Text>
-          </View>
-        ) : null}
-
-        {persistent && statusDetail ? (
-          <Text
-            style={styles.commandDetail}
-            numberOfLines={2}
-            ellipsizeMode="tail"
-          >
-            {statusDetail}
-          </Text>
-        ) : null}
-
-        <ServiceTunnelControls service={service} onOpenURL={onOpenURL} />
-        <View style={styles.linkRow}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+      >
+        <ListSection title="Open">
           {dshWeb ? (
             urls.length > 0 ? (
-              <TouchableOpacity
-                style={styles.linkChip}
-                onPress={() => onOpenURL(urls[0]!.url)}
-                activeOpacity={0.82}
+              <ListRow
+                title="Open Web"
+                subtitle={urls[0]!.address}
+                icon="globe-outline"
+                accessory="chevron"
                 accessibilityLabel={`Open DSH Web for port ${service.port}`}
-              >
-                <Ionicons name="globe-outline" size={13} color={colors.textSecondary} />
-                <Text style={styles.linkLabel}>Open Web</Text>
-                <Text style={styles.linkHost} numberOfLines={1}>{urls[0]!.address}</Text>
-                <Ionicons name="open-outline" size={12} color={colors.textSecondary} />
-              </TouchableOpacity>
+                onPress={() => onOpenURL(urls[0]!.url)}
+              />
             ) : (
-              <View style={styles.localChip} accessibilityLabel="DSH Web unavailable">
-                <Ionicons name="globe-outline" size={13} color={colors.textSecondary} />
-                <Text style={styles.localLabel}>Web unavailable</Text>
-              </View>
+              <ListRow title="Web unavailable" icon="globe-outline" disabled accessibilityLabel="DSH Web unavailable" />
             )
           ) : urls.length > 0 ? (
             urls.map((item) => (
-              <TouchableOpacity
+              <ListRow
                 key={item.key}
-                style={styles.linkChip}
-                onPress={() => onOpenURL(item.url)}
-                activeOpacity={0.82}
+                title={item.label}
+                subtitle={item.address}
+                icon="open-outline"
+                accessory="chevron"
                 accessibilityLabel={`Open ${item.label} URL for port ${service.port}`}
-              >
-                <Text style={styles.linkLabel}>{item.label}</Text>
-                <Text style={styles.linkHost} numberOfLines={1}>
-                  {item.address}
-                </Text>
-                <Ionicons name="open-outline" size={12} color={colors.textSecondary} />
-              </TouchableOpacity>
+                onPress={() => onOpenURL(item.url)}
+              />
             ))
           ) : (
-            <View style={styles.localChip}>
-              <Text style={styles.localLabel}>Bind</Text>
-              <Text style={styles.localText} numberOfLines={1}>
-                {serviceBindLabel(service)}
-              </Text>
-            </View>
+            <ListRow title="Bound locally" value={serviceBindLabel(service)} icon="link-outline" />
           )}
-        </View>
-      </View>
-    </View>
+          {hasServiceTerminal(service) ? (
+            <ListRow
+              title="Open Session terminal"
+              icon="terminal-outline"
+              accessory="chevron"
+              accessibilityLabel={`Open terminal for port ${service.port}`}
+              onPress={() => onOpenTerminal(service)}
+            />
+          ) : null}
+        </ListSection>
+
+        {tunnel.available ? (
+          <ListSection
+            title="Public access"
+            footer={tunnel.active ? null : "A temporary Quick Tunnel URL that anyone with the link can open."}
+          >
+            {tunnel.publicURL ? (
+              <ListRow
+                title="Open public URL"
+                subtitle={tunnel.publicURL}
+                icon="globe-outline"
+                accessory="chevron"
+                accessibilityLabel="Open public URL"
+                onPress={() => onOpenURL(tunnel.publicURL!)}
+              />
+            ) : null}
+            {tunnel.publicURL ? (
+              <ListRow
+                title={copied ? "Copied" : "Copy public URL"}
+                icon={copied ? "checkmark" : "copy-outline"}
+                accessibilityLabel="Copy public URL"
+                onPress={() => void copyPublicURL(tunnel.publicURL!)}
+              />
+            ) : null}
+            <ListRow
+              title={tunnel.busy ? "Working…" : tunnel.active ? "Stop public tunnel" : "Share with Quick Tunnel"}
+              subtitle={tunnel.active && !tunnel.publicURL ? capitalize(tunnel.tunnel?.status) : null}
+              icon={tunnel.active ? "stop-circle-outline" : "share-outline"}
+              destructive={tunnel.active}
+              loading={tunnel.busy}
+              accessibilityLabel={tunnel.active ? "Stop public tunnel" : "Start temporary public tunnel"}
+              onPress={tunnel.active ? tunnel.stop : tunnel.start}
+            />
+          </ListSection>
+        ) : null}
+        {tunnel.error ? (
+          <InlineNotice tone="danger" title="Tunnel unavailable" detail={tunnel.error} style={styles.notice} />
+        ) : null}
+
+        <ListSection title="Details">
+          <ListRow title="Process" value={serviceProcessLabel(service)} />
+          {commandDetail ? (
+            <ListRow title="Command" subtitle={commandDetail} numberOfLines={1} />
+          ) : null}
+          <ListRow title="Bind" value={serviceBindLabel(service)} />
+          {persistent && statusDetail ? (
+            <ListRow title="Status" subtitle={statusDetail} />
+          ) : null}
+        </ListSection>
+      </ScrollView>
+    </>
   );
 }
 
-function createStyles(colors: ReturnType<typeof useAppColors>) {
-  return StyleSheet.create({
-    sheetRoot: {
-      position: "absolute",
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      width: "100%",
-      minWidth: "100%",
-    },
-    sheetCard: {
-      paddingHorizontal: 8,
-    },
-    sheetContent: {
-      width: "100%",
-      paddingHorizontal: 0,
-      paddingBottom: 8,
-      minWidth: 0,
-    },
-    header: {
-      minHeight: 44,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      paddingHorizontal: 6,
-      marginBottom: 4,
-    },
-    headerMain: {
-      flex: 1,
-      minWidth: 0,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-    },
-    title: {
-      color: colors.textPrimary,
-      fontSize: 17,
-      lineHeight: 22,
-      fontFamily: Typography.uiFontMedium,
-      letterSpacing: -0.2,
-    },
-    count: {
-      color: colors.textSecondary,
-      fontSize: 12,
-      lineHeight: 16,
-      fontFamily: Typography.uiFontMedium,
-      opacity: 0.72,
-    },
-    iconButton: {
-      width: 34,
-      height: 34,
-      borderRadius: 10,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfaceSubtle,
-    },
-    error: {
-      paddingHorizontal: 6,
-      paddingBottom: 8,
-      color: colors.dangerText,
-      fontSize: 12,
-      lineHeight: 16,
-      fontFamily: Typography.uiFont,
-    },
-    loading: {
-      minHeight: 160,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    empty: {
-      minHeight: 180,
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 10,
-    },
-    emptyText: {
-      color: colors.textSecondary,
-      fontSize: 13,
-      lineHeight: 18,
-      fontFamily: Typography.uiFont,
-    },
-    scroll: {
-      width: "100%",
-      flexGrow: 0,
-      maxHeight: 520,
-    },
-    list: {
-      width: "100%",
-      alignSelf: "stretch",
-      paddingHorizontal: 6,
-      paddingBottom: 12,
-      gap: 10,
-    },
-    section: {
-      width: "100%",
-      alignSelf: "stretch",
-      gap: 8,
-      minWidth: 0,
-    },
-    sectionHeader: {
-      minHeight: 18,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      paddingHorizontal: 4,
-      paddingTop: 2,
-    },
-    sectionTitle: {
-      flex: 1,
-      minWidth: 0,
-      color: colors.textSecondary,
-      fontSize: 11,
-      lineHeight: 14,
-      fontFamily: Typography.uiFontMedium,
-      letterSpacing: 0.5,
-      textTransform: "uppercase",
-      opacity: 0.62,
-    },
-    sectionMeta: {
-      color: colors.textSecondary,
-      fontSize: 10,
-      lineHeight: 13,
-      fontFamily: Typography.uiFont,
-      opacity: 0.52,
-    },
-    projectCard: {
-      width: "100%",
-      alignSelf: "stretch",
-      borderRadius: 8,
-      backgroundColor: colors.surfaceSubtle,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.borderSubtle,
-      overflow: "hidden",
-      minWidth: 0,
-    },
-    projectHeader: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 9,
-      paddingHorizontal: 12,
-      paddingTop: 10,
-      paddingBottom: 9,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-    },
-    projectHeaderIcon: {
-      width: 26,
-      height: 26,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfacePressed,
-    },
-    projectHeaderCopy: {
-      flex: 1,
-      minWidth: 0,
-      gap: 1,
-    },
-    projectTitle: {
-      color: colors.textPrimary,
-      fontSize: 14,
-      lineHeight: 18,
-      fontFamily: Typography.uiFontMedium,
-    },
-    projectMeta: {
-      color: colors.textSecondary,
-      fontSize: 11,
-      lineHeight: 14,
-      fontFamily: Typography.uiFont,
-      opacity: 0.72,
-    },
-    portRow: {
-      flexDirection: "row",
-      alignItems: "flex-start",
-      gap: 10,
-      paddingHorizontal: 12,
-      paddingVertical: 9,
-      minWidth: 0,
-    },
-    portRowDivider: {
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-    },
-    portMain: {
-      flex: 1,
-      minWidth: 0,
-      gap: 4,
-    },
-    portTopRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      minHeight: 24,
-      minWidth: 0,
-    },
-    portPill: {
-      minWidth: 48,
-      minHeight: 24,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-      paddingHorizontal: 7,
-      backgroundColor: colors.surfacePressed,
-    },
-    portNumber: {
-      color: colors.promptYellow,
-      fontSize: 13,
-      lineHeight: 18,
-      fontFamily: Typography.terminalFontBold,
-    },
-    portProcess: {
-      flex: 1,
-      minWidth: 0,
-      color: colors.textPrimary,
-      fontSize: 12,
-      lineHeight: 16,
-      fontFamily: Typography.terminalFontBold,
-    },
-    terminalButton: {
-      width: 28,
-      height: 28,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfaceActive,
-    },
-    commandDetail: {
-      color: colors.textSecondary,
-      fontSize: 11,
-      lineHeight: 14,
-      fontFamily: Typography.terminalFont,
-      opacity: 0.64,
-    },
-    workerRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 4,
-      minWidth: 0,
-    },
-    portWorker: {
-      flex: 1,
-      minWidth: 0,
-      color: colors.textSecondary,
-      fontSize: 11,
-      lineHeight: 14,
-      fontFamily: Typography.uiFont,
-      opacity: 0.74,
-    },
-    linkRow: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      gap: 6,
-      marginTop: 1,
-      minWidth: 0,
-    },
-    linkChip: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 5,
-      minWidth: 0,
-      maxWidth: "100%",
-      minHeight: 26,
-      borderRadius: 8,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      backgroundColor: colors.surfaceActive,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.borderStrong,
-    },
-    linkLabel: {
-      color: colors.accent,
-      fontSize: 10,
-      lineHeight: 12,
-      fontFamily: Typography.uiFontMedium,
-      textTransform: "uppercase",
-    },
-    linkHost: {
-      minWidth: 0,
-      flexShrink: 1,
-      color: colors.textPrimary,
-      fontSize: 11,
-      lineHeight: 14,
-      fontFamily: Typography.terminalFont,
-      opacity: 0.88,
-    },
-    localChip: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      minHeight: 26,
-      borderRadius: 8,
-      paddingHorizontal: 8,
-      paddingVertical: 5,
-      backgroundColor: colors.surfacePressed,
-      maxWidth: "100%",
-    },
-    localLabel: {
-      color: colors.textSecondary,
-      fontSize: 10,
-      lineHeight: 12,
-      fontFamily: Typography.uiFontMedium,
-      textTransform: "uppercase",
-      opacity: 0.7,
-    },
-    localText: {
-      flexShrink: 1,
-      color: colors.textSecondary,
-      fontSize: 11,
-      lineHeight: 14,
-      fontFamily: Typography.terminalFont,
-      opacity: 0.72,
-    },
-  });
+function capitalize(value?: string): string | null {
+  if (!value) return null;
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
+
+const styles = StyleSheet.create({
+  sheetRoot: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    width: "100%",
+    minWidth: "100%",
+  },
+  sheetContent: {
+    width: "100%",
+    paddingBottom: 8,
+    minWidth: 0,
+  },
+  header: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 4,
+    marginBottom: 12,
+  },
+  headerCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  notice: {
+    marginBottom: 16,
+  },
+  empty: {
+    paddingVertical: 32,
+  },
+  scroll: {
+    flexGrow: 0,
+  },
+  list: {
+    paddingBottom: 8,
+  },
+  section: {
+    marginBottom: 18,
+  },
+  refreshing: {
+    textAlign: "center",
+    paddingVertical: 4,
+  },
+  portTile: {
+    minWidth: 46,
+    height: 30,
+    paddingHorizontal: 6,
+    borderRadius: 9,
+    ...ContinuousCorners,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  portText: {
+    fontFamily: Typography.terminalFont,
+    fontSize: 13,
+    lineHeight: 17,
+  },
+});
