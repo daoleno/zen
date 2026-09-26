@@ -19,15 +19,14 @@ Brain is the chat with the current server's Brain. Errors and historical read-on
 
 ## Sessions
 
-The Sessions page is the list of the current server's Sessions, grouped by directory into inset rounded cards. Above the list, notices appear only when needed:
+The Sessions page is the list of the current server's Sessions, grouped by directory into inset rounded cards. Above the list, a notice appears only when needed:
 
 1. **Server offline** (or the connection issue) with **Retry**, when the current server is unreachable.
-2. **N Work items need you** with **Review**, when Work on the current server is blocked on you. Review opens the Work activity sheet.
 
 In every other case nothing sits above the list.
 
 - The floating **+** button creates a Session.
-- The page action opens a menu with **New session**, **Work activity** (which shows how many items need you), and **Services**.
+- The page action opens a menu with **New session** and **Services**.
 - Long press enters multi-select for termination.
 - There is no pull-down gesture.
 

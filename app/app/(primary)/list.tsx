@@ -35,11 +35,8 @@ import { surfacesFromTheme } from "../../constants/themedSurfaces";
 import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
 import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
 import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
-import { WorkSignalObservatory } from "../../components/work/WorkSignalObservatory";
 import { ActionMenu, EmptyState, confirmDestructive } from "../../components/ui";
 import { SessionsOverview } from "../../components/workers/SessionsOverview";
-import { buildWorkActivityListModel } from "../../components/work/workActivityListModel";
-import { useBrain } from "../../store/brain";
 import { sessionEmptyState } from "../../services/sessionEmptyState";
 import { WorkerListRowContainer } from "../../components/workers/WorkerListRowContainer";
 import { WorkerSessionSelectionBar } from "../../components/workers/WorkerSessionSelectionBar";
@@ -105,7 +102,6 @@ export default function InboxScreen() {
     [state.workers, currentServerId],
   );
   const { state: workState } = useWork();
-  const { state: brainState } = useBrain();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
@@ -142,7 +138,6 @@ export default function InboxScreen() {
     () => selectCurrentServerItems(sessionServices, currentServerId),
     [sessionServices, currentServerId],
   );
-  const [workObservatoryVisible, setWorkObservatoryVisible] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<SessionSelection>(
     EMPTY_SESSION_SELECTION,
@@ -160,7 +155,6 @@ export default function InboxScreen() {
     setServicesError(null);
     setServicesLoading(false);
     setCreateSheetVisible(false);
-    setWorkObservatoryVisible(false);
     setSelectionMode(false);
     setSelectedKeys(EMPTY_SESSION_SELECTION);
   }, [currentServerId]);
@@ -616,15 +610,6 @@ export default function InboxScreen() {
     void refreshSessionServices();
   };
 
-  const openWorkObservatory = useCallback(() => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setWorkObservatoryVisible(true);
-  }, []);
-
-  const closeWorkObservatory = useCallback(() => {
-    setWorkObservatoryVisible(false);
-  }, []);
-
   const openServiceTerminal = (service: DiscoveredSessionService) => {
     if (!isCurrentServer(service.serverId)) return;
     // Persistent services outlive their creating Session: there is no live
@@ -636,10 +621,6 @@ export default function InboxScreen() {
       params: { id: service.worker_id, serverId: service.serverId },
     });
   };
-
-  const openBrain = useCallback(() => {
-    router.navigate("/");
-  }, [router]);
 
   const openServiceURL = async (url: string) => {
     try {
@@ -667,28 +648,6 @@ export default function InboxScreen() {
     });
   };
 
-  // The attention notice counts the current server's Brain Work exactly like
-  // the Work activity sheet, so both surfaces agree on what needs you.
-  const currentBrain = currentServerId ? brainState.byServer[currentServerId] : undefined;
-  const workOwners = useMemo(
-    () =>
-      displayWorkers.map((agent) => ({
-        sessionId: agent.id,
-        title: presentWorker(agent, workerAliases[agent.key]).title,
-        status: agent.status,
-        delegated: agent.delegated === true,
-      })),
-    [displayWorkers, workerAliases],
-  );
-  const workModel = useMemo(
-    () =>
-      buildWorkActivityListModel({
-        work: currentBrain?.current_work ?? [],
-        owners: workOwners,
-        historicalResultCount: currentBrain?.work_backlog?.historical_results ?? 0,
-      }),
-    [currentBrain?.current_work, currentBrain?.work_backlog?.historical_results, workOwners],
-  );
   const empty = sessionEmptyState(hasConfiguredServers, connectionState);
   const retryCurrentServer = async () => {
     if (!currentServer || !isCurrentServer(currentServer.id)) return;
@@ -886,8 +845,6 @@ export default function InboxScreen() {
       serverName={currentServer?.name ?? null}
       connection={connectionState ?? "offline"}
       issue={primaryIssue}
-      attentionCount={workModel.attention.length}
-      onOpenWorkActivity={openWorkObservatory}
       onRetry={() => void retryCurrentServer()}
     />
   );
@@ -1020,16 +977,6 @@ export default function InboxScreen() {
           </AnimatedPressable>
         ) : null}
 
-        {workObservatoryVisible ? (
-          <WorkSignalObservatory
-            visible={workObservatoryVisible}
-            aliases={workerAliases}
-            onClose={closeWorkObservatory}
-            onOpenSession={openWorker}
-            onOpenBrain={openBrain}
-          />
-        ) : null}
-
         <ActionMenu
           visible={headerMenuVisible}
           title="Sessions"
@@ -1041,15 +988,6 @@ export default function InboxScreen() {
               icon: "add-circle-outline",
               disabled: !anyConnected || Boolean(creatingServerId),
               onPress: openCreateTerminal,
-            },
-            {
-              key: "work",
-              label: "Work activity",
-              icon: "pulse-outline",
-              detail: workModel.attention.length > 0
-                ? `${workModel.attention.length} need you`
-                : undefined,
-              onPress: openWorkObservatory,
             },
             {
               key: "services",
