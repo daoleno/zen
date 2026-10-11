@@ -684,7 +684,27 @@ func encodeCursorProjectDir(cwd string) string {
 	if cwd == "" {
 		return ""
 	}
-	return strings.Trim(strings.ReplaceAll(cwd, string(filepath.Separator), "-"), "-")
+	// Cursor's workspace-path utils sanitize a path with
+	//   path.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "")
+	// so dots, underscores and spaces collapse to a single hyphen and the
+	// result has no leading or trailing hyphen. (Cursor also relocates the
+	// project dir to /tmp/.cursor and appends a sha256 suffix for very long
+	// paths; that relocation is not modeled here.)
+	var b strings.Builder
+	b.Grow(len(cwd))
+	wroteHyphen := false
+	for _, r := range cwd {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			wroteHyphen = false
+			continue
+		}
+		if !wroteHyphen {
+			b.WriteByte('-')
+			wroteHyphen = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func cursorResumeSessionID(command string) string {

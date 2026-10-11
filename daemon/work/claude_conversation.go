@@ -117,7 +117,7 @@ func findClaudeTranscript(worker classifier.Worker, now time.Time) (claudeTransc
 
 	var candidates []claudeTranscriptCandidate
 	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
-		projectDir := filepath.Join(configDir, "projects", encodeClaudeProjectDir(candidateCWD))
+		projectDir := claudeProjectDir(configDir, candidateCWD)
 		entries, err := os.ReadDir(projectDir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -199,7 +199,7 @@ func claudeProcessOwnedTranscript(worker classifier.Worker, configDir string) (c
 	if err != nil || !live || !pathsEquivalent(record.Cwd, worker.Cwd) {
 		return claudeTranscriptCandidate{}, false, false
 	}
-	path := filepath.Join(configDir, "projects", encodeClaudeProjectDir(record.Cwd), record.SessionID+".jsonl")
+	path := filepath.Join(claudeProjectDir(configDir, record.Cwd), record.SessionID+".jsonl")
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return claudeTranscriptCandidate{}, true, false

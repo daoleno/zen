@@ -862,15 +862,68 @@ func isCodexInstructionContextFragment(value string) bool {
 	return count >= 2 && hasStrongMarker
 }
 
+// maxClaudeProjectDirLength mirrors Claude Code's MAX_SANITIZED_LENGTH. Names
+// longer than this are truncated to the limit and get a hash suffix.
+const maxClaudeProjectDirLength = 200
+
 func encodeClaudeProjectDir(cwd string) string {
 	clean := filepath.Clean(cwd)
-	// Claude Code replaces both path separators and dots with hyphens. Keep
-	// this in sync with the on-disk ~/.claude/projects layout (for example,
-	// /.mewla becomes --mewla after the separator and dot are encoded).
-	return strings.NewReplacer(
-		string(filepath.Separator), "-",
-		".", "-",
-	).Replace(clean)
+	// Claude Code sanitizes the project path with
+	// name.replace(/[^a-zA-Z0-9]/g, "-") (getProjectDir -> sanitizePath), so
+	// spaces, dots, underscores and every other non-alphanumeric rune become
+	// hyphens, not just separators and dots. For example, "01 cinematic-"
+	// becomes "01-cinematic-". JS regexes run over UTF-16 code units, so an
+	// astral rune (surrogate pair) yields two hyphens.
+	var b strings.Builder
+	b.Grow(len(clean))
+	for _, r := range clean {
+		if isClaudePathAlphanumeric(r) {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('-')
+		if r > 0xFFFF {
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
+func isClaudePathAlphanumeric(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+// claudeProjectDir resolves the on-disk ~/.claude/projects entry for cwd. For
+// encoded names longer than maxClaudeProjectDirLength, Claude Code truncates
+// the component and appends a hash whose value depends on whether the CLI is
+// running under Bun (Bun.hash) or Node (a djb2 fallback). Rather than guess
+// that hash, mirror Claude Code's own findProjectDir fallback: use the exact
+// name when it exists, otherwise scan the projects directory for a sibling
+// whose name shares the deterministic truncated prefix.
+func claudeProjectDir(configDir, cwd string) string {
+	encoded := encodeClaudeProjectDir(cwd)
+	if encoded == "" {
+		return ""
+	}
+	projectsDir := filepath.Join(configDir, "projects")
+	exact := filepath.Join(projectsDir, encoded)
+	if len(encoded) <= maxClaudeProjectDirLength {
+		return exact
+	}
+	if _, err := os.Stat(exact); err == nil {
+		return exact
+	}
+	prefix := encoded[:maxClaudeProjectDirLength] + "-"
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return exact
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
+			return filepath.Join(projectsDir, entry.Name())
+		}
+	}
+	return exact
 }
 
 func transcriptCWDCandidates(cwd string) []string {

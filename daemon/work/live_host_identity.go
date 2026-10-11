@@ -72,7 +72,7 @@ func ResolveLiveHostTranscriptIdentity(worker classifier.Worker, provider string
 	if !pathsEquivalent(record.Cwd, worker.Cwd) {
 		return HostTranscriptIdentity{}, false, fmt.Errorf("Claude process session cwd does not match host %q", worker.ID)
 	}
-	path := filepath.Join(root, "projects", encodeClaudeProjectDir(record.Cwd), record.SessionID+".jsonl")
+	path := filepath.Join(claudeProjectDir(root, record.Cwd), record.SessionID+".jsonl")
 	return HostTranscriptIdentity{Provider: provider, SessionID: record.SessionID, Path: path, DataRoot: root}, true, nil
 }
 

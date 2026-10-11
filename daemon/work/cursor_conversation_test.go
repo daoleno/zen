@@ -418,11 +418,45 @@ func TestParseCursorConversation_AssistantRowsDoNotSettleActivity(t *testing.T) 
 	}
 }
 
+func TestEncodeCursorProjectDirMatchesCursorLayout(t *testing.T) {
+	tests := []struct {
+		name string
+		cwd  string
+		want string
+	}{
+		{
+			name: "plain path",
+			cwd:  "/home/daoleno/workspace/pacagent",
+			want: "home-daoleno-workspace-pacagent",
+		},
+		{
+			name: "hidden directory collapses dot and separator",
+			cwd:  "/home/daoleno/.zen/brain/workspace",
+			want: "home-daoleno-zen-brain-workspace",
+		},
+		{
+			name: "runs collapse and edges trim",
+			cwd:  "/home/daoleno/my_proj//nested/",
+			want: "home-daoleno-my-proj-nested",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := encodeCursorProjectDir(tt.cwd); got != tt.want {
+				t.Fatalf("encodeCursorProjectDir(%q) = %q, want %q", tt.cwd, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProviderConversationReaderCursorResolvesHiddenWorkspaceViaTrustedMarker(t *testing.T) {
 	home := t.TempDir()
 	cwd := "/home/daoleno/.mewla/worktrees/mewla/terminal-native-scroll-perf"
 	encodedName := encodeCursorProjectDir(cwd)
-	actualName := "home-daoleno-mewla-worktrees-mewla-terminal-native-scroll-perf"
+	// Cursor appends a hash suffix when the joined project path is very long;
+	// that suffix is not reproducible from the cwd alone, so simulate it here
+	// and prove the .workspace-trusted marker still recovers the transcript.
+	actualName := encodedName + "-deadbeef"
 	if encodedName == actualName {
 		t.Fatalf("fixture requires Cursor private name to differ from encodeCursorProjectDir: %q", encodedName)
 	}
@@ -592,7 +626,9 @@ func TestProviderConversationReaderCursorForeignDirectRootDoesNotHideMarkerOwner
 	t.Setenv("HOME", home)
 
 	encodedName := encodeCursorProjectDir(cwd)
-	hashedName := "home-daoleno-mewla-worktrees-mewla-marker-owner"
+	// Simulate Cursor's truncated-and-hashed project dir name for a long path so
+	// the exact encoded dir cannot be the source; the marker scan must win.
+	hashedName := encodedName + "-c0ffee"
 	if encodedName == hashedName {
 		t.Fatalf("fixture requires hashed private name to differ from encode: %q", encodedName)
 	}

@@ -497,6 +497,16 @@ func TestEncodeClaudeProjectDirMatchesClaudeLayout(t *testing.T) {
 			cwd:  "/home/daoleno/workspace/onlora",
 			want: "-home-daoleno-workspace-onlora",
 		},
+		{
+			name: "space in path",
+			cwd:  "/home/daoleno/.mewla/brain/workspace/worklog/freeride-story-videos/01 cinematic-",
+			want: "-home-daoleno--mewla-brain-workspace-worklog-freeride-story-videos-01-cinematic-",
+		},
+		{
+			name: "underscore in path",
+			cwd:  "/repo/my_app",
+			want: "-repo-my-app",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -527,6 +537,49 @@ func TestProviderConversationReaderClaudeFindsDotEncodedProjectLayout(t *testing
 	}
 	if !got.Available || got.Path != path || got.SessionID != "brain-session" {
 		t.Fatalf("conversation = %#v", got)
+	}
+}
+
+func TestProviderConversationReaderClaudeFindsSpaceEncodedProjectLayout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/home/daoleno/.mewla/brain/workspace/worklog/freeride-story-videos/01 cinematic-"
+	// This is Claude Code's observed directory name for a cwd containing a
+	// space: every non-alphanumeric rune becomes a hyphen. Keep it explicit so
+	// the test proves lookup does not search for the literal-space spelling.
+	projectDir := filepath.Join(home, ".claude", "projects", "-home-daoleno--mewla-brain-workspace-worklog-freeride-story-videos-01-cinematic-")
+	path := filepath.Join(projectDir, "cinematic-session.jsonl")
+	writeClaudeReaderTranscript(t, path, cwd, "cinematic-session", "host reply")
+	now := time.Now().UTC()
+	forceReaderFixtureModTime(t, path, now)
+
+	got, err := NewProviderConversationReader().Load(classifier.Worker{
+		Name: "claude", Command: "claude", Cwd: cwd,
+	}, WorkerProviderClaude, now)
+	if err != nil {
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
+	}
+	if !got.Available || got.Path != path || got.SessionID != "cinematic-session" {
+		t.Fatalf("conversation = %#v", got)
+	}
+}
+
+func TestClaudeProjectDirResolvesHashSuffixedLongPath(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/repo/" + strings.Repeat("segment/", 40) + "leaf"
+	encoded := encodeClaudeProjectDir(cwd)
+	if len(encoded) <= maxClaudeProjectDirLength {
+		t.Fatalf("fixture path is not long enough: %d", len(encoded))
+	}
+	// A long path is written by Claude Code as the truncated prefix plus a
+	// runtime-dependent hash suffix. Lookup must still find it by prefix scan.
+	projectDir := filepath.Join(home, ".claude", "projects", encoded[:maxClaudeProjectDirLength]+"-deadbeef")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := claudeProjectDir(filepath.Join(home, ".claude"), cwd)
+	if got != projectDir {
+		t.Fatalf("claudeProjectDir = %q, want %q", got, projectDir)
 	}
 }
 
